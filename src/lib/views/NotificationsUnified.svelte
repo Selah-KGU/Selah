@@ -30,8 +30,8 @@
     if (fresh?.entries) notifyNewKwic(fresh.entries);
   });
   const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => {
-    lunaNotifications = fresh;
-    notifyNewLuna(fresh);
+    lunaNotifications = fresh ?? [];
+    notifyNewLuna(lunaNotifications);
   });
   onDestroy(() => { unsubKwic(); unsubLuna(); });
 
@@ -56,7 +56,7 @@
     lunaLoading = true;
     lunaError = "";
     try {
-      lunaNotifications = await cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"));
+      lunaNotifications = await cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates")) ?? [];
       notifyNewLuna(lunaNotifications);
     } catch (e: any) {
       lunaError = String(e);
@@ -74,7 +74,7 @@
   }
 
   let kwicCount = $derived(kwicData?.entries?.length ?? 0);
-  let lunaCount = $derived(lunaNotifications.length);
+  let lunaCount = $derived((lunaNotifications ?? []).length);
 </script>
 
 <div class="view">

@@ -8,6 +8,7 @@
 
   let unlisten1: (() => void) | null = null;
   let unlisten2: (() => void) | null = null;
+  let unlisten3: (() => void) | null = null;
 
   onMount(async () => {
     unlisten1 = await listen<{ username: string; display_name: string; student_id: string; faculty: string; department: string }>(
@@ -27,11 +28,16 @@
         error: event.payload || "ログインに失敗しました",
       }));
     });
+
+    unlisten3 = await listen<string>("login-cancelled", () => {
+      authState.update((s) => ({ ...s, loading: false }));
+    });
   });
 
   onDestroy(() => {
     unlisten1?.();
     unlisten2?.();
+    unlisten3?.();
   });
 
   async function handleLogin() {

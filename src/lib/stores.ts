@@ -285,7 +285,7 @@ syllabusSearchState.subscribe((state) => {
   }
 });
 
-export const activeTab = writable<string>("timetable");
+export const activeTab = writable<string>("home");
 export const aiRefreshRequested = writable<boolean>(false);
 function initTheme(): "system" | "light" | "dark" {
   if (typeof localStorage !== "undefined") {

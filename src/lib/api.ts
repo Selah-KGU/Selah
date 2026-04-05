@@ -248,12 +248,13 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
     if (isSessionExpiredError(err)) {
       try {
         await triggerRelogin();
-        return await fn();
       } catch (recoveryErr: any) {
         console.log("[Selah] Recovery failed:", recoveryErr);
         for (const svc of Object.values(serviceRegistry)) svc.onReset();
         throw recoveryErr;
       }
+      // Retry outside the recovery try-catch: if retry fails, don't reset auth
+      return await fn();
     }
     throw err;
   }

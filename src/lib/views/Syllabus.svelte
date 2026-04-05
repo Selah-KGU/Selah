@@ -571,7 +571,7 @@
 
 <style>
   .view {
-    padding: 24px;
+    padding: 0;
   }
 
   h2 {

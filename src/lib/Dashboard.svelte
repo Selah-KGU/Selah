@@ -12,6 +12,7 @@
   import LunaTodo from "./views/LunaTodo.svelte";
   import NotificationsUnified from "./views/NotificationsUnified.svelte";
   import ChangeInfo from "./views/ChangeInfo.svelte";
+  import HomePage from "./views/HomePage.svelte";
 
   interface Tab {
     id: string;
@@ -21,6 +22,7 @@
   }
 
   const tabs: Tab[] = [
+    { id: "home", label: "ホーム", icon: "square.grid.2x2", section: "概要" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },
@@ -31,7 +33,7 @@
   ];
 
   // Track which tabs have been visited (lazy mount: create once, then keep alive)
-  let visited = $state(new Set<string>(["timetable"]));
+  let visited = $state(new Set<string>(["home"]));
   $effect(() => {
     const tab = $activeTab;
     if (!visited.has(tab)) {
@@ -72,9 +74,14 @@
   <div class="main-area">
     <Titlebar />
     <div class="content">
-      <div class="view-panel" class:active={$activeTab === "timetable"}>
-        <Timetable />
+      <div class="view-panel" class:active={$activeTab === "home"}>
+        <HomePage />
       </div>
+      {#if visited.has("timetable")}
+        <div class="view-panel" class:active={$activeTab === "timetable"}>
+          <Timetable />
+        </div>
+      {/if}
       {#if visited.has("todo")}
         <div class="view-panel" class:active={$activeTab === "todo"}>
           <LunaTodo />

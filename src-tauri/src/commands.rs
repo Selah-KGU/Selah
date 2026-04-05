@@ -870,6 +870,7 @@ pub async fn debug_ping(target: String) -> Result<PingResult, String> {
         "https://kwic.kwansei.ac.jp",
         "https://sts.kwansei.ac.jp",
         "https://idp.kwansei.ac.jp",
+        "https://sso.kwansei.ac.jp",
     ];
     if !ALLOWED_HOSTS.iter().any(|h| target.starts_with(h)) {
         return Err("許可されていないホストです".into());
