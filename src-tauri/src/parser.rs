@@ -1,5 +1,14 @@
 use scraper::{Html, Selector};
 use serde::Serialize;
+use std::sync::LazyLock;
+
+// ============ Common Selectors ============
+
+pub(crate) static SEL_TR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("tr").unwrap());
+pub(crate) static SEL_TD: LazyLock<Selector> = LazyLock::new(|| Selector::parse("td").unwrap());
+pub(crate) static SEL_TH: LazyLock<Selector> = LazyLock::new(|| Selector::parse("th").unwrap());
+pub(crate) static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).unwrap());
+pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output").unwrap());
 
 // ============ Shared ============
 
@@ -56,45 +65,40 @@ pub fn parse_student_info(html: &str) -> StudentInfo {
 
     // Name is only in the table, not in hidden inputs
     // Parse from table.output: find <th> containing 学生氏名, take sibling <td>
-    if let Ok(table_sel) = Selector::parse("table.output") {
-        if let Some(table) = doc.select(&table_sel).next() {
-            let th_sel = Selector::parse("th").unwrap();
-            let td_sel = Selector::parse("td").unwrap();
-            let tr_sel = Selector::parse("tr").unwrap();
-            for tr in table.select(&tr_sel) {
-                let ths: Vec<_> = tr.select(&th_sel).collect();
-                let tds: Vec<_> = tr.select(&td_sel).collect();
-                for (ti, th) in ths.iter().enumerate() {
-                    let label = th.text().collect::<String>();
-                    let label = label.trim();
-                    // Each <th> pairs with the <td> at the same index
-                    let td_text = tds.get(ti)
-                        .map(|td| td.text().collect::<String>().trim().to_string())
-                        .unwrap_or_default();
-                    if td_text.is_empty() { continue; }
-                    if label.contains("学生氏名") || label == "氏名" || label.contains("Student Name") {
-                        if info.name.is_empty() {
-                            parse_name_field(&td_text, &mut info);
-                        }
-                    } else if label.contains("学生番号") && info.student_id.is_empty() {
-                        info.student_id = td_text;
-                    } else if label.contains("学部") && !label.contains("学科") && info.faculty.is_empty() {
-                        info.faculty = td_text;
-                    } else if label.contains("学科") && !label.contains("学部") && info.department.is_empty() {
-                        info.department = td_text;
-                    } else if label.contains("学生区分") && info.student_type.is_empty() {
-                        info.student_type = td_text;
-                    } else if label.contains("所属区分") && info.affiliation_type.is_empty() {
-                        info.affiliation_type = td_text;
-                    } else if label.contains("学生状態") && info.status.is_empty() {
-                        info.status = td_text;
-                    } else if (label == "クラス" || label.contains("クラス/")) && info.class.is_empty() {
-                        info.class = td_text;
-                    } else if (label.contains("専攻") || label.contains("コース")) && info.major.is_empty() {
-                        info.major = td_text;
-                    } else if (label.contains("住所") || label.contains("電話番号")) && info.address.is_empty() && td_text.len() > 5 {
-                        info.address = td_text;
+    if let Some(table) = doc.select(&SEL_TABLE_OUTPUT).next() {
+        for tr in table.select(&SEL_TR) {
+            let ths: Vec<_> = tr.select(&SEL_TH).collect();
+            let tds: Vec<_> = tr.select(&SEL_TD).collect();
+            for (ti, th) in ths.iter().enumerate() {
+                let label = th.text().collect::<String>();
+                let label = label.trim();
+                // Each <th> pairs with the <td> at the same index
+                let td_text = tds.get(ti)
+                    .map(|td| td.text().collect::<String>().trim().to_string())
+                    .unwrap_or_default();
+                if td_text.is_empty() { continue; }
+                if label.contains("学生氏名") || label == "氏名" || label.contains("Student Name") {
+                    if info.name.is_empty() {
+                        parse_name_field(&td_text, &mut info);
                     }
+                } else if label.contains("学生番号") && info.student_id.is_empty() {
+                    info.student_id = td_text;
+                } else if label.contains("学部") && !label.contains("学科") && info.faculty.is_empty() {
+                    info.faculty = td_text;
+                } else if label.contains("学科") && !label.contains("学部") && info.department.is_empty() {
+                    info.department = td_text;
+                } else if label.contains("学生区分") && info.student_type.is_empty() {
+                    info.student_type = td_text;
+                } else if label.contains("所属区分") && info.affiliation_type.is_empty() {
+                    info.affiliation_type = td_text;
+                } else if label.contains("学生状態") && info.status.is_empty() {
+                    info.status = td_text;
+                } else if (label == "クラス" || label.contains("クラス/")) && info.class.is_empty() {
+                    info.class = td_text;
+                } else if (label.contains("専攻") || label.contains("コース")) && info.major.is_empty() {
+                    info.major = td_text;
+                } else if (label.contains("住所") || label.contains("電話番号")) && info.address.is_empty() && td_text.len() > 5 {
+                    info.address = td_text;
                 }
             }
         }
@@ -148,10 +152,9 @@ pub fn parse_timetable(html: &str) -> TimetableData {
     // Parse timetable from hidden inputs: lstStdTsCht_st[N]
     // hdnTmtxCd = day letter (A=Mon..F=Sat) + period (1-7)
     // lblSbjKnjNm = course name, lblClrNm = room
-    let input_sel = Selector::parse(r#"input[type="hidden"]"#).unwrap();
     let mut timetable_data: std::collections::HashMap<String, std::collections::HashMap<String, String>> = Default::default();
 
-    for el in doc.select(&input_sel) {
+    for el in doc.select(&SEL_HIDDEN_INPUT) {
         let name = el.value().attr("name").unwrap_or("");
         let value = el.value().attr("value").unwrap_or("").trim();
         // Match lstStdTsCht_st[N].fieldName
@@ -293,15 +296,11 @@ pub fn parse_grades(html: &str) -> GradesData {
     let student = parse_student_info(html);
     let mut curriculum = Vec::new();
 
-    let tr_sel = Selector::parse("tr").unwrap();
-    let td_sel = Selector::parse("td").unwrap();
-    let th_sel = Selector::parse("th").unwrap();
-
     let mut headers: Vec<String> = Vec::new();
 
-    for tr in doc.select(&tr_sel) {
+    for tr in doc.select(&SEL_TR) {
         let ths: Vec<String> = tr
-            .select(&th_sel)
+            .select(&SEL_TH)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -316,7 +315,7 @@ pub fn parse_grades(html: &str) -> GradesData {
         }
 
         let tds: Vec<String> = tr
-            .select(&td_sel)
+            .select(&SEL_TD)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -326,7 +325,7 @@ pub fn parse_grades(html: &str) -> GradesData {
 
         // First column might be a th (category) or td
         let row_ths: Vec<String> = tr
-            .select(&th_sel)
+            .select(&SEL_TH)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -397,15 +396,11 @@ pub fn parse_cancellations(html: &str) -> CancellationsData {
     let student = parse_student_info(html);
     let mut entries = Vec::new();
 
-    let tr_sel = Selector::parse("tr").unwrap();
-    let td_sel = Selector::parse("td").unwrap();
-    let th_sel = Selector::parse("th").unwrap();
-
     let mut headers: Vec<String> = Vec::new();
 
-    for tr in doc.select(&tr_sel) {
+    for tr in doc.select(&SEL_TR) {
         let ths: Vec<String> = tr
-            .select(&th_sel)
+            .select(&SEL_TH)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -420,7 +415,7 @@ pub fn parse_cancellations(html: &str) -> CancellationsData {
         }
 
         let tds: Vec<String> = tr
-            .select(&td_sel)
+            .select(&SEL_TD)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -494,15 +489,11 @@ pub fn parse_makeup_classes(html: &str) -> MakeupData {
     let student = parse_student_info(html);
     let mut entries = Vec::new();
 
-    let tr_sel = Selector::parse("tr").unwrap();
-    let td_sel = Selector::parse("td").unwrap();
-    let th_sel = Selector::parse("th").unwrap();
-
     let mut headers: Vec<String> = Vec::new();
 
-    for tr in doc.select(&tr_sel) {
+    for tr in doc.select(&SEL_TR) {
         let ths: Vec<String> = tr
-            .select(&th_sel)
+            .select(&SEL_TH)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -516,7 +507,7 @@ pub fn parse_makeup_classes(html: &str) -> MakeupData {
         }
 
         let tds: Vec<String> = tr
-            .select(&td_sel)
+            .select(&SEL_TD)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -584,15 +575,11 @@ pub fn parse_room_changes(html: &str) -> RoomChangesData {
     let student = parse_student_info(html);
     let mut entries = Vec::new();
 
-    let tr_sel = Selector::parse("tr").unwrap();
-    let td_sel = Selector::parse("td").unwrap();
-    let th_sel = Selector::parse("th").unwrap();
-
     let mut headers: Vec<String> = Vec::new();
 
-    for tr in doc.select(&tr_sel) {
+    for tr in doc.select(&SEL_TR) {
         let ths: Vec<String> = tr
-            .select(&th_sel)
+            .select(&SEL_TH)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -606,7 +593,7 @@ pub fn parse_room_changes(html: &str) -> RoomChangesData {
         }
 
         let tds: Vec<String> = tr
-            .select(&td_sel)
+            .select(&SEL_TD)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -702,10 +689,7 @@ pub fn parse_registration(html: &str) -> RegistrationData {
     // Parse courses from curriculum grid (table.output_curriculum)
     let mut courses = Vec::new();
     let table_sel = Selector::parse("table.output_curriculum").unwrap();
-    let tr_sel = Selector::parse("tr").unwrap();
-    let th_sel = Selector::parse("th").unwrap();
-    let td_sel = Selector::parse("td").unwrap();
-    let hidden_input_sel = Selector::parse("input[type='hidden']").unwrap();
+
     let caption_sel = Selector::parse("caption").unwrap();
 
     let days = ["月", "火", "水", "木", "金", "土"];
@@ -718,9 +702,9 @@ pub fn parse_registration(html: &str) -> RegistrationData {
 
         let mut current_period = String::new();
 
-        for tr in table.select(&tr_sel) {
-            let ths: Vec<_> = tr.select(&th_sel).collect();
-            let tds: Vec<_> = tr.select(&td_sel).collect();
+        for tr in table.select(&SEL_TR) {
+            let ths: Vec<_> = tr.select(&SEL_TH).collect();
+            let tds: Vec<_> = tr.select(&SEL_TD).collect();
 
             // Update period from th with "N時限"
             for th in &ths {
@@ -804,7 +788,7 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                 }
 
                 // Try to get room from hidden input
-                let room_inputs: Vec<_> = td.select(&hidden_input_sel)
+                let room_inputs: Vec<_> = td.select(&SEL_HIDDEN_INPUT)
                     .filter(|el| {
                         el.value().attr("name").unwrap_or("").contains("lblClrNm")
                             && !el.value().attr("name").unwrap_or("").contains("lblClrNm2")
@@ -825,7 +809,7 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                 }
 
                 // Get full subject name from hidden input if truncated
-                let full_name_inputs: Vec<_> = td.select(&hidden_input_sel)
+                let full_name_inputs: Vec<_> = td.select(&SEL_HIDDEN_INPUT)
                     .filter(|el| {
                         el.value().attr("name").unwrap_or("").contains("lblSbjNmTmtx2")
                     })
@@ -916,17 +900,14 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
     let doc = Html::parse_document(html);
     let mut entries = Vec::new();
 
-    let tr_sel = Selector::parse("tr").unwrap();
-    let td_sel = Selector::parse("td").unwrap();
-    let th_sel = Selector::parse("th").unwrap();
     let a_sel = Selector::parse("a").unwrap();
 
     let mut headers: Vec<String> = Vec::new();
     let mut idx = 0;
 
-    for tr in doc.select(&tr_sel) {
+    for tr in doc.select(&SEL_TR) {
         let ths: Vec<String> = tr
-            .select(&th_sel)
+            .select(&SEL_TH)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
@@ -939,7 +920,7 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
             continue;
         }
 
-        let tds: Vec<_> = tr.select(&td_sel).collect();
+        let tds: Vec<_> = tr.select(&SEL_TD).collect();
 
         if tds.is_empty() {
             continue;
@@ -1006,18 +987,15 @@ pub struct CourseDetail {
 /// Tries selectors in order: table.output → table.form → table.tbl → table
 pub fn parse_course_detail(html: &str) -> CourseDetail {
     let doc = Html::parse_document(html);
-    let tr_sel = Selector::parse("tr").unwrap();
-    let th_sel = Selector::parse("th").unwrap();
-    let td_sel = Selector::parse("td").unwrap();
 
     let candidates = ["table.output", "table.form", "table.tbl", "table"];
     for selector_str in &candidates {
         let Ok(table_sel) = Selector::parse(selector_str) else { continue };
         let mut fields = Vec::new();
         for table in doc.select(&table_sel) {
-            for tr in table.select(&tr_sel) {
-                let ths: Vec<_> = tr.select(&th_sel).collect();
-                let tds: Vec<_> = tr.select(&td_sel).collect();
+            for tr in table.select(&SEL_TR) {
+                let ths: Vec<_> = tr.select(&SEL_TH).collect();
+                let tds: Vec<_> = tr.select(&SEL_TD).collect();
                 for (ti, th) in ths.iter().enumerate() {
                     let label = th.text().collect::<String>().trim().to_string();
                     let value = tds.get(ti)

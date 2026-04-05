@@ -56,7 +56,7 @@ fn is_session_expired_body(body: &str) -> bool {
 
 const SESSION_EXPIRED_MSG: &str = "セッションが期限切れです。再ログインしてください。";
 
-fn data_dir() -> std::path::PathBuf {
+pub(crate) fn data_dir() -> std::path::PathBuf {
     let base = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let dir = base.join("com.kgu.selah");
@@ -126,7 +126,7 @@ impl KwicClient {
         }
 
         // Save cookies
-        let store = self.cookie_store.lock().unwrap();
+        let store = self.cookie_store.lock().unwrap_or_else(|e| e.into_inner());
         let mut buf = Vec::new();
         if cookie_store::serde::json::save(&store, &mut buf).is_ok() {
             if let Err(e) = std::fs::write(dir.join(COOKIES_FILE), &buf) {
@@ -263,7 +263,7 @@ impl KwicClient {
             .map_err(|e| format!("リクエスト失敗: {}", e))?;
 
         let status = resp.status();
-        eprintln!("[POST_FORM] {} -> status={}", path, status);
+        log::debug!("[POST_FORM] {} -> status={}", path, status);
 
         // Follow redirects manually like fetch_page
         let mut current_url = String::new();
@@ -275,7 +275,7 @@ impl KwicClient {
                 } else {
                     loc_str.to_string()
                 };
-                eprintln!("[POST_FORM] redirect -> {}", current_url);
+                log::debug!("[POST_FORM] redirect -> {}", current_url);
                 if current_url.contains("sso.kwansei.ac.jp") {
                     return Err(SESSION_EXPIRED_MSG.into());
                 }
@@ -296,7 +296,7 @@ impl KwicClient {
                         } else {
                             loc_str.to_string()
                         };
-                        eprintln!("[POST_FORM] redirect chain -> {}", current_url);
+                        log::debug!("[POST_FORM] redirect chain -> {}", current_url);
                         if current_url.contains("sso.kwansei.ac.jp") {
                             return Err(SESSION_EXPIRED_MSG.into());
                         }

@@ -116,7 +116,6 @@
   }
 
   async function handleCellClick(cell: UnifiedCellData) {
-    console.log('[DEBUG] handleCellClick', { luna: cell.luna, kwic: cell.kwic, kwicDetailPath: cell.kwic?.detail_path });
     if (cell.luna && $lunaAuthState.authenticated) {
       await openLunaCourse(cell.luna.idnumber, cell.luna.name, cell.kwic?.detail_path);
     } else if (cell.kwic?.detail_path) {
@@ -238,7 +237,7 @@
       try {
         data = await cachedFetch("timetable", fetchTimetable);
         if (data && data.form_fields && shouldShowNextWeek(data)) {
-          data = await fetchTimetableWeek("next", data.form_fields);
+          data = await fetchTimetableWeek("next");
         }
         await afterDataLoaded();
       } catch (e: any) { error = e?.message || String(e); }
@@ -278,7 +277,7 @@
     if (!data?.form_fields || navigating) return;
     navigating = true;
     try {
-      data = await fetchTimetableWeek(direction, data.form_fields);
+      data = await fetchTimetableWeek(direction);
       await afterDataLoaded();
     } catch (e: any) { error = e?.message || String(e); }
     finally { navigating = false; }

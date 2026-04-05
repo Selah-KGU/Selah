@@ -5,9 +5,11 @@
   "windows": [
     "main",
     "login",
+    "luna-login",
     "detail-*",
     "luna-detail-*",
     "luna-web-*",
+    "syllabus-detail-*",
     "registration",
     "profile-edit",
     "settings",

@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri::{Emitter, Manager};
 use std::time::Instant;
+use std::sync::LazyLock;
+use regex::Regex;
 
 use crate::auth;
 use crate::parser;
@@ -203,6 +205,9 @@ pub async fn open_login_window(
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     let mut client = state.client.lock().await;
     client.clear_session();
+    drop(client);
+    let mut luna = state.luna.lock().await;
+    luna.clear();
     Ok(())
 }
 
@@ -322,9 +327,8 @@ pub async fn validate_session(state: State<'_, AppState>) -> Result<SessionStatu
 
 /// Navigate timetable to previous/next week.
 /// direction: "prev" or "next"
-/// form_fields: all hidden form fields from the current page
 #[tauri::command]
-pub async fn fetch_timetable_week(state: State<'_, AppState>, direction: String, _form_fields: std::collections::HashMap<String, String>) -> Result<parser::TimetableData, String> {
+pub async fn fetch_timetable_week(state: State<'_, AppState>, direction: String) -> Result<parser::TimetableData, String> {
     let client = state.client.lock().await;
     if !client.is_authenticated() {
         return Err(AUTH_REQUIRED_MSG.into());
@@ -407,18 +411,14 @@ fn period_to_time(period: i32) -> Option<(u32, u32, u32, u32)> {
     }
 }
 
+static WEEK_MONDAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})\(月\)").unwrap());
+static WEEK_DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})").unwrap());
+
 /// Parse week_label like "2026/03/30(月)～2026/04/05(日)" to get Monday's date
 fn parse_week_start(week_label: &str) -> Result<(i32, u32, u32), String> {
-    let re = regex::Regex::new(r"(\d{4})/(\d{2})/(\d{2})\(月\)").unwrap();
-    if let Some(caps) = re.captures(week_label) {
-        let y: i32 = caps[1].parse().unwrap();
-        let m: u32 = caps[2].parse().unwrap();
-        let d: u32 = caps[3].parse().unwrap();
-        return Ok((y, m, d));
-    }
-    // Fallback: extract the first date
-    let re2 = regex::Regex::new(r"(\d{4})/(\d{2})/(\d{2})").unwrap();
-    if let Some(caps) = re2.captures(week_label) {
+    let caps = WEEK_MONDAY_RE.captures(week_label)
+        .or_else(|| WEEK_DATE_RE.captures(week_label));
+    if let Some(caps) = caps {
         let y: i32 = caps[1].parse().unwrap();
         let m: u32 = caps[2].parse().unwrap();
         let d: u32 = caps[3].parse().unwrap();
@@ -690,6 +690,9 @@ pub async fn fetch_page(state: State<'_, AppState>, path: String) -> Result<Stri
 
 #[tauri::command]
 pub async fn fetch_course_detail(state: State<'_, AppState>, path: String) -> Result<parser::CourseDetail, String> {
+    if !path.starts_with("/uniasv2/") {
+        return Err("許可されていないパスです".into());
+    }
     let client = state.client.lock().await;
     if !client.is_authenticated() {
         return Err(AUTH_REQUIRED_MSG.into());
@@ -860,6 +863,18 @@ pub struct PingResult {
 
 #[tauri::command]
 pub async fn debug_ping(target: String) -> Result<PingResult, String> {
+    // Restrict to known university hosts
+    const ALLOWED_HOSTS: &[&str] = &[
+        "https://kg-course.kwansei.ac.jp",
+        "https://luna.kwansei.ac.jp",
+        "https://kwic.kwansei.ac.jp",
+        "https://sts.kwansei.ac.jp",
+        "https://idp.kwansei.ac.jp",
+    ];
+    if !ALLOWED_HOSTS.iter().any(|h| target.starts_with(h)) {
+        return Err("許可されていないホストです".into());
+    }
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .danger_accept_invalid_certs(false)
@@ -898,7 +913,8 @@ fn chrono_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = now.as_secs();
-    let hours = (secs % 86400) / 3600;
+    // JST = UTC + 9 hours
+    let hours = ((secs % 86400) / 3600 + 9) % 24;
     let mins = (secs % 3600) / 60;
     let s = secs % 60;
     format!("{:02}:{:02}:{:02}", hours, mins, s)
@@ -1072,23 +1088,14 @@ pub async fn fetch_syllabus_favorites(
     })
 }
 
-#[tauri::command]
-pub async fn toggle_syllabus_bookmark(
-    kwic_state: State<'_, AppState>,
-    class_code: String,
-) -> Result<bool, String> {
-    let kwic_client = kwic_state.client.lock().await;
-    if !kwic_client.is_authenticated() {
-        return Err(AUTH_REQUIRED_MSG.into());
-    }
-
-    // Search for the specific course by class_code to get a valid results page form state.
-    // The server requires at least one of term/campus/department/day_period, so we iterate terms.
+/// Search for a specific class_code across terms, returning the results HTML page.
+async fn find_syllabus_results_by_class_code(
+    client: &crate::client::KwicClient,
+    class_code: &str,
+) -> Result<String, String> {
     let terms = ["02", "03", "01", "04", "05", "06", "07"];
-    let mut results_html: Option<String> = None;
-
     for term_code in &terms {
-        let search_html = kwic_client
+        let search_html = client
             .fetch_page("/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/AGA030.do&REQ_PRFR_MNU_ID=MNUIDSTD0103011")
             .await?;
         let token = match extract_struts_token(&search_html) {
@@ -1106,7 +1113,7 @@ pub async fn toggle_syllabus_bookmark(
             ("selTacTrmCd".into(), term_code.to_string()),
             ("selOpcCmpsCd".into(), String::new()),
             ("selLsnMngPostCd".into(), String::new()),
-            ("txtLsnCd_01".into(), class_code.clone()),
+            ("txtLsnCd_01".into(), class_code.to_string()),
             ("txtLsnCd_02".into(), String::new()),
             ("selTmtxCd".into(), String::new()),
             ("txtSlbSrchKwd".into(), String::new()),
@@ -1120,21 +1127,32 @@ pub async fn toggle_syllabus_bookmark(
             ("ESearch".into(), "検索/Search".into()),
             ("hdnLoginUrl".into(), String::new()),
         ];
-        let html = kwic_client
+        let html = client
             .post_form("/uniasv2/AGA030PSC01EventAction.do", &search_params)
             .await?;
 
         if html.contains("結果一覧画面") {
             if let Ok(parsed) = crate::syllabus::parse_search_results_public(&html) {
                 if parsed.entries.iter().any(|e| e.class_code == class_code) {
-                    results_html = Some(html);
-                    break;
+                    return Ok(html);
                 }
             }
         }
     }
+    Err(format!("科目コード {} が見つかりません", class_code))
+}
 
-    let html = results_html.ok_or_else(|| format!("科目コード {} が見つかりません", class_code))?;
+#[tauri::command]
+pub async fn toggle_syllabus_bookmark(
+    kwic_state: State<'_, AppState>,
+    class_code: String,
+) -> Result<bool, String> {
+    let kwic_client = kwic_state.client.lock().await;
+    if !kwic_client.is_authenticated() {
+        return Err(AUTH_REQUIRED_MSG.into());
+    }
+
+    let html = find_syllabus_results_by_class_code(&kwic_client, &class_code).await?;
 
     // Find the target row's register index
     let parsed = crate::syllabus::parse_search_results_public(&html)?;
@@ -1186,57 +1204,7 @@ pub async fn open_syllabus_detail(
     }
 
     // Search by class_code across terms to find the course
-    let terms = ["02", "03", "01", "04", "05", "06", "07"];
-    let mut results_html: Option<String> = None;
-
-    for term_code in &terms {
-        let search_html = kwic_client
-            .fetch_page("/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/AGA030.do&REQ_PRFR_MNU_ID=MNUIDSTD0103011")
-            .await?;
-        let token = match extract_struts_token(&search_html) {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        let year = extract_year_from_search_page(&search_html).unwrap_or_else(|| "2026".into());
-
-        let search_params = vec![
-            ("org.apache.struts.taglib.html.TOKEN".into(), token),
-            ("selTypeCalLsnOpcFcy".into(), "0".into()),
-            ("txtLsnOpcFcy".into(), year.clone()),
-            ("selTypeCalLsnEndFcy".into(), "0".into()),
-            ("txtLsnEndFcy".into(), year),
-            ("selTacTrmCd".into(), term_code.to_string()),
-            ("selOpcCmpsCd".into(), String::new()),
-            ("selLsnMngPostCd".into(), String::new()),
-            ("txtLsnCd_01".into(), class_code.clone()),
-            ("txtLsnCd_02".into(), String::new()),
-            ("selTmtxCd".into(), String::new()),
-            ("txtSlbSrchKwd".into(), String::new()),
-            ("selVolCd1".into(), String::new()),
-            ("txtTchKnjfn_01".into(), String::new()),
-            ("txtTchKnafn_01".into(), String::new()),
-            ("txtCbbTchRnmAlpfn_01".into(), String::new()),
-            ("hdnClassisyUser".into(), "S".into()),
-            ("hdnEsearch".into(), "true".into()),
-            ("hdnPhfyPrcFlg".into(), String::new()),
-            ("ESearch".into(), "検索/Search".into()),
-            ("hdnLoginUrl".into(), String::new()),
-        ];
-        let html = kwic_client
-            .post_form("/uniasv2/AGA030PSC01EventAction.do", &search_params)
-            .await?;
-
-        if html.contains("結果一覧画面") {
-            if let Ok(parsed) = crate::syllabus::parse_search_results_public(&html) {
-                if parsed.entries.iter().any(|e| e.class_code == class_code) {
-                    results_html = Some(html);
-                    break;
-                }
-            }
-        }
-    }
-
-    let html = results_html.ok_or_else(|| format!("科目コード {} が見つかりません", class_code))?;
+    let html = find_syllabus_results_by_class_code(&kwic_client, &class_code).await?;
 
     // Parse results to obtain the fresh ereferIndex for this course
     let results = crate::syllabus::parse_search_results_public(&html)
@@ -1279,16 +1247,21 @@ pub async fn open_syllabus_detail(
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("syllabus-detail-{}", id);
 
-    // Update existing managed state
+    // Store keyed by window label so concurrent opens don't collide
     {
         let state = app.state::<SyllabusDetailData>();
-        let mut data = state.0.lock().map_err(|e| e.to_string())?;
-        *data = Some(detail);
+        let mut map = state.0.lock().map_err(|e| e.to_string())?;
+        // Evict stale entries if map grows (windows closed without fetching data)
+        if map.len() > 20 {
+            map.clear();
+        }
+        map.insert(label.clone(), detail);
     }
 
-    // Open detail window
+    // Open detail window — pass label in URL so the window can retrieve its own data
     let encoded_name = urlencoding::encode(&course_name);
-    let url_str = format!("detail.html?syllabus=true&name={}", encoded_name);
+    let encoded_label = urlencoding::encode(&label);
+    let url_str = format!("detail.html?syllabus=true&name={}&wlabel={}", encoded_name, encoded_label);
 
     tauri::WebviewWindowBuilder::new(
         &app,
@@ -1304,31 +1277,34 @@ pub async fn open_syllabus_detail(
     Ok(())
 }
 
-pub struct SyllabusDetailData(pub std::sync::Mutex<Option<crate::parser::CourseDetail>>);
+pub struct SyllabusDetailData(pub std::sync::Mutex<std::collections::HashMap<String, crate::parser::CourseDetail>>);
 
 #[tauri::command]
 pub async fn get_syllabus_detail(
     state: State<'_, SyllabusDetailData>,
+    label: String,
 ) -> Result<crate::parser::CourseDetail, String> {
-    let mut data = state.0.lock().map_err(|e| e.to_string())?;
-    data.take().ok_or("詳細データがありません".into())
+    let mut map = state.0.lock().map_err(|e| e.to_string())?;
+    map.remove(&label).ok_or("詳細データがありません".into())
 }
 
+static STRUTS_TOKEN_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#).unwrap());
+static STRUTS_TOKEN_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="([^"]+)"[^>]*name="org\.apache\.struts\.taglib\.html\.TOKEN""#).unwrap());
+
 fn extract_struts_token(html: &str) -> Result<String, String> {
-    let re = regex::Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#).unwrap();
-    let re2 = regex::Regex::new(r#"value="([^"]+)"[^>]*name="org\.apache\.struts\.taglib\.html\.TOKEN""#).unwrap();
-    re.captures(html)
-        .or_else(|| re2.captures(html))
+    STRUTS_TOKEN_RE1.captures(html)
+        .or_else(|| STRUTS_TOKEN_RE2.captures(html))
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
         .ok_or_else(|| "Strutsトークンが見つかりません".into())
 }
 
+static YEAR_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="txtLsnOpcFcy"[^>]*value="(\d{4})""#).unwrap());
+static YEAR_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="(\d{4})"[^>]*name="txtLsnOpcFcy""#).unwrap());
+
 fn extract_year_from_search_page(html: &str) -> Option<String> {
-    let re1 = regex::Regex::new(r#"name="txtLsnOpcFcy"[^>]*value="(\d{4})""#).ok()?;
-    let re2 = regex::Regex::new(r#"value="(\d{4})"[^>]*name="txtLsnOpcFcy""#).ok()?;
-    re1.captures(html)
-        .or_else(|| re2.captures(html))
+    YEAR_RE1.captures(html)
+        .or_else(|| YEAR_RE2.captures(html))
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
 }

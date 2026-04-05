@@ -324,8 +324,8 @@ export async function fetchTimetable(): Promise<TimetableData> {
   return withSessionGuard(() => invoke<TimetableData>("fetch_timetable"));
 }
 
-export async function fetchTimetableWeek(direction: "prev" | "next", formFields: Record<string, string>): Promise<TimetableData> {
-  return withSessionGuard(() => invoke<TimetableData>("fetch_timetable_week", { direction, formFields }));
+export async function fetchTimetableWeek(direction: "prev" | "next"): Promise<TimetableData> {
+  return withSessionGuard(() => invoke<TimetableData>("fetch_timetable_week", { direction }));
 }
 
 export async function fetchCourseDetail(path: string): Promise<CourseDetail> {

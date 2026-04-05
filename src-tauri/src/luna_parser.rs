@@ -481,7 +481,6 @@ fn extract_named_quill_text(html: &str, var_name: &str) -> Option<String> {
     // Find the closing ", 'reference') or similar
     // The JSON string ends at the last " before the next , or )
     // The JSON is double-escaped: \" inside the JS string
-    let _depth = 0;
     let mut end = 0;
     let chars: Vec<char> = after.chars().collect();
     let mut i = 0;
@@ -1018,15 +1017,6 @@ fn try_selectors_text(doc: &Html, selectors: &[&str]) -> String {
         }
     }
     String::new()
-}
-
-#[allow(dead_code)]
-fn collapse_whitespace(s: &str) -> String {
-    let lines: Vec<&str> = s.lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect();
-    lines.join("\n")
 }
 
 // ──────────────────────────────────────────────

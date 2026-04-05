@@ -1,5 +1,15 @@
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+
+use crate::parser::{SEL_HIDDEN_INPUT, SEL_TABLE_OUTPUT, SEL_TR};
+
+// ============ Selectors ============
+
+static SEL_DD_UL_LI: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dd ul li").unwrap());
+static SEL_IMG: LazyLock<Selector> = LazyLock::new(|| Selector::parse("img").unwrap());
+static SEL_EREGISTER: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[name="ERegister"]"#).unwrap());
+static SEL_TYPE_IMAGE: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="image"]"#).unwrap());
 
 // ============ Types ============
 
@@ -45,9 +55,7 @@ pub struct SyllabusSearchResult {
 
 pub fn extract_validation_error(html: &str) -> Option<String> {
     let doc = Html::parse_document(html);
-    // Error messages appear in <dd><ul><li> elements
-    let sel = Selector::parse("dd ul li").ok()?;
-    let errors: Vec<String> = doc.select(&sel)
+    let errors: Vec<String> = doc.select(&SEL_DD_UL_LI)
         .map(|el| el.text().collect::<String>().trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
@@ -77,13 +85,10 @@ fn parse_search_results(html: &str) -> Result<SyllabusSearchResult, String> {
         .unwrap_or(1);
 
     // Parse result rows from table.output
-    let table_sel = Selector::parse("table.output").unwrap();
-    let tr_sel = Selector::parse("tr").unwrap();
-
     let mut entries = Vec::new();
 
-    if let Some(table) = doc.select(&table_sel).next() {
-        for tr in table.select(&tr_sel).skip(1) {
+    if let Some(table) = doc.select(&SEL_TABLE_OUTPUT).next() {
+        for tr in table.select(&SEL_TR).skip(1) {
             // Skip header row
             if let Some(entry) = parse_result_row(&tr) {
                 entries.push(entry);
@@ -106,11 +111,9 @@ fn extract_hidden_value(doc: &Html, name: &str) -> Option<String> {
 }
 
 fn parse_result_row(tr: &scraper::ElementRef) -> Option<SyllabusEntry> {
-    let hidden_sel = Selector::parse("input[type=hidden]").unwrap();
-
     // Extract values from hidden inputs which have clean data
     let mut fields = std::collections::HashMap::new();
-    for input in tr.select(&hidden_sel) {
+    for input in tr.select(&SEL_HIDDEN_INPUT) {
         if let (Some(name), Some(value)) = (input.value().attr("name"), input.value().attr("value")) {
             // Strip the array prefix like "lstSlbinftJ016RList_st[0]."
             if let Some(field) = name.rsplit('.').next() {
@@ -124,20 +127,14 @@ fn parse_result_row(tr: &scraper::ElementRef) -> Option<SyllabusEntry> {
 
     // Check bookmark state: Bookmark_1.gif means bookmarked
     let bookmarked = {
-        // Try input[name="ERegister"] (type=image with src)
-        let img_sel = Selector::parse(r#"input[name="ERegister"]"#).unwrap();
-        let from_input = tr.select(&img_sel).next()
+        let from_input = tr.select(&SEL_EREGISTER).next()
             .and_then(|el| el.value().attr("src"))
             .map(|src| src.contains("Bookmark_1"))
             .unwrap_or(false);
         if !from_input {
-            // Also try img tags inside any element that may contain bookmark icon
-            let any_img_sel = Selector::parse("img").unwrap();
-            let from_img = tr.select(&any_img_sel)
+            let from_img = tr.select(&SEL_IMG)
                 .any(|el| el.value().attr("src").map(|s| s.contains("Bookmark_1")).unwrap_or(false));
-            // Also check input[type=image]
-            let type_img_sel = Selector::parse(r#"input[type="image"]"#).unwrap();
-            let from_type_img = tr.select(&type_img_sel)
+            let from_type_img = tr.select(&SEL_TYPE_IMAGE)
                 .any(|el| el.value().attr("src").map(|s| s.contains("Bookmark_1")).unwrap_or(false));
             from_img || from_type_img
         } else {

@@ -134,13 +134,6 @@
     }
   }
 
-  .login-subtitle {
-    font-size: 13px;
-    color: var(--text-secondary);
-    font-weight: 400;
-    letter-spacing: 0.02em;
-  }
-
   .login-body {
     padding: 0 32px 28px;
   }

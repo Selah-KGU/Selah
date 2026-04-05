@@ -1,19 +1,14 @@
 use reqwest::Client;
 use scraper::{Html, Selector};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
-use crate::client::{build_http_client, new_cookie_client};
+use crate::client::{build_http_client, data_dir, new_cookie_client};
+
+static SEL_FORM: LazyLock<Selector> = LazyLock::new(|| Selector::parse("form").unwrap());
+static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).unwrap());
 
 const LUNA_BASE: &str = "https://luna.kwansei.ac.jp";
 const LUNA_COOKIES_FILE: &str = "luna_cookies.json";
-
-fn data_dir() -> std::path::PathBuf {
-    let dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("com.kgu.selah");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
-}
 
 /// Check if Luna response body indicates session expired
 fn is_luna_session_expired(body: &str) -> bool {
@@ -54,7 +49,7 @@ impl LunaClient {
             return;
         }
         let dir = data_dir();
-        let store = self.cookie_store.lock().unwrap();
+        let store = self.cookie_store.lock().unwrap_or_else(|e| e.into_inner());
         let mut buf = Vec::new();
         if cookie_store::serde::json::save(&store, &mut buf).is_ok() {
             if let Err(e) = std::fs::write(dir.join(LUNA_COOKIES_FILE), &buf) {
@@ -541,8 +536,8 @@ impl LunaClient {
 /// Parse an LTI auto-submit form: returns (action_url, params)
 fn parse_lti_form(html: &str) -> Result<(String, Vec<(String, String)>), String> {
     let doc = Html::parse_document(html);
-    let form_sel = Selector::parse("form").map_err(|_| "フォーム解析失敗")?;
-    let input_sel = Selector::parse("input[type=\"hidden\"]").map_err(|_| "入力解析失敗")?;
+    let form_sel = &*SEL_FORM;
+    let input_sel = &*SEL_HIDDEN_INPUT;
 
     let form = doc.select(&form_sel).next()
         .ok_or("LTIフォームが見つかりません")?;

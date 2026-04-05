@@ -41,7 +41,7 @@ pub fn run() {
                 client: Mutex::new(client::KwicClient::new()),
                 luna: Mutex::new(luna),
             });
-            app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(None)));
+            app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
             tray::setup_tray(&app.handle())?;
 
             // Hide main window on close instead of quitting (keep in tray)

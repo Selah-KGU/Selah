@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { lunaInvoke } from "../api";
   import { cachedFetch, onCacheUpdate, lunaAuthState } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
@@ -50,7 +49,7 @@
   async function openDetail(path: string, title: string) {
     if (!path) return;
     try {
-      await invoke("luna_open_detail_window", { path, title });
+      await lunaInvoke("luna_open_detail_window", { path, title });
     } catch (e: any) {
       console.error("Failed to open detail window:", e);
     }

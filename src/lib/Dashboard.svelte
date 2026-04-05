@@ -42,11 +42,9 @@
   let unlistenRefresh: (() => void) | null = null;
   onMount(async () => {
     unlistenRefresh = await listen('ai-refresh-request', () => {
-      console.log('[Dashboard] ai-refresh-request received');
       activeTab.set('timetable');
       aiRefreshRequested.set(true);
     });
-    console.log('[Dashboard] ai-refresh-request listener registered');
   });
   onDestroy(() => { if (unlistenRefresh) unlistenRefresh(); });
 </script>

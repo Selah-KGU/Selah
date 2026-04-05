@@ -7,6 +7,19 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// Escape HTML special characters to prevent XSS in server-side rendered content
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Validate that a string looks like a simple numeric/alphanumeric ID
+fn is_safe_param(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 20 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Open a Luna detail page in a separate native window
 #[tauri::command]
 pub async fn luna_open_detail_window(
@@ -128,7 +141,9 @@ pub async fn luna_reveal_file(path: String) -> Result<(), String> {
     // Restrict to files under the user's Downloads or app data directory
     let p = std::path::Path::new(&path);
     let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
-    let allowed = dirs::download_dir().unwrap_or_else(|| dirs::home_dir().unwrap().join("Downloads"));
+    let allowed = dirs::download_dir().unwrap_or_else(|| {
+        dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+    });
     if !canonical.starts_with(&allowed) {
         return Err("ダウンロードフォルダ外のファイルは表示できません".into());
     }
@@ -231,6 +246,10 @@ pub async fn luna_fetch_page(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<String, String> {
+    // Only allow relative paths on Luna
+    if path.contains("://") || !path.starts_with('/') {
+        return Err("許可されていないパスです".into());
+    }
     let luna = state.luna.lock().await;
     luna.fetch_page(&path).await
 }
@@ -287,6 +306,9 @@ pub async fn luna_fetch_timetable(
 ) -> Result<luna_parser::LunaTimetable, String> {
     let luna = state.luna.lock().await;
     if let (Some(y), Some(t)) = (&year, &term) {
+        if !is_safe_param(y) || !is_safe_param(t) {
+            return Err("無効なパラメータです".into());
+        }
         let path = format!("/lms/timetable?risyunen={}&kikanCd={}", y, t);
         let html = luna.fetch_page(&path).await?;
         return Ok(luna_parser::parse_luna_timetable(&html));
@@ -321,6 +343,9 @@ pub async fn luna_fetch_course_content(
     state: State<'_, AppState>,
     idnumber: String,
 ) -> Result<String, String> {
+    if !is_safe_param(&idnumber) {
+        return Err("無効なパラメータです".into());
+    }
     let luna = state.luna.lock().await;
     let path = format!("/lms/contents?idnumber={}", idnumber);
     luna.fetch_page(&path).await
@@ -352,6 +377,9 @@ pub async fn luna_fetch_announcement_detail(
     idnumber: String,
     info_id: String,
 ) -> Result<luna_parser::LunaDetailPage, String> {
+    if !is_safe_param(&idnumber) || !is_safe_param(&info_id) {
+        return Err("無効なパラメータです".into());
+    }
     let luna = state.luna.lock().await;
     let path = format!(
         "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
@@ -373,6 +401,9 @@ pub async fn luna_fetch_course_detail(
     state: State<'_, AppState>,
     idnumber: String,
 ) -> Result<luna_parser::LunaCourseContents, String> {
+    if !is_safe_param(&idnumber) {
+        return Err("無効なパラメータです".into());
+    }
     let luna = state.luna.lock().await;
 
     let course_path = format!("/lms/course?idnumber={}", idnumber);
@@ -469,7 +500,7 @@ pub async fn luna_download_file(
                 format!("{} ({}).{}", stem, i, ext)
             };
             let candidate = downloads.join(&name);
-            if !candidate.exists() {
+            if !candidate.exists() || i >= 999 {
                 break candidate;
             }
             i += 1;
@@ -648,7 +679,7 @@ pub async fn luna_download_material(
                 format!("{} ({}).{}", stem, i, ext)
             };
             let candidate = downloads.join(&name);
-            if !candidate.exists() {
+            if !candidate.exists() || i >= 999 {
                 break candidate;
             }
             i += 1;
@@ -821,7 +852,7 @@ pub async fn luna_post_discussion(
         ("threadTitle".to_string(), title),
         ("contents".to_string(), content_json.clone()),
         ("contentsText".to_string(), content_json),
-        ("contentsHtml".to_string(), format!("<p>{}</p>", content)),
+        ("contentsHtml".to_string(), format!("<p>{}</p>", html_escape(&content))),
     ];
 
     let resp = luna.post_form("/lms/course/forums/setthread", &post_params).await?;
@@ -889,7 +920,7 @@ pub async fn luna_reply_discussion(
         .text("editAuthority", "")
         .text("currentThread", "0")
         .text("postContentsText", content_json)
-        .text("postContentsHtml", format!("<p>{}</p>", content))
+        .text("postContentsHtml", format!("<p>{}</p>", html_escape(&content)))
         .text("postContents", content.clone())
         .text("postSendFlag", "false")
         .text("forum.addressType", "0")

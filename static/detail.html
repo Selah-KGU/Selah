@@ -149,6 +149,7 @@
       const params = new URLSearchParams(window.location.search);
       const path = params.get('path');
       const isSyllabus = params.get('syllabus') === 'true';
+      const wlabel = params.get('wlabel') || '';
       const courseName = params.get('name') || '授業詳細';
       document.getElementById('title').textContent = courseName;
 
@@ -166,7 +167,7 @@
       try {
         let detail;
         if (isSyllabus) {
-          detail = await invoke('get_syllabus_detail');
+          detail = await invoke('get_syllabus_detail', { label: wlabel });
         } else {
           detail = await invoke('fetch_course_detail', { path });
         }

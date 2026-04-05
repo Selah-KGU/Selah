@@ -137,10 +137,7 @@ struct GeminiPartResponse {
 // ============ Config persistence ============
 
 fn config_path() -> PathBuf {
-    let dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("com.kgu.selah");
-    std::fs::create_dir_all(&dir).ok();
+    let dir = crate::client::data_dir();
     // Migrate from old config_dir location
     let old = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -342,6 +339,14 @@ pub fn save_ai_config(mut config: AiConfig) -> Result<(), String> {
         return Err("モデル名を入力してください".into());
     }
 
+    if !config.base_url.is_empty()
+        && !config.base_url.starts_with("https://")
+        && !config.base_url.starts_with("http://localhost")
+        && !config.base_url.starts_with("http://127.0.0.1")
+    {
+        return Err("Base URLは https:// で始まる必要があります".into());
+    }
+
     save_config(&config)
 }
 
@@ -386,7 +391,7 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn request_ai_refresh(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Emitter;
-    println!("[ai] request_ai_refresh called, emitting to all windows");
+    log::info!("[ai] request_ai_refresh called, emitting to all windows");
     app.emit("ai-refresh-request", ())
         .map_err(|e| format!("emit failed: {}", e))?;
     Ok(())
