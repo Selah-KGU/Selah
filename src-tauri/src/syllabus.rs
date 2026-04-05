@@ -139,13 +139,6 @@ fn parse_result_row(tr: &scraper::ElementRef) -> Option<SyllabusEntry> {
             let type_img_sel = Selector::parse(r#"input[type="image"]"#).unwrap();
             let from_type_img = tr.select(&type_img_sel)
                 .any(|el| el.value().attr("src").map(|s| s.contains("Bookmark_1")).unwrap_or(false));
-            // Debug: log what we found
-            let all_inputs: Vec<String> = tr.select(&Selector::parse("input[type=image]").unwrap())
-                .map(|el| format!("name={:?} src={:?}", el.value().attr("name"), el.value().attr("src")))
-                .collect();
-            if !all_inputs.is_empty() {
-                log::info!("Bookmark detection: input[name=ERegister]={}, img={}, input[type=image]={}, inputs={:?}", from_input, from_img, from_type_img, all_inputs);
-            }
             from_img || from_type_img
         } else {
             true
@@ -154,12 +147,6 @@ fn parse_result_row(tr: &scraper::ElementRef) -> Option<SyllabusEntry> {
 
     let refer_index = fields.get("ereferIndex").cloned().unwrap_or_default();
     let register_index = fields.get("eregisterIndex").cloned().unwrap_or_default();
-
-    // Debug: log all hidden field names from first row to discover available fields
-    if fields.len() > 5 {
-        let field_names: Vec<&String> = fields.keys().collect();
-        log::debug!("Syllabus row hidden fields: {:?}", field_names);
-    }
 
     Some(SyllabusEntry {
         academic_year: fields.get("lblLsnOpcFcy").cloned().unwrap_or_default(),

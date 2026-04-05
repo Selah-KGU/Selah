@@ -2,11 +2,19 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use regex::Regex;
 use url::Url;
+use std::sync::LazyLock;
 
 use crate::client::KwicClient;
 use crate::parser;
 
 const BASE_URL: &str = "https://kg-course.kwansei.ac.jp";
+
+static META_REFRESH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"meta\s+http-equiv="refresh"\s+content="\d+;URL=([^"]+)""#).unwrap()
+});
+static SAML_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(https://sso\.kwansei\.ac\.jp/app/[^"'\s]+)"#).unwrap()
+});
 
 /// Generate a SAML intercept initialization script for a login webview.
 /// `callback_host` determines the fake hostname used to intercept the SAML response
@@ -111,7 +119,7 @@ pub async fn initiate_sp_auth(http: &Client) -> Result<String, String> {
         // Check for meta refresh redirect
         let body = resp.text().await
             .map_err(|e| format!("レスポンス読取失敗: {}", e))?;
-        let re = Regex::new(r#"meta\s+http-equiv="refresh"\s+content="\d+;URL=([^"]+)""#).unwrap();
+        let re = &*META_REFRESH_RE;
         if let Some(caps) = re.captures(&body) {
             let redirect_path = &caps[1];
             let parsed = Url::parse(&current_url).unwrap();
@@ -125,7 +133,7 @@ pub async fn initiate_sp_auth(http: &Client) -> Result<String, String> {
 
         // Check if body contains an Okta SAML URL
         if body.contains("sso.kwansei.ac.jp") {
-            let re_saml = Regex::new(r#"(https://sso\.kwansei\.ac\.jp/app/[^"'\s]+)"#).unwrap();
+            let re_saml = &*SAML_URL_RE;
             if let Some(caps) = re_saml.captures(&body) {
                 return Ok(caps[1].to_string());
             }

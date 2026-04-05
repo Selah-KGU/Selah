@@ -414,6 +414,10 @@ export async function openSettingsWindow(): Promise<void> {
   return invoke<void>("open_settings_window");
 }
 
+export async function openProfileEditWindow(): Promise<void> {
+  return invoke<void>("open_profile_edit_window");
+}
+
 // ============ Background Polling ============
 // Two tiers:
 //   - Volatile (5 min): notifications, todo, change info

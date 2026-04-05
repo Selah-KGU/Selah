@@ -115,7 +115,15 @@ impl LunaClient {
                 // Decode HTML entities
                 let action = action
                     .replace("&#x3a;", ":")
-                    .replace("&#x2f;", "/");
+                    .replace("&#x2f;", "/")
+                    .replace("&#x3d;", "=")
+                    .replace("&#x3f;", "?")
+                    .replace("&#x26;", "&")
+                    .replace("&#x25;", "%")
+                    .replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"");
                 if action.contains("sso.kwansei.ac.jp") {
                     return Ok(action);
                 }

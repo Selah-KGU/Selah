@@ -1,8 +1,7 @@
 <script lang="ts">
   import { authState, theme, cachedFetch } from "./stores";
   import type { StudentInfo } from "./stores";
-  import { logout, fetchStudentProfile } from "./api";
-  import { invoke } from "@tauri-apps/api/core";
+  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow } from "./api";
   import Icon from "./Icon.svelte";
   import kgLogoRaw from "../assets/kg-logo.svg?raw";
 
@@ -56,7 +55,7 @@
         <Icon name="sun" size={14} />
       {/if}
     </button>
-    <button class="tb-btn" onclick={() => invoke('open_settings_window')} title="設定">
+    <button class="tb-btn" onclick={() => openSettingsWindow()} title="設定">
       <Icon name="gear" size={14} />
     </button>
     {#if $authState.authenticated}
@@ -117,7 +116,7 @@
         {/if}
       </div>
       <div class="profile-actions">
-        <button class="profile-edit-btn" onclick={() => { showProfile = false; invoke('open_profile_edit_window'); }}>
+        <button class="profile-edit-btn" onclick={() => { showProfile = false; openProfileEditWindow(); }}>
           個人情報を編集
         </button>
         <button class="profile-logout-btn" onclick={handleLogout}>

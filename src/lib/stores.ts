@@ -272,12 +272,16 @@ function loadSyllabusState(): SyllabusSearchState {
 
 export const syllabusSearchState = writable<SyllabusSearchState>(loadSyllabusState());
 
-// Persist on every change
+// Persist on change (debounced to avoid excessive writes)
+let syllabusWriteTimer: ReturnType<typeof setTimeout> | null = null;
 syllabusSearchState.subscribe((state) => {
   if (typeof localStorage !== "undefined") {
-    try {
-      localStorage.setItem(SYLLABUS_STORAGE_KEY, JSON.stringify(state));
-    } catch { /* quota exceeded etc */ }
+    if (syllabusWriteTimer) clearTimeout(syllabusWriteTimer);
+    syllabusWriteTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(SYLLABUS_STORAGE_KEY, JSON.stringify(state));
+      } catch { /* quota exceeded etc */ }
+    }, 500);
   }
 });
 
