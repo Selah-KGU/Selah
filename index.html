@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Selah</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      // Pre-boot log collector — stores logs before Svelte loads, consumed by DebugPanel
+      (function() {
+        var logs = window.__SELAH_PREBOOT_LOGS__ = [];
+        function addLog(type, msg) {
+          logs.push({ type: type, message: msg, time: new Date().toLocaleTimeString('ja-JP') });
+        }
+        window.addEventListener('error', function(e) {
+          addLog('error', e.message + (e.filename ? ' @ ' + e.filename + ':' + e.lineno : ''));
+        });
+        window.addEventListener('unhandledrejection', function(e) {
+          addLog('error', 'Unhandled Promise: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+        });
+        var origError = console.error;
+        console.error = function() {
+          addLog('error', Array.from(arguments).join(' '));
+          origError.apply(console, arguments);
+        };
+        var origWarn = console.warn;
+        console.warn = function() {
+          addLog('warn', Array.from(arguments).join(' '));
+          origWarn.apply(console, arguments);
+        };
+        addLog('info', 'Pre-boot started at ' + new Date().toLocaleTimeString());
+        addLog('info', 'Location: ' + window.location.href);
+        addLog('info', 'UA: ' + navigator.userAgent.substring(0, 80));
+        addLog('info', '#app element: ' + (document.getElementById('app') ? 'found' : 'NOT FOUND'));
+        addLog('info', '__TAURI_INTERNALS__: ' + (typeof window.__TAURI_INTERNALS__ !== 'undefined' ? 'available' : 'NOT available'));
+      })();
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>授業詳細</title>
+<style>
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f5f7;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --border: rgba(0, 0, 0, 0.08);
+    --accent: #002855;
+    color-scheme: light;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg-primary: #1c1c1e;
+      --bg-secondary: #2c2c2e;
+      --text-primary: #f5f5f7;
+      --text-secondary: #98989d;
+      --border: rgba(255, 255, 255, 0.08);
+      --accent: #4a90d9;
+      color-scheme: dark;
+    }
+  }
+  [data-theme="dark"] {
+    --bg-primary: #1c1c1e;
+    --bg-secondary: #2c2c2e;
+    --text-primary: #f5f5f7;
+    --text-secondary: #98989d;
+    --border: rgba(255, 255, 255, 0.08);
+    --accent: #4a90d9;
+    color-scheme: dark;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 20px;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  .subtitle {
+    font-size: 11px;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+  }
+  h1 {
+    font-size: 17px;
+    font-weight: 700;
+    margin: 2px 0 16px;
+    line-height: 1.3;
+  }
+  .loading {
+    text-align: center;
+    padding: 40px 0;
+    color: var(--text-secondary);
+  }
+  .spinner {
+    width: 24px;
+    height: 24px;
+    margin: 0 auto 12px;
+    border: 2.5px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 0.5px solid var(--border);
+  }
+  .row {
+    display: flex;
+    padding: 8px 0;
+    border-bottom: 0.5px solid var(--border);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .row:last-child { border-bottom: none; }
+  .label {
+    flex-shrink: 0;
+    width: 130px;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+  .value {
+    flex: 1;
+    color: var(--text-primary);
+    word-break: break-word;
+  }
+  .error {
+    color: #ff3b30;
+    text-align: center;
+    padding: 20px;
+  }
+</style>
+</head>
+<body>
+  <div class="subtitle">授業・時間割照会（詳細）</div>
+  <h1 id="title">読み込み中...</h1>
+  <div id="content">
+    <div class="loading">
+      <div class="spinner"></div>
+      <span>読み込み中...</span>
+    </div>
+  </div>
+  <script>
+    // Apply theme from parent window (shared localStorage)
+    (function() {
+      var t = localStorage.getItem('selah-theme');
+      if (t === 'light' || t === 'dark') {
+        document.documentElement.setAttribute('data-theme', t);
+      }
+    })();
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+    function renderData(data) {
+      const { title, fields, error } = data;
+      document.getElementById('title').textContent = title || '授業詳細';
+      const content = document.getElementById('content');
+      if (error) {
+        content.innerHTML = '<div class="error">' + escapeHtml(error) + '</div>';
+        return;
+      }
+      if (fields && fields.length > 0) {
+        let html = '<div class="section-title">授業時間割情報</div>';
+        for (const [label, value] of fields) {
+          html += '<div class="row"><div class="label">' + escapeHtml(label) + '</div><div class="value">' + escapeHtml(value || '—') + '</div></div>';
+        }
+        content.innerHTML = html;
+      } else {
+        content.innerHTML = '<div class="error">詳細情報を取得できませんでした。</div>';
+      }
+    }
+    document.addEventListener('DOMContentLoaded', async () => {
+      const params = new URLSearchParams(window.location.search);
+      const path = params.get('path');
+      const isSyllabus = params.get('syllabus') === 'true';
+      const courseName = params.get('name') || '授業詳細';
+      document.getElementById('title').textContent = courseName;
+
+      if (!path && !isSyllabus) {
+        renderData({ error: 'パスが指定されていません' });
+        return;
+      }
+
+      const invoke = window.__TAURI__?.core?.invoke;
+      if (!invoke) {
+        renderData({ title: courseName, error: 'Tauri IPC が利用できません' });
+        return;
+      }
+
+      try {
+        let detail;
+        if (isSyllabus) {
+          detail = await invoke('get_syllabus_detail');
+        } else {
+          detail = await invoke('fetch_course_detail', { path });
+        }
+        renderData({ title: courseName, fields: detail.fields });
+      } catch (e) {
+        renderData({ title: courseName, error: String(e) });
+      }
+    });
+  </script>
+</body>
+</html>
