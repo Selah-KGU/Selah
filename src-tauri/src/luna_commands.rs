@@ -31,7 +31,7 @@ pub async fn luna_open_detail_window(
     status: Option<String>,
     idnumber: Option<String>,
     info_id: Option<String>,
-    kwic_path: Option<String>,
+    kgc_path: Option<String>,
 ) -> Result<(), String> {
     let id = LUNA_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("luna-detail-{}", id);
@@ -81,8 +81,8 @@ pub async fn luna_open_detail_window(
                 urlencoding::encode(idnumber.as_deref().unwrap_or("")),
                 urlencoding::encode(&title)
             );
-            if let Some(kp) = &kwic_path {
-                parts.push_str(&format!("&kwicPath={}", urlencoding::encode(kp)));
+            if let Some(kp) = &kgc_path {
+                parts.push_str(&format!("&kgcPath={}", urlencoding::encode(kp)));
             }
             parts
         }
@@ -158,7 +158,7 @@ pub async fn luna_reveal_file(path: String) -> Result<(), String> {
 const LUNA_SAML_CALLBACK_HOST: &str = "luna-saml-callback.localhost";
 
 /// Open Luna login window — uses the same Okta SSO
-/// If user already has an active Okta session from KWIC login,
+/// If user already has an active Okta session from KG-Course login,
 /// Luna SAML should auto-authenticate
 #[tauri::command]
 pub async fn luna_open_login(

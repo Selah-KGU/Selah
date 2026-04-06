@@ -16,12 +16,17 @@ import type {
   AiConfig,
   AiChatMessage,
 } from "./stores";
-import { authState, lunaAuthState, invalidateCache, reloginInProgress, refreshCache } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, invalidateCache, reloginInProgress, refreshCache } from "./stores";
 import { get } from "svelte/store";
 
 // Global listener: Rust backend emits this after standalone Luna SAML login or Phase 2 of full login
 listen("luna-login-success", () => {
   lunaAuthState.set({ authenticated: true });
+});
+
+// Global listener: Rust backend emits this after standalone KWIC Portal SAML login or Phase 3 of full login
+listen("kwic-login-success", () => {
+  kwicAuthState.set({ authenticated: true });
 });
 
 export interface SessionStatus {
@@ -54,7 +59,7 @@ interface ServiceConfig {
 }
 
 const serviceRegistry: Record<string, ServiceConfig> = {
-  kwic: {
+  kgc: {
     expiredMarkers: [
       "セッションが期限切れです",
       "セッションがタイムアウト",
@@ -65,7 +70,7 @@ const serviceRegistry: Record<string, ServiceConfig> = {
       "不正なアクセスです",
       "SSO redirect detected",
     ],
-    onRecovered: () => refreshKwicAuthState().catch(() => {}),
+    onRecovered: () => refreshKgcAuthState().catch(() => {}),
     onReset: () => {
       authState.set({
         authenticated: false, username: "", displayName: "",
@@ -81,6 +86,14 @@ const serviceRegistry: Record<string, ServiceConfig> = {
     ],
     onRecovered: () => lunaAuthState.set({ authenticated: true }),
     onReset: () => lunaAuthState.set({ authenticated: false }),
+  },
+  kwic: {
+    expiredMarkers: [
+      "KWICセッションが期限切れです",
+      "KWICポータルにログインしてください",
+    ],
+    onRecovered: () => kwicAuthState.set({ authenticated: true }),
+    onReset: () => kwicAuthState.set({ authenticated: false }),
   },
 };
 
@@ -118,8 +131,8 @@ export function setAuthFromSession(session: { username: string; display_name?: s
   });
 }
 
-/** Re-fetch KWIC user info and update authState store */
-async function refreshKwicAuthState(): Promise<boolean> {
+/** Re-fetch KG-Course user info and update authState store */
+async function refreshKgcAuthState(): Promise<boolean> {
   const status = await checkSession();
   if (!status.valid) return false;
   setAuthFromSession(status);
@@ -127,8 +140,9 @@ async function refreshKwicAuthState(): Promise<boolean> {
 }
 
 export interface SessionStates {
-  kwic: boolean;
+  kgc: boolean;
   luna: boolean;
+  kwic: boolean;
   [key: string]: boolean;
 }
 
@@ -158,7 +172,7 @@ export function triggerRelogin(): Promise<void> {
       const ok = await syncSession("all");
       if (ok) {
         console.log("[Selah] Headless refresh succeeded (all services)");
-        // onRecovered for kwic will re-fetch session info via refreshKwicAuthState
+        // onRecovered for kgc will re-fetch session info via refreshKgcAuthState
         await Promise.all(
           Object.values(serviceRegistry).map(svc => {
             try { return Promise.resolve(svc.onRecovered()); } catch { return; }
@@ -197,9 +211,9 @@ function openVisibleLogin(): Promise<void> {
         "login-success",
         (event) => {
           setAuthFromSession(event.payload);
-          // Skip kwic.onRecovered (authState already set above), recover other services
+          // Skip kgc.onRecovered (authState already set above), recover other services
           for (const [key, svc] of Object.entries(serviceRegistry)) {
-            if (key !== "kwic") svc.onRecovered();
+            if (key !== "kgc") svc.onRecovered();
           }
           cleanup();
           resolve();
@@ -228,7 +242,7 @@ function openVisibleLogin(): Promise<void> {
 
 /**
  * Wrap any API call with automatic session recovery + retry.
- * Handles all registered services (KWIC, Luna, future).
+ * Handles all registered services (KGC, Luna, future).
  */
 async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -262,7 +276,7 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Restore all sessions on app startup.
- * Returns KWIC session status, or null if KWIC session is invalid.
+ * Returns KGC session status, or null if KGC session is invalid.
  */
 export async function restoreAllSessions(): Promise<SessionStatus | null> {
   const status = await checkSession();
@@ -274,11 +288,11 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
   try {
     const states = await getSessionStates();
     for (const [key, config] of Object.entries(serviceRegistry)) {
-      if (key === "kwic") continue; // already handled above
+      if (key === "kgc") continue; // already handled above
       if (states[key]) {
         config.onRecovered();
       } else {
-        // Primary (KWIC) is valid, so Okta SSO likely alive — try headless sync
+        // Primary (KGC) is valid, so Okta SSO likely alive — try headless sync
         syncSession(key)
           .then(ok => { if (ok) config.onRecovered(); })
           .catch(e => console.warn(`[Selah] Startup ${key} sync failed:`, e));
@@ -297,6 +311,117 @@ export async function lunaInvoke<T>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   return withSessionGuard(() => invoke<T>(command, args));
+}
+
+/** Convenience wrapper for KWIC Portal invoke calls with session guard */
+export async function kwicInvoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  return withSessionGuard(() => invoke<T>(command, args));
+}
+
+// ---------- KWIC Portal API ----------
+
+export interface KwicPortalNotification {
+  id: string;
+  title: string;
+  date: string;
+  category: string;
+  important: boolean;
+  information_type: string;
+  person_category_cd: string;
+  category_cd: string;
+}
+
+export interface KwicPortalSection {
+  title: string;
+  items: KwicPortalItem[];
+}
+
+export interface KwicPortalItem {
+  id: string;
+  title: string;
+  date: string;
+  category: string;
+  url: string;
+  important: boolean;
+  information_type: string;
+  person_category_cd: string;
+  category_cd: string;
+}
+
+export interface KwicPortalHome {
+  sections: KwicPortalSection[];
+  raw_html_debug?: string;
+}
+
+export interface KwicNotificationDetail {
+  title: string;
+  date: string;
+  sender: string;
+  body_html: string;
+  attachments: { name: string; url: string }[];
+}
+
+export interface KwicSubportalLink {
+  title: string;
+  url: string;
+  icon_url: string;
+  description: string;
+}
+
+export interface KwicSubportalData {
+  title: string;
+  links: KwicSubportalLink[];
+  notifications: KwicPortalNotification[];
+}
+
+export async function kwicCheckSession(): Promise<boolean> {
+  return kwicInvoke<boolean>("kwic_check_session");
+}
+
+export async function kwicFetchHome(): Promise<KwicPortalHome> {
+  return kwicInvoke<KwicPortalHome>("kwic_fetch_home");
+}
+
+export async function kwicFetchNotifications(): Promise<KwicPortalNotification[]> {
+  return kwicInvoke<KwicPortalNotification[]>("kwic_fetch_notifications");
+}
+
+export async function kwicFetchPage(path: string): Promise<string> {
+  return kwicInvoke<string>("kwic_fetch_page", { path });
+}
+
+export async function kwicFetchDetail(n: KwicPortalNotification): Promise<KwicNotificationDetail> {
+  return kwicInvoke<KwicNotificationDetail>("kwic_fetch_detail", {
+    informationId: n.id,
+    informationType: n.information_type,
+    personCategoryCd: n.person_category_cd,
+    categoryCd: n.category_cd,
+  });
+}
+
+export async function kwicFetchSubportal(tagCd: string): Promise<KwicSubportalData> {
+  return kwicInvoke<KwicSubportalData>("kwic_fetch_subportal", { tagCd });
+}
+
+export async function kwicOpenLink(url: string, title: string): Promise<void> {
+  return invoke<void>("kwic_open_link", { url, title });
+}
+
+export async function kwicOpenDetail(item: { id: string; title: string; information_type: string; person_category_cd: string; category_cd: string }): Promise<void> {
+  return invoke<void>("kwic_open_detail_window", {
+    title: item.title,
+    informationId: item.id,
+    informationType: item.information_type,
+    personCategoryCd: item.person_category_cd,
+    categoryCd: item.category_cd,
+  });
+}
+
+export async function kwicOpenLogin(): Promise<void> {
+  return invoke<void>("kwic_open_login");
 }
 
 // ---------- Public API ----------
@@ -445,6 +570,8 @@ function getVolatileTargets(): PollTarget[] {
     { key: "rooms", fetcher: fetchRoomChanges },
     { key: "luna_todo", fetcher: () => lunaInvoke<any>("luna_fetch_todo"), guard: () => get(lunaAuthState).authenticated },
     { key: "luna_updates", fetcher: () => lunaInvoke<any>("luna_fetch_updates"), guard: () => get(lunaAuthState).authenticated },
+    { key: "kwic_notifications", fetcher: kwicFetchNotifications, guard: () => get(kwicAuthState).authenticated },
+    { key: "kwic_home", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
   ];
 }
 

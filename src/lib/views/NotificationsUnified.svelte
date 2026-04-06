@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchNotifications, lunaInvoke } from "../api";
-  import { cachedFetch, onCacheUpdate, lunaAuthState } from "../stores";
+  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail } from "../api";
+  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState } from "../stores";
   import type { NotificationsData } from "../stores";
-  import { notifyNewKwic, notifyNewLuna } from "../notify";
+  import type { KwicPortalHome } from "../api";
+  import { notifyNewKgc, notifyNewLuna } from "../notify";
   import ViewLoader from "../ViewLoader.svelte";
-  import Icon from "../Icon.svelte";
 
   interface LunaNotification {
     date: string;
@@ -16,130 +16,227 @@
     idnumber: string;
   }
 
-  let activeTab = $state<"kwic" | "luna">("kwic");
-  let kwicLoading = $state(true);
-  let lunaLoading = $state(false);
-  let kwicError = $state("");
-  let lunaError = $state("");
-  let kwicData = $state<NotificationsData | null>(null);
+  // Unified notification item for all sources
+  interface UnifiedNotif {
+    id: string;
+    title: string;
+    date: string;
+    category: string;      // e.g. 学部名, module name
+    tab: string;            // one of the 4 KWIC-style tabs
+    source: "kgc" | "luna" | "kwic";
+    important: boolean;
+    url?: string;
+    courseInfo?: string;
+    // KWIC detail params
+    informationType?: string;
+    personCategoryCd?: string;
+    categoryCd?: string;
+  }
+
+  const TAB_ORDER = [
+    "呼出し・重要なお知らせ",
+    "学部・研究科からのお知らせ",
+    "授業のお知らせ",
+    "その他",
+  ] as const;
+  type TabName = typeof TAB_ORDER[number];
+
+  let activeTab = $state<TabName>("授業のお知らせ");
+  let loading = $state(true);
+  let error = $state("");
+  let kgcData = $state<NotificationsData | null>(null);
   let lunaNotifications = $state<LunaNotification[]>([]);
+  let kwicHome = $state<KwicPortalHome | null>(null);
+
+  // KWIC detail view state (removed - now opens in window)
 
   // SWR: update UI when background polling brings fresh data
-  const unsubKwic = onCacheUpdate<NotificationsData>("notifications", (fresh) => {
-    kwicData = fresh;
-    if (fresh?.entries) notifyNewKwic(fresh.entries);
+  const unsubKgc = onCacheUpdate<NotificationsData>("notifications", (fresh) => {
+    kgcData = fresh;
+    if (fresh?.entries) notifyNewKgc(fresh.entries);
   });
   const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => {
     lunaNotifications = fresh ?? [];
     notifyNewLuna(lunaNotifications);
   });
-  onDestroy(() => { unsubKwic(); unsubLuna(); });
+  const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => {
+    kwicHome = fresh ?? null;
+  });
+  onDestroy(() => { unsubKgc(); unsubLuna(); unsubKwicHome(); });
 
   onMount(async () => {
-    // Load KWIC notifications immediately
+    loading = true;
     try {
-      kwicData = await cachedFetch("notifications", fetchNotifications);
-      if (kwicData?.entries) notifyNewKwic(kwicData.entries);
+      const [kgc, luna, kwic] = await Promise.allSettled([
+        cachedFetch("notifications", fetchNotifications),
+        $lunaAuthState.authenticated
+          ? cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"))
+          : Promise.resolve([]),
+        $kwicAuthState.authenticated
+          ? cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome)
+          : Promise.resolve(null),
+      ]);
+      if (kgc.status === "fulfilled" && kgc.value) {
+        kgcData = kgc.value as NotificationsData;
+        if (kgcData?.entries) notifyNewKgc(kgcData.entries);
+      }
+      if (luna.status === "fulfilled" && luna.value) {
+        lunaNotifications = luna.value as LunaNotification[];
+        notifyNewLuna(lunaNotifications);
+      }
+      if (kwic.status === "fulfilled" && kwic.value) {
+        kwicHome = kwic.value as KwicPortalHome;
+      }
     } catch (e: any) {
-      kwicError = e?.message || String(e);
+      error = e?.message || String(e);
     } finally {
-      kwicLoading = false;
-    }
-
-    // Load Luna notifications if authenticated
-    if ($lunaAuthState.authenticated) {
-      loadLunaNotifications();
+      loading = false;
     }
   });
 
-  async function loadLunaNotifications() {
-    lunaLoading = true;
-    lunaError = "";
-    try {
-      lunaNotifications = await cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates")) ?? [];
-      notifyNewLuna(lunaNotifications);
-    } catch (e: any) {
-      lunaError = String(e);
-    }
-    lunaLoading = false;
-  }
+  // Build unified + categorized notifications
+  let allNotifs = $derived.by(() => {
+    const items: UnifiedNotif[] = [];
+    const seen = new Set<string>();
+    const addUniq = (n: UnifiedNotif) => {
+      const key = `${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      items.push(n);
+    };
 
-  async function openLunaDetail(path: string, title: string) {
-    if (!path) return;
-    try {
-      await lunaInvoke("luna_open_detail_window", { path, title });
-    } catch (e: any) {
-      console.error("Failed to open detail window:", e);
+    // KGC → 授業のお知らせ
+    if (kgcData?.entries) {
+      for (const n of kgcData.entries) {
+        addUniq({
+          id: "", title: n.title, date: n.date, category: n.category,
+          tab: "授業のお知らせ", source: "kgc", important: false,
+        });
+      }
+    }
+
+    // Luna → 授業のお知らせ
+    for (const n of lunaNotifications) {
+      addUniq({
+        id: "", title: n.content, date: n.date, category: n.module || n.course_info,
+        tab: "授業のお知らせ", source: "luna", important: false,
+        url: n.url, courseInfo: n.course_info,
+      });
+    }
+
+    // KWIC sections → map by section title (exclude 授業のお知らせ, use KGC/Luna for that)
+    if (kwicHome) {
+      const kwicTabMap: Record<string, TabName> = {
+        "呼出し・重要なお知らせ": "呼出し・重要なお知らせ",
+        "学部・研究科からのお知らせ": "学部・研究科からのお知らせ",
+        "その他": "その他",
+      };
+      for (const sec of kwicHome.sections) {
+        const tab = kwicTabMap[sec.title];
+        if (!tab) continue; // skip メインリンク, 注目コンテンツ etc.
+        for (const item of sec.items) {
+          addUniq({
+            id: item.id, title: item.title, date: item.date, category: item.category || sec.title,
+            tab, source: "kwic", important: item.important,
+            informationType: item.information_type,
+            personCategoryCd: item.person_category_cd,
+            categoryCd: item.category_cd,
+          });
+        }
+      }
+    }
+
+    return items;
+  });
+
+  // Group by tab
+  let groupedByTab = $derived.by(() => {
+    const map = new Map<TabName, UnifiedNotif[]>();
+    for (const tab of TAB_ORDER) map.set(tab, []);
+    for (const n of allNotifs) {
+      map.get(n.tab as TabName)?.push(n);
+    }
+    // Sort each group by date descending
+    for (const [, items] of map) {
+      items.sort((a, b) => {
+        const da = new Date(a.date.replace(/\//g, "-")).getTime() || 0;
+        const db = new Date(b.date.replace(/\//g, "-")).getTime() || 0;
+        return db - da;
+      });
+    }
+    return map;
+  });
+
+  let tabCounts = $derived.by(() => {
+    const counts: Record<string, number> = {};
+    for (const tab of TAB_ORDER) counts[tab] = groupedByTab.get(tab)?.length ?? 0;
+    return counts;
+  });
+
+  let currentItems = $derived(groupedByTab.get(activeTab) ?? []);
+
+  async function openNotif(n: UnifiedNotif) {
+    if (n.source === "luna" && n.url) {
+      try {
+        await lunaInvoke("luna_open_detail_window", { path: n.url, title: n.title });
+      } catch (e) { console.error("Failed to open Luna detail:", e); }
+    } else if (n.source === "kwic" && n.id) {
+      await kwicOpenDetail({
+        id: n.id,
+        title: n.title,
+        information_type: n.informationType || "",
+        person_category_cd: n.personCategoryCd || "",
+        category_cd: n.categoryCd || "",
+      });
     }
   }
-
-  let kwicCount = $derived(kwicData?.entries?.length ?? 0);
-  let lunaCount = $derived((lunaNotifications ?? []).length);
 </script>
 
 <div class="view">
   <h2>お知らせ</h2>
 
   <div class="segmented-control">
-    <button class="segment" class:active={activeTab === "kwic"} onclick={() => activeTab = "kwic"}>
-      <Icon name="globe" size={13} />
-      KWIC
-      {#if kwicCount > 0}<span class="count-badge">{kwicCount}</span>{/if}
-    </button>
-    <button class="segment" class:active={activeTab === "luna"} onclick={() => activeTab = "luna"}>
-      <Icon name="moon.stars" size={13} />
-      Luna 更新
-      {#if lunaCount > 0}<span class="count-badge">{lunaCount}</span>{/if}
-    </button>
+    {#each TAB_ORDER as tab}
+      <button class="segment" class:active={activeTab === tab} onclick={() => { activeTab = tab; }}>
+        {#if tab === "呼出し・重要なお知らせ"}
+          重要
+        {:else if tab === "学部・研究科からのお知らせ"}
+          学部
+        {:else if tab === "授業のお知らせ"}
+          授業
+        {:else}
+          その他
+        {/if}
+        {#if tabCounts[tab] > 0}<span class="count-badge">{tabCounts[tab]}</span>{/if}
+      </button>
+    {/each}
   </div>
 
-  {#if activeTab === "kwic"}
-    <ViewLoader loading={kwicLoading} error={kwicError} empty={kwicData?.entries.length === 0} emptyMessage="お知らせはありません">
-      {#if kwicData}
-        <div class="notif-list">
-          {#each kwicData.entries as n, i}
-            <div class="notif-item" style="animation: slide-up 0.3s ease {Math.min(i * 0.04, 0.4)}s both;">
-              <div class="notif-header">
-                {#if n.category}
-                  <span class="notif-badge">{n.category}</span>
-                {/if}
-                <span class="notif-title">{n.title}</span>
-                <span class="notif-date">{n.date}</span>
-              </div>
+  <ViewLoader {loading} {error} empty={currentItems.length === 0 && !loading} emptyMessage="お知らせはありません">
+      <div class="notif-list">
+        {#each currentItems as n, i}
+          <button
+            class="notif-item"
+            class:clickable={n.source === "luna" || n.source === "kwic"}
+            style="animation: slide-up 0.3s ease {Math.min(i * 0.04, 0.4)}s both;"
+            onclick={() => openNotif(n)}
+            disabled={n.source === "kgc"}
+          >
+            <div class="notif-header">
+              {#if n.category}
+                <span class="notif-badge" class:badge-kwic={n.source === "kwic"} class:badge-luna={n.source === "luna"}>{n.category}</span>
+              {/if}
+              {#if n.important}<span class="notif-important">NEW</span>{/if}
+              <span class="notif-title">{n.title}</span>
+              <span class="notif-date">{n.date}</span>
             </div>
-          {/each}
-        </div>
-      {/if}
+            {#if n.courseInfo}
+              <div class="notif-course">{n.courseInfo}</div>
+            {/if}
+          </button>
+        {/each}
+      </div>
     </ViewLoader>
-
-  {:else}
-    <ViewLoader loading={lunaLoading} error={lunaError} empty={lunaNotifications.length === 0 && !lunaLoading} emptyMessage="更新通知はありません">
-      {#if !$lunaAuthState.authenticated && lunaNotifications.length === 0 && !lunaLoading}
-        <div class="state-msg">Luna LMSに接続されていません</div>
-      {:else}
-        <div class="update-list">
-          {#each lunaNotifications as n, i}
-            <button
-              class="update-card"
-              class:has-link={!!n.url}
-              style="animation: slide-up 0.3s ease {Math.min(i * 0.04, 0.4)}s both;"
-              onclick={() => openLunaDetail(n.url, n.content || n.module)}
-              disabled={!n.url}
-            >
-              <div class="update-header">
-                {#if n.module}
-                  <span class="update-badge">{n.module}</span>
-                {/if}
-                <span class="update-text">{n.content}</span>
-                <span class="update-date">{n.date}</span>
-              </div>
-              <div class="update-course">{n.course_info}</div>
-            </button>
-          {/each}
-        </div>
-      {/if}
-    </ViewLoader>
-  {/if}
 </div>
 
 <style>
@@ -191,7 +288,7 @@
     padding: 40px 0;
   }
 
-  /* KWIC Notifications */
+  /* KGC Notifications */
   .notif-list {
     display: flex;
     flex-direction: column;
@@ -204,11 +301,26 @@
     padding: 12px 16px;
     box-shadow: var(--shadow-sm);
     transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    font-family: inherit;
+    color: inherit;
+    text-align: left;
+    width: 100%;
   }
-  .notif-item:hover {
+  .notif-item.clickable {
+    cursor: pointer;
+  }
+  .notif-item.clickable:hover {
     background: var(--bg-hover);
     transform: translateX(2px);
     box-shadow: var(--shadow-md);
+  }
+  .notif-item:disabled {
+    cursor: default;
+  }
+  .notif-item:disabled:hover {
+    background: var(--bg-card);
+    transform: none;
+    box-shadow: var(--shadow-sm);
   }
   .notif-item:active {
     transform: scale(0.995);
@@ -228,6 +340,14 @@
     white-space: nowrap;
     letter-spacing: 0.3px;
   }
+  .badge-kwic {
+    background: rgba(124, 58, 237, 0.1);
+    color: #7c3aed;
+  }
+  .badge-luna {
+    background: rgba(245, 158, 11, 0.1);
+    color: #d97706;
+  }
   .notif-title {
     flex: 1;
     font-weight: 500;
@@ -240,67 +360,13 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-
-  /* Luna Update Notifications */
-  .update-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .update-card {
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 16px;
-    box-shadow: var(--shadow-sm);
-    transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-    cursor: pointer;
-    font-family: inherit;
-    text-align: left;
-    width: 100%;
-  }
-  .update-card:disabled {
-    cursor: default;
-    opacity: 0.7;
-  }
-  .update-card:disabled:hover {
-    background: var(--bg-card);
-    transform: none;
-    box-shadow: var(--shadow-sm);
-  }
-  .update-card:hover {
-    background: var(--bg-hover);
-    transform: translateX(2px);
-    box-shadow: var(--shadow-md);
-  }
-  .update-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .update-badge {
+  .notif-important {
     font-size: 10px;
-    padding: 2px 8px;
-    background: var(--accent-light);
-    color: var(--accent);
-    border-radius: 6px;
-    font-weight: 600;
-    white-space: nowrap;
-    letter-spacing: 0.3px;
+    font-weight: 700;
+    color: var(--red, #ef4444);
+    flex-shrink: 0;
   }
-  .update-text {
-    flex: 1;
-    font-weight: 500;
-    font-size: 13px;
-    color: var(--text-primary);
-  }
-  .update-date {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-  }
-  .update-course {
+  .notif-course {
     margin-top: 4px;
     font-size: 12px;
     color: var(--text-tertiary);

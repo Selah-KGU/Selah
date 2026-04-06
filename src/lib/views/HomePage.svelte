@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { authState, lunaAuthState, activeTab, cachedFetch, onCacheUpdate } from "../stores";
+  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate } from "../stores";
   import type { TimetableData, TimetableEntry, NotificationsData, NotificationEntry } from "../stores";
-  import { fetchTimetable, fetchNotifications, lunaInvoke } from "../api";
+  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink } from "../api";
+  import type { KwicPortalHome, KwicPortalSection, KwicSubportalData } from "../api";
   import { invoke } from "@tauri-apps/api/core";
 
   // ============ Types ============
@@ -27,7 +28,7 @@
   }
 
   interface UnifiedNotif {
-    source: "kwic" | "luna";
+    source: "kgc" | "luna";
     title: string;
     category: string;
     date: string;
@@ -63,10 +64,45 @@
   let timetableData = $state<TimetableData | null>(null);
   let lunaTimetable = $state<LunaTimetable | null>(null);
   let todoItems = $state<LunaTodoItem[]>([]);
-  let kwicNotifs = $state<NotificationEntry[]>([]);
+  let kgcNotifs = $state<NotificationEntry[]>([]);
   let lunaNotifs = $state<LunaNotification[]>([]);
+  let kwicHome = $state<KwicPortalHome | null>(null);
   let now = $state(new Date());
   let loading = $state(true);
+
+  // KWIC subportal state
+  let subportalData = $state<KwicSubportalData | null>(null);
+  let subportalLoading = $state(false);
+  let subportalError = $state("");
+
+  async function openSubportal(item: { url: string; title: string }) {
+    // Extract tagCd from URL like /portal/subportal?tagCd=1
+    const match = item.url.match(/tagCd=(\d+)/);
+    if (!match) {
+      // Fallback: open in browser for non-subportal links
+      await invoke("luna_open_url", { url: item.url });
+      return;
+    }
+    subportalLoading = true;
+    subportalError = "";
+    subportalData = null;
+    try {
+      subportalData = await kwicFetchSubportal(match[1]);
+      if (!subportalData.title) subportalData.title = item.title;
+    } catch (e: any) {
+      subportalError = e?.message || String(e);
+    }
+    subportalLoading = false;
+  }
+
+  /** Open merged subportal (fetches multiple tagCds, merges links+notifications) */
+  let showIctFacility = $state(false);
+
+  function closeSubportal() {
+    subportalData = null;
+    subportalError = "";
+    showIctFacility = false;
+  }
 
   // ============ Derived ============
 
@@ -214,13 +250,30 @@
 
   let recentNotifs = $derived.by(() => {
     const merged: UnifiedNotif[] = [];
-    for (const n of kwicNotifs) {
-      merged.push({ source: "kwic", title: n.title, category: n.category, date: n.date });
+    const seen = new Set<string>();
+    const addUniq = (n: UnifiedNotif) => {
+      // Deduplicate by normalized title + date
+      const key = `${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      merged.push(n);
+    };
+    for (const n of kgcNotifs) {
+      addUniq({ source: "kgc", title: n.title, category: n.category, date: n.date });
     }
     for (const n of lunaNotifs) {
-      merged.push({ source: "luna", title: n.content, category: n.module || n.course_info, date: n.date, url: n.url });
+      addUniq({ source: "luna", title: n.content, category: n.module || n.course_info, date: n.date, url: n.url });
     }
-    // Sort by date descending (newer first), take 3
+    // KWIC notification sections
+    if (kwicHome) {
+      const notifSections = kwicHome.sections.filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ");
+      for (const sec of notifSections) {
+        for (const item of sec.items) {
+          addUniq({ source: "kgc", title: item.title, category: item.category || sec.title, date: item.date });
+        }
+      }
+    }
+    // Sort by date descending (newer first), take 5
     merged.sort((a, b) => {
       const da = new Date(a.date.replace(/\//g, "-")).getTime() || 0;
       const db = new Date(b.date.replace(/\//g, "-")).getTime() || 0;
@@ -246,20 +299,22 @@
     unsubTimetable();
     unsubLunaTimetable();
     unsubTodo();
-    unsubKwicNotifs();
+    unsubKgcNotifs();
     unsubLunaNotifs();
+    unsubKwicHome();
     unsubAuth();
   });
 
   const unsubTimetable = onCacheUpdate<TimetableData>("timetable", (fresh) => { timetableData = fresh; });
   const unsubLunaTimetable = onCacheUpdate<LunaTimetable>("luna_timetable", (fresh) => { lunaTimetable = fresh; });
   const unsubTodo = onCacheUpdate<LunaTodoItem[]>("luna_todo", (fresh) => { todoItems = fresh; });
-  const unsubKwicNotifs = onCacheUpdate<NotificationsData>("notifications", (fresh) => { kwicNotifs = fresh?.entries ?? []; });
+  const unsubKgcNotifs = onCacheUpdate<NotificationsData>("notifications", (fresh) => { kgcNotifs = fresh?.entries ?? []; });
   const unsubLunaNotifs = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => { lunaNotifs = fresh ?? []; });
+  const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => { kwicHome = fresh ?? null; });
 
   // Re-fetch when auth state changes (e.g. after re-login from session expiry)
   const unsubAuth = authState.subscribe((state) => {
-    if (hasLoadedOnce && state.authenticated && (!timetableData?.entries?.length || (!kwicNotifs.length && !lunaNotifs.length))) {
+    if (hasLoadedOnce && state.authenticated && (!timetableData?.entries?.length || (!kgcNotifs.length && !lunaNotifs.length))) {
       loadData();
     }
   });
@@ -267,7 +322,7 @@
   async function loadData() {
     loading = true;
     try {
-      const [tt, td, nt, ln, lt] = await Promise.allSettled([
+      const [tt, td, nt, ln, lt, kh] = await Promise.allSettled([
         cachedFetch<TimetableData>("timetable", fetchTimetable),
         $lunaAuthState.authenticated
           ? cachedFetch<LunaTodoItem[]>("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"))
@@ -279,8 +334,11 @@
         $lunaAuthState.authenticated
           ? cachedFetch<LunaTimetable>("luna_timetable", () => lunaInvoke<LunaTimetable>("luna_fetch_timetable", {}))
           : Promise.resolve(null),
+        $kwicAuthState.authenticated
+          ? cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome)
+          : Promise.resolve(null),
       ]);
-      console.log("[HomePage] loadData results:", tt.status, td.status, nt.status, ln.status, lt.status);
+      console.log("[HomePage] loadData results:", tt.status, td.status, nt.status, ln.status, lt.status, kh.status);
       if (tt.status === "fulfilled" && tt.value) {
         timetableData = tt.value;
         console.log("[HomePage] timetable loaded:", tt.value.entries?.length, "entries, days:", [...new Set(tt.value.entries?.map((e: TimetableEntry) => e.day))]);
@@ -289,8 +347,8 @@
       }
       if (td.status === "fulfilled" && td.value) todoItems = td.value;
       if (nt.status === "fulfilled" && nt.value) {
-        kwicNotifs = nt.value.entries ?? [];
-        console.log("[HomePage] kwic notifications loaded:", kwicNotifs.length);
+        kgcNotifs = nt.value.entries ?? [];
+        console.log("[HomePage] kgc notifications loaded:", kgcNotifs.length);
       }
       if (ln.status === "fulfilled" && ln.value) {
         lunaNotifs = (ln.value as LunaNotification[]) ?? [];
@@ -299,6 +357,10 @@
       if (lt.status === "fulfilled" && lt.value) {
         lunaTimetable = lt.value as LunaTimetable;
         console.log("[HomePage] luna timetable loaded:", lunaTimetable.courses?.length, "courses");
+      }
+      if (kh.status === "fulfilled" && kh.value) {
+        kwicHome = kh.value as KwicPortalHome;
+        console.log("[HomePage] kwic home loaded:", kwicHome.sections?.length, "sections");
       }
     } catch (err) { console.error("[HomePage] loadData error:", err); }
     loading = false;
@@ -322,7 +384,7 @@
         try {
           await invoke("luna_open_detail_window", {
             path: "", title: lunaMatch.name, mode: "course", idnumber: lunaMatch.idnumber,
-            kwicPath: entry.detail_path || null,
+            kgcPath: entry.detail_path || null,
           });
           return;
         } catch (e) {
@@ -330,7 +392,7 @@
         }
       }
     }
-    // Fallback to KWIC
+    // Fallback to KG-Course
     try {
       await invoke("open_detail_window", { path: entry.detail_path, courseName: entry.course_name });
     } catch (e) {
@@ -403,7 +465,7 @@
         {#each recentNotifs as n}
           <button class="notif-card" onclick={() => openNotif(n)}>
             <div class="notif-card-top">
-              <span class="notif-source" class:luna={n.source === 'luna'}>{n.source === 'kwic' ? 'KWIC' : 'Luna'}</span>
+              <span class="notif-source" class:luna={n.source === 'luna'}>{n.source === 'kgc' ? 'KGC' : 'Luna'}</span>
               <span class="notif-cat">{n.category}</span>
             </div>
             <span class="notif-title">{n.title}</span>
@@ -414,6 +476,78 @@
       <p class="empty-text">お知らせはありません</p>
     {/if}
   </section>
+
+  <!-- ===== KWIC Portal Main Links ===== -->
+  {#if $kwicAuthState.authenticated && kwicHome}
+    {#if subportalData || subportalLoading || subportalError}
+      <!-- Subportal Detail View -->
+      <section class="section">
+        <button class="section-head" onclick={closeSubportal}>
+          <span class="back-arrow">‹</span>
+          <span>{subportalData?.title || "読み込み中…"}</span>
+        </button>
+        {#if subportalLoading}
+          <div class="subportal-loading">読み込み中…</div>
+        {:else if subportalError}
+          <div class="subportal-error">{subportalError}</div>
+        {:else if subportalData}
+          {#if subportalData.links.length > 0}
+            <div class="kwic-link-list">
+              {#each subportalData.links as link}
+                <button class="kwic-sub-link" onclick={() => kwicOpenLink(link.url, link.title)}>
+                  <span class="kwic-sub-link-title">{link.title}</span>
+                </button>
+              {/each}
+            </div>
+          {:else}
+            <p class="empty-text">コンテンツはありません</p>
+          {/if}
+        {/if}
+      </section>
+    {:else if showIctFacility}
+      <!-- ICT・施設利用 choice -->
+      <section class="section">
+        <button class="section-head" onclick={closeSubportal}>
+          <span class="back-arrow">‹</span>
+          <span>ICT・施設利用</span>
+        </button>
+        <div class="kwic-link-list">
+          <button class="kwic-sub-link" onclick={() => kwicOpenLink("https://kwic.kwansei.ac.jp/portal/subportal?tagCd=6", "ICT活用・サポート")}>
+            <span class="kwic-sub-link-title">ICT活用・サポート</span>
+          </button>
+          <button class="kwic-sub-link" onclick={() => kwicOpenLink("https://kwic.kwansei.ac.jp/portal/subportal?tagCd=9", "各種施設利用・イベント")}>
+            <span class="kwic-sub-link-title">各種施設利用・イベント</span>
+          </button>
+        </div>
+      </section>
+    {:else}
+      {@const mainLinks = kwicHome.sections.find(s => s.title === "メインリンク")}
+      {#if mainLinks && mainLinks.items.length > 0}
+        {@const ICT_TAG = "tagCd=6"}
+        {@const FACILITY_TAG = "tagCd=9"}
+        {@const filteredItems = mainLinks.items.filter(i => !i.url.includes(ICT_TAG) && !i.url.includes(FACILITY_TAG))}
+        {@const hasIct = mainLinks.items.some(i => i.url.includes(ICT_TAG))}
+        {@const hasFacility = mainLinks.items.some(i => i.url.includes(FACILITY_TAG))}
+        <section class="section">
+          <div class="section-head-static">
+            <span>ポータルリンク</span>
+          </div>
+          <div class="kwic-link-grid">
+            {#each filteredItems as item}
+              <button class="kwic-link-card" onclick={() => openSubportal(item)}>
+                <span class="kwic-link-title">{item.title}</span>
+              </button>
+            {/each}
+            {#if hasIct || hasFacility}
+              <button class="kwic-link-card" onclick={() => showIctFacility = true}>
+                <span class="kwic-link-title">ICT・施設利用</span>
+              </button>
+            {/if}
+          </div>
+        </section>
+      {/if}
+    {/if}
+  {/if}
 
   <!-- ===== Schedule + Deadlines — shared card row ===== -->
   <section class="section">
@@ -904,5 +1038,144 @@
   @keyframes shimmer {
     0%, 100% { opacity: 0.5; }
     50% { opacity: 0.25; }
+  }
+
+  /* ===== KWIC Portal ===== */
+  .section-head-static {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .kwic-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: #7c3aed;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .kwic-link-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+
+  .kwic-link-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 8px;
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--bg-card);
+    cursor: pointer;
+    text-decoration: none;
+    color: inherit;
+    transition: transform 0.12s, box-shadow 0.12s;
+    text-align: center;
+  }
+
+  .kwic-link-card:hover {
+    transform: scale(1.02);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+
+  .kwic-link-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.3;
+  }
+
+  /* Subportal view */
+  .back-arrow {
+    font-size: 18px;
+    font-weight: 400;
+    color: var(--accent);
+  }
+
+  .subportal-loading, .subportal-error {
+    text-align: center;
+    padding: 30px 0;
+    font-size: 13px;
+    color: var(--text-tertiary);
+  }
+  .subportal-error { color: var(--red, #ef4444); }
+
+  .kwic-link-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+  }
+
+  .kwic-sub-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--bg-card);
+    cursor: pointer;
+    font-family: inherit;
+    color: inherit;
+    text-align: left;
+    transition: transform 0.12s, box-shadow 0.12s;
+  }
+  .kwic-sub-link:hover {
+    transform: scale(1.01);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  .kwic-sub-link-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    object-fit: contain;
+  }
+  .kwic-sub-link-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--accent);
+  }
+
+  .kwic-sub-notifs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .kwic-sub-notifs-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-secondary);
+  }
+  .kwic-sub-notif {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  .kwic-sub-notif-date {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .kwic-sub-notif-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

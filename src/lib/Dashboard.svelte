@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
+  import { invoke } from "@tauri-apps/api/core";
   import { activeTab, aiRefreshRequested } from "./stores";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./Icon.svelte";
@@ -19,10 +20,11 @@
     label: string;
     icon: IconName;
     section?: string;
+    external?: () => void;
   }
 
   const tabs: Tab[] = [
-    { id: "home", label: "ホーム", icon: "square.grid.2x2", section: "概要" },
+    { id: "home", label: "ホーム", icon: "square.grid.2x2" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },
@@ -30,6 +32,7 @@
     { id: "syllabus", label: "シラバス検索", icon: "book" },
     { id: "notifications", label: "お知らせ", icon: "bell", section: "お知らせ" },
     { id: "changes", label: "変更情報", icon: "arrow.triangle.swap" },
+    { id: "facility", label: "施設予約", icon: "building.2", section: "ツール", external: () => invoke("open_facility_reservation") },
   ];
 
   // Track which tabs have been visited (lazy mount: create once, then keep alive)
@@ -62,7 +65,7 @@
         <button
           class="nav-item"
           class:active={$activeTab === tab.id}
-          onclick={() => activeTab.set(tab.id)}
+          onclick={() => tab.external ? tab.external() : activeTab.set(tab.id)}
         >
           <Icon name={tab.icon} size={16} />
           <span class="nav-label">{tab.label}</span>

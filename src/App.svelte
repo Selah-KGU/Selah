@@ -21,7 +21,7 @@
     });
 
     try {
-      // Restore all service sessions (KWIC + Luna + future)
+      // Restore all service sessions (KGC + Luna + future)
       const session = await restoreAllSessions();
       if (session) startBackgroundPolling();
     } catch (e) {

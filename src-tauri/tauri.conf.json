@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://kg-course.kwansei.ac.jp https://sso.kwansei.ac.jp https://api.openai.com https://generativelanguage.googleapis.com https://*.openai.com; img-src 'self' data:"
+      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://kg-course.kwansei.ac.jp https://sso.kwansei.ac.jp https://api.openai.com https://generativelanguage.googleapis.com https://*.openai.com; img-src 'self' data: https://kwic.kwansei.ac.jp"
     }
   },
   "bundle": {

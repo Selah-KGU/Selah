@@ -4,7 +4,7 @@ use regex::Regex;
 use url::Url;
 use std::sync::LazyLock;
 
-use crate::client::KwicClient;
+use crate::client::KgcClient;
 use crate::parser;
 
 const BASE_URL: &str = "https://kg-course.kwansei.ac.jp";
@@ -18,7 +18,7 @@ static SAML_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Generate a SAML intercept initialization script for a login webview.
 /// `callback_host` determines the fake hostname used to intercept the SAML response
-/// (e.g. "kwic-saml-callback.localhost" or "luna-saml-callback.localhost").
+/// (e.g. "kgc-saml-callback.localhost" or "luna-saml-callback.localhost").
 pub fn saml_intercept_script(callback_host: &str) -> String {
     format!(
         r#"
@@ -149,7 +149,7 @@ pub async fn initiate_sp_auth(http: &Client) -> Result<String, String> {
 /// submit it to the SP's ACS endpoint via reqwest to establish
 /// the Shibboleth session in our HTTP client.
 pub async fn complete_saml_login(
-    kwic: &mut KwicClient,
+    kgc: &mut KgcClient,
     data: &SamlCallbackData,
 ) -> Result<AuthSession, String> {
     log::info!("Submitting SAMLResponse to ACS: {}", &data.acs_url[..80.min(data.acs_url.len())]);
@@ -162,7 +162,7 @@ pub async fn complete_saml_login(
         params.push(("RelayState", data.relay_state.as_str()));
     }
 
-    let resp = kwic.http
+    let resp = kgc.http
         .post(&data.acs_url)
         .form(&params)
         .send()
@@ -179,7 +179,7 @@ pub async fn complete_saml_login(
     // Follow post-login redirects to fully establish the session
     let mut current_url = format!("{}/uniasv2/UnSSOLoginControl2", BASE_URL);
     for _ in 0..15 {
-        let resp = kwic.http
+        let resp = kgc.http
             .get(&current_url)
             .send()
             .await
@@ -206,7 +206,7 @@ pub async fn complete_saml_login(
     }
 
     // Temporarily mark as authenticated so fetch_page works
-    kwic.session = Some(AuthSession {
+    kgc.session = Some(AuthSession {
         username: String::new(),
         display_name: "ユーザー".to_string(),
         student_id: String::new(),
@@ -215,7 +215,7 @@ pub async fn complete_saml_login(
     });
 
     // Fetch timetable page to parse basic student info
-    let student_info = match kwic.fetch_page("/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014").await {
+    let student_info = match kgc.fetch_page("/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014").await {
         Ok(html) => {
             let info = parser::parse_student_info(&html);
             log::info!("Student info: id={}, name={}, faculty={}", info.student_id, info.name, info.faculty);
@@ -234,10 +234,10 @@ pub async fn complete_saml_login(
         faculty: student_info.faculty,
         department: student_info.department,
     };
-    kwic.session = Some(session.clone());
+    kgc.session = Some(session.clone());
 
     // Persist session and cookies to disk
-    kwic.save_session();
+    kgc.save_session();
 
     log::info!("Login complete, session established for {}", session.display_name);
     Ok(session)

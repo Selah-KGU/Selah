@@ -714,7 +714,7 @@
       });
     }
 
-    function renderCourseDetail(data, idnumber, kwicPath) {
+    function renderCourseDetail(data, idnumber, kgcPath) {
       var content = document.getElementById('content');
       if (!data) {
         content.innerHTML = '<div class="error">データがありません</div>';
@@ -856,7 +856,7 @@
       }
 
       // KG course detail collapsible section
-      if (kwicPath) {
+      if (kgcPath) {
         html += '<div class="course-section kg-detail-section">';
         html += '<button class="kg-detail-toggle" id="kg-detail-toggle">';
         html += '<span class="kg-detail-toggle-label"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="16" x2="12" y2="16"/></svg>KG 授業詳細</span>';
@@ -871,7 +871,7 @@
       content.innerHTML = html;
 
       // Wire up KG detail toggle
-      if (kwicPath) {
+      if (kgcPath) {
         var kgToggle = document.getElementById('kg-detail-toggle');
         var kgBody = document.getElementById('kg-detail-body');
         var kgChevron = document.getElementById('kg-chevron');
@@ -889,7 +889,7 @@
               var inv = window.__TAURI__?.core?.invoke;
               if (inv) {
                 try {
-                  var detail = await inv('fetch_course_detail', { path: kwicPath });
+                  var detail = await inv('fetch_course_detail', { path: kgcPath });
                   if (detail.fields && detail.fields.length > 0) {
                     var fhtml = '<div class="meta-table">';
                     for (var fi = 0; fi < detail.fields.length; fi++) {
@@ -1172,15 +1172,15 @@
       // Course detail mode
       if (mode === 'course') {
         var idnumber = params.get('idnumber');
-        var kwicPath = params.get('kwicPath') || '';
-        console.log('[DEBUG luna-detail] course mode', { idnumber: idnumber, kwicPath: kwicPath, fullUrl: window.location.href });
+        var kgcPath = params.get('kgcPath') || '';
+        console.log('[DEBUG luna-detail] course mode', { idnumber: idnumber, kgcPath: kgcPath, fullUrl: window.location.href });
         if (!idnumber) {
           renderDetail({ error: 'コース番号が指定されていません' });
           return;
         }
         try {
           var courseData = await invoke('luna_fetch_course_detail', { idnumber: idnumber });
-          renderCourseDetail(courseData, idnumber, kwicPath);
+          renderCourseDetail(courseData, idnumber, kgcPath);
         } catch (e) {
           renderDetail({ error: String(e) });
         }

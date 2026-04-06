@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>お知らせ詳細</title>
+<style>
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f5f7;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --border: rgba(0, 0, 0, 0.08);
+    --accent: #002855;
+    color-scheme: light;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg-primary: #1c1c1e;
+      --bg-secondary: #2c2c2e;
+      --text-primary: #f5f5f7;
+      --text-secondary: #98989d;
+      --border: rgba(255, 255, 255, 0.08);
+      --accent: #4a90d9;
+      color-scheme: dark;
+    }
+  }
+  [data-theme="dark"] {
+    --bg-primary: #1c1c1e;
+    --bg-secondary: #2c2c2e;
+    --text-primary: #f5f5f7;
+    --text-secondary: #98989d;
+    --border: rgba(255, 255, 255, 0.08);
+    --accent: #4a90d9;
+    color-scheme: dark;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 20px;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  .subtitle {
+    font-size: 11px;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+  }
+  h1 {
+    font-size: 17px;
+    font-weight: 700;
+    margin: 2px 0 12px;
+    line-height: 1.3;
+  }
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 0.5px solid var(--border);
+  }
+  .meta-sender {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .loading {
+    text-align: center;
+    padding: 40px 0;
+    color: var(--text-secondary);
+  }
+  .spinner {
+    width: 24px;
+    height: 24px;
+    margin: 0 auto 12px;
+    border: 2.5px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .body-content {
+    font-size: 13px;
+    line-height: 1.7;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+  .body-content a {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .body-content img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    margin: 8px 0;
+  }
+  .body-content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8px 0;
+    font-size: 12px;
+  }
+  .body-content td, .body-content th {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    text-align: left;
+  }
+  .attachments {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 0.5px solid var(--border);
+  }
+  .attachments-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+  .attachment-link {
+    display: inline-block;
+    font-size: 12px;
+    color: var(--accent);
+    padding: 3px 10px;
+    background: rgba(0,122,255,0.06);
+    border-radius: 6px;
+    text-decoration: none;
+    margin: 2px 4px 2px 0;
+    cursor: pointer;
+    border: none;
+    font-family: inherit;
+  }
+  .attachment-link:hover {
+    text-decoration: underline;
+    background: rgba(0,122,255,0.12);
+  }
+  .error {
+    color: #ff3b30;
+    text-align: center;
+    padding: 20px;
+  }
+</style>
+</head>
+<body>
+  <div class="subtitle">KWIC ポータル お知らせ</div>
+  <h1 id="title">読み込み中...</h1>
+  <div id="content">
+    <div class="loading">
+      <div class="spinner"></div>
+      <span>読み込み中...</span>
+    </div>
+  </div>
+  <script>
+    (function() {
+      var t = localStorage.getItem('selah-theme');
+      if (t === 'light' || t === 'dark') {
+        document.documentElement.setAttribute('data-theme', t);
+      }
+    })();
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      const params = new URLSearchParams(window.location.search);
+      const informationId = params.get('informationId') || '';
+      const informationType = params.get('informationType') || '';
+      const personCategoryCd = params.get('personCategoryCd') || '';
+      const categoryCd = params.get('categoryCd') || '';
+      const titleParam = params.get('title') || 'お知らせ';
+
+      document.getElementById('title').textContent = titleParam;
+
+      if (!informationId) {
+        document.getElementById('content').innerHTML = '<div class="error">通知IDが指定されていません</div>';
+        return;
+      }
+
+      const invoke = window.__TAURI__?.core?.invoke;
+      if (!invoke) {
+        document.getElementById('content').innerHTML = '<div class="error">Tauri IPC が利用できません</div>';
+        return;
+      }
+
+      try {
+        const detail = await invoke('kwic_fetch_detail', {
+          informationId,
+          informationType,
+          personCategoryCd,
+          categoryCd,
+        });
+
+        if (detail.title) {
+          document.getElementById('title').textContent = detail.title;
+        }
+
+        let html = '';
+
+        // Meta line (date + sender)
+        if (detail.date || detail.sender) {
+          html += '<div class="meta">';
+          if (detail.date) html += '<span>' + escapeHtml(detail.date) + '</span>';
+          if (detail.sender) html += '<span class="meta-sender">' + escapeHtml(detail.sender) + '</span>';
+          html += '</div>';
+        }
+
+        // Body HTML (already sanitized on backend)
+        if (detail.body_html) {
+          html += '<div class="body-content">' + detail.body_html + '</div>';
+        } else {
+          html += '<div class="error">本文が取得できませんでした</div>';
+        }
+
+        // Attachments
+        if (detail.attachments && detail.attachments.length > 0) {
+          html += '<div class="attachments"><div class="attachments-label">添付ファイル</div>';
+          for (const att of detail.attachments) {
+            html += '<button class="attachment-link" data-url="' + escapeHtml(att.url) + '">' + escapeHtml(att.name) + '</button>';
+          }
+          html += '</div>';
+        }
+
+        document.getElementById('content').innerHTML = html;
+
+        // Attachment click handler — open in KWIC webview
+        document.querySelectorAll('.attachment-link[data-url]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const url = btn.getAttribute('data-url');
+            const name = btn.textContent;
+            invoke('kwic_open_link', { url, title: name }).catch(console.error);
+          });
+        });
+
+      } catch (e) {
+        document.getElementById('content').innerHTML = '<div class="error">' + escapeHtml(String(e)) + '</div>';
+      }
+    });
+  </script>
+</body>
+</html>

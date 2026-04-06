@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-const SEEN_KWIC_KEY = "selah_seen_kwic_notifs";
+const SEEN_KGC_KEY = "selah_seen_kgc_notifs";
 const SEEN_LUNA_KEY = "selah_seen_luna_notifs";
 
 /** Send a native macOS notification via osascript */
@@ -41,7 +41,7 @@ async function ensurePermission(): Promise<boolean> {
   }
 }
 
-export interface KwicNotif {
+export interface KgcNotif {
   id: string;
   title: string;
   date: string;
@@ -55,16 +55,16 @@ export interface LunaNotif {
   content: string;
 }
 
-/** Check KWIC notifications for new items and send native notifications */
-export async function notifyNewKwic(entries: KwicNotif[]) {
+/** Check KG-Course notifications for new items and send native notifications */
+export async function notifyNewKgc(entries: KgcNotif[]) {
   if (!entries.length) return;
-  const seen = getSeenIds(SEEN_KWIC_KEY);
+  const seen = getSeenIds(SEEN_KGC_KEY);
   const newEntries = entries.filter((e) => !seen.has(e.id));
   if (!newEntries.length) {
     // First run: mark all as seen without notifying
     if (seen.size === 0) {
       for (const e of entries) seen.add(e.id);
-      saveSeenIds(SEEN_KWIC_KEY, seen);
+      saveSeenIds(SEEN_KGC_KEY, seen);
     }
     return;
   }
@@ -79,7 +79,7 @@ export async function notifyNewKwic(entries: KwicNotif[]) {
     );
     seen.add(e.id);
   }
-  saveSeenIds(SEEN_KWIC_KEY, seen);
+  saveSeenIds(SEEN_KGC_KEY, seen);
 }
 
 /** Check Luna notifications for new items and send native notifications */

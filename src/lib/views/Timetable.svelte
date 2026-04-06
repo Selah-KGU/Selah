@@ -9,7 +9,7 @@
   import StudentBar from "../StudentBar.svelte";
   import Icon from "../Icon.svelte";
 
-  // ── KWIC weekly state ──
+  // ── KG-Course weekly state ──
   let loading = $state(true);
   let navigating = $state(false);
   let error = $state("");
@@ -81,7 +81,7 @@
   // ── Unified Cell ──
   interface UnifiedCellData {
     luna?: LunaCourse;
-    kwic?: TimetableEntry;
+    kgc?: TimetableEntry;
     exam?: ExamEntry;
     favorites: SyllabusEntry[];
   }
@@ -90,58 +90,58 @@
     const dayIdx = days.indexOf(day) + 1;
     return {
       luna: lunaTimetable?.courses.find(c => c.period === period && c.day === dayIdx),
-      kwic: data?.entries.find(e => e.day === day && e.period === period),
+      kgc: data?.entries.find(e => e.day === day && e.period === period),
       exam: examData?.entries.find(e => e.day === day && e.period === period),
       favorites: favoritesMap.get(`${day}-${period}`) ?? [],
     };
   }
 
   function cellIsEmpty(cell: UnifiedCellData): boolean {
-    return !cell.luna && !cell.kwic && !cell.exam && cell.favorites.length === 0;
+    return !cell.luna && !cell.kgc && !cell.exam && cell.favorites.length === 0;
   }
 
   function cellItemCount(cell: UnifiedCellData): number {
     let n = cell.favorites.length;
-    if (cell.luna || cell.kwic) n++;
+    if (cell.luna || cell.kgc) n++;
     return n;
   }
 
   function cellDotColor(cell: UnifiedCellData): string {
-    if (cell.kwic) {
-      if (cell.kwic.is_cancelled)    return "#ff3b30";
-      if (cell.kwic.is_makeup)       return "#34c759";
-      if (cell.kwic.is_room_changed) return "#ff9500";
+    if (cell.kgc) {
+      if (cell.kgc.is_cancelled)    return "#ff3b30";
+      if (cell.kgc.is_makeup)       return "#34c759";
+      if (cell.kgc.is_room_changed) return "#ff9500";
     }
     return "var(--accent)";
   }
 
   async function handleCellClick(cell: UnifiedCellData) {
     if (cell.luna && $lunaAuthState.authenticated) {
-      await openLunaCourse(cell.luna.idnumber, cell.luna.name, cell.kwic?.detail_path);
-    } else if (cell.kwic?.detail_path) {
+      await openLunaCourse(cell.luna.idnumber, cell.luna.name, cell.kgc?.detail_path);
+    } else if (cell.kgc?.detail_path) {
       try {
-        await invoke("open_detail_window", { path: cell.kwic.detail_path, courseName: cell.kwic.course_name });
+        await invoke("open_detail_window", { path: cell.kgc.detail_path, courseName: cell.kgc.course_name });
       } catch (e: any) {
         console.error("Failed to open detail:", e);
       }
     }
   }
 
-  async function openKwicDetail(entry: TimetableEntry, event: MouseEvent) {
+  async function openKgcDetail(entry: TimetableEntry, event: MouseEvent) {
     event.stopPropagation();
     if (!entry.detail_path) return;
     try {
       await invoke("open_detail_window", { path: entry.detail_path, courseName: entry.course_name });
     } catch (e: any) {
-      console.error("Failed to open KWIC detail:", e);
+      console.error("Failed to open KGC detail:", e);
     }
   }
 
-  async function openLunaCourse(idnumber: string, name: string, kwicPath?: string) {
+  async function openLunaCourse(idnumber: string, name: string, kgcPath?: string) {
     try {
       await invoke("luna_open_detail_window", {
         path: "", title: name, mode: "course", idnumber,
-        kwicPath: kwicPath || null,
+        kgcPath: kgcPath || null,
       });
     } catch (e: any) {
       console.error("Failed to open Luna course:", e);
@@ -233,7 +233,7 @@
   onDestroy(() => { unsubTimetable(); unsubExams(); unsubLuna(); });
 
   onMount(async () => {
-    const kwicPromise = (async () => {
+    const kgcPromise = (async () => {
       try {
         data = await cachedFetch("timetable", fetchTimetable);
         if (data && data.form_fields && shouldShowNextWeek(data)) {
@@ -258,7 +258,7 @@
       catch { /* exam is supplementary */ }
     })();
 
-    await Promise.allSettled([kwicPromise, lunaPromise, examPromise]);
+    await Promise.allSettled([kgcPromise, lunaPromise, examPromise]);
     updateTray();
   });
 
@@ -673,7 +673,7 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="cal-menu-backdrop" onclick={() => showCalMenu = false}></div>
             <div class="cal-menu">
-              <div class="cal-menu-header">KWIC 時間割 カレンダー</div>
+              <div class="cal-menu-header">KGC 時間割 カレンダー</div>
               {#if calInfo}
                 <div class="cal-menu-info">
                   {calInfo.exists ? `${calInfo.count}件のイベント` : "カレンダー未作成"}
@@ -783,8 +783,8 @@
           {#each days as day}
             {@const cell = getUnifiedCell(day, period)}
             {@const empty = cellIsEmpty(cell)}
-            {@const hasCourse = !!(cell.luna || cell.kwic)}
-            {@const favOnly = !cell.luna && !cell.kwic && !cell.exam && cell.favorites.length > 0}
+            {@const hasCourse = !!(cell.luna || cell.kgc)}
+            {@const favOnly = !cell.luna && !cell.kgc && !cell.exam && cell.favorites.length > 0}
 
             {#if favOnly}
               <div class="cell" class:multi={cell.favorites.length > 1}>
@@ -808,10 +808,10 @@
               <div
                 class="cell course-cell"
                 class:multi={totalItems > 1}
-                class:entry-normal={hasCourse && !cell.kwic?.is_cancelled && !cell.kwic?.is_makeup && !cell.kwic?.is_room_changed}
-                class:entry-cancelled={cell.kwic?.is_cancelled}
-                class:entry-makeup={cell.kwic?.is_makeup}
-                class:entry-changed={cell.kwic?.is_room_changed}
+                class:entry-normal={hasCourse && !cell.kgc?.is_cancelled && !cell.kgc?.is_makeup && !cell.kgc?.is_room_changed}
+                class:entry-cancelled={cell.kgc?.is_cancelled}
+                class:entry-makeup={cell.kgc?.is_makeup}
+                class:entry-changed={cell.kgc?.is_room_changed}
                 class:exam-only={!hasCourse && !!cell.exam}
                 onclick={() => handleCellClick(cell)}
               >
@@ -820,8 +820,8 @@
                 {/if}
                 <div class="item">
                   <div class="item-top">
-                    <span class="course-name" class:struck={cell.kwic?.is_cancelled}>
-                      {cell.luna?.name || cell.kwic?.course_name || cell.exam?.course_name || ""}
+                    <span class="course-name" class:struck={cell.kgc?.is_cancelled}>
+                      {cell.luna?.name || cell.kgc?.course_name || cell.exam?.course_name || ""}
                     </span>
                     {#if hasCourse}
                       <span class="dot" style="background:{cellDotColor(cell)};flex-shrink:0;margin-top:2px"></span>
@@ -830,17 +830,17 @@
                   {#if cell.luna?.teacher}
                     <span class="course-teacher">{cell.luna.teacher}</span>
                   {/if}
-                  {#if cell.kwic?.room}
-                    <span class="course-room">{cell.kwic.room}</span>
+                  {#if cell.kgc?.room}
+                    <span class="course-room">{cell.kgc.room}</span>
                   {/if}
                   {#if cell.exam && !hasCourse}
                     <span class="course-room">{cell.exam.room}</span>
                   {/if}
-                  {#if cell.kwic?.is_cancelled || cell.kwic?.is_makeup || cell.kwic?.is_room_changed || cell.exam}
+                  {#if cell.kgc?.is_cancelled || cell.kgc?.is_makeup || cell.kgc?.is_room_changed || cell.exam}
                     <div class="tags">
-                      {#if cell.kwic?.is_cancelled}<span class="tag tag-cancel">休講</span>{/if}
-                      {#if cell.kwic?.is_makeup}<span class="tag tag-makeup">補講</span>{/if}
-                      {#if cell.kwic?.is_room_changed}<span class="tag tag-change">変更</span>{/if}
+                      {#if cell.kgc?.is_cancelled}<span class="tag tag-cancel">休講</span>{/if}
+                      {#if cell.kgc?.is_makeup}<span class="tag tag-makeup">補講</span>{/if}
+                      {#if cell.kgc?.is_room_changed}<span class="tag tag-change">変更</span>{/if}
                       {#if cell.exam}<span class="tag tag-exam">試験</span>{/if}
                     </div>
                   {/if}

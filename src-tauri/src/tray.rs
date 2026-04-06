@@ -206,7 +206,7 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
             _ => {}
         });
     } else {
-        let _ = tray.set_tooltip(Some("KWIC - 授業なし"));
+        let _ = tray.set_tooltip(Some("Selah - 授業なし"));
 
         let no_class = MenuItemBuilder::with_id("noclass", "授業予定なし").enabled(false).build(&app).map_err(|e| e.to_string())?;
         let show_item = MenuItemBuilder::with_id("show", "Selah を表示").build(&app).map_err(|e| e.to_string())?;

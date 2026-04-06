@@ -79,14 +79,14 @@ pub(crate) fn data_dir() -> std::path::PathBuf {
     dir
 }
 
-/// Main HTTP client for KWIC system
-pub struct KwicClient {
+/// Main HTTP client for KG-Course (kg-course.kwansei.ac.jp)
+pub struct KgcClient {
     pub http: Client,
     pub cookie_store: Arc<reqwest_cookie_store::CookieStoreMutex>,
     pub session: Option<AuthSession>,
 }
 
-impl KwicClient {
+impl KgcClient {
     pub fn new() -> Self {
         let (cookie_store, http) = new_cookie_client();
         Self {
@@ -184,7 +184,7 @@ impl KwicClient {
         }
     }
 
-    /// Fetch a page from the KWIC system (requires authentication)
+    /// Fetch a page from the KG-Course system (requires authentication)
     pub async fn fetch_page(&self, path: &str) -> Result<String, String> {
         if !self.is_authenticated() {
             return Err("認証されていません".into());
@@ -193,7 +193,7 @@ impl KwicClient {
         use std::io::Write;
         #[cfg(debug_assertions)]
         let mut dbg = std::fs::OpenOptions::new().create(true).append(true)
-            .open("/tmp/kwic-fetch.log").ok();
+            .open("/tmp/kgc-fetch.log").ok();
         #[cfg(not(debug_assertions))]
         let mut dbg: Option<std::fs::File> = None;
         macro_rules! dbg_log {
@@ -248,7 +248,7 @@ impl KwicClient {
         Err("リダイレクトが多すぎます".into())
     }
 
-    /// POST a form to the KWIC system (requires authentication)
+    /// POST a form to the KG-Course system (requires authentication)
     pub async fn post_form(&self, path: &str, params: &[(String, String)]) -> Result<String, String> {
         if !self.is_authenticated() {
             return Err("認証されていません".into());

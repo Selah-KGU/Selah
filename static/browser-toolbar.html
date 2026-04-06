@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    -webkit-app-region: drag;
+    user-select: none; -webkit-user-select: none;
+    background: transparent;
+  }
+  body {
+    display: flex; align-items: center;
+    padding: 0 6px 0 74px;
+    gap: 1px;
+  }
+  .btn {
+    -webkit-app-region: no-drag;
+    border: none; background: transparent; cursor: pointer;
+    width: 28px; height: 28px; border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(0,0,0,0.4);
+    transition: all 0.12s ease;
+    flex-shrink: 0;
+  }
+  .btn:hover { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.65); }
+  .btn:active { transform: scale(0.9); background: rgba(0,0,0,0.1); }
+  .btn svg { width: 15px; height: 15px; fill: currentColor; }
+  .btn.disabled { opacity: 0.25; pointer-events: none; }
+
+  .url-bar {
+    -webkit-app-region: no-drag;
+    flex: 1; height: 24px; border-radius: 6px;
+    background: rgba(0,0,0,0.04);
+    padding: 0 9px; margin: 0 3px;
+    display: flex; align-items: center;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    font-size: 11px; color: rgba(0,0,0,0.35);
+    letter-spacing: 0.01em;
+    cursor: default;
+    transition: all 0.15s ease;
+    border: 0.5px solid rgba(0,0,0,0.04);
+  }
+  .url-bar:hover {
+    background: rgba(0,0,0,0.06);
+    color: rgba(0,0,0,0.5);
+  }
+  .url-bar.copied {
+    background: rgba(59,130,246,0.08);
+    color: rgba(59,130,246,0.7);
+    border-color: rgba(59,130,246,0.15);
+  }
+
+  .sep { width: 1px; height: 16px; background: rgba(0,0,0,0.06); margin: 0 3px; flex-shrink: 0; }
+
+  @media (prefers-color-scheme: dark) {
+    .btn { color: rgba(255,255,255,0.4); }
+    .btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7); }
+    .btn:active { background: rgba(255,255,255,0.12); }
+    .url-bar {
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.3);
+      border-color: rgba(255,255,255,0.04);
+    }
+    .url-bar:hover {
+      background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.5);
+    }
+    .url-bar.copied {
+      background: rgba(96,165,250,0.1);
+      color: rgba(96,165,250,0.7);
+      border-color: rgba(96,165,250,0.15);
+    }
+    .sep { background: rgba(255,255,255,0.06); }
+  }
+</style>
+</head>
+<body>
+  <button class="btn" id="back" title="戻る">
+    <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+  </button>
+  <button class="btn" id="forward" title="進む">
+    <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+  </button>
+  <button class="btn" id="reload" title="再読み込み">
+    <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+  </button>
+  <div class="sep"></div>
+  <div class="url-bar" id="url"></div>
+  <div class="sep"></div>
+  <button class="btn" id="external" title="外部ブラウザで開く">
+    <svg viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+  </button>
+
+<script>
+(async () => {
+  const { invoke } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+
+  const params = new URLSearchParams(window.location.search);
+  const target = params.get('target');
+  const urlBar = document.getElementById('url');
+  let currentUrl = '';
+
+  function displayUrl(url) {
+    currentUrl = url;
+    try {
+      const u = new URL(url);
+      let display = u.hostname.replace('www.', '');
+      let path = u.pathname;
+      if (path.length > 1) display += path.replace(/\/$/, '');
+      urlBar.textContent = display;
+      urlBar.title = url;
+    } catch(e) {
+      urlBar.textContent = url || '読み込み中…';
+      urlBar.title = url;
+    }
+  }
+  displayUrl('');
+
+  // Listen for URL change events from Rust
+  await listen('browser-url-changed', (event) => {
+    displayUrl(event.payload);
+  });
+
+  // Get initial URL
+  try {
+    const url = await invoke('browser_get_url', { target });
+    if (url && url !== 'about:blank') displayUrl(url);
+  } catch(e) {}
+
+  document.getElementById('back').onclick = () =>
+    invoke('browser_go_back', { target }).catch(() => {});
+  document.getElementById('forward').onclick = () =>
+    invoke('browser_go_forward', { target }).catch(() => {});
+  document.getElementById('reload').onclick = () =>
+    invoke('browser_reload', { target }).catch(() => {});
+
+  document.getElementById('external').onclick = async () => {
+    try {
+      const url = await invoke('browser_get_url', { target });
+      if (url && url !== 'about:blank') await invoke('luna_open_url', { url });
+    } catch(e) {}
+  };
+
+  urlBar.onclick = () => {
+    if (!currentUrl) return;
+    navigator.clipboard.writeText(currentUrl).then(() => {
+      const orig = urlBar.textContent;
+      urlBar.textContent = '✓ コピーしました';
+      urlBar.classList.add('copied');
+      setTimeout(() => {
+        urlBar.textContent = orig;
+        urlBar.classList.remove('copied');
+      }, 1200);
+    }).catch(() => {});
+  };
+})();
+</script>
+</body>
+</html>

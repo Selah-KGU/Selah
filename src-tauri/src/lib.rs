@@ -2,19 +2,23 @@ mod ai;
 mod auth;
 mod client;
 mod commands;
+mod kwic_client;
+mod kwic_commands;
 mod luna_client;
 mod luna_commands;
 mod luna_parser;
 mod parser;
 mod syllabus;
 mod tray;
+mod webview_toolbar;
 
 use tokio::sync::Mutex;
 use tauri::Manager;
 
 pub struct AppState {
-    pub client: Mutex<client::KwicClient>,
+    pub client: Mutex<client::KgcClient>,
     pub luna: Mutex<luna_client::LunaClient>,
+    pub kwic: Mutex<kwic_client::KwicClient>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -36,10 +40,13 @@ pub fn run() {
                     .build(),
             )?;
             let mut luna = luna_client::LunaClient::new();
-            luna.try_restore_session(); // restore cookies from disk (validated lazily on first use)
+            luna.try_restore_session();
+            let mut kwic = kwic_client::KwicClient::new();
+            kwic.try_restore_session();
             app.manage(AppState {
-                client: Mutex::new(client::KwicClient::new()),
+                client: Mutex::new(client::KgcClient::new()),
                 luna: Mutex::new(luna),
+                kwic: Mutex::new(kwic),
             });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
             tray::setup_tray(&app.handle())?;
@@ -77,6 +84,7 @@ pub fn run() {
             commands::fetch_course_detail,
             commands::open_detail_window,
             commands::open_profile_edit_window,
+            commands::open_facility_reservation,
             commands::open_registration_window,
             commands::fetch_student_profile,
             commands::debug_info,
@@ -115,6 +123,15 @@ pub fn run() {
             luna_commands::luna_post_discussion,
             luna_commands::luna_reply_discussion,
             luna_commands::luna_fetch_thread_posts,
+            kwic_commands::kwic_check_session,
+            kwic_commands::kwic_fetch_page,
+            kwic_commands::kwic_fetch_home,
+            kwic_commands::kwic_fetch_notifications,
+            kwic_commands::kwic_fetch_detail,
+            kwic_commands::kwic_fetch_subportal,
+            kwic_commands::kwic_open_detail_window,
+            kwic_commands::kwic_open_link,
+            kwic_commands::kwic_open_login,
             ai::get_ai_config,
             ai::save_ai_config,
             ai::ai_chat,
@@ -125,6 +142,10 @@ pub fn run() {
             ai::toggle_debug_panel,
             ai::test_notification,
             tray::update_tray,
+            webview_toolbar::browser_go_back,
+            webview_toolbar::browser_go_forward,
+            webview_toolbar::browser_reload,
+            webview_toolbar::browser_get_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

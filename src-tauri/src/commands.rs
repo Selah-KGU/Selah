@@ -9,11 +9,11 @@ use crate::auth;
 use crate::parser;
 use crate::AppState;
 
-const SAML_CALLBACK_HOST: &str = "kwic-saml-callback.localhost";
+const SAML_CALLBACK_HOST: &str = "kgc-saml-callback.localhost";
 const AUTH_REQUIRED_MSG: &str = "ログインしてください";
 
 /// Helper: lock client, check auth, fetch page, optionally dump to /tmp, parse.
-macro_rules! kwic_fetch {
+macro_rules! kgc_fetch {
     ($state:expr, $path:expr, $parser:expr) => {{
         let client = $state.client.lock().await;
         if !client.is_authenticated() {
@@ -90,7 +90,7 @@ pub async fn open_login_window(
     .initialization_script(&auth::saml_intercept_script(SAML_CALLBACK_HOST))
     .on_navigation(move |url| {
         // Intercept our special callback URL
-        if url.host_str() == Some("kwic-saml-callback.localhost") {
+        if url.host_str() == Some("kgc-saml-callback.localhost") {
             let pairs: std::collections::HashMap<String, String> =
                 url.query_pairs().into_owned().collect();
 
@@ -172,6 +172,49 @@ pub async fn open_login_window(
                                 }
                             }
 
+                            // Phase 3: Navigate the login webview to KWIC Portal's SAML entry
+                            // Like Luna Phase 2, navigate the webview directly — the Okta session
+                            // in the webview will auto-authenticate KWIC Portal.
+                            log::info!("=== Phase 3: KWIC Portal SAML login ===");
+                            if let Some(win) = app_clone.get_webview_window("login") {
+                                let kwic_saml_url = "https://kwic.kwansei.ac.jp/saml/login?disco=true";
+                                log::info!("Navigating login webview to KWIC Portal SAML: {}", kwic_saml_url);
+                                let kwic_url: url::Url = kwic_saml_url.parse().unwrap();
+                                let _ = win.navigate(kwic_url);
+
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    rx.recv(),
+                                ).await {
+                                    Ok(Some(kwic_data)) => {
+                                        log::info!("KWIC Portal SAML callback received (ACS: {})", &kwic_data.acs_url[..80.min(kwic_data.acs_url.len())]);
+                                        let mut kwic = app_state.kwic.lock().await;
+                                        match kwic.complete_saml_login(
+                                            &kwic_data.saml_response,
+                                            &kwic_data.relay_state,
+                                            &kwic_data.acs_url,
+                                        ).await {
+                                            Ok(()) => {
+                                                log::info!("KWIC Portal login successful");
+                                                kwic.save_session();
+                                                let _ = app_clone.emit("kwic-login-success", ());
+                                            }
+                                            Err(e) => {
+                                                log::warn!("KWIC Portal SAML login failed: {}", e);
+                                                let _ = app_clone.emit("kwic-login-error", &e);
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        log::warn!("KWIC Portal login window closed before completion");
+                                    }
+                                    Err(_) => {
+                                        log::warn!("KWIC Portal SAML login timed out (15s)");
+                                        let _ = app_clone.emit("kwic-login-error", "KWIC Portal login timed out");
+                                    }
+                                }
+                            }
+
                             // Close the login window
                             if let Some(win) = app_clone.get_webview_window("login") {
                                 let _ = win.close();
@@ -208,6 +251,9 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     drop(client);
     let mut luna = state.luna.lock().await;
     luna.clear();
+    drop(luna);
+    let mut kwic = state.kwic.lock().await;
+    kwic.clear();
     Ok(())
 }
 
@@ -277,7 +323,7 @@ pub async fn check_session(
 
 #[tauri::command]
 pub async fn fetch_timetable(state: State<'_, AppState>) -> Result<parser::TimetableData, String> {
-    kwic_fetch!(state, "/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", parser::parse_timetable)
+    kgc_fetch!(state, "/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", parser::parse_timetable)
 }
 
 /// Validate the session by actually hitting the server.
@@ -357,45 +403,45 @@ pub async fn fetch_timetable_week(state: State<'_, AppState>, direction: String)
 
     let html = client.post_form("/uniasv2/ARF010PCT01EventAction.do", &params).await?;
     #[cfg(debug_assertions)]
-    { let _ = std::fs::write("/tmp/kwic-week-response.html", &html); }
+    { let _ = std::fs::write("/tmp/kgc-week-response.html", &html); }
     Ok(parser::parse_timetable(&html))
 }
 
 #[tauri::command]
 pub async fn fetch_grades(state: State<'_, AppState>) -> Result<parser::GradesData, String> {
-    kwic_fetch!(state, "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "/tmp/kwic-grades.html")
+    kgc_fetch!(state, "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "/tmp/kgc-grades.html")
 }
 
 #[tauri::command]
 pub async fn fetch_cancellations(state: State<'_, AppState>) -> Result<parser::CancellationsData, String> {
-    kwic_fetch!(state, "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "/tmp/kwic-cancellations.html")
+    kgc_fetch!(state, "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "/tmp/kgc-cancellations.html")
 }
 
 #[tauri::command]
 pub async fn fetch_makeup_classes(state: State<'_, AppState>) -> Result<parser::MakeupData, String> {
-    kwic_fetch!(state, "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "/tmp/kwic-makeup.html")
+    kgc_fetch!(state, "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "/tmp/kgc-makeup.html")
 }
 
 #[tauri::command]
 pub async fn fetch_room_changes(state: State<'_, AppState>) -> Result<parser::RoomChangesData, String> {
-    kwic_fetch!(state, "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "/tmp/kwic-roomchanges.html")
+    kgc_fetch!(state, "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "/tmp/kgc-roomchanges.html")
 }
 
 #[tauri::command]
 pub async fn fetch_registration(state: State<'_, AppState>) -> Result<parser::RegistrationData, String> {
-    kwic_fetch!(state, "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "/tmp/kwic-registration.html")
+    kgc_fetch!(state, "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "/tmp/kgc-registration.html")
 }
 
 #[tauri::command]
 pub async fn fetch_exam_timetable(state: State<'_, AppState>) -> Result<parser::ExamTimetableData, String> {
-    kwic_fetch!(state, "/uniasv2/ARF010PVL01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0102019", parser::parse_exam_timetable)
+    kgc_fetch!(state, "/uniasv2/ARF010PVL01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0102019", parser::parse_exam_timetable)
 }
 
 #[tauri::command]
 pub async fn fetch_notifications(
     state: State<'_, AppState>,
 ) -> Result<parser::NotificationsData, String> {
-    kwic_fetch!(state, "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "/tmp/kwic-notifications.html")
+    kgc_fetch!(state, "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "/tmp/kgc-notifications.html")
 }
 
 /// 関西学院大学 period → (start_hour, start_min, end_hour, end_min)
@@ -586,7 +632,7 @@ cal.events().length;
     Ok(format!("{}件のイベントを同期しました", count))
 }
 
-/// Get info about the KWIC calendar (exists, event count)
+/// Get info about the KG-Course calendar (exists, event count)
 #[tauri::command]
 pub async fn get_calendar_info() -> Result<serde_json::Value, String> {
     let script = r#"
@@ -619,7 +665,7 @@ if (!cal) {
     serde_json::from_str(&stdout).map_err(|e| format!("JSON parse error: {}", e))
 }
 
-/// Clear all events from the KWIC calendar, or delete the calendar entirely
+/// Clear all events from the KG-Course calendar, or delete the calendar entirely
 #[tauri::command]
 pub async fn clear_calendar(delete_calendar: bool) -> Result<String, String> {
     let script = if delete_calendar {
@@ -735,7 +781,7 @@ pub async fn open_detail_window(
 pub async fn open_profile_edit_window(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("profile-edit") {
+    if let Some(win) = app.get_window("profile-edit") {
         let _ = win.set_focus();
         return Ok(());
     }
@@ -744,16 +790,39 @@ pub async fn open_profile_edit_window(
         .parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
 
-    tauri::WebviewWindowBuilder::new(
+    crate::webview_toolbar::create_browser_window(
         &app,
         "profile-edit",
         tauri::WebviewUrl::External(url),
-    )
-    .title("個人情報編集")
-    .inner_size(1000.0, 720.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
+        "個人情報編集",
+        1000.0, 720.0,
+        &[],
+    )?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_facility_reservation(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if let Some(win) = app.get_window("facility-rsv") {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    let url: url::Url = "https://facility-rsv.kwansei.ac.jp/ss/top"
+        .parse()
+        .map_err(|e| format!("URL parse error: {}", e))?;
+
+    crate::webview_toolbar::create_browser_window(
+        &app,
+        "facility-rsv",
+        tauri::WebviewUrl::External(url),
+        "施設予約",
+        1100.0, 780.0,
+        &[],
+    )?;
 
     Ok(())
 }
@@ -762,8 +831,7 @@ pub async fn open_profile_edit_window(
 pub async fn open_registration_window(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // If the window already exists, focus it
-    if let Some(win) = app.get_webview_window("registration") {
+    if let Some(win) = app.get_window("registration") {
         let _ = win.set_focus();
         return Ok(());
     }
@@ -774,16 +842,14 @@ pub async fn open_registration_window(
         .parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
 
-    tauri::WebviewWindowBuilder::new(
+    crate::webview_toolbar::create_browser_window(
         &app,
         "registration",
         tauri::WebviewUrl::External(url),
-    )
-    .title("履修登録")
-    .inner_size(1100.0, 780.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
+        "履修登録",
+        1100.0, 780.0,
+        &[],
+    )?;
 
     Ok(())
 }
@@ -925,14 +991,14 @@ fn chrono_now() -> String {
 #[tauri::command]
 pub async fn search_syllabus(
     params: crate::syllabus::SyllabusSearchParams,
-    kwic_state: State<'_, AppState>,
+    kgc_state: State<'_, AppState>,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
-    let kwic_client = kwic_state.client.lock().await;
-    if !kwic_client.is_authenticated() {
+    let kgc_client = kgc_state.client.lock().await;
+    if !kgc_client.is_authenticated() {
         return Err(AUTH_REQUIRED_MSG.into());
     }
 
-    let search_html = kwic_client
+    let search_html = kgc_client
         .fetch_page("/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/AGA030.do&REQ_PRFR_MNU_ID=MNUIDSTD0103011")
         .await?;
     let token = extract_struts_token(&search_html)?;
@@ -963,7 +1029,7 @@ pub async fn search_syllabus(
         ("hdnLoginUrl".into(), String::new()),
     ];
 
-    let html = kwic_client
+    let html = kgc_client
         .post_form("/uniasv2/AGA030PSC01EventAction.do", &form_params)
         .await?;
 
@@ -1007,7 +1073,7 @@ pub async fn search_syllabus(
 
         log::info!("Fetching page {} with {} form params", page, form_params.len());
 
-        let next_html = kwic_client
+        let next_html = kgc_client
             .post_form("/uniasv2/AGA030PLS01EventAction.do", &form_params)
             .await?;
 
@@ -1033,10 +1099,10 @@ pub async fn search_syllabus(
 
 #[tauri::command]
 pub async fn fetch_syllabus_favorites(
-    kwic_state: State<'_, AppState>,
+    kgc_state: State<'_, AppState>,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
-    let kwic_client = kwic_state.client.lock().await;
-    if !kwic_client.is_authenticated() {
+    let kgc_client = kgc_state.client.lock().await;
+    if !kgc_client.is_authenticated() {
         return Err(AUTH_REQUIRED_MSG.into());
     }
 
@@ -1046,7 +1112,7 @@ pub async fn fetch_syllabus_favorites(
     let mut seen_codes = std::collections::HashSet::new();
 
     for term_code in main_terms.iter().chain(sub_terms.iter()) {
-        let search_html = kwic_client.fetch_page("/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/AGA030.do&REQ_PRFR_MNU_ID=MNUIDSTD0103011").await?;
+        let search_html = kgc_client.fetch_page("/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/AGA030.do&REQ_PRFR_MNU_ID=MNUIDSTD0103011").await?;
         let token = match extract_struts_token(&search_html) {
             Ok(t) => t,
             Err(_) => continue,
@@ -1067,7 +1133,7 @@ pub async fn fetch_syllabus_favorites(
             ("hdnPhfyPrcFlg".into(), String::new()),
             ("ENarrowSearch".into(), "お気に入り/Bookmark".into()),
         ];
-        let html = kwic_client.post_form("/uniasv2/AGA030PSC01EventAction.do", &params).await?;
+        let html = kgc_client.post_form("/uniasv2/AGA030PSC01EventAction.do", &params).await?;
 
         if let Ok(result) = crate::syllabus::parse_search_results_public(&html) {
             for entry in result.entries {
@@ -1091,7 +1157,7 @@ pub async fn fetch_syllabus_favorites(
 
 /// Search for a specific class_code across terms, returning the results HTML page.
 async fn find_syllabus_results_by_class_code(
-    client: &crate::client::KwicClient,
+    client: &crate::client::KgcClient,
     class_code: &str,
 ) -> Result<String, String> {
     let terms = ["02", "03", "01", "04", "05", "06", "07"];
@@ -1145,15 +1211,15 @@ async fn find_syllabus_results_by_class_code(
 
 #[tauri::command]
 pub async fn toggle_syllabus_bookmark(
-    kwic_state: State<'_, AppState>,
+    kgc_state: State<'_, AppState>,
     class_code: String,
 ) -> Result<bool, String> {
-    let kwic_client = kwic_state.client.lock().await;
-    if !kwic_client.is_authenticated() {
+    let kgc_client = kgc_state.client.lock().await;
+    if !kgc_client.is_authenticated() {
         return Err(AUTH_REQUIRED_MSG.into());
     }
 
-    let html = find_syllabus_results_by_class_code(&kwic_client, &class_code).await?;
+    let html = find_syllabus_results_by_class_code(&kgc_client, &class_code).await?;
 
     // Find the target row's register index
     let parsed = crate::syllabus::parse_search_results_public(&html)?;
@@ -1182,7 +1248,7 @@ pub async fn toggle_syllabus_bookmark(
     log::info!("Bookmark toggle: class_code={}, eregisterIndex={}, params_count={}",
         class_code, target_index, form_params.len());
 
-    let toggle_html = kwic_client
+    let toggle_html = kgc_client
         .post_form("/uniasv2/AGA030PLS01EventAction.do", &form_params)
         .await?;
 
@@ -1195,17 +1261,17 @@ pub async fn toggle_syllabus_bookmark(
 #[tauri::command]
 pub async fn open_syllabus_detail(
     app: tauri::AppHandle,
-    kwic_state: State<'_, AppState>,
+    kgc_state: State<'_, AppState>,
     class_code: String,
     course_name: String,
 ) -> Result<(), String> {
-    let kwic_client = kwic_state.client.lock().await;
-    if !kwic_client.is_authenticated() {
+    let kgc_client = kgc_state.client.lock().await;
+    if !kgc_client.is_authenticated() {
         return Err(AUTH_REQUIRED_MSG.into());
     }
 
     // Search by class_code across terms to find the course
-    let html = find_syllabus_results_by_class_code(&kwic_client, &class_code).await?;
+    let html = find_syllabus_results_by_class_code(&kgc_client, &class_code).await?;
 
     // Parse results to obtain the fresh ereferIndex for this course
     let results = crate::syllabus::parse_search_results_public(&html)
@@ -1234,7 +1300,7 @@ pub async fn open_syllabus_detail(
 
     log::info!("Syllabus detail: ereferIndex={}, params_count={}", fresh_refer_index, form_params.len());
 
-    let detail_html = kwic_client
+    let detail_html = kgc_client
         .post_form("/uniasv2/AGA030PLS01EventAction.do", &form_params)
         .await?;
 
@@ -1363,28 +1429,30 @@ fn extract_all_form_inputs(html: &str) -> Vec<(String, String)> {
 /// Current auth state of all services
 #[derive(Debug, Serialize)]
 pub struct SessionStates {
-    pub kwic: bool,
+    pub kgc: bool,
     pub luna: bool,
+    pub kwic: bool,
 }
 
 /// Returns in-memory auth state for all services.
 #[tauri::command]
 pub async fn get_session_states(state: State<'_, AppState>) -> Result<SessionStates, String> {
-    let kwic = state.client.lock().await.is_authenticated();
+    let kgc = state.client.lock().await.is_authenticated();
     let luna = state.luna.lock().await.authenticated;
-    Ok(SessionStates { kwic, luna })
+    let kwic = state.kwic.lock().await.authenticated;
+    Ok(SessionStates { kgc, luna, kwic })
 }
 
-/// Attempt a silent (headless) KWIC session refresh via an invisible WebView.
+/// Attempt a silent (headless) KG-Course session refresh via an invisible WebView.
 /// The hidden browser carries the persisted Okta cookies, so if the Okta session
 /// is still alive Okta will auto-submit the SAMLResponse without user interaction.
 /// Returns true on success, false when Okta has also expired (caller must use
 /// the visible login window).
-pub async fn headless_kwic_refresh(
+pub async fn headless_kgc_refresh(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<bool, String> {
-    log::info!("headless_kwic_refresh: starting");
+    log::info!("headless_kgc_refresh: starting");
 
     // Step 1 – Initiate SP auth via reqwest to get the Okta URL and establish
     // SP pre-session cookies in the reqwest jar (needed for complete_saml_login).
@@ -1395,7 +1463,7 @@ pub async fn headless_kwic_refresh(
     };
 
     // Step 2 – Close any leftover headless window.
-    if let Some(w) = app.get_webview_window("kwic-headless") {
+    if let Some(w) = app.get_webview_window("kgc-headless") {
         let _ = w.close();
     }
 
@@ -1411,13 +1479,13 @@ pub async fn headless_kwic_refresh(
     // injected script intercepts.
     let _win = tauri::WebviewWindowBuilder::new(
         app,
-        "kwic-headless",
+        "kgc-headless",
         tauri::WebviewUrl::External(parsed_url),
     )
     .visible(false)
     .initialization_script(&auth::saml_intercept_script(SAML_CALLBACK_HOST))
     .on_navigation(move |url| {
-        if url.host_str() == Some("kwic-saml-callback.localhost") {
+        if url.host_str() == Some("kgc-saml-callback.localhost") {
             let pairs: std::collections::HashMap<String, String> =
                 url.query_pairs().into_owned().collect();
             if let Some(saml_response) = pairs.get("saml_response") {
@@ -1427,7 +1495,7 @@ pub async fn headless_kwic_refresh(
                     acs_url: pairs.get("acs_url").cloned().unwrap_or_default(),
                 };
                 log::info!(
-                    "headless_kwic_refresh: SAMLResponse intercepted (len={})",
+                    "headless_kgc_refresh: SAMLResponse intercepted (len={})",
                     data.saml_response.len()
                 );
                 let _ = tx.try_send(data);
@@ -1446,23 +1514,23 @@ pub async fn headless_kwic_refresh(
             let mut client = state.client.lock().await;
             match auth::complete_saml_login(&mut client, &data).await {
                 Ok(session) => {
-                    log::info!("headless_kwic_refresh: succeeded for {}", session.display_name);
+                    log::info!("headless_kgc_refresh: succeeded for {}", session.display_name);
                     let _ = _win.close();
                     Ok(true)
                 }
                 Err(e) => {
-                    log::warn!("headless_kwic_refresh: SAML completion failed: {}", e);
+                    log::warn!("headless_kgc_refresh: SAML completion failed: {}", e);
                     let _ = _win.close();
                     Err(e)
                 }
             }
         }
         Ok(None) => {
-            log::info!("headless_kwic_refresh: window closed without SAMLResponse");
+            log::info!("headless_kgc_refresh: window closed without SAMLResponse");
             Ok(false)
         }
         Err(_) => {
-            log::info!("headless_kwic_refresh: timed out – Okta session likely expired");
+            log::info!("headless_kgc_refresh: timed out – Okta session likely expired");
             let _ = _win.close();
             Ok(false)
         }
@@ -1551,9 +1619,89 @@ pub async fn headless_luna_refresh(
     }
 }
 
+/// Attempt a silent (headless) KWIC Portal session refresh via an invisible WebView.
+pub async fn headless_kwic_refresh(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<bool, String> {
+    log::info!("headless_kwic_refresh: starting");
+
+    if let Some(w) = app.get_webview_window("kwic-headless") {
+        let _ = w.close();
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<auth::SamlCallbackData>(1);
+
+    // Navigate directly to KWIC Portal's SAML login URL.
+    // The invisible WebView shares the Okta session cookies with the visible login window,
+    // so Okta will auto-submit the SAMLResponse without user interaction.
+    let saml_url = "https://kwic.kwansei.ac.jp/saml/login?disco=true";
+    let parsed_url: url::Url = saml_url
+        .parse()
+        .map_err(|e| format!("URL parse error: {}", e))?;
+
+    let _win = tauri::WebviewWindowBuilder::new(
+        app,
+        "kwic-headless",
+        tauri::WebviewUrl::External(parsed_url),
+    )
+    .visible(false)
+    .initialization_script(&auth::saml_intercept_script("kwic-saml-callback.localhost"))
+    .on_navigation(move |url| {
+        if url.host_str() == Some("kwic-saml-callback.localhost") {
+            let pairs: std::collections::HashMap<String, String> =
+                url.query_pairs().into_owned().collect();
+            if let Some(saml_response) = pairs.get("saml_response") {
+                let data = auth::SamlCallbackData {
+                    saml_response: saml_response.clone(),
+                    relay_state: pairs.get("relay_state").cloned().unwrap_or_default(),
+                    acs_url: pairs.get("acs_url").cloned().unwrap_or_default(),
+                };
+                log::info!(
+                    "headless_kwic_refresh: SAMLResponse intercepted (len={})",
+                    data.saml_response.len()
+                );
+                let _ = tx.try_send(data);
+            }
+            return false;
+        }
+        true
+    })
+    .build()
+    .map_err(|e| format!("Failed to build headless KWIC window: {}", e))?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv()).await {
+        Ok(Some(data)) => {
+            let mut kwic = state.kwic.lock().await;
+            match kwic.complete_saml_login(&data.saml_response, &data.relay_state, &data.acs_url).await {
+                Ok(()) => {
+                    kwic.save_session();
+                    log::info!("headless_kwic_refresh: succeeded");
+                    let _ = _win.close();
+                    Ok(true)
+                }
+                Err(e) => {
+                    log::warn!("headless_kwic_refresh: SAML completion failed: {}", e);
+                    let _ = _win.close();
+                    Err(e)
+                }
+            }
+        }
+        Ok(None) => {
+            log::info!("headless_kwic_refresh: window closed without SAMLResponse");
+            Ok(false)
+        }
+        Err(_) => {
+            log::info!("headless_kwic_refresh: timed out – Okta session likely expired");
+            let _ = _win.close();
+            Ok(false)
+        }
+    }
+}
+
 /// Silently refresh one or all service sessions using hidden WebViews.
 ///
-/// `service`: `"kwic"` | `"luna"` | `"all"`
+/// `service`: `"kgc"` | `"luna"` | `"kwic"` | `"all"`
 ///
 /// Returns `true` if all requested refreshes succeeded (Okta still valid).
 /// Returns `false` if the Okta session has also expired — the frontend should
@@ -1567,14 +1715,17 @@ pub async fn sync_session(
     log::info!("sync_session: service={}", service);
     let s = state.inner();
     match service.as_str() {
-        "kwic" => headless_kwic_refresh(&app, s).await,
+        "kgc" => headless_kgc_refresh(&app, s).await,
         "luna" => headless_luna_refresh(&app, s).await,
+        "kwic" => headless_kwic_refresh(&app, s).await,
         "all" => {
-            let kwic_ok = headless_kwic_refresh(&app, s).await?;
-            if !kwic_ok {
-                return Ok(false); // Okta expired; no point trying Luna
+            let kgc_ok = headless_kgc_refresh(&app, s).await?;
+            if !kgc_ok {
+                return Ok(false); // Okta expired; no point trying Luna/KWIC
             }
-            headless_luna_refresh(&app, s).await
+            let luna_ok = headless_luna_refresh(&app, s).await?;
+            let kwic_ok = headless_kwic_refresh(&app, s).await?;
+            Ok(luna_ok && kwic_ok)
         }
         _ => Err(format!("Unknown service: {}", service)),
     }

@@ -30,6 +30,11 @@ export const lunaAuthState = writable<{ authenticated: boolean }>({
   authenticated: false,
 });
 
+/** KWIC Portal authentication state */
+export const kwicAuthState = writable<{ authenticated: boolean }>({
+  authenticated: false,
+});
+
 // ============ Data Types ============
 
 export interface StudentInfo {
@@ -243,7 +248,7 @@ const defaultSyllabusParams: SyllabusSearchParams = {
   language: "",
 };
 
-const SYLLABUS_STORAGE_KEY = "kwic-syllabus-state";
+const SYLLABUS_STORAGE_KEY = "kgc-syllabus-state";
 
 function loadSyllabusState(): SyllabusSearchState {
   if (typeof localStorage !== "undefined") {
@@ -315,7 +320,7 @@ const inflight = new Map<string, Promise<any>>();
 
 const DEFAULT_TTL = 5 * 60 * 1000; // 5 minutes
 const CACHE_TTLS: Record<string, number> = {
-  // KG (KWIC)
+  // KG-Course
   timetable: 30 * 60 * 1000,
   grades: 30 * 60 * 1000,
   exams: 30 * 60 * 1000,
