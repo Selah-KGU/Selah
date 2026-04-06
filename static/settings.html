@@ -251,6 +251,13 @@
     </svg>
     セッション
   </div>
+  <div class="nav-item" data-panel="mail" onclick="switchPanel('mail')">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3">
+      <rect x="2" y="4" width="16" height="12" rx="2"/>
+      <polyline points="18 4 10 11 2 4"/>
+    </svg>
+    メール
+  </div>
   <div class="nav-item" data-panel="notification" onclick="switchPanel('notification')">
     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3">
       <path d="M10 2.5a5 5 0 015 5v3l1.5 2H3.5l1.5-2v-3a5 5 0 015-5z" stroke-linejoin="round"/>
@@ -391,6 +398,52 @@
       <span id="sessionStatus" class="hint" style="margin-left:4px;"></span>
     </div>
   </div>
+  <div class="panel" id="panel-mail">
+    <div class="hero-card">
+      <div class="hero-icon" style="background:linear-gradient(135deg,rgba(0,122,255,0.15),rgba(88,86,214,0.15));">
+        <svg viewBox="0 0 20 20" fill="none" stroke="#0055b3" stroke-width="1.3" style="width:19px;height:19px;">
+          <rect x="2" y="4" width="16" height="12" rx="2"/>
+          <polyline points="18 4 10 11 2 4"/>
+        </svg>
+      </div>
+      <div class="hero-text">
+        <h2 class="panel-title">メール設定</h2>
+        <p class="panel-desc">Microsoft 365 メール連携の設定を管理します。大学の管理者がサードパーティアプリを制限している場合は、独自の Azure AD クライアント ID を設定してください。</p>
+      </div>
+    </div>
+    <div class="card-label">Microsoft Azure AD</div>
+    <div class="card">
+      <div class="row">
+        <span class="row-label">クライアント ID</span>
+        <div class="row-input">
+          <input type="text" id="mailClientId" placeholder="空欄 = デフォルト" spellcheck="false" style="font-family:monospace;font-size:11px;">
+          <div class="hint">Azure Portal で登録したアプリケーション (クライアント) ID を入力してください。空欄の場合はデフォルト値が使用されます。</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">アカウント</span>
+        <div class="row-input">
+          <div class="session-indicator" id="mail-session-status">未確認</div>
+          <div id="mail-account-info" class="hint" style="margin-top:2px;"></div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:4px;align-items:center;">
+      <button class="btn-test" id="mailSaveBtn" onclick="saveMailConfig()">保存</button>
+      <button class="btn-test" id="mailLogoutBtn" onclick="mailLogout()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">ログアウト</button>
+      <span id="mailStatus" class="hint" style="margin-left:4px;"></span>
+    </div>
+    <div class="card-label" style="margin-top:20px;">独自クライアント ID の取得方法</div>
+    <div class="card" style="padding:12px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+      <ol style="margin:0;padding-left:18px;">
+        <li><a href="https://portal.azure.com" style="color:var(--blue);" onclick="event.preventDefault();invoke('open_external_url',{url:'https://portal.azure.com'}).catch(console.error)">portal.azure.com</a> でアプリを登録</li>
+        <li>サポートされるアカウントの種類: 「任意の組織ディレクトリ内のアカウント」</li>
+        <li>リダイレクト URI: 「パブリッククライアント」→ <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">http://localhost</code></li>
+        <li>API のアクセス許可: Microsoft Graph → <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">Mail.Read</code></li>
+        <li>認証 → 「パブリッククライアントフローを許可する」を「はい」に</li>
+      </ol>
+    </div>
+  </div>
   <div class="panel" id="panel-notification">
     <div class="hero-card">
       <div class="hero-icon" style="background:linear-gradient(135deg,rgba(255,150,0,0.15),rgba(255,59,48,0.12));">
@@ -458,7 +511,7 @@
   (function(){var s='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60"><rect width="60" height="60" rx="12" fill="%23002855"/><g transform="translate(6 4) scale(0.8)"><path d="M18.418,55.234A29.957,29.957,0,0,1,1.68,43.573a30.258,30.258,0,0,0,5.243,1.9,31.463,31.463,0,0,0,38.555-22.24A31.168,31.168,0,0,0,43.55,1.68,30.052,30.052,0,0,1,18.395,55.234" transform="translate(2.27 2.27)" fill="%23fff200"/><path d="M44.479,1.364C43.656.87,42.787.423,41.893,0c.541.776,1.058,1.575,1.552,2.421A30.069,30.069,0,0,1,2.421,43.445C1.6,42.975.776,42.457,0,41.917c.423.893.87,1.74,1.364,2.586A31.477,31.477,0,1,0,44.456,1.387M20.688,57.5A29.957,29.957,0,0,1,3.95,45.843a30.258,30.258,0,0,0,5.243,1.9,31.463,31.463,0,0,0,38.555-22.24A31.168,31.168,0,0,0,45.819,3.95,30.052,30.052,0,0,1,20.665,57.5Z" fill="%23231f20"/><path d="M15.243,19.32s.118-.071.141-.047c.047.024.024.118.047.235a.923.923,0,0,0,.188.423c.141.235,5.219,8.3,5.384,8.557a1.406,1.406,0,0,0,.517.541c.118.047.141.094.118.141,0,.047-.071.071-.141.118s-1.622.846-1.693.893a.179.179,0,0,1-.212.024.253.253,0,0,1-.047-.188,1.39,1.39,0,0,0-.282-.682c-.282-.447-5.172-8.2-5.266-8.369a1.6,1.6,0,0,0-.494-.494c-.071-.024-.118-.094-.024-.141S15.2,19.32,15.2,19.32" transform="translate(18.14 26.029)" fill="%23231f20"/><path d="M15.35,25.782s.541-4.161.588-4.843c.024-.682,0-.964-.071-1.058a.4.4,0,0,0-.188-.165c-.094-.047-.071-.118,0-.165s2.257-1.716,2.351-1.787.141-.047.165,0,0,.094-.047.188a2.359,2.359,0,0,0-.188.87c-.071.705-.729,6.441-.729,6.441l-1.834.541" transform="translate(20.737 23.94)" fill="%23231f20"/><path d="M16.234,23.227a5.064,5.064,0,0,1,6.3,1.011,3.112,3.112,0,0,1,.47.752c.047.212.165.188.282.118.141-.071,1.693-1.1,1.693-1.1.047-.024.094-.071.094-.094,0-.047-.024-.094-.071-.094a1.328,1.328,0,0,1-.517-.447,7.593,7.593,0,0,0-4.725-2.586,10.324,10.324,0,0,0-4.49.987l1.011,1.481" transform="translate(20.628 28.046)" fill="%23231f20"/><path d="M21.7,20.8a1.21,1.21,0,1,1-1.669-.376A1.214,1.214,0,0,1,21.7,20.8" transform="translate(26.304 27.344)" fill="%23231f20"/><path d="M25.422,14.8a1.21,1.21,0,1,1-1.669-.376,1.214,1.214,0,0,1,1.669.376" transform="translate(31.329 19.239)" fill="%23231f20"/><path d="M24.457,21.137s.118.094.165.071.047-.118.071-.212a1.3,1.3,0,0,1,.259-.423c.094-.141,1.434-1.9,1.5-2.022a.168.168,0,0,1,.259-.024c.071.047,1.5,1.128,1.81,1.34.282.235.165.658.141.823a5.44,5.44,0,0,1-.893,1.575,4.308,4.308,0,0,1-5.995.752,4.148,4.148,0,0,1-.705-5.83,4.631,4.631,0,0,1,1.9-1.434c.141-.047.141-.118.141-.141a.084.084,0,0,0-.047-.071c-.047-.024-1.693-1.269-1.74-1.293-.024-.024-.071-.047-.094-.024-.047,0-.071.094-.141.235a3.606,3.606,0,0,1-.682.658A6.2,6.2,0,0,0,18.3,20.173a5.924,5.924,0,0,0,2.327,4.3,6.222,6.222,0,0,0,6.347.729,6.647,6.647,0,0,0,3.479-4.185,7.376,7.376,0,0,1,.517-1.693c.047-.188-.047-.212-.118-.212a.173.173,0,0,1-.141-.047c-.047-.047-4.3-3.221-4.349-3.244-.047-.047-.141,0-.165.024,0,0-2.515,3.362-2.68,3.6a.738.738,0,0,1-.376.306c-.094.047-.165.094-.165.141a.174.174,0,0,0,.118.141l1.387,1.034" transform="translate(24.7 19.204)" fill="%23231f20"/></g></svg>';
   document.getElementById("aboutIcon").src="data:image/svg+xml,"+s})();
 
-  function switchPanel(n){document.querySelectorAll(".panel").forEach(function(p){p.classList.remove("active")});document.querySelectorAll(".nav-item").forEach(function(i){i.classList.remove("active")});var p=document.getElementById("panel-"+n);var nav=document.querySelector('.nav-item[data-panel="'+n+'"]');if(p)p.classList.add("active");if(nav)nav.classList.add("active");var sb=document.querySelector(".save-bar");if(sb)sb.style.display=n==="ai"?"flex":"none"}
+  function switchPanel(n){document.querySelectorAll(".panel").forEach(function(p){p.classList.remove("active")});document.querySelectorAll(".nav-item").forEach(function(i){i.classList.remove("active")});var p=document.getElementById("panel-"+n);var nav=document.querySelector('.nav-item[data-panel="'+n+'"]');if(p)p.classList.add("active");if(nav)nav.classList.add("active");var sb=document.querySelector(".save-bar");if(sb)sb.style.display=n==="ai"?"flex":"none";if(n==="mail")checkMailSession()}
 
   var invoke=window.__TAURI__.core.invoke;
 
@@ -587,6 +640,84 @@
       if (el && info.app_version) el.textContent = 'バージョン ' + info.app_version;
     } catch(e) { console.error('version fetch failed:', e); }
   })();
+
+  // ---- Mail Config ----
+  var $mailClientId = document.getElementById('mailClientId');
+
+  async function loadMailConfig() {
+    try {
+      var cfg = await invoke('mail_get_config');
+      $mailClientId.value = cfg.client_id || '';
+    } catch (e) { console.error('Failed to load mail config:', e); }
+    checkMailSession();
+  }
+
+  async function checkMailSession() {
+    var el = document.getElementById('mail-session-status');
+    var info = document.getElementById('mail-account-info');
+    if (!el) return;
+    el.innerHTML = '<span class="spinner" style="width:10px;height:10px;border-width:1.5px;"></span> 確認中...';
+    if (info) info.textContent = '';
+    try {
+      var s = await invoke('mail_check_session');
+      if (s.authenticated) {
+        el.innerHTML = '<span class="session-dot ok"></span> 認証済み';
+        // Use profile info from session check first
+        var parts = [];
+        if (s.display_name) parts.push(s.display_name);
+        if (s.email) parts.push(s.email);
+        if (info && parts.length) {
+          info.textContent = parts.join(' — ');
+        } else {
+          // Fallback: fetch profile separately
+          try {
+            var p = await invoke('mail_fetch_profile');
+            var parts2 = [];
+            if (p.displayName) parts2.push(p.displayName);
+            if (p.mail || p.userPrincipalName) parts2.push(p.mail || p.userPrincipalName);
+            if (info && parts2.length) info.textContent = parts2.join(' — ');
+          } catch (e) {
+            console.error('mail_fetch_profile error:', e);
+            if (info) info.textContent = String(e);
+          }
+        }
+      } else {
+        el.innerHTML = '<span class="session-dot ng"></span> 未接続';
+      }
+    } catch (e) {
+      el.innerHTML = '<span class="session-dot ng"></span> エラー';
+    }
+  }
+
+  async function saveMailConfig() {
+    var btn = document.getElementById('mailSaveBtn');
+    var st = document.getElementById('mailStatus');
+    btn.disabled = true;
+    try {
+      await invoke('mail_save_config', { config: { client_id: $mailClientId.value.trim() } });
+      if (st) { st.style.color = 'var(--green)'; st.textContent = '保存しました'; }
+      checkMailSession();
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = '保存失敗: ' + e; }
+    } finally {
+      btn.disabled = false;
+      setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+    }
+  }
+
+  async function mailLogout() {
+    var st = document.getElementById('mailStatus');
+    try {
+      await invoke('mail_logout');
+      if (st) { st.style.color = 'var(--green)'; st.textContent = 'ログアウトしました'; }
+      checkMailSession();
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = 'ログアウト失敗: ' + e; }
+    }
+    setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+  }
+
+  loadMailConfig();
 
   // Auto-check sessions when panel becomes visible
   recheckSessions();

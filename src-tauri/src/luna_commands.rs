@@ -105,34 +105,13 @@ pub async fn luna_open_detail_window(
     Ok(())
 }
 
-/// Open a URL in the default browser
+/// Launch an LTI tool (Zoom, Panopto, etc.) and open the final URL in app webview
 #[tauri::command]
-pub async fn luna_open_url(url: String) -> Result<(), String> {
-    // Only allow http/https URLs to prevent command injection via custom schemes
-    if !url.starts_with("https://") && !url.starts_with("http://") {
-        return Err("無効なURLスキームです".into());
-    }
-    Command::new("open")
-        .arg(&url)
-        .spawn()
-        .map_err(|e| format!("URLを開けませんでした: {}", e))?;
-    Ok(())
-}
-
-/// Launch an LTI tool (Zoom, Panopto, etc.) and open the final URL in browser
-#[tauri::command]
-pub async fn luna_launch_lti(state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub async fn luna_launch_lti(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
     let luna = state.luna.lock().await;
     let final_url = luna.launch_lti(&path).await?;
     drop(luna);
-    if !final_url.starts_with("https://") && !final_url.starts_with("http://") {
-        return Err("無効なURLスキームです".into());
-    }
-    Command::new("open")
-        .arg(&final_url)
-        .spawn()
-        .map_err(|e| format!("URLを開けませんでした: {}", e))?;
-    Ok(())
+    crate::commands::open_external_url(app, final_url, None).await
 }
 
 /// Reveal a file in Finder (restricted to app download directory)

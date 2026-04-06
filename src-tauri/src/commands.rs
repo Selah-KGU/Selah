@@ -777,6 +777,41 @@ pub async fn open_detail_window(
     Ok(())
 }
 
+/// Open an external URL in a new webview window with browser toolbar
+#[tauri::command]
+pub async fn open_external_url(
+    app: tauri::AppHandle,
+    url: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    let parsed_url: url::Url = url.parse()
+        .map_err(|e| format!("URL parse error: {}", e))?;
+
+    // Only allow http/https URLs
+    let scheme = parsed_url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("Unsupported URL scheme: {}", scheme));
+    }
+
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let label = format!("ext-{}", id);
+    let win_title = title.unwrap_or_else(|| parsed_url.host_str().unwrap_or("Web").to_string());
+
+    crate::webview_toolbar::create_browser_window(
+        &app,
+        &label,
+        tauri::WebviewUrl::External(parsed_url),
+        &win_title,
+        900.0, 640.0,
+        &[],
+    )?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn open_profile_edit_window(
     app: tauri::AppHandle,

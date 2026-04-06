@@ -25,7 +25,8 @@
     "facility-rsv-tb",
     "facility-rsv-ct",
     "settings",
-    "ai-result"
+    "ai-result",
+    "ext-*"
   ],
   "permissions": [
     "core:default",

@@ -144,3 +144,40 @@ export async function notifyNewKwic(items: KwicNotif[]) {
   }
   saveSeenIds(SEEN_KWIC_KEY, seen);
 }
+
+export interface MailNotif {
+  id: string;
+  subject: string | null;
+  from: { emailAddress: { name: string | null; address: string | null } } | null;
+  isRead: boolean | null;
+}
+
+const SEEN_MAIL_KEY = "selah_seen_mail_notifs";
+
+/** Check mail inbox for new unread items and send native notifications */
+export async function notifyNewMail(items: MailNotif[]) {
+  if (!items.length) return;
+  const seen = getSeenIds(SEEN_MAIL_KEY);
+  const newItems = items.filter((n) => n.id && !seen.has(n.id) && !n.isRead);
+  if (!newItems.length) {
+    if (seen.size === 0) {
+      for (const n of items) if (n.id) seen.add(n.id);
+      saveSeenIds(SEEN_MAIL_KEY, seen);
+    }
+    return;
+  }
+
+  const granted = await ensurePermission();
+  if (!granted) return;
+
+  for (const n of newItems) {
+    const sender = n.from?.emailAddress?.name || n.from?.emailAddress?.address || "";
+    const subj = n.subject || "(件名なし)";
+    nativeNotify(
+      sender ? `${sender}` : "新着メール",
+      subj,
+    );
+    seen.add(n.id);
+  }
+  saveSeenIds(SEEN_MAIL_KEY, seen);
+}

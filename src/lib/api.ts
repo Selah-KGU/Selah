@@ -16,7 +16,7 @@ import type {
   AiConfig,
   AiChatMessage,
 } from "./stores";
-import { authState, lunaAuthState, kwicAuthState, invalidateCache, reloginInProgress, refreshCache } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, invalidateCache, reloginInProgress, refreshCache } from "./stores";
 import { get } from "svelte/store";
 
 // Global listener: Rust backend emits this after standalone Luna SAML login or Phase 2 of full login
@@ -27,6 +27,15 @@ listen("luna-login-success", () => {
 // Global listener: Rust backend emits this after standalone KWIC Portal SAML login or Phase 3 of full login
 listen("kwic-login-success", () => {
   kwicAuthState.set({ authenticated: true });
+});
+
+// Global listener: Microsoft 365 mail login success
+listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
+  mailAuthState.set({
+    authenticated: true,
+    email: event.payload.email,
+    displayName: event.payload.displayName,
+  });
 });
 
 export interface SessionStatus {
@@ -457,6 +466,66 @@ export async function kwicOpenLogin(): Promise<void> {
   return invoke<void>("kwic_open_login");
 }
 
+// ---------- Microsoft 365 Mail API ----------
+
+export interface MailSessionStatus {
+  authenticated: boolean;
+  email: string;
+  display_name: string;
+}
+
+export interface MailMessage {
+  id: string;
+  subject: string | null;
+  bodyPreview: string | null;
+  from: { emailAddress: { name: string | null; address: string | null } } | null;
+  receivedDateTime: string | null;
+  isRead: boolean | null;
+  hasAttachments: boolean | null;
+}
+
+export interface MailDetail {
+  id: string;
+  subject: string | null;
+  body: { contentType: string | null; content: string | null } | null;
+  from: { emailAddress: { name: string | null; address: string | null } } | null;
+  receivedDateTime: string | null;
+  isRead: boolean | null;
+  hasAttachments: boolean | null;
+  toRecipients: { emailAddress: { name: string | null; address: string | null } }[] | null;
+  ccRecipients: { emailAddress: { name: string | null; address: string | null } }[] | null;
+}
+
+export interface MailProfile {
+  displayName: string | null;
+  mail: string | null;
+  userPrincipalName: string | null;
+}
+
+export async function mailCheckSession(): Promise<MailSessionStatus> {
+  return invoke<MailSessionStatus>("mail_check_session");
+}
+
+export async function mailOpenLogin(): Promise<void> {
+  return invoke<void>("mail_open_login");
+}
+
+export async function mailLogout(): Promise<void> {
+  return invoke<void>("mail_logout");
+}
+
+export async function mailFetchProfile(): Promise<MailProfile> {
+  return invoke<MailProfile>("mail_fetch_profile");
+}
+
+export async function mailFetchInbox(top?: number, skip?: number): Promise<MailMessage[]> {
+  return invoke<MailMessage[]>("mail_fetch_inbox", { top: top ?? 20, skip: skip ?? 0 });
+}
+
+export async function mailFetchMessage(messageId: string): Promise<MailDetail> {
+  return invoke<MailDetail>("mail_fetch_message", { messageId });
+}
+
 // ---------- Public API ----------
 
 export async function openLoginWindow(): Promise<void> {
@@ -606,6 +675,7 @@ function getVolatileTargets(): PollTarget[] {
     { key: "kwic_notifications", fetcher: kwicFetchNotifications, guard: () => get(kwicAuthState).authenticated },
     { key: "kwic_home", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
     { key: "weather", fetcher: fetchWeather },
+    { key: "mail_inbox", fetcher: () => mailFetchInbox(20, 0), guard: () => get(mailAuthState).authenticated },
   ];
 }
 

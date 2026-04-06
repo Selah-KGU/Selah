@@ -142,7 +142,7 @@
   document.getElementById('external').onclick = async () => {
     try {
       const url = await invoke('browser_get_url', { target });
-      if (url && url !== 'about:blank') await invoke('luna_open_url', { url });
+      if (url && url !== 'about:blank') await invoke('open_external_url', { url });
     } catch(e) {}
   };
 

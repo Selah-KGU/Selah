@@ -14,6 +14,7 @@
   import NotificationsUnified from "./views/NotificationsUnified.svelte";
   import ChangeInfo from "./views/ChangeInfo.svelte";
   import HomePage from "./views/HomePage.svelte";
+  import MailView from "./views/MailView.svelte";
 
   interface Tab {
     id: string;
@@ -25,6 +26,7 @@
 
   const tabs: Tab[] = [
     { id: "home", label: "ホーム", icon: "square.grid.2x2" },
+    { id: "mail", label: "メール", icon: "envelope" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },
@@ -80,6 +82,11 @@
       <div class="view-panel" class:active={$activeTab === "home"}>
         <HomePage />
       </div>
+      {#if visited.has("mail")}
+        <div class="view-panel" class:active={$activeTab === "mail"}>
+          <MailView />
+        </div>
+      {/if}
       {#if visited.has("timetable")}
         <div class="view-panel" class:active={$activeTab === "timetable"}>
           <Timetable />

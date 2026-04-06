@@ -35,7 +35,9 @@
     | "star.fill"
     | "gear"
     | "pin"
-    | "building.2";
+    | "building.2"
+    | "envelope"
+    | "arrow.clockwise";
 </script>
 
 <script lang="ts">
@@ -195,6 +197,12 @@
     <line x1="16" y1="11" x2="18" y2="11" />
     <line x1="16" y1="14" x2="18" y2="14" />
     <line x1="16" y1="17" x2="18" y2="17" />
+  {:else if name === "envelope"}
+    <rect x="2" y="4" width="20" height="16" rx="2" />
+    <polyline points="22 4 12 13 2 4" />
+  {:else if name === "arrow.clockwise"}
+    <path d="M21 2v6h-6" />
+    <path d="M21 8A9 9 0 1 0 18.36 18.36" />
   {/if}
 </svg>
 

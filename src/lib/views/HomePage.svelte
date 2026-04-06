@@ -105,7 +105,7 @@
     const match = item.url.match(/tagCd=(\d+)/);
     if (!match) {
       // Fallback: open in browser for non-subportal links
-      await invoke("luna_open_url", { url: item.url });
+      await invoke("open_external_url", { url: item.url });
       return;
     }
     subportalLoading = true;

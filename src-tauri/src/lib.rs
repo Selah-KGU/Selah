@@ -7,6 +7,8 @@ mod kwic_commands;
 mod luna_client;
 mod luna_commands;
 mod luna_parser;
+mod mail;
+mod mail_commands;
 mod parser;
 mod syllabus;
 mod tray;
@@ -19,6 +21,7 @@ pub struct AppState {
     pub client: Mutex<client::KgcClient>,
     pub luna: Mutex<luna_client::LunaClient>,
     pub kwic: Mutex<kwic_client::KwicClient>,
+    pub mail: Mutex<mail::MailClient>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -43,10 +46,13 @@ pub fn run() {
             luna.try_restore_session();
             let mut kwic = kwic_client::KwicClient::new();
             kwic.try_restore_session();
+            let mut mail_client = mail::MailClient::new();
+            mail_client.try_restore_token();
             app.manage(AppState {
                 client: Mutex::new(client::KgcClient::new()),
                 luna: Mutex::new(luna),
                 kwic: Mutex::new(kwic),
+                mail: Mutex::new(mail_client),
             });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
             tray::setup_tray(&app.handle())?;
@@ -83,6 +89,7 @@ pub fn run() {
             commands::fetch_page,
             commands::fetch_course_detail,
             commands::open_detail_window,
+            commands::open_external_url,
             commands::open_profile_edit_window,
             commands::open_facility_reservation,
             commands::open_registration_window,
@@ -115,7 +122,6 @@ pub fn run() {
             luna_commands::luna_fetch_course_detail,
             luna_commands::luna_download_file,
             luna_commands::luna_download_material,
-            luna_commands::luna_open_url,
             luna_commands::luna_launch_lti,
             luna_commands::luna_reveal_file,
             luna_commands::luna_submit_report,
@@ -132,6 +138,14 @@ pub fn run() {
             kwic_commands::kwic_open_detail_window,
             kwic_commands::kwic_open_link,
             kwic_commands::kwic_open_login,
+            mail_commands::mail_check_session,
+            mail_commands::mail_open_login,
+            mail_commands::mail_logout,
+            mail_commands::mail_fetch_profile,
+            mail_commands::mail_fetch_inbox,
+            mail_commands::mail_fetch_message,
+            mail_commands::mail_get_config,
+            mail_commands::mail_save_config,
             ai::get_ai_config,
             ai::save_ai_config,
             ai::ai_chat,

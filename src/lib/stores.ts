@@ -35,6 +35,13 @@ export const kwicAuthState = writable<{ authenticated: boolean }>({
   authenticated: false,
 });
 
+/** Microsoft 365 Mail authentication state */
+export const mailAuthState = writable<{ authenticated: boolean; email: string; displayName: string }>({
+  authenticated: false,
+  email: "",
+  displayName: "",
+});
+
 // ============ Data Types ============
 
 export interface StudentInfo {
@@ -337,6 +344,8 @@ const CACHE_TTLS: Record<string, number> = {
   luna_updates: 5 * 60 * 1000,
   // Weather
   weather: 60 * 60 * 1000,
+  // Mail
+  mail_inbox: 5 * 60 * 1000,
 };
 
 // Keys eligible for disk persistence (survive app restart, stale-while-revalidate)
@@ -434,6 +443,11 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
   });
   inflight.set(key, p);
   return p;
+}
+
+export function getCacheTimestamp(key: string): number | null {
+  const entry = cache.get(key);
+  return entry ? entry.ts : null;
 }
 
 export function invalidateCache(key?: string) {

@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail } from "../api";
-  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState } from "../stores";
+  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox } from "../api";
+  import type { MailMessage } from "../api";
+  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab } from "../stores";
   import type { NotificationsData } from "../stores";
   import type { KwicPortalHome } from "../api";
-  import { notifyNewKgc, notifyNewLuna, notifyNewKwic } from "../notify";
+  import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "../notify";
   import ViewLoader from "../ViewLoader.svelte";
 
   interface LunaNotification {
@@ -23,7 +24,7 @@
     date: string;
     category: string;      // e.g. 学部名, module name
     tab: string;            // one of the 4 KWIC-style tabs
-    source: "kgc" | "luna" | "kwic";
+    source: "kgc" | "luna" | "kwic" | "mail";
     important: boolean;
     url?: string;
     courseInfo?: string;
@@ -41,12 +42,13 @@
   ] as const;
   type TabName = typeof TAB_ORDER[number];
 
-  let activeTab = $state<TabName>("授業のお知らせ");
+  let selectedTab = $state<TabName>("授業のお知らせ");
   let loading = $state(true);
   let error = $state("");
   let kgcData = $state<NotificationsData | null>(null);
   let lunaNotifications = $state<LunaNotification[]>([]);
   let kwicHome = $state<KwicPortalHome | null>(null);
+  let mailMessages = $state<MailMessage[]>([]);
 
   // KWIC detail view state (removed - now opens in window)
 
@@ -74,12 +76,16 @@
     kwicHome = fresh ?? null;
     if (fresh) notifyKwicItems(fresh);
   });
-  onDestroy(() => { unsubKgc(); unsubLuna(); unsubKwicHome(); });
+  const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (fresh) => {
+    mailMessages = fresh ?? [];
+    notifyNewMail(mailMessages);
+  });
+  onDestroy(() => { unsubKgc(); unsubLuna(); unsubKwicHome(); unsubMail(); });
 
   onMount(async () => {
     loading = true;
     try {
-      const [kgc, luna, kwic] = await Promise.allSettled([
+      const [kgc, luna, kwic, mail] = await Promise.allSettled([
         cachedFetch("notifications", fetchNotifications),
         $lunaAuthState.authenticated
           ? cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"))
@@ -87,6 +93,9 @@
         $kwicAuthState.authenticated
           ? cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome)
           : Promise.resolve(null),
+        $mailAuthState.authenticated
+          ? cachedFetch<MailMessage[]>("mail_inbox", () => mailFetchInbox(20, 0))
+          : Promise.resolve([]),
       ]);
       if (kgc.status === "fulfilled" && kgc.value) {
         kgcData = kgc.value as NotificationsData;
@@ -99,6 +108,10 @@
       if (kwic.status === "fulfilled" && kwic.value) {
         kwicHome = kwic.value as KwicPortalHome;
         notifyKwicItems(kwicHome);
+      }
+      if (mail.status === "fulfilled" && mail.value) {
+        mailMessages = mail.value as MailMessage[];
+        notifyNewMail(mailMessages);
       }
     } catch (e: any) {
       error = e?.message || String(e);
@@ -135,6 +148,22 @@
         tab: "授業のお知らせ", source: "luna", important: false,
         url: n.url, courseInfo: n.course_info,
       });
+    }
+
+    // Mail → その他
+    for (const m of mailMessages) {
+      if (!m.isRead) {
+        const sender = m.from?.emailAddress?.name || m.from?.emailAddress?.address || "不明";
+        addUniq({
+          id: m.id,
+          title: m.subject || "(件名なし)",
+          date: m.receivedDateTime ? new Date(m.receivedDateTime).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) : "",
+          category: sender,
+          tab: "その他",
+          source: "mail",
+          important: false,
+        });
+      }
     }
 
     // KWIC sections → map by section title (exclude 授業のお知らせ, use KGC/Luna for that)
@@ -186,10 +215,12 @@
     return counts;
   });
 
-  let currentItems = $derived(groupedByTab.get(activeTab) ?? []);
+  let currentItems = $derived(groupedByTab.get(selectedTab) ?? []);
 
   async function openNotif(n: UnifiedNotif) {
-    if (n.source === "luna" && n.url) {
+    if (n.source === "mail") {
+      activeTab.set("mail");
+    } else if (n.source === "luna" && n.url) {
       try {
         await lunaInvoke("luna_open_detail_window", { path: n.url, title: n.title });
       } catch (e) { console.error("Failed to open Luna detail:", e); }
@@ -210,7 +241,7 @@
 
   <div class="segmented-control">
     {#each TAB_ORDER as tab}
-      <button class="segment" class:active={activeTab === tab} onclick={() => { activeTab = tab; }}>
+      <button class="segment" class:active={selectedTab === tab} onclick={() => { selectedTab = tab; }}>
         {#if tab === "呼出し・重要なお知らせ"}
           重要
         {:else if tab === "学部・研究科からのお知らせ"}
@@ -230,14 +261,14 @@
         {#each currentItems as n, i}
           <button
             class="notif-item"
-            class:clickable={n.source === "luna" || n.source === "kwic"}
+            class:clickable={n.source === "luna" || n.source === "kwic" || n.source === "mail"}
             style="animation: slide-up 0.3s ease {Math.min(i * 0.04, 0.4)}s both;"
             onclick={() => openNotif(n)}
             disabled={n.source === "kgc"}
           >
             <div class="notif-header">
               {#if n.category}
-                <span class="notif-badge" class:badge-kwic={n.source === "kwic"} class:badge-luna={n.source === "luna"}>{n.category}</span>
+                <span class="notif-badge" class:badge-kwic={n.source === "kwic"} class:badge-luna={n.source === "luna"} class:badge-mail={n.source === "mail"}>{n.category}</span>
               {/if}
               {#if n.important}<span class="notif-important">NEW</span>{/if}
               <span class="notif-title">{n.title}</span>
@@ -360,6 +391,10 @@
   .badge-luna {
     background: rgba(245, 158, 11, 0.1);
     color: #d97706;
+  }
+  .badge-mail {
+    background: rgba(0, 122, 255, 0.1);
+    color: #0066cc;
   }
   .notif-title {
     flex: 1;

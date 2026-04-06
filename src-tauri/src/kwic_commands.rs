@@ -337,11 +337,8 @@ pub async fn kwic_open_link(
             )?;
         }
     } else {
-        // External link → system browser
-        std::process::Command::new("open")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| format!("URLを開けませんでした: {}", e))?;
+        // External link → in-app browser webview
+        crate::commands::open_external_url(app, url, Some(title)).await?;
     }
 
     Ok(())

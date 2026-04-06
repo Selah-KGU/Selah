@@ -922,7 +922,7 @@
       // Syllabus
       content.querySelectorAll('[data-syllabus-url]').forEach(function(btn) {
         btn.addEventListener('click', function() {
-          invoke('luna_open_url', { url: btn.getAttribute('data-syllabus-url') }).catch(console.error);
+          invoke('open_external_url', { url: btn.getAttribute('data-syllabus-url') }).catch(console.error);
         });
       });
 
@@ -1136,7 +1136,7 @@
       try {
         var result = await invoke('luna_download_file', { url: url, filename: name });
         if (result.startsWith('http')) {
-          await invoke('luna_open_url', { url: result });
+          await invoke('open_external_url', { url: result });
         } else {
           await invoke('luna_reveal_file', { path: result });
         }
