@@ -245,23 +245,25 @@
     return `今日はあと${remaining.length}コマ`;
   });
 
-  let nextClass = $derived.by(() => {
-    if (!timetableData?.entries.length) return null;
+  let heroClasses = $derived.by(() => {
+    if (!timetableData?.entries.length) return [];
     const todayDay = DAY_LABELS[now.getDay()];
     const nowMin = now.getHours() * 60 + now.getMinutes();
     const todayClasses = timetableData.entries
       .filter(e => e.day === todayDay && !e.is_cancelled)
       .sort((a, b) => a.period - b.period);
+    const result: { entry: TimetableEntry; time: typeof PERIOD_TIMES[number]; live: boolean }[] = [];
     for (const entry of todayClasses) {
       const pt = PERIOD_TIMES[entry.period];
       if (!pt) continue;
       const startMin = pt.startH * 60 + pt.startM;
       const endMin = pt.endH * 60 + pt.endM;
       if (nowMin < endMin) {
-        return { entry, time: pt, live: nowMin >= startMin };
+        result.push({ entry, time: pt, live: nowMin >= startMin });
+        if (result.length >= 2) break;
       }
     }
-    return null;
+    return result;
   });
 
   let upcomingDays = $derived.by(() => {
@@ -777,20 +779,19 @@
   </div>
 
   <!-- ===== NOW / NEXT — hero row ===== -->
-  {#if nextClass}
-    {@const nc = nextClass}
-    <section class="section">
+  {#if heroClasses.length > 0}
+    <section class="section hero-section">
       <button class="section-head" onclick={() => navigate("timetable")}>
-        <span>{nc.live ? "いま" : "つぎの授業"}</span>
+        <span>{heroClasses[0].live ? "いま" : "つぎの授業"}</span>
         <span class="arrow">›</span>
       </button>
-      <div class="scroll-row">
+      {#each heroClasses as nc}
         <button class="hero-card" class:hero-live={nc.live} onclick={() => openDetail(nc.entry)}>
           <span class="hero-tag">{nc.live ? "NOW" : "NEXT"}</span>
           <span class="hero-course">{nc.entry.course_name}</span>
           <span class="hero-meta">{nc.entry.room ? `${nc.entry.room} · ` : ""}{nc.time.start}–{nc.time.end}</span>
         </button>
-      </div>
+      {/each}
     </section>
   {/if}
 
@@ -800,7 +801,13 @@
       <span>お知らせ</span>
       <span class="arrow">›</span>
     </button>
-    {#if aiEnabled}
+    {#if loading && !aiNotifLoading && recentNotifs.length === 0}
+      <div class="notif-cards">
+        <div class="notif-skel"><div class="skel-text" style="width:36px;height:12px"></div><div class="skel-text" style="width:80%;height:14px;margin-top:8px"></div></div>
+        <div class="notif-skel"><div class="skel-text" style="width:36px;height:12px"></div><div class="skel-text" style="width:65%;height:14px;margin-top:8px"></div></div>
+        <div class="notif-skel"><div class="skel-text" style="width:36px;height:12px"></div><div class="skel-text" style="width:72%;height:14px;margin-top:8px"></div></div>
+      </div>
+    {:else if aiEnabled}
       <!-- AI Smart Notifications -->
       {#if aiNotifLoading}
         <div class="ai-loading-box">
@@ -884,7 +891,16 @@
   </section>
 
   <!-- ===== KWIC Portal Main Links ===== -->
-  {#if $kwicAuthState.authenticated && kwicHome}
+  {#if loading && !kwicHome}
+    <section class="section">
+      <div class="section-head-static"><span>ポータルリンク</span></div>
+      <div class="kwic-link-grid">
+        {#each Array(8) as _}
+          <div class="kwic-link-skel"><div class="skel-text" style="width:60%;height:13px"></div></div>
+        {/each}
+      </div>
+    </section>
+  {:else if $kwicAuthState.authenticated && kwicHome}
     {#if subportalData || subportalLoading || subportalError}
       <!-- Subportal Detail View -->
       <section class="section">
@@ -1468,87 +1484,97 @@
   .scroll-row::-webkit-scrollbar { display: none; }
 
   /* ===== Hero Card (NOW/NEXT) ===== */
+  .hero-section {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
   .hero-card {
-    flex-shrink: 0;
-    width: 280px;
-    padding: 20px;
-    border-radius: 16px;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 6px 12px;
+    border-radius: 14px;
     border: none;
     cursor: pointer;
     text-align: left;
     font-family: inherit;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
     transition: transform 0.15s ease;
-    scroll-snap-align: start;
   }
 
-  /* Light mode: soft blue gradient */
+  /* Light mode */
   .hero-card {
     color: var(--text-primary);
-    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent) 0%, color-mix(in srgb, var(--blue) 8%, transparent) 50%, color-mix(in srgb, var(--accent) 15%, transparent) 100%);
-    background-size: 200% 200%;
-    animation: hero-gradient 8s ease infinite;
+    background: var(--bg-card);
+    border: 1px solid var(--glass-border);
   }
 
   @media (prefers-color-scheme: dark) {
     .hero-card {
       color: #fff;
-      background: linear-gradient(135deg, #003d7a 0%, #002855 50%, #004a99 100%);
-      background-size: 200% 200%;
-      animation: hero-gradient 8s ease infinite;
+      background: color-mix(in srgb, var(--blue) 12%, var(--bg-card));
+      border-color: color-mix(in srgb, var(--blue) 20%, var(--glass-border));
     }
     .hero-card.hero-live {
-      background: linear-gradient(135deg, #1b8a4a 0%, #0d5c31 50%, #24a85e 100%);
-      background-size: 200% 200%;
+      background: color-mix(in srgb, var(--green) 12%, var(--bg-card));
+      border-color: color-mix(in srgb, var(--green) 20%, var(--glass-border));
     }
   }
 
   :global([data-theme="dark"]) .hero-card {
     color: #fff;
-    background: linear-gradient(135deg, #003d7a 0%, #002855 50%, #004a99 100%);
-    background-size: 200% 200%;
-    animation: hero-gradient 8s ease infinite;
+    background: color-mix(in srgb, var(--blue) 12%, var(--bg-card));
+    border-color: color-mix(in srgb, var(--blue) 20%, var(--glass-border));
   }
 
   :global([data-theme="dark"]) .hero-card.hero-live {
-    background: linear-gradient(135deg, #1b8a4a 0%, #0d5c31 50%, #24a85e 100%);
-    background-size: 200% 200%;
+    background: color-mix(in srgb, var(--green) 12%, var(--bg-card));
+    border-color: color-mix(in srgb, var(--green) 20%, var(--glass-border));
   }
 
-  @keyframes hero-gradient {
-    0% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
-  }
-
-  .hero-card:hover { transform: scale(1.02); }
+  .hero-card:hover { transform: scale(1.01); }
 
   .hero-card.hero-live {
-    background: linear-gradient(135deg, color-mix(in srgb, var(--green) 15%, transparent) 0%, color-mix(in srgb, var(--green) 8%, transparent) 50%, color-mix(in srgb, var(--green) 18%, transparent) 100%);
-    background-size: 200% 200%;
+    background: color-mix(in srgb, var(--green) 8%, var(--bg-card));
+    border-color: color-mix(in srgb, var(--green) 15%, var(--glass-border));
   }
 
   .hero-tag {
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 800;
-    letter-spacing: 0.1em;
-    color: var(--text-tertiary);
+    letter-spacing: 0.08em;
+    color: #fff;
+    background: var(--blue);
+    padding: 1px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+
+  .hero-live .hero-tag {
+    background: var(--green);
   }
 
   .hero-course {
-    font-size: 18px;
-    font-weight: 700;
-    line-height: 1.25;
-    letter-spacing: -0.01em;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .hero-meta {
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 500;
-    color: var(--text-secondary);
-    margin-top: auto;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   /* ===== Unified Tile Card ===== */
@@ -1723,6 +1749,30 @@
   }
 
   /* ===== Skeleton ===== */
+  .skel-text {
+    border-radius: 6px;
+    background: var(--bg-card);
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  .notif-skel {
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: var(--bg-card);
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  .kwic-link-skel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 8px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    min-height: 40px;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
   .card-skel {
     flex-shrink: 0;
     width: 220px;

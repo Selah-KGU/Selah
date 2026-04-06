@@ -55,7 +55,10 @@ pub fn run() {
                 mail: Mutex::new(mail_client),
             });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
+            let tray_status = std::sync::Arc::new(tray::TrayStatusState::new());
+            app.manage(tray_status.clone());
             tray::setup_tray(&app.handle())?;
+            tray::start_tray_cycle(&app.handle(), tray_status);
 
             // Hide main window on close instead of quitting (keep in tray)
             if let Some(win) = app.get_webview_window("main") {
@@ -156,6 +159,7 @@ pub fn run() {
             ai::toggle_debug_panel,
             ai::test_notification,
             tray::update_tray,
+            tray::set_tray_status_items,
             webview_toolbar::browser_go_back,
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,

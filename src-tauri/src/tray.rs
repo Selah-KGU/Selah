@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
@@ -236,5 +237,66 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
         });
     }
 
+    Ok(())
+}
+
+// ============ Tray Status Cycling ============
+
+/// Shared state for cycling tray title text
+pub struct TrayStatusState {
+    items: Mutex<Vec<String>>,
+    index: Mutex<usize>,
+    running: AtomicBool,
+}
+
+impl TrayStatusState {
+    pub fn new() -> Self {
+        Self {
+            items: Mutex::new(Vec::new()),
+            index: Mutex::new(0),
+            running: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Start the background cycling thread (call once at setup)
+pub fn start_tray_cycle(app: &AppHandle, state: Arc<TrayStatusState>) {
+    if state.running.swap(true, Ordering::SeqCst) {
+        return; // already running
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(8));
+            let items = state.items.lock().unwrap();
+            if items.is_empty() {
+                if let Some(tray) = app.tray_by_id("main-tray") {
+                    let _ = tray.set_title(None::<&str>);
+                }
+                continue;
+            }
+            let mut idx = state.index.lock().unwrap();
+            *idx = *idx % items.len();
+            let text = format!(" {}", items[*idx]);
+            *idx = (*idx + 1) % items.len();
+            drop(items);
+            drop(idx);
+            if let Some(tray) = app.tray_by_id("main-tray") {
+                let _ = tray.set_title(Some(&text));
+            }
+        }
+    });
+}
+
+/// Update the cycling status items from the frontend
+#[tauri::command]
+pub fn set_tray_status_items(
+    state: tauri::State<'_, Arc<TrayStatusState>>,
+    items: Vec<String>,
+) -> Result<(), String> {
+    let mut current = state.items.lock().map_err(|e| e.to_string())?;
+    *current = items;
+    let mut idx = state.index.lock().map_err(|e| e.to_string())?;
+    *idx = 0;
     Ok(())
 }

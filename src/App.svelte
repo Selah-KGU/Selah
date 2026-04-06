@@ -5,6 +5,7 @@
   import DebugPanel from "./lib/DebugPanel.svelte";
   import { authState, reloginInProgress, debugVisible } from "./lib/stores";
   import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling } from "./lib/api";
+  import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
   import { listen } from "@tauri-apps/api/event";
   import { get } from "svelte/store";
   import { onMount, onDestroy } from "svelte";
@@ -23,7 +24,10 @@
     try {
       // Restore all service sessions (KGC + Luna + future)
       const session = await restoreAllSessions();
-      if (session) startBackgroundPolling();
+      if (session) {
+        startBackgroundPolling();
+        startTrayStatus();
+      }
     } catch (e) {
       console.warn("Session restore failed:", e);
     } finally {
@@ -43,6 +47,7 @@
 
   onDestroy(() => {
     unlistenDebugToggle?.();
+    stopTrayStatus();
     stopBackgroundPolling();
     if (intervalId) clearInterval(intervalId);
     document.removeEventListener("visibilitychange", handleVisibility);
