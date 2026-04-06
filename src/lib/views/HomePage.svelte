@@ -2,8 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate } from "../stores";
   import type { TimetableData, TimetableEntry, NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
-  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, getAiConfig, aiChat, fetchWeather } from "../api";
-  import type { KwicPortalHome, KwicPortalSection, KwicSubportalData, WeatherData } from "../api";
+  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, aiChat, fetchWeather } from "../api";
+  import type { KwicPortalHome, KwicPortalSection, KwicPortalNotification, KwicNotificationDetail, KwicSubportalData, WeatherData } from "../api";
   import type { LunaTodoItem, LunaNotification, LunaCourse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS } from "../types";
   import { invoke } from "@tauri-apps/api/core";
@@ -16,6 +16,7 @@
     category: string;
     date: string;
     url?: string;
+    body?: string;
     // KWIC detail params
     kwicId?: string;
     informationType?: string;
@@ -523,15 +524,18 @@
     aiNotifError = "";
     try {
       // Collect all notifications with rich context
-      const allNotifs: { source: string; title: string; category: string; date: string; extra: string }[] = [];
+      const stripHtml = (html: string) => html.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+      const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max) + "…" : s;
+
+      const allNotifs: { source: string; title: string; category: string; date: string; extra: string; body: string }[] = [];
       for (const n of kgcNotifs) {
-        allNotifs.push({ source: "KGC", title: n.title, category: n.category, date: n.date, extra: "" });
+        allNotifs.push({ source: "KGC", title: n.title, category: n.category, date: n.date, extra: "", body: "" });
       }
       for (const n of lunaNotifs) {
         const parts: string[] = [];
         if (n.course_info) parts.push(`科目: ${n.course_info}`);
         if (n.module) parts.push(`種別: ${n.module}`);
-        allNotifs.push({ source: "Luna", title: n.content, category: n.course_info || "", date: n.date, extra: parts.join(", ") });
+        allNotifs.push({ source: "Luna", title: n.content, category: n.course_info || "", date: n.date, extra: parts.join(", "), body: "" });
       }
       if (kwicHome) {
         for (const sec of kwicHome.sections) {
@@ -540,9 +544,58 @@
             const flags: string[] = [];
             if (item.important) flags.push("★重要");
             if (item.category) flags.push(`分類: ${item.category}`);
-            allNotifs.push({ source: "KWIC", title: item.title, category: sec.title, date: item.date, extra: flags.join(", ") });
+            allNotifs.push({ source: "KWIC", title: item.title, category: sec.title, date: item.date, extra: flags.join(", "), body: "" });
           }
         }
+      }
+
+      // Fetch detail content for KWIC and Luna notifications (up to 10 each)
+      const kwicItems: { idx: number; item: { id: string; information_type: string; person_category_cd: string; category_cd: string } }[] = [];
+      const lunaItems: { idx: number; url: string }[] = [];
+      let idx = kgcNotifs.length;
+      for (const n of lunaNotifs) {
+        if (n.url && lunaItems.length < 10) lunaItems.push({ idx, url: n.url });
+        idx++;
+      }
+      if (kwicHome) {
+        for (const sec of kwicHome.sections) {
+          if (sec.title === "メインリンク" || sec.title === "注目コンテンツ") continue;
+          for (const item of sec.items) {
+            if (item.id && kwicItems.length < 10) {
+              kwicItems.push({ idx, item: { id: item.id, information_type: item.information_type, person_category_cd: item.person_category_cd, category_cd: item.category_cd } });
+            }
+            idx++;
+          }
+        }
+      }
+
+      // Parallel fetch of notification body content
+      const detailPromises: Promise<void>[] = [];
+      for (const { idx: i, item } of kwicItems) {
+        detailPromises.push(
+          kwicFetchDetail(item as KwicPortalNotification)
+            .then(d => {
+              const body = truncate(stripHtml(d.body_html), 300);
+              if (body) allNotifs[i].body = body;
+            })
+            .catch(e => console.warn(`[AI] KWIC detail fetch failed for idx=${i}:`, e))
+        );
+      }
+      for (const { idx: i, url } of lunaItems) {
+        detailPromises.push(
+          lunaInvoke<{ title: string; course_name: string; sections: { heading: string; html: string }[]; attachments: { name: string; url: string }[]; meta: Record<string, string> }>("luna_fetch_detail", { path: url })
+            .then(d => {
+              const text = d.sections.map(s => (s.heading ? s.heading + ": " : "") + stripHtml(s.html)).join(" ");
+              const body = truncate(text, 300);
+              if (body) allNotifs[i].body = body;
+            })
+            .catch(e => console.warn(`[AI] Luna detail fetch failed for idx=${i}:`, e))
+        );
+      }
+      if (detailPromises.length > 0) {
+        await Promise.allSettled(detailPromises);
+        const fetched = allNotifs.filter(n => n.body).length;
+        console.log(`[AI] Detail content fetched for ${fetched}/${kwicItems.length + lunaItems.length} notifications`);
       }
 
       if (allNotifs.length === 0) {
@@ -577,11 +630,12 @@
         .map((n, i) => {
           let line = `${i + 1}. [${n.source}] ${n.date} | ${n.category} | ${n.title}`;
           if (n.extra) line += ` (${n.extra})`;
+          if (n.body) line += `\n   内容: ${n.body}`;
           return line;
         })
         .join("\n");
 
-      // Build student context
+      // Build student context with campus mapping
       const studentInfo = timetableData?.student;
       let studentCtx = `学生ID: ${$authState.studentId}`;
       if (studentInfo) {
@@ -590,6 +644,13 @@
         if (studentInfo.department) studentCtx += `\n学科: ${studentInfo.department}`;
         if (studentInfo.major) studentCtx += `\n専攻: ${studentInfo.major}`;
         if (studentInfo.student_type) studentCtx += `\n学生種別: ${studentInfo.student_type}`;
+        // Campus mapping based on faculty
+        const faculty = studentInfo.faculty;
+        const kscFaculties = ["総合政策学部", "理学部", "工学部", "生命環境学部", "建築学部"];
+        const campus = kscFaculties.some(f => faculty.includes(f))
+          ? "神戸三田キャンパス（KSC）"
+          : "西宮上ケ原キャンパス（NUC）";
+        studentCtx += `\n所属キャンパス: ${campus}`;
       }
 
       // Build timetable context
@@ -620,35 +681,72 @@
       }
 
       const today = new Date();
-      const dateStr = `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}`;
+      const dayNames = ["日", "月", "火", "水", "木", "金", "土"];
+      const dateStr = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日（${dayNames[today.getDay()]}）`;
+      const timeStr = `${today.getHours()}:${String(today.getMinutes()).padStart(2, "0")}`;
+      const nowStr = `${dateStr} ${timeStr}`;
 
-      const systemPrompt = `あなたは関西学院大学の学生向け通知アシスタントです。通知の内容・分類・科目との関連性を分析し、この学生に本当に必要な情報を伝えてください。
+      const systemPrompt = `あなたは関西学院大学の学生向けパーソナル通知アシスタントです。この学生の学部・キャンパス・履修科目・課題状況を踏まえ、今日時点で本当に行動が必要な情報だけを伝えてください。
 
-出力は必ず以下のJSON形式のみで返してください（説明文やマークダウンは不要）：
+★★★ 現在の日時: ${nowStr} ★★★
+この日時が絶対的な基準。この日時より前に実施されたイベント・説明会・オリエンテーション等は「終了済み」。
+
+# キャンパス情報
+- 西宮上ケ原（NUC）：神学部、文学部、社会学部、法学部、経済学部、商学部、人間福祉学部、国際学部、教育学部
+- 神戸三田（KSC）：総合政策学部、理学部、工学部、生命環境学部、建築学部
+- 西宮聖和：教育学部（一部）
+NUCとKSCは約40km離れており通学圏が完全に異なる。
+
+# 出力形式（厳守：JSON以外の出力禁止）
 {
-  "summary": "80〜150字の分析。通知群から読み取れる全体像、学生に影響のある変更や締切の詳細、注意すべきポイントを丁寧に説明する",
-  "important": [
-    {"title": "通知タイトル（20字以内に短縮）", "reason": "影響・理由（15字以内）", "index": 1}
+  "_check": [
+    "通知N: (タイトル抜粋) → 学生キャンパスでの日程: YYYY/MM/DD → 現在より前/後 → 採用/除外",
+    ...
   ],
-  "suggestions": ["15〜25字の行動指示。科目名や場所など固有名詞を含めて簡潔に"]
+  "summary": "80〜150字",
+  "important": [{"title": "20字以内", "reason": "15字以内", "index": N}],
+  "suggestions": ["10〜20字の行動提案"]
 }
 
-ルール：
-- summaryは最低80字。以下を含めて書く：
-  ・重要な通知の具体的な内容（「〇〇の教室がA号館からB号館に変更」など、タイトルから推測して踏み込んだ説明）
-  ・学生の履修科目と関連する通知があればその影響
-  ・課題の締切状況があれば残り日数つきで言及
-  ・全体として今週注意すべきことのまとめ
-- importantは最大5件（indexは通知一覧の番号）。★重要マーク付き・呼出し系は必ず含める
-- suggestionsは最大3件、各15〜25字。具体的かつ簡潔に：
-  ○「〇〇学レポート、4/10〆切まであと4日」
-  ○「△△の教室変更をメモしておく」
-  ○「学生課窓口に平日中に訪問する」
-  ×「確認しましょう」「注意してください」（禁止）
-- 学生が履修中の科目に関する通知を最優先
-- 今日: ${dateStr}${aiReplyLanguage ? `\n- すべての出力テキスト（summary, title, reason, suggestions）は必ず${aiReplyLanguage}で書くこと` : ""}`;
+★ _checkフィールドは必須。importantの候補となる全通知について、以下を1行ずつ書くこと：
+  1. 通知の番号とタイトル抜粋
+  2. この学生のキャンパスでの実施日（本文から特定。日程が書かれていない場合は「日程なし」）
+  3. 現在（${nowStr}）と比較して「前（終了）」か「後（有効）」か
+  4. 結論：「採用」か「除外」か
+→ _checkで「除外」と判定した通知は、importantとsuggestionsに絶対に含めないこと。
 
-      const userMsg = `${studentCtx}${timetableCtx}${todoCtx}\n\n通知一覧（${allNotifs.length}件）:\n${notifText}`;
+# 関連性の優先度
+1. 履修中の科目に直接関係（教室変更・休講・課題・試験）
+2. 学部・学科に名指しで関係（学部事務・履修登録）
+3. 所属キャンパスの施設・窓口・イベント（時間的に有効なもののみ）
+4. 全学共通の重要事項（学費・奨学金・健康診断等）
+5. 他キャンパス・他学部限定 → summaryで軽く触れる程度。importantには入れない
+
+# 時間判定の詳細ルール
+- 本文に複数キャンパスの日程がある → 学生の所属キャンパスの日程のみ使う
+  例：国際学部（NUC）の学生。NUC開催4/4、KSC開催4/8 → 4/4で判定。現在が4/6なら「終了」
+- 掲載期間がまだ有効でも、学生が参加すべき日程が過ぎていれば「終了」
+- 締切系（課題提出・申請等）は残り日数を計算
+
+# summary
+- 80〜150字。今日以降に行動が必要な事項のみ書く
+- 終了済みイベントには一切言及しない
+- 本文付き通知はその内容を正確に反映
+
+# important
+- 最大5件。_checkで「採用」したものだけ
+- ★重要マーク付きでも、時間切れなら含めない
+
+# suggestions
+- 最大3件、各10〜20字
+- 「通知の要約」ではなく、通知＋学生状況を掛け合わせた一歩踏み込んだ提案
+- カジュアルな口調（丁寧語・命令形は禁止）
+- 良い例：「レポートは先に構成書いとくといいよ」「教室変わったから場所確認しとこ」
+- 悪い例（禁止）：「〇〇のクイズ、あと3日」（事実の繰り返し）「〇〇に行こう」（根拠なし）
+- 終了済みイベントに言及しない${aiReplyLanguage ? `\n\n# 言語指定\nすべての出力テキスト（summary, title, reason, suggestionsの中身）は必ず${aiReplyLanguage}で書くこと。_checkは日本語のままでよい` : ""}`;
+
+      const userMsg = `現在日時: ${nowStr}\n${studentCtx}${timetableCtx}${todoCtx}\n\n通知一覧（${allNotifs.length}件）:\n${notifText}`;
+      console.log("[AI] User message length:", userMsg.length, "Body-enriched notifs:", allNotifs.filter(n => n.body).length);
 
       const messages: AiChatMessage[] = [
         { role: "system", content: systemPrompt },
@@ -659,10 +757,13 @@
       // Extract JSON from response
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("AI応答の解析に失敗しました");
-      const parsed: AiNotifResult = JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(jsonMatch[0]);
+      // Strip _check (reasoning trace) before storing
+      delete parsed._check;
+      const result: AiNotifResult = parsed;
 
-      aiNotifResult = parsed;
-      localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result: parsed, sources: aiNotifSources }));
+      aiNotifResult = result;
+      localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result, sources: aiNotifSources }));
       startSuggestionCycle();
     } catch (e: any) {
       aiNotifError = e?.message || String(e);
