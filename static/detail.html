@@ -176,6 +176,26 @@
         renderData({ title: courseName, error: String(e) });
       }
     });
+
+    // Universal link interceptor: route all <a> clicks through smart browser
+    document.addEventListener('click', function(e) {
+      var a = e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      var href = a.getAttribute('href');
+      if (!href || href === '#') return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Resolve relative KGC URLs
+      if (href.startsWith('/')) {
+        href = 'https://kg-course.kwansei.ac.jp' + href;
+      }
+      // Only allow http/https
+      if (!href.startsWith('http://') && !href.startsWith('https://')) return;
+      var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+      if (invoke) {
+        invoke('kwic_open_link', { url: href, title: a.textContent.trim() || href });
+      }
+    }, true);
   </script>
 </body>
 </html>

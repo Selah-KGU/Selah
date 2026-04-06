@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate } from "../stores";
-  import type { TimetableData, TimetableEntry, NotificationsData, NotificationEntry } from "../stores";
-  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink } from "../api";
+  import type { TimetableData, TimetableEntry, NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
+  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, getAiConfig, aiChat } from "../api";
   import type { KwicPortalHome, KwicPortalSection, KwicSubportalData } from "../api";
   import { invoke } from "@tauri-apps/api/core";
 
@@ -28,11 +28,28 @@
   }
 
   interface UnifiedNotif {
-    source: "kgc" | "luna";
+    source: "kgc" | "luna" | "kwic";
     title: string;
     category: string;
     date: string;
     url?: string;
+    // KWIC detail params
+    kwicId?: string;
+    informationType?: string;
+    personCategoryCd?: string;
+    categoryCd?: string;
+  }
+
+  interface AiNotifResult {
+    summary: string;
+    important: { title: string; reason: string; index: number }[];
+    suggestions: string[];
+  }
+
+  interface AiNotifCache {
+    timestamp: number;
+    result: AiNotifResult;
+    sources: UnifiedNotif[];
   }
 
   interface LunaCourse {
@@ -74,6 +91,14 @@
   let subportalData = $state<KwicSubportalData | null>(null);
   let subportalLoading = $state(false);
   let subportalError = $state("");
+
+  // AI smart notification state
+  let aiEnabled = $state(false);
+  let aiNotifResult = $state<AiNotifResult | null>(null);
+  let aiNotifLoading = $state(false);
+  let aiNotifError = $state("");
+  let aiNotifSources = $state<UnifiedNotif[]>([]);
+  let aiReplyLanguage = $state("");
 
   async function openSubportal(item: { url: string; title: string }) {
     // Extract tagCd from URL like /portal/subportal?tagCd=1
@@ -269,7 +294,11 @@
       const notifSections = kwicHome.sections.filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ");
       for (const sec of notifSections) {
         for (const item of sec.items) {
-          addUniq({ source: "kgc", title: item.title, category: item.category || sec.title, date: item.date });
+          addUniq({
+            source: "kwic", title: item.title, category: item.category || sec.title, date: item.date,
+            kwicId: item.id, informationType: item.information_type,
+            personCategoryCd: item.person_category_cd, categoryCd: item.category_cd,
+          });
         }
       }
     }
@@ -364,6 +393,193 @@
       }
     } catch (err) { console.error("[HomePage] loadData error:", err); }
     loading = false;
+    // Check AI config after data is ready
+    checkAiConfig();
+  }
+
+  const AI_CACHE_KEY = "ai-notif-cache";
+  const AI_REFRESH_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+  async function checkAiConfig() {
+    try {
+      const cfg = await getAiConfig();
+      aiEnabled = !!(cfg.api_key && cfg.api_key.trim());
+      aiReplyLanguage = cfg.reply_language || "";
+      if (aiEnabled) await loadAiNotifs(false);
+    } catch { aiEnabled = false; }
+  }
+
+  async function loadAiNotifs(force: boolean) {
+    if (!force) {
+      try {
+        const raw = localStorage.getItem(AI_CACHE_KEY);
+        if (raw) {
+          const cache: AiNotifCache = JSON.parse(raw);
+          if (Date.now() - cache.timestamp < AI_REFRESH_MS) {
+            aiNotifResult = cache.result;
+            aiNotifSources = cache.sources || [];
+            return;
+          }
+        }
+      } catch { /* ignore bad cache */ }
+    }
+    await fetchAiNotifs();
+  }
+
+  async function fetchAiNotifs() {
+    aiNotifLoading = true;
+    aiNotifError = "";
+    try {
+      // Collect all notifications with rich context
+      const allNotifs: { source: string; title: string; category: string; date: string; extra: string }[] = [];
+      for (const n of kgcNotifs) {
+        allNotifs.push({ source: "KGC", title: n.title, category: n.category, date: n.date, extra: "" });
+      }
+      for (const n of lunaNotifs) {
+        const parts: string[] = [];
+        if (n.course_info) parts.push(`科目: ${n.course_info}`);
+        if (n.module) parts.push(`種別: ${n.module}`);
+        allNotifs.push({ source: "Luna", title: n.content, category: n.course_info || "", date: n.date, extra: parts.join(", ") });
+      }
+      if (kwicHome) {
+        for (const sec of kwicHome.sections) {
+          if (sec.title === "メインリンク" || sec.title === "注目コンテンツ") continue;
+          for (const item of sec.items) {
+            const flags: string[] = [];
+            if (item.important) flags.push("★重要");
+            if (item.category) flags.push(`分類: ${item.category}`);
+            allNotifs.push({ source: "KWIC", title: item.title, category: sec.title, date: item.date, extra: flags.join(", ") });
+          }
+        }
+      }
+
+      if (allNotifs.length === 0) {
+        aiNotifResult = { summary: "現在通知はありません。", important: [], suggestions: [] };
+        aiNotifSources = [];
+        return;
+      }
+
+      // Build unified notif lookup for clickable tags
+      const unifiedLookup: UnifiedNotif[] = [];
+      for (const n of kgcNotifs) {
+        unifiedLookup.push({ source: "kgc", title: n.title, category: n.category, date: n.date });
+      }
+      for (const n of lunaNotifs) {
+        unifiedLookup.push({ source: "luna", title: n.content, category: n.module || n.course_info, date: n.date, url: n.url });
+      }
+      if (kwicHome) {
+        for (const sec of kwicHome.sections) {
+          if (sec.title === "メインリンク" || sec.title === "注目コンテンツ") continue;
+          for (const item of sec.items) {
+            unifiedLookup.push({
+              source: "kwic", title: item.title, category: item.category || sec.title, date: item.date,
+              kwicId: item.id, informationType: item.information_type,
+              personCategoryCd: item.person_category_cd, categoryCd: item.category_cd,
+            });
+          }
+        }
+      }
+      aiNotifSources = unifiedLookup;
+
+      const notifText = allNotifs
+        .map((n, i) => {
+          let line = `${i + 1}. [${n.source}] ${n.date} | ${n.category} | ${n.title}`;
+          if (n.extra) line += ` (${n.extra})`;
+          return line;
+        })
+        .join("\n");
+
+      // Build student context
+      const studentInfo = timetableData?.student;
+      let studentCtx = `学生ID: ${$authState.studentId}`;
+      if (studentInfo) {
+        studentCtx += `\n氏名: ${studentInfo.name}`;
+        if (studentInfo.faculty) studentCtx += `\n学部: ${studentInfo.faculty}`;
+        if (studentInfo.department) studentCtx += `\n学科: ${studentInfo.department}`;
+        if (studentInfo.major) studentCtx += `\n専攻: ${studentInfo.major}`;
+        if (studentInfo.student_type) studentCtx += `\n学生種別: ${studentInfo.student_type}`;
+      }
+
+      // Build timetable context
+      let timetableCtx = "";
+      if (timetableData?.entries?.length) {
+        const courses = timetableData.entries
+          .filter(e => !e.is_cancelled)
+          .map(e => `${e.day}${e.period}限: ${e.course_name}${e.room ? ` (${e.room})` : ""}`)
+          .join("\n");
+        timetableCtx = `\n\n履修科目:\n${courses}`;
+      }
+      if (lunaTimetable?.courses?.length) {
+        const lunaCourses = lunaTimetable.courses
+          .map(c => `${DAY_LABELS[c.day]}${c.period}限: ${c.name} (${c.teacher})`)
+          .join("\n");
+        if (!timetableCtx) timetableCtx = `\n\n履修科目 (Luna):\n${lunaCourses}`;
+      }
+
+      // Build todo context
+      let todoCtx = "";
+      if (todoItems.length > 0) {
+        const todos = todoItems
+          .filter(t => !t.status.includes("提出済"))
+          .slice(0, 10)
+          .map(t => `${t.course_name} | ${t.content_type}: ${t.content_name} | 〆切: ${t.deadline} | ${t.status}`)
+          .join("\n");
+        if (todos) todoCtx = `\n\n未提出課題:\n${todos}`;
+      }
+
+      const today = new Date();
+      const dateStr = `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}`;
+
+      const systemPrompt = `あなたは関西学院大学の学生向け通知アシスタントです。通知の内容・分類・科目との関連性を分析し、この学生に本当に必要な情報を伝えてください。
+
+出力は必ず以下のJSON形式のみで返してください（説明文やマークダウンは不要）：
+{
+  "summary": "80〜150字の分析。通知群から読み取れる全体像、学生に影響のある変更や締切の詳細、注意すべきポイントを丁寧に説明する",
+  "important": [
+    {"title": "通知タイトル（20字以内に短縮）", "reason": "影響・理由（15字以内）", "index": 1}
+  ],
+  "suggestions": ["15〜25字の行動指示。科目名や場所など固有名詞を含めて簡潔に"]
+}
+
+ルール：
+- summaryは最低80字。以下を含めて書く：
+  ・重要な通知の具体的な内容（「〇〇の教室がA号館からB号館に変更」など、タイトルから推測して踏み込んだ説明）
+  ・学生の履修科目と関連する通知があればその影響
+  ・課題の締切状況があれば残り日数つきで言及
+  ・全体として今週注意すべきことのまとめ
+- importantは最大5件（indexは通知一覧の番号）。★重要マーク付き・呼出し系は必ず含める
+- suggestionsは最大3件、各15〜25字。具体的かつ簡潔に：
+  ○「〇〇学レポート、4/10〆切まであと4日」
+  ○「△△の教室変更をメモしておく」
+  ○「学生課窓口に平日中に訪問する」
+  ×「確認しましょう」「注意してください」（禁止）
+- 学生が履修中の科目に関する通知を最優先
+- 今日: ${dateStr}${aiReplyLanguage ? `\n- すべての出力テキスト（summary, title, reason, suggestions）は必ず${aiReplyLanguage}で書くこと` : ""}`;
+
+      const userMsg = `${studentCtx}${timetableCtx}${todoCtx}\n\n通知一覧（${allNotifs.length}件）:\n${notifText}`;
+
+      const messages: AiChatMessage[] = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMsg },
+      ];
+
+      const raw = await aiChat(messages);
+      // Extract JSON from response
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI応答の解析に失敗しました");
+      const parsed: AiNotifResult = JSON.parse(jsonMatch[0]);
+
+      aiNotifResult = parsed;
+      localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result: parsed, sources: aiNotifSources }));
+    } catch (e: any) {
+      aiNotifError = e?.message || String(e);
+    } finally {
+      aiNotifLoading = false;
+    }
+  }
+
+  async function refreshAiNotifs() {
+    await loadAiNotifs(true);
   }
 
   function daysUntil(deadline: string): number {
@@ -412,6 +628,14 @@
   function openNotif(n: UnifiedNotif) {
     if (n.source === "luna" && n.url) {
       openLunaDetail(n.url, n.title);
+    } else if (n.source === "kwic" && n.kwicId) {
+      kwicOpenDetail({
+        id: n.kwicId,
+        title: n.title,
+        information_type: n.informationType || "",
+        person_category_cd: n.personCategoryCd || "",
+        category_cd: n.categoryCd || "",
+      });
     } else {
       navigate("notifications");
     }
@@ -460,12 +684,78 @@
       <span>お知らせ</span>
       <span class="arrow">›</span>
     </button>
-    {#if recentNotifs.length > 0}
+    {#if aiEnabled}
+      <!-- AI Smart Notifications -->
+      {#if aiNotifLoading}
+        <div class="ai-loading-box">
+          <div class="ai-loading-header">
+            <span class="ai-badge">AI</span>
+            <span class="ai-loading-text">分析中</span>
+            <span class="ai-loading-dots"><span></span><span></span><span></span></span>
+          </div>
+          <div class="ai-loading-lines">
+            <div class="ai-skel-line" style="width: 85%"></div>
+            <div class="ai-skel-line" style="width: 60%"></div>
+          </div>
+          <div class="ai-skel-tags">
+            <div class="ai-skel-tag"></div>
+            <div class="ai-skel-tag" style="width: 90px"></div>
+            <div class="ai-skel-tag" style="width: 70px"></div>
+          </div>
+        </div>
+      {:else if aiNotifError}
+        <div class="ai-error">
+          <span>AI分析に失敗しました</span>
+          <button class="ai-retry-btn" onclick={refreshAiNotifs}>再試行</button>
+        </div>
+        <!-- Fallback to normal notifs -->
+        <div class="notif-cards">
+          {#each recentNotifs as n}
+            <button class="notif-card" onclick={() => openNotif(n)}>
+              <div class="notif-card-top">
+                <span class="notif-source" class:luna={n.source === 'luna'} class:kwic={n.source === 'kwic'}>{n.source === 'kgc' ? 'KGC' : n.source === 'luna' ? 'Luna' : 'KWIC'}</span>
+                <span class="notif-cat">{n.category}</span>
+              </div>
+              <span class="notif-title">{n.title}</span>
+            </button>
+          {/each}
+        </div>
+      {:else if aiNotifResult}
+        <div class="ai-notif-box">
+          <div class="ai-notif-meta">
+            <span class="ai-badge">AI</span>
+            {#if aiNotifResult.suggestions.length > 0}
+              <span class="ai-suggestions-row">
+                {#each aiNotifResult.suggestions as s, i}
+                  {#if i > 0}<span class="ai-sep">·</span>{/if}
+                  <span class="ai-suggestion">{s}</span>
+                {/each}
+              </span>
+            {/if}
+            <button class="ai-refresh-btn" onclick={refreshAiNotifs} title="更新">↻</button>
+          </div>
+          <p class="ai-summary">{aiNotifResult.summary}</p>
+          {#if aiNotifResult.important.length > 0}
+            <div class="ai-tags">
+              {#each aiNotifResult.important as item}
+                <button class="ai-tag" onclick={() => {
+                  const n = aiNotifSources[item.index - 1];
+                  if (n) openNotif(n); else navigate("notifications");
+                }}>
+                  <span class="ai-tag-title">{item.title}</span>
+                  <span class="ai-tag-reason">{item.reason}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    {:else if recentNotifs.length > 0}
       <div class="notif-cards">
         {#each recentNotifs as n}
           <button class="notif-card" onclick={() => openNotif(n)}>
             <div class="notif-card-top">
-              <span class="notif-source" class:luna={n.source === 'luna'}>{n.source === 'kgc' ? 'KGC' : 'Luna'}</span>
+              <span class="notif-source" class:luna={n.source === 'luna'} class:kwic={n.source === 'kwic'}>{n.source === 'kgc' ? 'KGC' : n.source === 'luna' ? 'Luna' : 'KWIC'}</span>
               <span class="notif-cat">{n.category}</span>
             </div>
             <span class="notif-title">{n.title}</span>
@@ -693,6 +983,9 @@
   .notif-source.luna {
     background: var(--orange);
   }
+  .notif-source.kwic {
+    background: var(--green, #38a169);
+  }
 
   .notif-cat {
     font-size: 11px;
@@ -712,6 +1005,232 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* ===== AI Notifications ===== */
+
+  .ai-loading-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    border: 0.5px solid rgba(175, 82, 222, 0.15);
+    background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg-card) 96%, rgba(175, 82, 222, 0.08)) 100%);
+  }
+
+  .ai-loading-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ai-loading-text {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .ai-loading-dots {
+    display: inline-flex;
+    gap: 3px;
+    align-items: center;
+  }
+
+  .ai-loading-dots span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: rgba(175, 82, 222, 0.6);
+    animation: ai-dot-bounce 1.2s ease-in-out infinite;
+  }
+
+  .ai-loading-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .ai-loading-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+  @keyframes ai-dot-bounce {
+    0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); }
+  }
+
+  .ai-loading-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ai-skel-line {
+    height: 10px;
+    border-radius: 5px;
+    background: linear-gradient(90deg, var(--glass-border) 25%, color-mix(in srgb, var(--glass-border) 60%, transparent) 50%, var(--glass-border) 75%);
+    background-size: 200% 100%;
+    animation: ai-shimmer 1.5s ease-in-out infinite;
+  }
+
+  .ai-skel-tags {
+    display: flex;
+    gap: 6px;
+  }
+
+  .ai-skel-tag {
+    width: 80px;
+    height: 28px;
+    border-radius: 10px;
+    background: linear-gradient(90deg, var(--glass-border) 25%, color-mix(in srgb, var(--glass-border) 60%, transparent) 50%, var(--glass-border) 75%);
+    background-size: 200% 100%;
+    animation: ai-shimmer 1.5s ease-in-out infinite;
+  }
+
+  @keyframes ai-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  .ai-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--red, #e53e3e);
+    margin-bottom: 8px;
+  }
+
+  .ai-retry-btn {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--glass-border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .ai-notif-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    border: 0.5px solid rgba(175, 82, 222, 0.15);
+    background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg-card) 96%, rgba(175, 82, 222, 0.08)) 100%);
+  }
+
+  .ai-notif-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .ai-badge {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.85), rgba(0, 122, 255, 0.85));
+    color: rgb(255, 255, 255);
+    line-height: 1.5;
+    letter-spacing: 0px;
+  }
+
+  .ai-suggestions-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .ai-sep {
+    color: var(--text-tertiary);
+    font-size: 10px;
+  }
+
+  .ai-suggestion {
+    font-size: 11px;
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.85), rgba(0, 122, 255, 0.85));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ai-summary {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    line-height: 1.5;
+  }
+
+  .ai-refresh-btn {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: none;
+    background: none;
+    color: var(--text-tertiary);
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, background 0.12s;
+  }
+
+  .ai-refresh-btn:hover {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+
+  .ai-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  .ai-tag {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 5px 12px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.08), rgba(0, 122, 255, 0.08));
+    border: 0.5px solid rgba(175, 82, 222, 0.18);
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    transition: all 0.15s;
+  }
+
+  .ai-tag:hover {
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.18), rgba(0, 122, 255, 0.18));
+    border-color: rgba(175, 82, 222, 0.35);
+    transform: translateY(-1px);
+  }
+
+  .ai-tag-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ai-tag-reason {
+    font-size: 10px;
+    color: var(--text-secondary);
+    white-space: nowrap;
   }
 
   /* ===== Section ===== */
@@ -1088,7 +1607,7 @@
   }
 
   .kwic-link-title {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
     line-height: 1.3;

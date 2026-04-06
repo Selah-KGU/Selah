@@ -244,6 +244,28 @@
         document.getElementById('content').innerHTML = '<div class="error">' + escapeHtml(String(e)) + '</div>';
       }
     });
+
+    // Universal link interceptor: route all <a> clicks through smart browser
+    document.addEventListener('click', function(e) {
+      const a = e.target.closest('a[href]');
+      if (!a) return;
+      let href = a.getAttribute('href');
+      if (!href || href === '#') return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Resolve relative KWIC portal URLs
+      if (href.startsWith('/')) {
+        href = 'https://kwic.kwansei.ac.jp' + href;
+      }
+      // Only allow http/https
+      if (!href.startsWith('http://') && !href.startsWith('https://')) return;
+      const invoke = window.__TAURI__?.core?.invoke;
+      if (invoke) {
+        invoke('kwic_open_link', { url: href, title: a.textContent?.trim() || href }).catch(function(err) {
+          console.error('Link open failed:', err);
+        });
+      }
+    }, true);
   </script>
 </body>
 </html>
