@@ -3,6 +3,7 @@ use reqwest::Client;
 use std::sync::Arc;
 
 use crate::auth::AuthSession;
+use crate::config;
 
 const SESSION_FILE: &str = "session.json";
 const COOKIES_FILE: &str = "cookies.json";
@@ -79,6 +80,33 @@ pub(crate) fn data_dir() -> std::path::PathBuf {
     dir
 }
 
+/// Save a cookie jar to a JSON file in the data directory.
+pub(crate) fn save_cookie_jar(store: &reqwest_cookie_store::CookieStoreMutex, filename: &str) {
+    let dir = data_dir();
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    let mut buf = Vec::new();
+    if cookie_store::serde::json::save(&store, &mut buf).is_ok() {
+        if let Err(e) = std::fs::write(dir.join(filename), &buf) {
+            log::warn!("Failed to save cookies ({}): {}", filename, e);
+        }
+    }
+}
+
+/// Load a cookie jar from a JSON file in the data directory.
+/// Returns None if the file doesn't exist or can't be parsed.
+pub(crate) fn load_cookie_jar(filename: &str) -> Option<cookie_store::CookieStore> {
+    let path = data_dir().join(filename);
+    let file = std::fs::File::open(&path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    match cookie_store::serde::json::load(reader) {
+        Ok(store) => Some(store),
+        Err(e) => {
+            log::warn!("Failed to load cookies ({}): {}", filename, e);
+            None
+        }
+    }
+}
+
 /// Main HTTP client for KG-Course (kg-course.kwansei.ac.jp)
 pub struct KgcClient {
     pub http: Client,
@@ -126,27 +154,15 @@ impl KgcClient {
         }
 
         // Save cookies
-        let store = self.cookie_store.lock().unwrap_or_else(|e| e.into_inner());
-        let mut buf = Vec::new();
-        if cookie_store::serde::json::save(&store, &mut buf).is_ok() {
-            if let Err(e) = std::fs::write(dir.join(COOKIES_FILE), &buf) {
-                log::warn!("Failed to save cookies: {}", e);
-            } else {
-                log::info!("Session and cookies saved to {}", dir.display());
-            }
-        }
+        save_cookie_jar(&self.cookie_store, COOKIES_FILE);
     }
 
     /// Try to restore session and cookies from disk.
     /// Returns true if session was restored (still needs validation).
     pub fn try_restore_session(&mut self) -> bool {
         let dir = data_dir();
-
-        // Load AuthSession
         let session_path = dir.join(SESSION_FILE);
-        let cookies_path = dir.join(COOKIES_FILE);
-
-        if !session_path.exists() || !cookies_path.exists() {
+        if !session_path.exists() {
             return false;
         }
 
@@ -160,27 +176,18 @@ impl KgcClient {
         };
 
         // Load cookies
-        match std::fs::File::open(&cookies_path) {
-            Ok(file) => {
-                let reader = std::io::BufReader::new(file);
-                match cookie_store::serde::json::load(reader) {
-                    Ok(store) => {
-                        let cookie_store = Arc::new(
-                            reqwest_cookie_store::CookieStoreMutex::new(store),
-                        );
-                        self.http = build_http_client(cookie_store.clone());
-                        self.cookie_store = cookie_store;
-                        self.session = Some(session);
-                        log::info!("Session restored from disk");
-                        true
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to load cookies: {}", e);
-                        false
-                    }
-                }
+        match load_cookie_jar(COOKIES_FILE) {
+            Some(store) => {
+                let cookie_store = Arc::new(
+                    reqwest_cookie_store::CookieStoreMutex::new(store),
+                );
+                self.http = build_http_client(cookie_store.clone());
+                self.cookie_store = cookie_store;
+                self.session = Some(session);
+                log::info!("Session restored from disk");
+                true
             }
-            Err(_) => false,
+            None => false,
         }
     }
 
@@ -193,7 +200,7 @@ impl KgcClient {
         use std::io::Write;
         #[cfg(debug_assertions)]
         let mut dbg = std::fs::OpenOptions::new().create(true).append(true)
-            .open("/tmp/kgc-fetch.log").ok();
+            .open(std::env::temp_dir().join("kgc-fetch.log")).ok();
         #[cfg(not(debug_assertions))]
         let mut dbg: Option<std::fs::File> = None;
         macro_rules! dbg_log {
@@ -202,7 +209,7 @@ impl KgcClient {
             }
         }
 
-        let url = format!("https://kg-course.kwansei.ac.jp{}", path);
+        let url = format!("{}{}", config::KG_COURSE_BASE, path);
         let mut current_url = url;
         dbg_log!("[FETCH] start: {}", current_url);
         
@@ -217,7 +224,7 @@ impl KgcClient {
                 if let Some(loc) = resp.headers().get("location") {
                     let loc_str = loc.to_str().unwrap_or_default();
                     if loc_str.starts_with('/') {
-                        current_url = format!("https://kg-course.kwansei.ac.jp{}", loc_str);
+                        current_url = format!("{}{}", config::KG_COURSE_BASE, loc_str);
                     } else {
                         current_url = loc_str.to_string();
                     }
@@ -254,10 +261,10 @@ impl KgcClient {
             return Err("認証されていません".into());
         }
 
-        let url = format!("https://kg-course.kwansei.ac.jp{}", path);
+        let url = format!("{}{}", config::KG_COURSE_BASE, path);
         let resp = self.http.post(&url)
-            .header("Referer", "https://kg-course.kwansei.ac.jp/uniasv2/ARF010.do")
-            .header("Origin", "https://kg-course.kwansei.ac.jp")
+            .header("Referer", &format!("{}/uniasv2/ARF010.do", config::KG_COURSE_BASE))
+            .header("Origin", config::KG_COURSE_BASE)
             .form(params)
             .send().await
             .map_err(|e| format!("リクエスト失敗: {}", e))?;
@@ -271,7 +278,7 @@ impl KgcClient {
             if let Some(loc) = resp.headers().get("location") {
                 let loc_str = loc.to_str().unwrap_or_default();
                 current_url = if loc_str.starts_with('/') {
-                    format!("https://kg-course.kwansei.ac.jp{}", loc_str)
+                    format!("{}{}", config::KG_COURSE_BASE, loc_str)
                 } else {
                     loc_str.to_string()
                 };
@@ -292,7 +299,7 @@ impl KgcClient {
                     if let Some(loc) = resp2.headers().get("location") {
                         let loc_str = loc.to_str().unwrap_or_default();
                         current_url = if loc_str.starts_with('/') {
-                            format!("https://kg-course.kwansei.ac.jp{}", loc_str)
+                            format!("{}{}", config::KG_COURSE_BASE, loc_str)
                         } else {
                             loc_str.to_string()
                         };

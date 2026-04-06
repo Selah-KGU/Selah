@@ -85,14 +85,25 @@
     favorites: SyllabusEntry[];
   }
 
+  // ── Pre-computed cell map (avoids 42 array scans per render) ──
+  let cellMap = $derived.by(() => {
+    const map = new Map<string, UnifiedCellData>();
+    for (const day of days) {
+      const dayIdx = days.indexOf(day) + 1;
+      for (const period of periods) {
+        map.set(`${day}-${period}`, {
+          luna: lunaTimetable?.courses.find(c => c.period === period && c.day === dayIdx),
+          kgc: data?.entries.find(e => e.day === day && e.period === period),
+          exam: examData?.entries.find(e => e.day === day && e.period === period),
+          favorites: favoritesMap.get(`${day}-${period}`) ?? [],
+        });
+      }
+    }
+    return map;
+  });
+
   function getUnifiedCell(day: string, period: number): UnifiedCellData {
-    const dayIdx = days.indexOf(day) + 1;
-    return {
-      luna: lunaTimetable?.courses.find(c => c.period === period && c.day === dayIdx),
-      kgc: data?.entries.find(e => e.day === day && e.period === period),
-      exam: examData?.entries.find(e => e.day === day && e.period === period),
-      favorites: favoritesMap.get(`${day}-${period}`) ?? [],
-    };
+    return cellMap.get(`${day}-${period}`) ?? { favorites: [] };
   }
 
   function cellIsEmpty(cell: UnifiedCellData): boolean {
@@ -798,7 +809,7 @@
                   <div class="conflict-banner">重複 {cell.favorites.length}件</div>
                 {/if}
                 {#each cell.favorites as fav}
-                  <button class="item fav-item" onclick={() => openSyllabusDetail(fav.class_code, fav.course_title)}>
+                  <button class="item fav-item" onclick={() => openSyllabusDetail(fav.class_code, fav.course_title).catch(console.error)}>
                     <div class="item-top">
                       <span class="course-name fav-title">{short(fav.course_title)}</span>
                       <span class="dot" style="background:#af52de;flex-shrink:0;margin-top:2px"></span>
@@ -854,7 +865,7 @@
 
                 {#if cell.favorites.length > 0}
                   {#each cell.favorites as fav}
-                    <button class="item fav-item fav-sub" onclick={(e) => { e.stopPropagation(); openSyllabusDetail(fav.class_code, fav.course_title); }}>
+                    <button class="item fav-item fav-sub" onclick={(e) => { e.stopPropagation(); openSyllabusDetail(fav.class_code, fav.course_title).catch(console.error); }}>
                       <div class="item-top">
                         <span class="course-name fav-title">{short(fav.course_title)}</span>
                         <span class="dot" style="background:#af52de;flex-shrink:0;margin-top:2px"></span>

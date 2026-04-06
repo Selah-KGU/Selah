@@ -304,6 +304,10 @@ function initTheme(): "system" | "light" | "dark" {
     const saved = localStorage.getItem("selah-theme");
     if (saved === "light" || saved === "dark") {
       document.documentElement.setAttribute("data-theme", saved);
+      // Sync initial theme to Rust so child webviews can read it
+      import("@tauri-apps/api/core").then(({ invoke }) => {
+        invoke("set_app_theme", { theme: saved });
+      }).catch(() => {});
       return saved;
     }
   }

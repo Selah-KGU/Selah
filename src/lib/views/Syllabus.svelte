@@ -332,7 +332,7 @@
 
   function handleRowClick(entry: SyllabusEntry & { _original?: SyllabusEntry }) {
     const original = entry._original ?? entry;
-    openSyllabusDetail(original.class_code, original.course_title);
+    openSyllabusDetail(original.class_code, original.course_title).catch(e => console.error("Failed to open syllabus:", e));
   }
 
   // Strip bilingual suffixes for compact display
@@ -475,10 +475,12 @@
 
   {#if searched && !loading}
     {#if result && result.entries.length > 0}
-      <div class="segmented-control">
+      <div class="segmented-control" role="tablist">
         <button
           class="segment"
           class:active={activeResultTab === "results"}
+          role="tab"
+          aria-selected={activeResultTab === "results"}
           onclick={() => activeResultTab = "results"}
         >
           検索結果 ({result.total_count || result.entries.length})
@@ -486,6 +488,8 @@
         <button
           class="segment"
           class:active={activeResultTab === "favorites"}
+          role="tab"
+          aria-selected={activeResultTab === "favorites"}
           onclick={() => { activeResultTab = "favorites"; if (!favorites && !favLoading) loadFavorites(); }}
         >
           お気に入り{favorites ? ` (${favorites.entries.length})` : ""}

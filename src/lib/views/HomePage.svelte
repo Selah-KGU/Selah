@@ -48,7 +48,14 @@
   let lunaNotifs = $state<LunaNotification[]>([]);
   let kwicHome = $state<KwicPortalHome | null>(null);
   let now = $state(new Date());
+  // Day-level date: only reassigned when the calendar date or greeting-slot changes
+  let todayDate = $state(new Date());
   let loading = $state(true);
+
+  function greetingSlot(d: Date) {
+    const h = d.getHours();
+    return h < 5 ? 0 : h < 11 ? 1 : h < 17 ? 2 : 3;
+  }
 
   // KWIC subportal state
   let subportalData = $state<KwicSubportalData | null>(null);
@@ -68,7 +75,7 @@
     const match = item.url.match(/tagCd=(\d+)/);
     if (!match) {
       // Fallback: open in browser for non-subportal links
-      await invoke("open_external_url", { url: item.url });
+      await invoke("open_external_url", { url: item.url }).catch(e => console.error("open_external_url failed:", e));
       return;
     }
     subportalLoading = true;
@@ -180,17 +187,17 @@
 
   // Pick a greeting that stays stable per calendar day
   let greeting = $derived.by(() => {
-    const h = now.getHours();
+    const h = todayDate.getHours();
     const slot = h < 5 ? "night" : h < 11 ? "morning" : h < 17 ? "day" : "evening";
     const pool = GREETINGS[slot];
-    const daySeed = now.getFullYear() * 400 + now.getMonth() * 32 + now.getDate();
+    const daySeed = todayDate.getFullYear() * 400 + todayDate.getMonth() * 32 + todayDate.getDate();
     return pool[daySeed % pool.length];
   });
 
   let dateLabel = $derived.by(() => {
-    const m = now.getMonth() + 1;
-    const d = now.getDate();
-    const dayStr = DAY_LABELS[now.getDay()];
+    const m = todayDate.getMonth() + 1;
+    const d = todayDate.getDate();
+    const dayStr = DAY_LABELS[todayDate.getDay()];
     return `${m}月${d}日（${dayStr}）`;
   });
 
@@ -233,7 +240,7 @@
     if (!timetableData?.entries.length) {
       return [];
     }
-    const todayDow = now.getDay(); // 0=Sun..6=Sat
+    const todayDow = todayDate.getDay(); // 0=Sun..6=Sat
     const nowMin = now.getHours() * 60 + now.getMinutes();
 
     // Build map: day name → non-cancelled entries
@@ -275,14 +282,14 @@
   });
 
   let urgentTodos = $derived.by(() => {
-    const limit = new Date(now);
+    const limit = new Date(todayDate);
     limit.setDate(limit.getDate() + 5);
     return todoItems
       .filter(t => {
         if (t.status.includes("提出済")) return false;
         if (!t.deadline) return false;
         const d = new Date(t.deadline.replace(/\//g, "-"));
-        return d >= now && d <= limit;
+        return d >= todayDate && d <= limit;
       })
       .sort((a, b) => {
         const da = new Date(a.deadline.replace(/\//g, "-")).getTime();
@@ -371,7 +378,14 @@
   let hasLoadedOnce = false;
 
   onMount(async () => {
-    clockInterval = setInterval(() => { now = new Date(); }, 30_000);
+    clockInterval = setInterval(() => {
+      const prev = now;
+      now = new Date();
+      // Only reassign todayDate when calendar date or greeting slot changes
+      if (now.getDate() !== prev.getDate() || greetingSlot(now) !== greetingSlot(prev)) {
+        todayDate = now;
+      }
+    }, 30_000);
     cachedFetch<WeatherData>("weather", fetchWeather).then(applyWeather).catch(() => {});
     await loadData();
     hasLoadedOnce = true;
@@ -388,6 +402,8 @@
     unsubKwicHome();
     unsubWeather();
     unsubAuth();
+    unsubLunaAuth();
+    unsubKwicAuth();
   });
 
   const unsubTimetable = onCacheUpdate<TimetableData>("timetable", (fresh) => { timetableData = fresh; });
@@ -402,6 +418,30 @@
   const unsubAuth = authState.subscribe((state) => {
     if (hasLoadedOnce && state.authenticated && (!timetableData?.entries?.length || (!kgcNotifs.length && !lunaNotifs.length))) {
       loadData();
+    }
+  });
+
+  // Re-fetch Luna data when Luna authenticates after initial load
+  const unsubLunaAuth = lunaAuthState.subscribe((state) => {
+    if (hasLoadedOnce && state.authenticated && !todoItems.length && !lunaNotifs.length) {
+      Promise.allSettled([
+        cachedFetch<LunaTodoItem[]>("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo")),
+        cachedFetch<LunaNotification[]>("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates")),
+        cachedFetch<LunaTimetable>("luna_timetable", () => lunaInvoke<LunaTimetable>("luna_fetch_timetable", {})),
+      ]).then(([td, ln, lt]) => {
+        if (td.status === "fulfilled" && td.value) todoItems = td.value;
+        if (ln.status === "fulfilled" && ln.value) lunaNotifs = ln.value as LunaNotification[];
+        if (lt.status === "fulfilled" && lt.value) lunaTimetable = lt.value as LunaTimetable;
+      });
+    }
+  });
+
+  // Re-fetch KWIC data when KWIC authenticates after initial load
+  const unsubKwicAuth = kwicAuthState.subscribe((state) => {
+    if (hasLoadedOnce && state.authenticated && !kwicHome) {
+      cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome).then(kh => {
+        if (kh) kwicHome = kh;
+      }).catch(() => {});
     }
   });
 

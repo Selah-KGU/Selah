@@ -48,11 +48,11 @@ pub fn parse_luna_timetable(html: &str) -> LunaTimetable {
     let term_options = extract_select_options(&doc, "#kikanCd");
 
     let mut courses = Vec::new();
-    let row_sel = Selector::parse(".div-table-data-row").unwrap();
-    let period_sel = Selector::parse(".div-table-colomn-period").unwrap();
-    let cell_sel = Selector::parse(".div-table-cell").unwrap();
-    let course_btn_sel = Selector::parse(".timetable-course-top-btn").unwrap();
-    let detail_sel = Selector::parse(".div-table-cell-detail span").unwrap();
+    let row_sel = Selector::parse(".div-table-data-row").expect("valid selector");
+    let period_sel = Selector::parse(".div-table-colomn-period").expect("valid selector");
+    let cell_sel = Selector::parse(".div-table-cell").expect("valid selector");
+    let course_btn_sel = Selector::parse(".timetable-course-top-btn").expect("valid selector");
+    let detail_sel = Selector::parse(".div-table-cell-detail span").expect("valid selector");
 
     for row in doc.select(&row_sel) {
         // Extract period number from text like "１時限"
@@ -87,7 +87,7 @@ pub fn parse_luna_timetable(html: &str) -> LunaTimetable {
 
     // Parse communities
     let mut communities = Vec::new();
-    let comm_sel = Selector::parse(".timetable-community-course .timetable-course-top-btn").unwrap();
+    let comm_sel = Selector::parse(".timetable-community-course .timetable-course-top-btn").expect("valid selector");
     for el in doc.select(&comm_sel) {
         let idnumber = el.value().attr("id").unwrap_or_default().to_string();
         let name = el.text().collect::<String>().trim().to_string();
@@ -116,13 +116,13 @@ pub fn parse_luna_todo(html: &str) -> Vec<LunaTodoItem> {
     let doc = Html::parse_document(html);
     let mut items = Vec::new();
 
-    let list_sel = Selector::parse(".todo-list").unwrap();
-    let course_sel = Selector::parse(".todolist-course").unwrap();
-    let type_sel = Selector::parse(".todolist-contents-type span").unwrap();
-    let name_sel = Selector::parse(".todolist-contents-name a").unwrap();
-    let deadline_sel = Selector::parse(".todolist-mobile-width-deadline").unwrap();
-    let status_sel = Selector::parse(".todolist-contents-status span").unwrap();
-    let feedback_sel = Selector::parse(".todolist-feedback .todolist-mobile-feedback").unwrap();
+    let list_sel = Selector::parse(".todo-list").expect("valid selector");
+    let course_sel = Selector::parse(".todolist-course").expect("valid selector");
+    let type_sel = Selector::parse(".todolist-contents-type span").expect("valid selector");
+    let name_sel = Selector::parse(".todolist-contents-name a").expect("valid selector");
+    let deadline_sel = Selector::parse(".todolist-mobile-width-deadline").expect("valid selector");
+    let status_sel = Selector::parse(".todolist-contents-status span").expect("valid selector");
+    let feedback_sel = Selector::parse(".todolist-feedback .todolist-mobile-feedback").expect("valid selector");
 
     for item in doc.select(&list_sel) {
         let course_name = item.select(&course_sel).next()
@@ -184,13 +184,13 @@ pub fn parse_luna_notifications(html: &str) -> Vec<LunaNotification> {
     let doc = Html::parse_document(html);
     let mut items = Vec::new();
 
-    let list_sel = Selector::parse(".update-info-list").unwrap();
-    let date_sel = Selector::parse(".update-info-updateDate label").unwrap();
-    let course_sel = Selector::parse(".update-info-courseInfo span").unwrap();
-    let module_sel = Selector::parse(".update-info-module span").unwrap();
-    let content_sel = Selector::parse(".update-info-contents .break-word").unwrap();
-    let url_sel = Selector::parse(".updateInfoUrl").unwrap();
-    let id_sel = Selector::parse("input[id='idnumber']").unwrap();
+    let list_sel = Selector::parse(".update-info-list").expect("valid selector");
+    let date_sel = Selector::parse(".update-info-updateDate label").expect("valid selector");
+    let course_sel = Selector::parse(".update-info-courseInfo span").expect("valid selector");
+    let module_sel = Selector::parse(".update-info-module span").expect("valid selector");
+    let content_sel = Selector::parse(".update-info-contents .break-word").expect("valid selector");
+    let url_sel = Selector::parse(".updateInfoUrl").expect("valid selector");
+    let id_sel = Selector::parse("input[id='idnumber']").expect("valid selector");
 
     for item in doc.select(&list_sel) {
         let date = item.select(&date_sel).next()
@@ -588,7 +588,7 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
     let quill_texts = extract_all_quill_texts(html);
 
     // Build sections from top-level Quill content that wasn't captured in meta
-    let mut sections: Vec<LunaDetailSection> = if quill_texts.len() > 0 {
+    let mut sections: Vec<LunaDetailSection> = if !quill_texts.is_empty() {
         // Check which quill texts are already in meta values
         let meta_values: Vec<&str> = meta.iter().map(|(_, v)| v.as_str()).collect();
         quill_texts.into_iter()
@@ -650,7 +650,7 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
             let name = el.text().collect::<String>().trim().to_string();
             if !name.is_empty() {
                 let object_name = el.parent()
-                    .and_then(|parent| scraper::ElementRef::wrap(parent))
+                    .and_then(scraper::ElementRef::wrap)
                     .and_then(|parent_el| {
                         parent_el.select(&obj_sel).next()
                             .map(|e| e.text().collect::<String>().trim().to_string())
@@ -1281,7 +1281,7 @@ fn extract_staff_info(doc: &Html, label: &str) -> String {
             let text = div.text().collect::<String>();
             if text.contains(label) {
                 // Extract the value after the label span
-                let span_sel = Selector::parse("span").unwrap();
+                let span_sel = Selector::parse("span").expect("valid selector");
                 let spans: Vec<String> = div.select(&span_sel)
                     .map(|s| s.text().collect::<String>().trim().to_string())
                     .collect();
@@ -1328,17 +1328,17 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
         Ok(s) => s,
         Err(_) => return items,
     };
-    let title_sel = Selector::parse(".course-material-title-txt").unwrap();
-    let period_sel = Selector::parse(".contents-input-area span").unwrap();
-    let file_link_sel = Selector::parse(".material-file-name").unwrap();
-    let result_sel = Selector::parse(".course-result-list.materialCss").unwrap();
-    let filename_sel = Selector::parse(".fileName").unwrap();
-    let objname_sel = Selector::parse(".objectName").unwrap();
-    let resid_sel = Selector::parse(".resource_Id").unwrap();
-    let filetype_sel = Selector::parse(".fileType").unwrap();
-    let dlmatid_sel = Selector::parse("#dlMaterialId").unwrap();
-    let enddate_sel = Selector::parse(".openEndDate").unwrap();
-    let scanstatus_sel = Selector::parse(".scanStatus").unwrap();
+    let title_sel = Selector::parse(".course-material-title-txt").expect("valid selector");
+    let period_sel = Selector::parse(".contents-input-area span").expect("valid selector");
+    let file_link_sel = Selector::parse(".material-file-name").expect("valid selector");
+    let result_sel = Selector::parse(".course-result-list.materialCss").expect("valid selector");
+    let filename_sel = Selector::parse(".fileName").expect("valid selector");
+    let objname_sel = Selector::parse(".objectName").expect("valid selector");
+    let resid_sel = Selector::parse(".resource_Id").expect("valid selector");
+    let filetype_sel = Selector::parse(".fileType").expect("valid selector");
+    let dlmatid_sel = Selector::parse("#dlMaterialId").expect("valid selector");
+    let enddate_sel = Selector::parse(".openEndDate").expect("valid selector");
+    let scanstatus_sel = Selector::parse(".scanStatus").expect("valid selector");
 
     // Each materialList div is a folder with materials
     for folder in doc.select(&folder_sel) {
@@ -1348,9 +1348,7 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
         if title.is_empty() { continue; }
 
         let period = folder.select(&period_sel)
-            .map(|e| e.text().collect::<String>().trim().to_string())
-            .filter(|s| s.contains('～'))
-            .next()
+            .map(|e| e.text().collect::<String>().trim().to_string()).find(|s| s.contains('～'))
             .unwrap_or_default();
 
         // Parse individual material files with download metadata
@@ -1420,10 +1418,10 @@ fn parse_reports(doc: &Html) -> Vec<LunaContentItem> {
         Ok(s) => s,
         Err(_) => return items,
     };
-    let name_sel = Selector::parse(".course-view-report-name.link-txt").unwrap();
-    let start_sel = Selector::parse(".course-view-report-time-start").unwrap();
-    let end_sel = Selector::parse(".course-view-report-time-end").unwrap();
-    let status_sel = Selector::parse(".course-view-report-status").unwrap();
+    let name_sel = Selector::parse(".course-view-report-name.link-txt").expect("valid selector");
+    let start_sel = Selector::parse(".course-view-report-time-start").expect("valid selector");
+    let end_sel = Selector::parse(".course-view-report-time-end").expect("valid selector");
+    let status_sel = Selector::parse(".course-view-report-status").expect("valid selector");
 
     for row in doc.select(&row_sel) {
         let a = match row.select(&name_sel).next() {
@@ -1467,11 +1465,11 @@ fn parse_examinations(doc: &Html) -> Vec<LunaContentItem> {
         Ok(s) => s,
         Err(_) => return items,
     };
-    let name_sel = Selector::parse(".course-view-examination-name.link-txt").unwrap();
-    let name_fallback_sel = Selector::parse(".course-view-examination-name").unwrap();
-    let link_sel = Selector::parse("a.link-txt").unwrap();
-    let period_sel = Selector::parse(".course-view-examination-period.sp-contents-hidden").unwrap();
-    let status_sel = Selector::parse(".course-view-examination-answer-status").unwrap();
+    let name_sel = Selector::parse(".course-view-examination-name.link-txt").expect("valid selector");
+    let name_fallback_sel = Selector::parse(".course-view-examination-name").expect("valid selector");
+    let link_sel = Selector::parse("a.link-txt").expect("valid selector");
+    let period_sel = Selector::parse(".course-view-examination-period.sp-contents-hidden").expect("valid selector");
+    let status_sel = Selector::parse(".course-view-examination-answer-status").expect("valid selector");
 
     for row in doc.select(&row_sel) {
         // Try primary selector, then fallback
@@ -1523,11 +1521,11 @@ fn parse_discussions(doc: &Html) -> Vec<LunaContentItem> {
         Ok(s) => s,
         Err(_) => return items,
     };
-    let name_sel = Selector::parse(".course-view-forum-title.link-txt").unwrap();
-    let name_fallback_sel = Selector::parse(".course-view-forum-title").unwrap();
-    let link_sel = Selector::parse("a.link-txt").unwrap();
-    let period_sel = Selector::parse(".course-view-forum-period.sp-contents-hidden").unwrap();
-    let status_sel = Selector::parse(".course-view-forum-postzyoukyou").unwrap();
+    let name_sel = Selector::parse(".course-view-forum-title.link-txt").expect("valid selector");
+    let name_fallback_sel = Selector::parse(".course-view-forum-title").expect("valid selector");
+    let link_sel = Selector::parse("a.link-txt").expect("valid selector");
+    let period_sel = Selector::parse(".course-view-forum-period.sp-contents-hidden").expect("valid selector");
+    let status_sel = Selector::parse(".course-view-forum-postzyoukyou").expect("valid selector");
 
     for row in doc.select(&row_sel) {
         let (title, mut url) = if let Some(a) = row.select(&name_sel).next() {
@@ -1613,7 +1611,7 @@ fn extract_selected_value(doc: &Html, selector: &str) -> (String, String) {
         Some(e) => e,
         None => return (String::new(), String::new()),
     };
-    let option_sel = Selector::parse("option[selected]").unwrap();
+    let option_sel = Selector::parse("option[selected]").expect("valid selector");
     match select_el.select(&option_sel).next() {
         Some(opt) => {
             let value = opt.value().attr("value").unwrap_or_default().to_string();
@@ -1633,7 +1631,7 @@ fn extract_select_options(doc: &Html, selector: &str) -> Vec<SelectOption> {
         Some(e) => e,
         None => return Vec::new(),
     };
-    let option_sel = Selector::parse("option").unwrap();
+    let option_sel = Selector::parse("option").expect("valid selector");
     select_el.select(&option_sel).map(|opt| {
         SelectOption {
             value: opt.value().attr("value").unwrap_or_default().to_string(),
@@ -1665,6 +1663,7 @@ mod tests {
     use super::*;
     
     #[test]
+    #[ignore] // requires local HTML dump file
     fn test_parse_detail_attachments() {
         let html = std::fs::read_to_string("/tmp/luna_detail_lms_course_report_submission_idnumber=2026510010040201_reportId=225148.html")
             .expect("HTML dump file not found");
@@ -1681,6 +1680,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // requires local HTML dump file
     fn test_parse_course_page() {
         let html = std::fs::read_to_string("/tmp/luna_detail_lms_course_idnumber=2026510010040201#information.html")
             .expect("Course HTML dump file not found");
@@ -1708,6 +1708,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // requires local HTML dump file
     fn test_parse_contents_page() {
         let html = std::fs::read_to_string("/tmp/luna_contents_2026510010040201.html")
             .expect("Contents HTML dump file not found");
@@ -1733,6 +1734,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // requires local HTML dump file
     fn test_parse_announcement_detail() {
         let html = std::fs::read_to_string("/tmp/luna_announcement_2026510010040201_414248.html")
             .expect("Announcement HTML dump file not found");

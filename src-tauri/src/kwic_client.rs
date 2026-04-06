@@ -1,9 +1,9 @@
 use reqwest::Client;
 use std::sync::Arc;
 
-use crate::client::{build_http_client, data_dir, new_cookie_client};
+use crate::client::{build_http_client, data_dir, load_cookie_jar, new_cookie_client, save_cookie_jar};
+use crate::config;
 
-const KWIC_BASE: &str = "https://kwic.kwansei.ac.jp";
 const KWIC_COOKIES_FILE: &str = "kwic_portal_cookies.json";
 
 /// Check if KWIC Portal response indicates session expired
@@ -48,53 +48,31 @@ impl KwicClient {
         if !self.authenticated {
             return;
         }
-        let dir = data_dir();
-        let store = self.cookie_store.lock().unwrap_or_else(|e| e.into_inner());
-        let mut buf = Vec::new();
-        if cookie_store::serde::json::save(&store, &mut buf).is_ok() {
-            if let Err(e) = std::fs::write(dir.join(KWIC_COOKIES_FILE), &buf) {
-                log::warn!("Failed to save KWIC Portal cookies: {}", e);
-            } else {
-                log::info!("KWIC Portal cookies saved");
-            }
-        }
+        save_cookie_jar(&self.cookie_store, KWIC_COOKIES_FILE);
+        log::info!("KWIC Portal cookies saved");
     }
 
     /// Try to restore session from disk
     pub fn try_restore_session(&mut self) -> bool {
-        let dir = data_dir();
-        let cookies_path = dir.join(KWIC_COOKIES_FILE);
-        if !cookies_path.exists() {
-            return false;
-        }
-        match std::fs::File::open(&cookies_path) {
-            Ok(file) => {
-                let reader = std::io::BufReader::new(file);
-                match cookie_store::serde::json::load(reader) {
-                    Ok(store) => {
-                        let cookie_store = Arc::new(
-                            reqwest_cookie_store::CookieStoreMutex::new(store),
-                        );
-                        self.http = build_http_client(cookie_store.clone());
-                        self.cookie_store = cookie_store;
-                        self.authenticated = true;
-                        log::info!("KWIC Portal session restored from disk");
-                        true
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to load KWIC Portal cookies: {}", e);
-                        false
-                    }
-                }
+        match load_cookie_jar(KWIC_COOKIES_FILE) {
+            Some(store) => {
+                let cookie_store = Arc::new(
+                    reqwest_cookie_store::CookieStoreMutex::new(store),
+                );
+                self.http = build_http_client(cookie_store.clone());
+                self.cookie_store = cookie_store;
+                self.authenticated = true;
+                log::info!("KWIC Portal session restored from disk");
+                true
             }
-            Err(_) => false,
+            None => false,
         }
     }
 
     /// Initiate KWIC Portal SAML auth — returns the Okta SSO URL
     pub async fn initiate_saml_auth(&self) -> Result<String, String> {
         // KWIC Portal login redirects to Okta SSO
-        let url = format!("{}/login", KWIC_BASE);
+        let url = format!("{}/login", config::KWIC_BASE);
         let mut current_url = url;
 
         for i in 0..10 {
@@ -109,7 +87,7 @@ impl KwicClient {
                 if let Some(loc) = headers.get("location") {
                     let loc_str = loc.to_str().unwrap_or_default();
                     let next_url = if loc_str.starts_with('/') {
-                        format!("{}{}", KWIC_BASE, loc_str)
+                        format!("{}{}", config::KWIC_BASE, loc_str)
                     } else {
                         loc_str.to_string()
                     };
@@ -140,7 +118,7 @@ impl KwicClient {
                 current_url = if refresh_url.starts_with("http") {
                     refresh_url
                 } else {
-                    format!("{}/{}", KWIC_BASE, refresh_url.trim_start_matches('/'))
+                    format!("{}/{}", config::KWIC_BASE, refresh_url.trim_start_matches('/'))
                 };
                 continue;
             }
@@ -184,7 +162,7 @@ impl KwicClient {
             if let Some(loc) = resp.headers().get("location") {
                 let loc_str = loc.to_str().unwrap_or_default();
                 let next_url = if loc_str.starts_with('/') {
-                    format!("{}{}", KWIC_BASE, loc_str)
+                    format!("{}{}", config::KWIC_BASE, loc_str)
                 } else {
                     loc_str.to_string()
                 };
@@ -209,7 +187,7 @@ impl KwicClient {
                 if let Some(loc) = resp.headers().get("location") {
                     let loc_str = loc.to_str().unwrap_or_default();
                     current_url = if loc_str.starts_with('/') {
-                        format!("{}{}", KWIC_BASE, loc_str)
+                        format!("{}{}", config::KWIC_BASE, loc_str)
                     } else {
                         loc_str.to_string()
                     };
@@ -233,7 +211,7 @@ impl KwicClient {
         Err("リダイレクトが多すぎます".into())
     }
 
-    /// Fetch a page from KWIC Portal (path relative to KWIC_BASE or absolute URL)
+    /// Fetch a page from KWIC Portal (path relative to config::KWIC_BASE or absolute URL)
     pub async fn fetch_page(&self, path: &str) -> Result<String, String> {
         if !self.authenticated {
             return Err(KWIC_AUTH_REQUIRED_MSG.into());
@@ -241,7 +219,7 @@ impl KwicClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", KWIC_BASE, path)
+            format!("{}{}", config::KWIC_BASE, path)
         };
         self.fetch_page_internal(&url).await
     }
@@ -254,7 +232,7 @@ impl KwicClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", KWIC_BASE, path)
+            format!("{}{}", config::KWIC_BASE, path)
         };
 
         let resp = self.http.get(&url)
@@ -289,7 +267,7 @@ impl KwicClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", KWIC_BASE, path)
+            format!("{}{}", config::KWIC_BASE, path)
         };
 
         let resp = self.http.post(&url)

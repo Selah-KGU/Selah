@@ -217,13 +217,15 @@
         await lunaInvoke("luna_open_detail_window", { path: n.url, title: n.title });
       } catch (e) { console.error("Failed to open Luna detail:", e); }
     } else if (n.source === "kwic" && n.id) {
-      await kwicOpenDetail({
-        id: n.id,
-        title: n.title,
-        information_type: n.informationType || "",
-        person_category_cd: n.personCategoryCd || "",
-        category_cd: n.categoryCd || "",
-      });
+      try {
+        await kwicOpenDetail({
+          id: n.id,
+          title: n.title,
+          information_type: n.informationType || "",
+          person_category_cd: n.personCategoryCd || "",
+          category_cd: n.categoryCd || "",
+        });
+      } catch (e) { console.error("Failed to open KWIC detail:", e); }
     }
   }
 </script>
@@ -231,9 +233,9 @@
 <div class="view">
   <h2>お知らせ</h2>
 
-  <div class="segmented-control">
+  <div class="segmented-control" role="tablist">
     {#each TAB_ORDER as tab}
-      <button class="segment" class:active={selectedTab === tab} onclick={() => { selectedTab = tab; }}>
+      <button class="segment" class:active={selectedTab === tab} role="tab" aria-selected={selectedTab === tab} onclick={() => { selectedTab = tab; }}>
         {#if tab === "呼出し・重要なお知らせ"}
           重要
         {:else if tab === "学部・研究科からのお知らせ"}

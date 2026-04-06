@@ -4,11 +4,11 @@ use std::sync::LazyLock;
 
 // ============ Common Selectors ============
 
-pub(crate) static SEL_TR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("tr").unwrap());
-pub(crate) static SEL_TD: LazyLock<Selector> = LazyLock::new(|| Selector::parse("td").unwrap());
-pub(crate) static SEL_TH: LazyLock<Selector> = LazyLock::new(|| Selector::parse("th").unwrap());
-pub(crate) static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).unwrap());
-pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output").unwrap());
+pub(crate) static SEL_TR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("tr").expect("valid selector"));
+pub(crate) static SEL_TD: LazyLock<Selector> = LazyLock::new(|| Selector::parse("td").expect("valid selector"));
+pub(crate) static SEL_TH: LazyLock<Selector> = LazyLock::new(|| Selector::parse("th").expect("valid selector"));
+pub(crate) static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).expect("valid selector"));
+pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output").expect("valid selector"));
 
 // ============ Shared ============
 
@@ -170,7 +170,7 @@ pub fn parse_timetable(html: &str) -> TimetableData {
 
     let day_map = [('A', "月"), ('B', "火"), ('C', "水"), ('D', "木"), ('E', "金"), ('F', "土")];
 
-    for (_idx, fields) in &timetable_data {
+    for fields in timetable_data.values() {
         // hdn* fields have the full (untruncated) values; lbl* may be truncated by the server
         let course_name = fields.get("hdnSbjKnjNm").cloned()
             .filter(|s| !s.is_empty())
@@ -215,7 +215,7 @@ pub fn parse_timetable(html: &str) -> TimetableData {
         let day = day_map.iter().find(|(c, _)| *c == day_char).map(|(_, d)| d.to_string()).unwrap_or_default();
         let period: i32 = period_str.parse().unwrap_or(0);
 
-        if !day.is_empty() && period >= 1 && period <= 7 {
+        if !day.is_empty() && (1..=7).contains(&period) {
             entries.push(TimetableEntry {
                 day,
                 period,
@@ -242,7 +242,7 @@ pub fn parse_timetable(html: &str) -> TimetableData {
 
     // Collect ALL input fields from the form for resubmission
     // The Struts form requires all fields to be present when POSTing
-    let all_input_sel = Selector::parse("input").unwrap();
+    let all_input_sel = Selector::parse("input").expect("valid selector");
     let mut form_fields = std::collections::HashMap::new();
     for el in doc.select(&all_input_sel) {
         let name = el.value().attr("name").unwrap_or("").trim();
@@ -260,7 +260,7 @@ pub fn parse_timetable(html: &str) -> TimetableData {
     }
     // Also collect <select> values
     if let Ok(sel_sel) = Selector::parse("select") {
-        let opt_sel = Selector::parse("option[selected]").unwrap();
+        let opt_sel = Selector::parse("option[selected]").expect("valid selector");
         for select_el in doc.select(&sel_sel) {
             let name = select_el.value().attr("name").unwrap_or("").trim();
             if !name.is_empty() {
@@ -517,11 +517,10 @@ pub fn parse_makeup_classes(html: &str) -> MakeupData {
 
         let col = |name: &str| -> String {
             for (i, h) in headers.iter().enumerate() {
-                if h.contains(name) {
-                    if i > 0 && i - 1 < tds.len() {
+                if h.contains(name)
+                    && i > 0 && i - 1 < tds.len() {
                         return tds[i - 1].clone();
                     }
-                }
             }
             String::new()
         };
@@ -603,11 +602,10 @@ pub fn parse_room_changes(html: &str) -> RoomChangesData {
 
         let col = |name: &str| -> String {
             for (i, h) in headers.iter().enumerate() {
-                if h.contains(name) {
-                    if i > 0 && i - 1 < tds.len() {
+                if h.contains(name)
+                    && i > 0 && i - 1 < tds.len() {
                         return tds[i - 1].clone();
                     }
-                }
             }
             String::new()
         };
@@ -688,9 +686,9 @@ pub fn parse_registration(html: &str) -> RegistrationData {
 
     // Parse courses from curriculum grid (table.output_curriculum)
     let mut courses = Vec::new();
-    let table_sel = Selector::parse("table.output_curriculum").unwrap();
+    let table_sel = Selector::parse("table.output_curriculum").expect("valid selector");
 
-    let caption_sel = Selector::parse("caption").unwrap();
+    let caption_sel = Selector::parse("caption").expect("valid selector");
 
     let days = ["月", "火", "水", "木", "金", "土"];
 
@@ -826,7 +824,7 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                 if !course_name.is_empty() {
                     courses.push(RegisteredCourse {
                         period: current_period.clone(),
-                        day: day,
+                        day,
                         semester,
                         course_name,
                         instructor,
@@ -900,7 +898,7 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
     let doc = Html::parse_document(html);
     let mut entries = Vec::new();
 
-    let a_sel = Selector::parse("a").unwrap();
+    let a_sel = Selector::parse("a").expect("valid selector");
 
     let mut headers: Vec<String> = Vec::new();
     let mut idx = 0;

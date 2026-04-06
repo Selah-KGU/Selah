@@ -6,10 +6,10 @@ use crate::parser::{SEL_HIDDEN_INPUT, SEL_TABLE_OUTPUT, SEL_TR};
 
 // ============ Selectors ============
 
-static SEL_DD_UL_LI: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dd ul li").unwrap());
-static SEL_IMG: LazyLock<Selector> = LazyLock::new(|| Selector::parse("img").unwrap());
-static SEL_EREGISTER: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[name="ERegister"]"#).unwrap());
-static SEL_TYPE_IMAGE: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="image"]"#).unwrap());
+static SEL_DD_UL_LI: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dd ul li").expect("valid selector"));
+static SEL_IMG: LazyLock<Selector> = LazyLock::new(|| Selector::parse("img").expect("valid selector"));
+static SEL_EREGISTER: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[name=\"ERegister\"]"#).expect("valid selector"));
+static SEL_TYPE_IMAGE: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type=\"image\"]"#).expect("valid selector"));
 
 // ============ Types ============
 

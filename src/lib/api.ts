@@ -19,24 +19,29 @@ import type {
 import { authState, lunaAuthState, kwicAuthState, mailAuthState, invalidateCache, reloginInProgress, refreshCache } from "./stores";
 import { get } from "svelte/store";
 
-// Global listener: Rust backend emits this after standalone Luna SAML login or Phase 2 of full login
-listen("luna-login-success", () => {
+// Global listeners — store unlisteners for cleanup
+const _unlisteners: Array<Promise<() => void>> = [];
+
+_unlisteners.push(listen("luna-login-success", () => {
   lunaAuthState.set({ authenticated: true });
-});
+}));
 
-// Global listener: Rust backend emits this after standalone KWIC Portal SAML login or Phase 3 of full login
-listen("kwic-login-success", () => {
+_unlisteners.push(listen("kwic-login-success", () => {
   kwicAuthState.set({ authenticated: true });
-});
+}));
 
-// Global listener: Microsoft 365 mail login success
-listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
+_unlisteners.push(listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
   mailAuthState.set({
     authenticated: true,
     email: event.payload.email,
     displayName: event.payload.displayName,
   });
-});
+}));
+
+export async function cleanupApiListeners() {
+  for (const p of _unlisteners) { (await p)(); }
+  _unlisteners.length = 0;
+}
 
 export interface SessionStatus {
   valid: boolean;
@@ -409,26 +414,7 @@ export interface WeatherData {
 }
 
 export async function fetchWeather(): Promise<WeatherData> {
-  const res = await fetch(
-    "https://api.open-meteo.com/v1/forecast?latitude=34.7383&longitude=135.3416&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo&forecast_days=2"
-  );
-  if (!res.ok) throw new Error(`Weather API error: ${res.status}`);
-  const data = await res.json();
-  let tomorrow: WeatherData["tomorrow"] = null;
-  if (data.daily?.time?.length >= 2) {
-    tomorrow = {
-      tempMax: Math.round(data.daily.temperature_2m_max[1]),
-      tempMin: Math.round(data.daily.temperature_2m_min[1]),
-      weatherCode: data.daily.weather_code[1],
-    };
-  }
-  return {
-    temperature: Math.round(data.current.temperature_2m),
-    weatherCode: data.current.weather_code,
-    humidity: data.current.relative_humidity_2m,
-    windSpeed: Math.round(data.current.wind_speed_10m),
-    tomorrow,
-  };
+  return invoke<WeatherData>("fetch_weather");
 }
 
 export async function kwicFetchPage(path: string): Promise<string> {

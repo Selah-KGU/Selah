@@ -2,12 +2,12 @@ use reqwest::Client;
 use scraper::{Html, Selector};
 use std::sync::{Arc, LazyLock};
 
-use crate::client::{build_http_client, data_dir, new_cookie_client};
+use crate::client::{build_http_client, data_dir, load_cookie_jar, new_cookie_client, save_cookie_jar};
+use crate::config;
 
-static SEL_FORM: LazyLock<Selector> = LazyLock::new(|| Selector::parse("form").unwrap());
-static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).unwrap());
+static SEL_FORM: LazyLock<Selector> = LazyLock::new(|| Selector::parse("form").expect("valid selector"));
+static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).expect("valid selector"));
 
-const LUNA_BASE: &str = "https://luna.kwansei.ac.jp";
 const LUNA_COOKIES_FILE: &str = "luna_cookies.json";
 
 /// Check if Luna response body indicates session expired
@@ -48,53 +48,31 @@ impl LunaClient {
         if !self.authenticated {
             return;
         }
-        let dir = data_dir();
-        let store = self.cookie_store.lock().unwrap_or_else(|e| e.into_inner());
-        let mut buf = Vec::new();
-        if cookie_store::serde::json::save(&store, &mut buf).is_ok() {
-            if let Err(e) = std::fs::write(dir.join(LUNA_COOKIES_FILE), &buf) {
-                log::warn!("Failed to save Luna cookies: {}", e);
-            } else {
-                log::info!("Luna cookies saved to {}", dir.display());
-            }
-        }
+        save_cookie_jar(&self.cookie_store, LUNA_COOKIES_FILE);
+        log::info!("Luna cookies saved");
     }
 
     /// Try to restore Luna session from disk.
     /// Returns true if cookies were loaded (session still needs server validation).
     pub fn try_restore_session(&mut self) -> bool {
-        let dir = data_dir();
-        let cookies_path = dir.join(LUNA_COOKIES_FILE);
-        if !cookies_path.exists() {
-            return false;
-        }
-        match std::fs::File::open(&cookies_path) {
-            Ok(file) => {
-                let reader = std::io::BufReader::new(file);
-                match cookie_store::serde::json::load(reader) {
-                    Ok(store) => {
-                        let cookie_store = Arc::new(
-                            reqwest_cookie_store::CookieStoreMutex::new(store),
-                        );
-                        self.http = build_http_client(cookie_store.clone());
-                        self.cookie_store = cookie_store;
-                        self.authenticated = true;
-                        log::info!("Luna session restored from disk");
-                        true
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to load Luna cookies: {}", e);
-                        false
-                    }
-                }
+        match load_cookie_jar(LUNA_COOKIES_FILE) {
+            Some(store) => {
+                let cookie_store = Arc::new(
+                    reqwest_cookie_store::CookieStoreMutex::new(store),
+                );
+                self.http = build_http_client(cookie_store.clone());
+                self.cookie_store = cookie_store;
+                self.authenticated = true;
+                log::info!("Luna session restored from disk");
+                true
             }
-            Err(_) => false,
+            None => false,
         }
     }
 
     /// Initiate Luna SAML auth — returns the Okta SSO URL for Luna
     pub async fn initiate_saml_auth(&self) -> Result<String, String> {
-        let url = format!("{}/saml/login?disco=true", LUNA_BASE);
+        let url = format!("{}/saml/login?disco=true", config::LUNA_BASE);
         let resp = self.http.get(&url).send().await
             .map_err(|e| format!("Luna接続失敗: {}", e))?;
 
@@ -134,7 +112,7 @@ impl LunaClient {
         saml_response: &str,
         relay_state: &str,
     ) -> Result<(), String> {
-        let acs_url = format!("{}/saml/SSO", LUNA_BASE);
+        let acs_url = format!("{}/saml/SSO", config::LUNA_BASE);
         log::info!("Luna: POSTing SAMLResponse to {}", acs_url);
 
         let mut params = vec![("SAMLResponse", saml_response)];
@@ -155,7 +133,7 @@ impl LunaClient {
             if let Some(loc) = resp.headers().get("location") {
                 let loc_str = loc.to_str().unwrap_or_default();
                 let next_url = if loc_str.starts_with('/') {
-                    format!("{}{}", LUNA_BASE, loc_str)
+                    format!("{}{}", config::LUNA_BASE, loc_str)
                 } else {
                     loc_str.to_string()
                 };
@@ -181,7 +159,7 @@ impl LunaClient {
                 if let Some(loc) = resp.headers().get("location") {
                     let loc_str = loc.to_str().unwrap_or_default();
                     current_url = if loc_str.starts_with('/') {
-                        format!("{}{}", LUNA_BASE, loc_str)
+                        format!("{}{}", config::LUNA_BASE, loc_str)
                     } else {
                         loc_str.to_string()
                     };
@@ -205,7 +183,7 @@ impl LunaClient {
         Err("リダイレクトが多すぎます".into())
     }
 
-    /// Fetch a Luna page (path relative to LUNA_BASE)
+    /// Fetch a Luna page (path relative to config::LUNA_BASE)
     pub async fn fetch_page(&self, path: &str) -> Result<String, String> {
         if !self.authenticated {
             return Err(LUNA_AUTH_REQUIRED_MSG.into());
@@ -213,7 +191,7 @@ impl LunaClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", LUNA_BASE, path)
+            format!("{}{}", config::LUNA_BASE, path)
         };
         self.fetch_page_internal(&url).await
     }
@@ -227,7 +205,7 @@ impl LunaClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", LUNA_BASE, path)
+            format!("{}{}", config::LUNA_BASE, path)
         };
 
         let resp = self.http.post(&url)
@@ -242,7 +220,7 @@ impl LunaClient {
             if let Some(loc) = resp.headers().get("location") {
                 let loc_str = loc.to_str().unwrap_or_default();
                 let next_url = if loc_str.starts_with('/') {
-                    format!("{}{}", LUNA_BASE, loc_str)
+                    format!("{}{}", config::LUNA_BASE, loc_str)
                 } else {
                     loc_str.to_string()
                 };
@@ -283,7 +261,7 @@ impl LunaClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", LUNA_BASE, path)
+            format!("{}{}", config::LUNA_BASE, path)
         };
 
         let resp = self.http.post(&url)
@@ -296,7 +274,7 @@ impl LunaClient {
             if let Some(loc) = resp.headers().get("location") {
                 let loc_str = loc.to_str().unwrap_or_default();
                 let next_url = if loc_str.starts_with('/') {
-                    format!("{}{}", LUNA_BASE, loc_str)
+                    format!("{}{}", config::LUNA_BASE, loc_str)
                 } else {
                     loc_str.to_string()
                 };
@@ -325,7 +303,7 @@ impl LunaClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", LUNA_BASE, path)
+            format!("{}{}", config::LUNA_BASE, path)
         };
 
         let mut current_url = url;
@@ -364,7 +342,7 @@ impl LunaClient {
                 if let Some(loc) = resp.headers().get("location") {
                     let loc_str = loc.to_str().unwrap_or_default();
                     current_url = if loc_str.starts_with('/') {
-                        format!("{}{}", LUNA_BASE, loc_str)
+                        format!("{}{}", config::LUNA_BASE, loc_str)
                     } else {
                         loc_str.to_string()
                     };
@@ -397,7 +375,7 @@ impl LunaClient {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
-            format!("{}{}", LUNA_BASE, path)
+            format!("{}{}", config::LUNA_BASE, path)
         };
 
         log::info!("download_file_with_params: GET {} with {} params", url, params.len());
@@ -440,7 +418,7 @@ impl LunaClient {
                 if let Some(loc) = resp.headers().get("location") {
                     let loc_str = loc.to_str().unwrap_or_default();
                     current_url = if loc_str.starts_with('/') {
-                        format!("{}{}", LUNA_BASE, loc_str)
+                        format!("{}{}", config::LUNA_BASE, loc_str)
                     } else {
                         loc_str.to_string()
                     };
@@ -539,7 +517,7 @@ fn parse_lti_form(html: &str) -> Result<(String, Vec<(String, String)>), String>
     let form_sel = &*SEL_FORM;
     let input_sel = &*SEL_HIDDEN_INPUT;
 
-    let form = doc.select(&form_sel).next()
+    let form = doc.select(form_sel).next()
         .ok_or("LTIフォームが見つかりません")?;
 
     let action = form.value().attr("action").unwrap_or_default().to_string();
@@ -548,7 +526,7 @@ fn parse_lti_form(html: &str) -> Result<(String, Vec<(String, String)>), String>
     }
 
     let mut params: Vec<(String, String)> = Vec::new();
-    for input in form.select(&input_sel) {
+    for input in form.select(input_sel) {
         let name = input.value().attr("name").unwrap_or_default().to_string();
         let value = input.value().attr("value").unwrap_or_default().to_string();
         if !name.is_empty() {

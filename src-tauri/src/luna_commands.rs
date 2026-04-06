@@ -7,6 +7,43 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// Save bytes to the Downloads folder with conflict avoidance (appends " (N)" if the file exists).
+fn save_to_downloads(filename: &str, bytes: &[u8]) -> Result<String, String> {
+    let downloads = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+    let save_path = downloads.join(filename);
+
+    let final_path = if save_path.exists() {
+        let stem = std::path::Path::new(filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let mut i = 1;
+        loop {
+            let name = if ext.is_empty() {
+                format!("{} ({})", stem, i)
+            } else {
+                format!("{} ({}).{}", stem, i, ext)
+            };
+            let candidate = downloads.join(&name);
+            if !candidate.exists() || i >= 999 {
+                break candidate;
+            }
+            i += 1;
+        }
+    } else {
+        save_path
+    };
+
+    std::fs::write(&final_path, bytes)
+        .map_err(|e| format!("ファイル保存失敗: {}", e))?;
+
+    Ok(final_path.to_string_lossy().to_string())
+}
+
 /// Escape HTML special characters to prevent XSS in server-side rendered content
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -121,7 +158,7 @@ pub async fn luna_reveal_file(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
     let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
     let allowed = dirs::download_dir().unwrap_or_else(|| {
-        dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(std::env::temp_dir)
     });
     if !canonical.starts_with(&allowed) {
         return Err("ダウンロードフォルダ外のファイルは表示できません".into());
@@ -169,7 +206,7 @@ pub async fn luna_open_login(
     .title("Luna - サインイン")
     .inner_size(480.0, 700.0)
     .resizable(true)
-    .initialization_script(&crate::auth::saml_intercept_script(LUNA_SAML_CALLBACK_HOST))
+    .initialization_script(crate::auth::saml_intercept_script(LUNA_SAML_CALLBACK_HOST))
     .on_navigation(move |url| {
         if url.host_str() == Some("luna-saml-callback.localhost") {
             let pairs: std::collections::HashMap<String, String> =
@@ -341,10 +378,10 @@ pub async fn luna_fetch_detail(
     // Debug: dump to /tmp for inspection
     #[cfg(debug_assertions)]
     {
-        let filename = path.replace('/', "_").replace('?', "_").replace('&', "_");
-        let dump_path = format!("/tmp/luna_detail{}.html", filename);
+        let filename = path.replace(['/', '?', '&'], "_");
+        let dump_path = std::env::temp_dir().join(format!("luna_detail{}.html", filename));
         let _ = std::fs::write(&dump_path, &html);
-        log::info!("Luna detail HTML dumped to {} ({} bytes)", dump_path, html.len());
+        log::info!("Luna detail HTML dumped to {} ({} bytes)", dump_path.display(), html.len());
     }
     Ok(luna_parser::parse_luna_detail_page(&html))
 }
@@ -367,7 +404,7 @@ pub async fn luna_fetch_announcement_detail(
     let html = luna.fetch_page(&path).await?;
     #[cfg(debug_assertions)]
     {
-        let dump_path = format!("/tmp/luna_announcement_{}_{}.html", idnumber, info_id);
+        let dump_path = std::env::temp_dir().join(format!("luna_announcement_{}_{}.html", idnumber, info_id));
         let _ = std::fs::write(&dump_path, &html);
         log::info!("Luna announcement detail dumped ({} bytes)", html.len());
     }
@@ -397,7 +434,7 @@ pub async fn luna_fetch_course_detail(
         log::warn!("Course page for {} returned no menus ({}B), retrying...", idnumber, course_html.len());
         #[cfg(debug_assertions)]
         {
-            let dump = format!("/tmp/luna_course_{}_initial.html", idnumber);
+            let dump = std::env::temp_dir().join(format!("luna_course_{}_initial.html", idnumber));
             let _ = std::fs::write(&dump, &course_html);
         }
         // Retry: the first request may have warmed up the Luna session/course state
@@ -409,14 +446,14 @@ pub async fn luna_fetch_course_detail(
             }
             #[cfg(debug_assertions)]
             {
-                let dump = format!("/tmp/luna_course_{}.html", idnumber);
+                let dump = std::env::temp_dir().join(format!("luna_course_{}.html", idnumber));
                 let _ = std::fs::write(&dump, &retry_html);
             }
         }
     } else {
         #[cfg(debug_assertions)]
         {
-            let dump = format!("/tmp/luna_course_{}.html", idnumber);
+            let dump = std::env::temp_dir().join(format!("luna_course_{}.html", idnumber));
             let _ = std::fs::write(&dump, &course_html);
         }
     }
@@ -426,7 +463,7 @@ pub async fn luna_fetch_course_detail(
 
     #[cfg(debug_assertions)]
     {
-        let dump_path = format!("/tmp/luna_contents_{}.html", idnumber);
+        let dump_path = std::env::temp_dir().join(format!("luna_contents_{}.html", idnumber));
         let _ = std::fs::write(&dump_path, &contents_html);
     }
 
@@ -455,50 +492,16 @@ pub async fn luna_download_file(
     }
 
     let bytes = luna.download_file(&url).await?;
+    drop(luna); // Release lock before blocking fs::write
 
-    // Save to Downloads folder
-    let downloads = dirs::download_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let save_path = downloads.join(&filename);
-
-    // Avoid overwriting: if file exists, add a number
-    let final_path = if save_path.exists() {
-        let stem = std::path::Path::new(&filename)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
-        let ext = std::path::Path::new(&filename)
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let mut i = 1;
-        loop {
-            let name = if ext.is_empty() {
-                format!("{} ({})", stem, i)
-            } else {
-                format!("{} ({}).{}", stem, i, ext)
-            };
-            let candidate = downloads.join(&name);
-            if !candidate.exists() || i >= 999 {
-                break candidate;
-            }
-            i += 1;
-        }
-    } else {
-        save_path
-    };
-
-    std::fs::write(&final_path, &bytes)
-        .map_err(|e| format!("ファイル保存失敗: {}", e))?;
-
-    Ok(final_path.to_string_lossy().to_string())
+    save_to_downloads(&filename, &bytes)
 }
 
 /// Replicate Luna's CommonUtil.makeDownFileName JS function:
 /// replace fullwidth/halfwidth spaces with _, collapse multiple _, then encodeURI
 fn make_down_file_name(file_name: &str) -> String {
     // Replace fullwidth space (U+3000) and regular space with _
-    let mut result = file_name.replace('\u{3000}', "_").replace(' ', "_");
+    let mut result = file_name.replace(['\u{3000}', ' '], "_");
     // Collapse multiple underscores
     while result.contains("__") {
         result = result.replace("__", "_");
@@ -546,7 +549,7 @@ pub async fn luna_download_material(
     // (the browser is always on this page when downloading)
     let course_url = format!("/lms/course?idnumber={}", idnumber);
     let _ = luna.fetch_page(&course_url).await;
-    let _referer = format!("https://luna.kwansei.ac.jp/lms/course?idnumber={}", idnumber);
+    let _referer = format!("{}/lms/course?idnumber={}", crate::config::LUNA_BASE, idnumber);
 
     // Step 1: Prepare tempfile (GET /lms/course/make/tempfile)
     // jQuery $.ajax({ type: "GET", data: params }) sends as query string
@@ -619,6 +622,7 @@ pub async fn luna_download_material(
     log::info!("Material download full URL: {}", full_download_url);
 
     let bytes = luna.download_file(&full_download_url).await?;
+    drop(luna); // Release lock before blocking fs::write
 
     log::info!("Material downloaded {} bytes", bytes.len());
 
@@ -636,41 +640,7 @@ pub async fn luna_download_material(
         return Err("ダウンロードされたファイルが空です".into());
     }
 
-    // Save to Downloads folder
-    let downloads = dirs::download_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let save_path = downloads.join(&file_name);
-
-    let final_path = if save_path.exists() {
-        let stem = std::path::Path::new(&file_name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
-        let ext = std::path::Path::new(&file_name)
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let mut i = 1;
-        loop {
-            let name = if ext.is_empty() {
-                format!("{} ({})", stem, i)
-            } else {
-                format!("{} ({}).{}", stem, i, ext)
-            };
-            let candidate = downloads.join(&name);
-            if !candidate.exists() || i >= 999 {
-                break candidate;
-            }
-            i += 1;
-        }
-    } else {
-        save_path
-    };
-
-    std::fs::write(&final_path, &bytes)
-        .map_err(|e| format!("ファイル保存失敗: {}", e))?;
-
-    Ok(final_path.to_string_lossy().to_string())
+    save_to_downloads(&file_name, &bytes)
 }
 
 /// Submit a report (課題提出) to Luna
@@ -766,8 +736,8 @@ pub async fn luna_fetch_discussion_detail(
     let html = luna.fetch_page(&url).await?;
     #[cfg(debug_assertions)]
     {
-        let dump_path = format!("/tmp/luna_discussion_{}.html",
-            url.replace('/', "_").replace('?', "_").replace('&', "_"));
+        let dump_path = std::env::temp_dir().join(format!("luna_discussion_{}.html",
+            url.replace(['/', '?', '&'], "_")));
         let _ = std::fs::write(&dump_path, &html);
         log::info!("Discussion HTML dumped ({} bytes)", html.len());
     }
@@ -802,7 +772,7 @@ pub async fn luna_post_discussion(
     // Dump for debugging
     #[cfg(debug_assertions)]
     {
-        let dump_path = format!("/tmp/luna_setthread_{}.html", forum_id);
+        let dump_path = std::env::temp_dir().join(format!("luna_setthread_{}.html", forum_id));
         let _ = std::fs::write(&dump_path, &html);
         log::info!("Setthread HTML dumped ({} bytes)", html.len());
     }
@@ -930,8 +900,8 @@ pub async fn luna_fetch_thread_posts(
 
     #[cfg(debug_assertions)]
     {
-        let dump_path = format!("/tmp/luna_thread_{}.html",
-            url.replace('/', "_").replace('?', "_").replace('&', "_"));
+        let dump_path = std::env::temp_dir().join(format!("luna_thread_{}.html",
+            url.replace(['/', '?', '&'], "_")));
         let _ = std::fs::write(&dump_path, &html);
     }
 
@@ -966,7 +936,7 @@ fn extract_input_value(html: &str, name: &str) -> Option<String> {
     // Fallback: regex-like search for name="xxx" ... value="yyy"
     let pattern = format!("name=\"{}\"", name);
     let pos = html.find(&pattern)?;
-    let region_start = if pos > 200 { pos - 200 } else { 0 };
+    let region_start = pos.saturating_sub(200);
     let region_end = (pos + pattern.len() + 200).min(html.len());
     let region = &html[region_start..region_end];
     let val_marker = "value=\"";

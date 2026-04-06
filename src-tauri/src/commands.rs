@@ -3,6 +3,7 @@ use tauri::State;
 use tauri::{Emitter, Manager};
 use std::time::Instant;
 use std::sync::LazyLock;
+use crate::config;
 use regex::Regex;
 
 use crate::auth;
@@ -29,7 +30,7 @@ macro_rules! kgc_fetch {
         }
         let html = client.fetch_page($path).await?;
         #[cfg(debug_assertions)]
-        { let _ = std::fs::write($dump, &html); }
+        { let _ = std::fs::write(std::env::temp_dir().join($dump), &html); }
         Ok($parser(&html))
     }};
 }
@@ -87,7 +88,7 @@ pub async fn open_login_window(
     .title("関西学院 - サインイン")
     .inner_size(480.0, 700.0)
     .resizable(true)
-    .initialization_script(&auth::saml_intercept_script(SAML_CALLBACK_HOST))
+    .initialization_script(auth::saml_intercept_script(SAML_CALLBACK_HOST))
     .on_navigation(move |url| {
         // Intercept our special callback URL
         if url.host_str() == Some("kgc-saml-callback.localhost") {
@@ -135,7 +136,7 @@ pub async fn open_login_window(
                         // The Okta session is still active in the webview, so Luna should auto-authenticate
                         log::info!("=== Phase 2: Luna SAML login ===");
                         if let Some(win) = app_clone.get_webview_window("login") {
-                            let luna_saml_url = "https://luna.kwansei.ac.jp/saml/login?disco=true";
+                            let luna_saml_url = config::LUNA_SAML_URL;
                             log::info!("Navigating login webview to Luna SAML: {}", luna_saml_url);
                             let luna_url: url::Url = luna_saml_url.parse()
                                 .expect("hardcoded Luna SAML URL is valid");
@@ -178,7 +179,7 @@ pub async fn open_login_window(
                             // in the webview will auto-authenticate KWIC Portal.
                             log::info!("=== Phase 3: KWIC Portal SAML login ===");
                             if let Some(win) = app_clone.get_webview_window("login") {
-                                let kwic_saml_url = "https://kwic.kwansei.ac.jp/saml/login?disco=true";
+                                let kwic_saml_url = config::KWIC_SAML_URL;
                                 log::info!("Navigating login webview to KWIC Portal SAML: {}", kwic_saml_url);
                                 let kwic_url: url::Url = kwic_saml_url.parse()
                                     .expect("hardcoded KWIC SAML URL is valid");
@@ -266,8 +267,8 @@ pub async fn check_session(
     let mut client = state.client.lock().await;
 
     // If no in-memory session, try to restore from disk
-    if client.session.is_none() {
-        if client.try_restore_session() {
+    if client.session.is_none()
+        && client.try_restore_session() {
             log::info!("Restored session from disk, validating...");
             // Validate by trying to fetch a page
             match client.fetch_page("/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014").await {
@@ -300,7 +301,6 @@ pub async fn check_session(
                 }
             }
         }
-    }
 
     if let Some(session) = &client.session {
         Ok(SessionStatus {
@@ -406,33 +406,33 @@ pub async fn fetch_timetable_week(state: State<'_, AppState>, direction: String)
 
     let html = client.post_form("/uniasv2/ARF010PCT01EventAction.do", &params).await?;
     #[cfg(debug_assertions)]
-    { let _ = std::fs::write("/tmp/kgc-week-response.html", &html); }
+    { let _ = std::fs::write(std::env::temp_dir().join("kgc-week-response.html"), &html); }
     Ok(parser::parse_timetable(&html))
 }
 
 #[tauri::command]
 pub async fn fetch_grades(state: State<'_, AppState>) -> Result<parser::GradesData, String> {
-    kgc_fetch!(state, "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "/tmp/kgc-grades.html")
+    kgc_fetch!(state, "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "kgc-grades.html")
 }
 
 #[tauri::command]
 pub async fn fetch_cancellations(state: State<'_, AppState>) -> Result<parser::CancellationsData, String> {
-    kgc_fetch!(state, "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "/tmp/kgc-cancellations.html")
+    kgc_fetch!(state, "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "kgc-cancellations.html")
 }
 
 #[tauri::command]
 pub async fn fetch_makeup_classes(state: State<'_, AppState>) -> Result<parser::MakeupData, String> {
-    kgc_fetch!(state, "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "/tmp/kgc-makeup.html")
+    kgc_fetch!(state, "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "kgc-makeup.html")
 }
 
 #[tauri::command]
 pub async fn fetch_room_changes(state: State<'_, AppState>) -> Result<parser::RoomChangesData, String> {
-    kgc_fetch!(state, "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "/tmp/kgc-roomchanges.html")
+    kgc_fetch!(state, "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "kgc-roomchanges.html")
 }
 
 #[tauri::command]
 pub async fn fetch_registration(state: State<'_, AppState>) -> Result<parser::RegistrationData, String> {
-    kgc_fetch!(state, "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "/tmp/kgc-registration.html")
+    kgc_fetch!(state, "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "kgc-registration.html")
 }
 
 #[tauri::command]
@@ -444,24 +444,21 @@ pub async fn fetch_exam_timetable(state: State<'_, AppState>) -> Result<parser::
 pub async fn fetch_notifications(
     state: State<'_, AppState>,
 ) -> Result<parser::NotificationsData, String> {
-    kgc_fetch!(state, "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "/tmp/kgc-notifications.html")
+    kgc_fetch!(state, "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
 }
 
 /// 関西学院大学 period → (start_hour, start_min, end_hour, end_min)
 /// 6限以降は通常使わないため None を返す（カレンダーに同期しない）
 fn period_to_time(period: i32) -> Option<(u32, u32, u32, u32)> {
-    match period {
-        1 => Some((9, 0, 10, 30)),
-        2 => Some((11, 0, 12, 30)),
-        3 => Some((13, 30, 15, 0)),
-        4 => Some((15, 10, 16, 40)),
-        5 => Some((16, 50, 18, 20)),
-        _ => None, // 6限以降は同期しない
+    if period >= 1 && period <= 5 {
+        Some(config::PERIOD_TIMES[(period - 1) as usize])
+    } else {
+        None // 6限以降は同期しない
     }
 }
 
-static WEEK_MONDAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})\(月\)").unwrap());
-static WEEK_DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})").unwrap());
+static WEEK_MONDAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})\(月\)").expect("valid regex"));
+static WEEK_DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})").expect("valid regex"));
 
 /// Parse week_label like "2026/03/30(月)～2026/04/05(日)" to get Monday's date
 fn parse_week_start(week_label: &str) -> Result<(i32, u32, u32), String> {
@@ -478,29 +475,28 @@ fn parse_week_start(week_label: &str) -> Result<(i32, u32, u32), String> {
 
 /// Calculate actual date by adding day_offset to a base date
 fn add_days(year: i32, month: u32, day: u32, offset: i32) -> (i32, u32, u32) {
-    // Simple date arithmetic using day-of-year
-    let days_in_month = |y: i32, m: u32| -> u32 {
-        match m {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 => if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 29 } else { 28 },
-            _ => 30,
+    use chrono::{Datelike, NaiveDate};
+    let date = NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
+        + chrono::Duration::days(offset as i64);
+    (date.year(), date.month(), date.day())
+}
+
+/// Run a JXA script via osascript on a blocking thread.
+async fn run_jxa(script: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = std::process::Command::new("osascript")
+            .arg("-l").arg("JavaScript")
+            .arg("-e").arg(&script)
+            .output()
+            .map_err(|e| format!("osascript 実行失敗: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("osascript エラー: {}", stderr.trim()));
         }
-    };
-    let mut y = year;
-    let mut m = month;
-    let mut d = (day as i32) + offset;
-    while d > days_in_month(y, m) as i32 {
-        d -= days_in_month(y, m) as i32;
-        m += 1;
-        if m > 12 { m = 1; y += 1; }
-    }
-    while d < 1 {
-        m -= 1;
-        if m < 1 { m = 12; y -= 1; }
-        d += days_in_month(y, m) as i32;
-    }
-    (y, m, d as u32)
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {}", e))?
 }
 
 #[derive(Debug, Deserialize)]
@@ -619,18 +615,8 @@ cal.events().length;
         }
     );
 
-    let output = std::process::Command::new("osascript")
-        .arg("-l").arg("JavaScript")
-        .arg("-e").arg(&script)
-        .output()
-        .map_err(|e| format!("osascript 実行失敗: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("カレンダー同期失敗: {}", stderr.trim()));
-    }
-
-    let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let count = run_jxa(script).await
+        .map_err(|e| format!("カレンダー同期失敗: {}", e))?;
     log::info!("Calendar sync: {} events added", count);
     Ok(format!("{}件のイベントを同期しました", count))
 }
@@ -655,17 +641,10 @@ if (!cal) {
   JSON.stringify({ exists: true, count: cal.events().length });
 }
 "#;
-    let output = std::process::Command::new("osascript")
-        .arg("-l").arg("JavaScript")
-        .arg("-e").arg(script)
-        .output()
-        .map_err(|e| format!("osascript 実行失敗: {}", e))?;
-
-    if !output.status.success() {
-        return Ok(serde_json::json!({ "exists": false, "count": 0 }));
+    match run_jxa(script.to_string()).await {
+        Ok(stdout) => serde_json::from_str(&stdout).map_err(|e| format!("JSON parse error: {}", e)),
+        Err(_) => Ok(serde_json::json!({ "exists": false, "count": 0 })),
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    serde_json::from_str(&stdout).map_err(|e| format!("JSON parse error: {}", e))
 }
 
 /// Clear all events from the KG-Course calendar, or delete the calendar entirely
@@ -708,22 +687,13 @@ count + "";
 "#.to_string()
     };
 
-    let output = std::process::Command::new("osascript")
-        .arg("-l").arg("JavaScript")
-        .arg("-e").arg(&script)
-        .output()
-        .map_err(|e| format!("osascript 実行失敗: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("カレンダー操作失敗: {}", stderr.trim()));
-    }
+    let result = run_jxa(script).await
+        .map_err(|e| format!("カレンダー操作失敗: {}", e))?;
 
     if delete_calendar {
         Ok("カレンダーを削除しました".into())
     } else {
-        let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(format!("{}件のイベントを削除しました", count))
+        Ok(format!("{}件のイベントを削除しました", result))
     }
 }
 
@@ -824,7 +794,7 @@ pub async fn open_profile_edit_window(
         return Ok(());
     }
 
-    let url: url::Url = "https://kg-course.kwansei.ac.jp/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/GGA110.do&REQ_PRFR_MNU_ID=MNUIDSTD0104011"
+    let url: url::Url = format!("{}/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/GGA110.do&REQ_PRFR_MNU_ID=MNUIDSTD0104011", config::KG_COURSE_BASE)
         .parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
 
@@ -876,7 +846,7 @@ pub async fn open_registration_window(
 
     // Navigate through SSO entry point so the WebView establishes its own
     // authenticated session using the Okta cookies from the login webview.
-    let url: url::Url = "https://kg-course.kwansei.ac.jp/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/ARD010.do&REQ_PRFR_MNU_ID=MNUIDSTD0102012&SE_LANGUAGE="
+    let url: url::Url = format!("{}/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/ARD010.do&REQ_PRFR_MNU_ID=MNUIDSTD0102012&SE_LANGUAGE=", config::KG_COURSE_BASE)
         .parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
 
@@ -969,9 +939,9 @@ pub struct PingResult {
 pub async fn debug_ping(target: String) -> Result<PingResult, String> {
     // Restrict to known university hosts
     const ALLOWED_HOSTS: &[&str] = &[
-        "https://kg-course.kwansei.ac.jp",
-        "https://luna.kwansei.ac.jp",
-        "https://kwic.kwansei.ac.jp",
+        config::KG_COURSE_BASE,
+        config::LUNA_BASE,
+        config::KWIC_BASE,
         "https://sts.kwansei.ac.jp",
         "https://idp.kwansei.ac.jp",
         "https://sso.kwansei.ac.jp",
@@ -1393,8 +1363,8 @@ pub async fn get_syllabus_detail(
     map.remove(&label).ok_or("詳細データがありません".into())
 }
 
-static STRUTS_TOKEN_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#).unwrap());
-static STRUTS_TOKEN_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="([^"]+)"[^>]*name="org\.apache\.struts\.taglib\.html\.TOKEN""#).unwrap());
+static STRUTS_TOKEN_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#).expect("valid regex"));
+static STRUTS_TOKEN_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="([^"]+)"[^>]*name="org\.apache\.struts\.taglib\.html\.TOKEN""#).expect("valid regex"));
 
 fn extract_struts_token(html: &str) -> Result<String, String> {
     STRUTS_TOKEN_RE1.captures(html)
@@ -1404,8 +1374,8 @@ fn extract_struts_token(html: &str) -> Result<String, String> {
         .ok_or_else(|| "Strutsトークンが見つかりません".into())
 }
 
-static YEAR_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="txtLsnOpcFcy"[^>]*value="(\d{4})""#).unwrap());
-static YEAR_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="(\d{4})"[^>]*name="txtLsnOpcFcy""#).unwrap());
+static YEAR_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="txtLsnOpcFcy"[^>]*value="(\d{4})""#).expect("valid regex"));
+static YEAR_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="(\d{4})"[^>]*name="txtLsnOpcFcy""#).expect("valid regex"));
 
 fn extract_year_from_search_page(html: &str) -> Option<String> {
     YEAR_RE1.captures(html)
@@ -1423,7 +1393,7 @@ fn extract_all_form_inputs(html: &str) -> Vec<(String, String)> {
     let mut params: Vec<(String, String)> = Vec::new();
 
     // Collect all <input> elements (hidden, text, etc.)
-    let input_sel = Selector::parse("form input").unwrap();
+    let input_sel = Selector::parse("form input").expect("valid selector");
     for el in document.select(&input_sel) {
         let name = match el.value().attr("name") {
             Some(n) if !n.is_empty() => n.to_string(),
@@ -1435,18 +1405,17 @@ fn extract_all_form_inputs(html: &str) -> Vec<(String, String)> {
             continue;
         }
         // For checkboxes/radios, only include if checked
-        if input_type == "checkbox" || input_type == "radio" {
-            if el.value().attr("checked").is_none() {
+        if (input_type == "checkbox" || input_type == "radio")
+            && el.value().attr("checked").is_none() {
                 continue;
             }
-        }
         let value = el.value().attr("value").unwrap_or("").to_string();
         params.push((name, value));
     }
 
     // Collect <select> elements with their selected <option> value
-    let select_sel = Selector::parse("form select").unwrap();
-    let option_sel = Selector::parse("option[selected]").unwrap();
+    let select_sel = Selector::parse("form select").expect("valid selector");
+    let option_sel = Selector::parse("option[selected]").expect("valid selector");
     for sel_el in document.select(&select_sel) {
         let name = match sel_el.value().attr("name") {
             Some(n) if !n.is_empty() => n.to_string(),
@@ -1521,7 +1490,7 @@ pub async fn headless_kgc_refresh(
         tauri::WebviewUrl::External(parsed_url),
     )
     .visible(false)
-    .initialization_script(&auth::saml_intercept_script(SAML_CALLBACK_HOST))
+    .initialization_script(auth::saml_intercept_script(SAML_CALLBACK_HOST))
     .on_navigation(move |url| {
         if url.host_str() == Some("kgc-saml-callback.localhost") {
             let pairs: std::collections::HashMap<String, String> =
@@ -1604,7 +1573,7 @@ pub async fn headless_luna_refresh(
         tauri::WebviewUrl::External(parsed_url),
     )
     .visible(false)
-    .initialization_script(&auth::saml_intercept_script("luna-saml-callback.localhost"))
+    .initialization_script(auth::saml_intercept_script("luna-saml-callback.localhost"))
     .on_navigation(move |url| {
         if url.host_str() == Some("luna-saml-callback.localhost") {
             let pairs: std::collections::HashMap<String, String> =
@@ -1673,7 +1642,7 @@ pub async fn headless_kwic_refresh(
     // Navigate directly to KWIC Portal's SAML login URL.
     // The invisible WebView shares the Okta session cookies with the visible login window,
     // so Okta will auto-submit the SAMLResponse without user interaction.
-    let saml_url = "https://kwic.kwansei.ac.jp/saml/login?disco=true";
+    let saml_url = config::KWIC_SAML_URL;
     let parsed_url: url::Url = saml_url
         .parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
@@ -1684,7 +1653,7 @@ pub async fn headless_kwic_refresh(
         tauri::WebviewUrl::External(parsed_url),
     )
     .visible(false)
-    .initialization_script(&auth::saml_intercept_script("kwic-saml-callback.localhost"))
+    .initialization_script(auth::saml_intercept_script("kwic-saml-callback.localhost"))
     .on_navigation(move |url| {
         if url.host_str() == Some("kwic-saml-callback.localhost") {
             let pairs: std::collections::HashMap<String, String> =
@@ -1767,4 +1736,59 @@ pub async fn sync_session(
         }
         _ => Err(format!("Unknown service: {}", service)),
     }
+}
+
+// ───────── Weather (fetched server-side to avoid CSP issues) ─────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WeatherData {
+    pub temperature: i32,
+    #[serde(rename = "weatherCode")]
+    pub weather_code: i32,
+    pub humidity: i32,
+    #[serde(rename = "windSpeed")]
+    pub wind_speed: i32,
+    pub tomorrow: Option<WeatherTomorrow>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WeatherTomorrow {
+    #[serde(rename = "tempMax")]
+    pub temp_max: i32,
+    #[serde(rename = "tempMin")]
+    pub temp_min: i32,
+    #[serde(rename = "weatherCode")]
+    pub weather_code: i32,
+}
+
+#[tauri::command]
+pub async fn fetch_weather() -> Result<WeatherData, String> {
+    let url = "https://api.open-meteo.com/v1/forecast?latitude=34.7383&longitude=135.3416&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo&forecast_days=2";
+    let resp: serde_json::Value = reqwest::get(url)
+        .await
+        .map_err(|e| format!("天気API接続失敗: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("天気API解析失敗: {}", e))?;
+
+    let current = &resp["current"];
+    let daily = &resp["daily"];
+
+    let tomorrow = if daily["time"].as_array().is_some_and(|a| a.len() >= 2) {
+        Some(WeatherTomorrow {
+            temp_max: daily["temperature_2m_max"][1].as_f64().unwrap_or(0.0).round() as i32,
+            temp_min: daily["temperature_2m_min"][1].as_f64().unwrap_or(0.0).round() as i32,
+            weather_code: daily["weather_code"][1].as_i64().unwrap_or(0) as i32,
+        })
+    } else {
+        None
+    };
+
+    Ok(WeatherData {
+        temperature: current["temperature_2m"].as_f64().unwrap_or(0.0).round() as i32,
+        weather_code: current["weather_code"].as_i64().unwrap_or(0) as i32,
+        humidity: current["relative_humidity_2m"].as_i64().unwrap_or(0) as i32,
+        wind_speed: current["wind_speed_10m"].as_f64().unwrap_or(0.0).round() as i32,
+        tomorrow,
+    })
 }

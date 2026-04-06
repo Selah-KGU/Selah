@@ -29,15 +29,18 @@
     }
   }
 
-  function toggleTheme() {
+  async function toggleTheme() {
+    const { emit } = await import("@tauri-apps/api/event");
+    const { invoke } = await import("@tauri-apps/api/core");
     theme.update((t) => {
-      // Determine the current effective theme
       const effective = t === "system"
         ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
         : t;
       const next = effective === "dark" ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", next);
       localStorage.setItem("selah-theme", next);
+      emit("theme-changed", next);
+      invoke("set_app_theme", { theme: next });
       return next;
     });
   }
@@ -48,14 +51,14 @@
     <span class="logo" aria-label="関西学院大学">{@html kgLogoRaw}</span>
   </div>
   <div class="titlebar-right">
-    <button class="tb-btn" onclick={toggleTheme} title="テーマ切替">
+    <button class="tb-btn" onclick={toggleTheme} title="テーマ切替" aria-label="テーマ切替">
       {#if $theme === "dark" || ($theme === "system" && typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches)}
         <Icon name="moon" size={14} />
       {:else}
         <Icon name="sun" size={14} />
       {/if}
     </button>
-    <button class="tb-btn" onclick={() => openSettingsWindow()} title="設定">
+    <button class="tb-btn" onclick={() => openSettingsWindow()} title="設定" aria-label="設定">
       <Icon name="gear" size={14} />
     </button>
     {#if $authState.authenticated}

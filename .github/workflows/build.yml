@@ -28,6 +28,25 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Setup Node.js
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust stable
+        if: steps.check.outputs.skip == 'false'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        if: steps.check.outputs.skip == 'false'
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
       - name: Bump patch version
         if: steps.check.outputs.skip == 'false'
         id: version
@@ -60,35 +79,6 @@ jobs:
           # Update Cargo.toml
           sed -i '' "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" src-tauri/Cargo.toml
 
-      - name: Commit version bump
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
-          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}" || exit 0
-          git tag ${{ steps.version.outputs.tag }}
-          git push origin main --tags
-
-      - name: Setup Node.js
-        if: steps.check.outputs.skip == 'false'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install Rust stable
-        if: steps.check.outputs.skip == 'false'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Rust cache
-        if: steps.check.outputs.skip == 'false'
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
       - name: Install frontend dependencies
         if: steps.check.outputs.skip == 'false'
         run: npm ci
@@ -105,3 +95,12 @@ jobs:
           releaseBody: "See the assets for the DMG installer."
           releaseDraft: true
           prerelease: false
+
+      - name: Commit version bump
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}" || exit 0
+          git push origin main

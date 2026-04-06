@@ -57,7 +57,7 @@
 </script>
 
 <div class="dashboard">
-  <nav class="sidebar" data-tauri-drag-region>
+  <nav class="sidebar" data-tauri-drag-region aria-label="メインナビゲーション">
     <div class="sidebar-drag-area" data-tauri-drag-region></div>
     <div class="sidebar-scroll">
       {#each tabs as tab}
@@ -67,6 +67,7 @@
         <button
           class="nav-item"
           class:active={$activeTab === tab.id}
+          aria-current={$activeTab === tab.id ? 'page' : undefined}
           onclick={() => tab.external ? tab.external() : activeTab.set(tab.id)}
         >
           <Icon name={tab.icon} size={16} />

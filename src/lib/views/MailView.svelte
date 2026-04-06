@@ -6,6 +6,7 @@
   import type { MailMessage, MailDetail } from "../api";
   import Icon from "../Icon.svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import DOMPurify from "dompurify";
 
   let loading = $state(true);
   let error = $state("");
@@ -292,7 +293,7 @@
           <div class="detail-body" onclick={handleBodyClick}>
             {#if selectedMessage.body?.content}
               {#if selectedMessage.body.contentType === "html"}
-                {@html selectedMessage.body.content}
+                {@html DOMPurify.sanitize(selectedMessage.body.content)}
               {:else}
                 <pre class="plain-text">{selectedMessage.body.content}</pre>
               {/if}

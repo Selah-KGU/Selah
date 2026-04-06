@@ -94,16 +94,16 @@
 <div class="view">
   <h2>変更情報</h2>
 
-  <div class="segmented-control">
-    <button class="segment" class:active={activeTab === "cancellations"} onclick={() => activeTab = "cancellations"}>
+  <div class="segmented-control" role="tablist">
+    <button class="segment" class:active={activeTab === "cancellations"} role="tab" aria-selected={activeTab === "cancellations"} onclick={() => activeTab = "cancellations"}>
       休講
       {#if cancelCount > 0}<span class="count-badge">{cancelCount}</span>{/if}
     </button>
-    <button class="segment" class:active={activeTab === "makeup"} onclick={() => activeTab = "makeup"}>
+    <button class="segment" class:active={activeTab === "makeup"} role="tab" aria-selected={activeTab === "makeup"} onclick={() => activeTab = "makeup"}>
       補講
       {#if makeupCount > 0}<span class="count-badge">{makeupCount}</span>{/if}
     </button>
-    <button class="segment" class:active={activeTab === "rooms"} onclick={() => activeTab = "rooms"}>
+    <button class="segment" class:active={activeTab === "rooms"} role="tab" aria-selected={activeTab === "rooms"} onclick={() => activeTab = "rooms"}>
       教室変更
       {#if roomCount > 0}<span class="count-badge">{roomCount}</span>{/if}
     </button>

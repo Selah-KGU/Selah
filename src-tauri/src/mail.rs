@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use std::path::PathBuf;
 
+use crate::config;
+
 pub const DEFAULT_CLIENT_ID_STR: &str = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
-const MS_AUTHORITY: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";
 const MS_REDIRECT_URI: &str = "http://localhost";
 const MS_SCOPES: &str = "Mail.Read offline_access";
-const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 
 const TOKEN_FILE: &str = "ms_mail_token.json";
 const MAIL_CONFIG_FILE: &str = "ms_mail_config.json";
@@ -14,18 +14,12 @@ const MAIL_CONFIG_FILE: &str = "ms_mail_config.json";
 /// User-configurable mail settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct MailConfig {
     /// Azure AD Application (client) ID. Empty = use default.
     pub client_id: String,
 }
 
-impl Default for MailConfig {
-    fn default() -> Self {
-        Self {
-            client_id: String::new(),
-        }
-    }
-}
 
 impl MailConfig {
     /// Returns the effective client_id (user-configured or default)
@@ -147,6 +141,14 @@ pub struct MailClient {
     pub config: MailConfig,
 }
 
+/// Validate a Graph API message ID (alphanumeric, hyphens, underscores, equals, dots).
+fn validate_message_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=.".contains(c)) {
+        return Err("無効なメッセージIDです".into());
+    }
+    Ok(())
+}
+
 impl MailClient {
     pub fn new() -> Self {
         let http = Client::builder()
@@ -191,7 +193,7 @@ impl MailClient {
     pub fn auth_url(&self) -> String {
         format!(
             "{}/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}&response_mode=query",
-            MS_AUTHORITY,
+            config::MS_AUTHORITY,
             self.config.effective_client_id(),
             urlencoding::encode(MS_REDIRECT_URI),
             urlencoding::encode(MS_SCOPES),
@@ -210,7 +212,7 @@ impl MailClient {
         ];
 
         let resp = self.http
-            .post(&format!("{}/token", MS_AUTHORITY))
+            .post(format!("{}/token", config::MS_AUTHORITY))
             .form(&params)
             .send()
             .await
@@ -257,7 +259,7 @@ impl MailClient {
         ];
 
         let resp = self.http
-            .post(&format!("{}/token", MS_AUTHORITY))
+            .post(format!("{}/token", config::MS_AUTHORITY))
             .form(&params)
             .send()
             .await
@@ -298,7 +300,7 @@ impl MailClient {
             // Token expired or about to expire, refresh
             self.refresh_token().await?;
         }
-        Ok(self.token.as_ref().unwrap().access_token.clone())
+        Ok(self.token.as_ref().ok_or("token lost after refresh")?.access_token.clone())
     }
 
     /// GET request to Graph API with auto-refresh
@@ -316,7 +318,7 @@ impl MailClient {
         if status.as_u16() == 401 {
             // Token might have been revoked, try refresh once
             self.refresh_token().await?;
-            let new_token = self.token.as_ref().unwrap().access_token.clone();
+            let new_token = self.token.as_ref().ok_or("token lost after refresh")?.access_token.clone();
             let resp2 = self.http
                 .get(url)
                 .bearer_auth(&new_token)
@@ -340,7 +342,7 @@ impl MailClient {
 
     /// Fetch user's mail profile
     pub async fn fetch_profile(&mut self) -> Result<MailProfile, String> {
-        let body = self.graph_get(&format!("{}/me?$select=displayName,mail,userPrincipalName", GRAPH_BASE)).await?;
+        let body = self.graph_get(&format!("{}/me?$select=displayName,mail,userPrincipalName", config::GRAPH_BASE)).await?;
         serde_json::from_value(body).map_err(|e| format!("プロフィール解析失敗: {}", e))
     }
 
@@ -348,7 +350,7 @@ impl MailClient {
     pub async fn fetch_inbox(&mut self, top: u32, skip: u32) -> Result<Vec<MailMessage>, String> {
         let url = format!(
             "{}/me/mailFolders/inbox/messages?$top={}&$skip={}&$orderby=receivedDateTime desc&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments",
-            GRAPH_BASE, top, skip,
+            config::GRAPH_BASE, top, skip,
         );
         let body = self.graph_get(&url).await?;
         let resp: GraphListResponse<MailMessage> = serde_json::from_value(body)
@@ -358,9 +360,10 @@ impl MailClient {
 
     /// Fetch a single message detail
     pub async fn fetch_message(&mut self, message_id: &str) -> Result<MailDetail, String> {
+        validate_message_id(message_id)?;
         let url = format!(
             "{}/me/messages/{}?$select=id,subject,body,from,receivedDateTime,isRead,hasAttachments,toRecipients,ccRecipients",
-            GRAPH_BASE, message_id,
+            config::GRAPH_BASE, message_id,
         );
         let body = self.graph_get(&url).await?;
         serde_json::from_value(body).map_err(|e| format!("メール詳細解析失敗: {}", e))
@@ -368,8 +371,9 @@ impl MailClient {
 
     /// Mark a message as read
     pub async fn mark_as_read(&mut self, message_id: &str) -> Result<(), String> {
+        validate_message_id(message_id)?;
         let access_token = self.ensure_token().await?;
-        let url = format!("{}/me/messages/{}", GRAPH_BASE, message_id);
+        let url = format!("{}/me/messages/{}", config::GRAPH_BASE, message_id);
         let body = serde_json::json!({"isRead": true});
         self.http
             .patch(&url)

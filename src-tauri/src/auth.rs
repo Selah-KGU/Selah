@@ -5,15 +5,14 @@ use url::Url;
 use std::sync::LazyLock;
 
 use crate::client::KgcClient;
+use crate::config;
 use crate::parser;
 
-const BASE_URL: &str = "https://kg-course.kwansei.ac.jp";
-
 static META_REFRESH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"meta\s+http-equiv="refresh"\s+content="\d+;URL=([^"]+)""#).unwrap()
+    Regex::new(r#"meta\s+http-equiv="refresh"\s+content="\d+;URL=([^"]+)""#).expect("valid regex")
 });
 static SAML_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(https://sso\.kwansei\.ac\.jp/app/[^"'\s]+)"#).unwrap()
+    Regex::new(r#"(https://sso\.kwansei\.ac\.jp/app/[^"'\s]+)"#).expect("valid regex")
 });
 
 /// Generate a SAML intercept initialization script for a login webview.
@@ -79,7 +78,7 @@ pub struct SamlCallbackData {
 /// This also establishes SP session cookies in the reqwest cookie jar,
 /// which are needed when we later POST the SAMLResponse back to the SP.
 pub async fn initiate_sp_auth(http: &Client) -> Result<String, String> {
-    let entry_url = format!("{}/uniasv2/UnSSOLoginControl2", BASE_URL);
+    let entry_url = format!("{}/uniasv2/UnSSOLoginControl2", config::KG_COURSE_BASE);
     let mut current_url = entry_url;
 
     for i in 0..10 {
@@ -99,8 +98,8 @@ pub async fn initiate_sp_auth(http: &Client) -> Result<String, String> {
                 let loc_str = loc.to_str().unwrap_or_default();
                 log::info!("initiate_sp_auth step {}: Location={}", i, &loc_str[..200.min(loc_str.len())]);
                 let next_url = if loc_str.starts_with('/') {
-                    let parsed = Url::parse(&current_url).unwrap();
-                    format!("{}://{}{}", parsed.scheme(), parsed.host_str().unwrap(), loc_str)
+                    let parsed = Url::parse(&current_url).expect("current_url is a valid URL");
+                    format!("{}://{}{}", parsed.scheme(), parsed.host_str().expect("URL has host"), loc_str)
                 } else {
                     loc_str.to_string()
                 };
@@ -122,11 +121,11 @@ pub async fn initiate_sp_auth(http: &Client) -> Result<String, String> {
         let re = &*META_REFRESH_RE;
         if let Some(caps) = re.captures(&body) {
             let redirect_path = &caps[1];
-            let parsed = Url::parse(&current_url).unwrap();
+            let parsed = Url::parse(&current_url).expect("current_url is a valid URL");
             current_url = if redirect_path.starts_with("http") {
                 redirect_path.to_string()
             } else {
-                format!("{}://{}/{}", parsed.scheme(), parsed.host_str().unwrap(), redirect_path)
+                format!("{}://{}/{}", parsed.scheme(), parsed.host_str().expect("URL has host"), redirect_path)
             };
             continue;
         }
@@ -177,7 +176,7 @@ pub async fn complete_saml_login(
     }
 
     // Follow post-login redirects to fully establish the session
-    let mut current_url = format!("{}/uniasv2/UnSSOLoginControl2", BASE_URL);
+    let mut current_url = format!("{}/uniasv2/UnSSOLoginControl2", config::KG_COURSE_BASE);
     for _ in 0..15 {
         let resp = kgc.http
             .get(&current_url)
@@ -190,8 +189,8 @@ pub async fn complete_saml_login(
             if let Some(loc) = resp.headers().get("location") {
                 let loc_str = loc.to_str().unwrap_or_default();
                 let next = if loc_str.starts_with('/') {
-                    let parsed = Url::parse(&current_url).unwrap();
-                    format!("{}://{}{}", parsed.scheme(), parsed.host_str().unwrap(), loc_str)
+                    let parsed = Url::parse(&current_url).expect("current_url is a valid URL");
+                    format!("{}://{}{}", parsed.scheme(), parsed.host_str().expect("URL has host"), loc_str)
                 } else {
                     loc_str.to_string()
                 };

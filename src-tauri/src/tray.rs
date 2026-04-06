@@ -6,16 +6,7 @@ use tauri::{
     AppHandle, Manager,
 };
 
-/// Period time slots (start_hour, start_min, end_hour, end_min)
-const PERIOD_TIMES: [(u32, u32, u32, u32); 7] = [
-    (9, 0, 10, 30),   // 1限
-    (11, 0, 12, 30),  // 2限
-    (13, 30, 15, 0),  // 3限
-    (15, 10, 16, 40), // 4限
-    (16, 50, 18, 20), // 5限
-    (18, 30, 20, 0),  // 6限
-    (20, 10, 21, 40), // 7限
-];
+use crate::config;
 
 fn day_label(day: &str) -> &str {
     match day {
@@ -61,7 +52,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .build()?;
 
     let _tray = TrayIconBuilder::with_id("main-tray")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(app.default_window_icon().expect("app icon is set").clone())
         .icon_as_template(true)
         .tooltip("Selah")
         .menu(&menu)
@@ -118,7 +109,7 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
         if entry.period < 1 || entry.period > 7 {
             continue;
         }
-        let (sh, sm, _, _) = PERIOD_TIMES[(entry.period - 1) as usize];
+        let (sh, sm, _, _) = config::PERIOD_TIMES[(entry.period - 1) as usize];
         let start_minutes = (sh * 60 + sm) as i32;
 
         // Calculate days ahead (0 = today, 1 = tomorrow, ...)
@@ -130,7 +121,7 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
         }
         // If same day but class already ended, push to next week
         if days_ahead == 0 {
-            let (_, _, eh, em) = PERIOD_TIMES[(entry.period - 1) as usize];
+            let (_, _, eh, em) = config::PERIOD_TIMES[(entry.period - 1) as usize];
             let end_minutes = (eh * 60 + em) as i32;
             if current_minutes as i32 >= end_minutes {
                 days_ahead = 7;
@@ -153,7 +144,7 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
     if let Some((entry, days_ahead, start_minutes)) = best {
         let sh = start_minutes / 60;
         let sm = start_minutes % 60;
-        let (_, _, eh, em) = PERIOD_TIMES[(entry.period - 1) as usize];
+        let (_, _, eh, em) = config::PERIOD_TIMES[(entry.period - 1) as usize];
 
         let time_label = if days_ahead == 0 {
             // Currently in class or upcoming today
@@ -177,7 +168,7 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
         let _ = tray.set_tooltip(Some(&tooltip));
 
         // Rebuild menu with next class info
-        let info_text = format!("{}", entry.course_name);
+        let info_text = entry.course_name.to_string();
         let time_text = format!("{} {}限 {}:{:02}〜{}:{:02}", time_label, entry.period, sh, sm, eh, em);
         let room_text = if entry.room.is_empty() {
             String::new()
@@ -238,24 +229,27 @@ impl TrayStatusState {
     }
 }
 
-/// Start the background cycling thread (call once at setup)
+/// Start the background cycling task (call once at setup)
 pub fn start_tray_cycle(app: &AppHandle, state: Arc<TrayStatusState>) {
     if state.running.swap(true, Ordering::SeqCst) {
         return; // already running
     }
     let app = app.clone();
-    std::thread::spawn(move || {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(8));
+        interval.tick().await; // first tick fires immediately, skip it
         let mut last_text = String::new();
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(8));
-            let mut guard = state.inner.lock().unwrap();
+            interval.tick().await;
+            let Ok(mut guard) = state.inner.lock() else {
+                continue; // mutex poisoned, skip this tick
+            };
             let (ref items, ref mut idx) = *guard;
             if items.is_empty() {
                 drop(guard);
-                // Keep showing last text rather than clearing
                 continue;
             }
-            *idx = *idx % items.len();
+            *idx %= items.len();
             let text = format!(" {}", items[*idx]);
             *idx = (*idx + 1) % items.len();
             drop(guard);

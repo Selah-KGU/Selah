@@ -1,6 +1,7 @@
 mod ai;
 mod auth;
 mod client;
+pub(crate) mod config;
 mod commands;
 mod kwic_client;
 mod kwic_commands;
@@ -22,6 +23,19 @@ pub struct AppState {
     pub luna: Mutex<luna_client::LunaClient>,
     pub kwic: Mutex<kwic_client::KwicClient>,
     pub mail: Mutex<mail::MailClient>,
+}
+
+/// Shared theme state so child webviews can read the current theme.
+pub struct ThemeState(pub std::sync::Mutex<String>);
+
+#[tauri::command]
+fn get_app_theme(state: tauri::State<'_, ThemeState>) -> String {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn set_app_theme(state: tauri::State<'_, ThemeState>, theme: String) {
+    *state.0.lock().unwrap() = theme;
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -55,10 +69,11 @@ pub fn run() {
                 mail: Mutex::new(mail_client),
             });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
+            app.manage(ThemeState(std::sync::Mutex::new("system".to_string())));
             let tray_status = std::sync::Arc::new(tray::TrayStatusState::new());
             app.manage(tray_status.clone());
-            tray::setup_tray(&app.handle())?;
-            tray::start_tray_cycle(&app.handle(), tray_status);
+            tray::setup_tray(app.handle())?;
+            tray::start_tray_cycle(app.handle(), tray_status);
 
             // Hide main window on close instead of quitting (keep in tray)
             if let Some(win) = app.get_webview_window("main") {
@@ -89,6 +104,7 @@ pub fn run() {
             commands::fetch_registration,
             commands::fetch_exam_timetable,
             commands::fetch_notifications,
+            commands::fetch_weather,
             commands::fetch_page,
             commands::fetch_course_detail,
             commands::open_detail_window,
@@ -160,6 +176,8 @@ pub fn run() {
             ai::test_notification,
             tray::update_tray,
             tray::set_tray_status_items,
+            get_app_theme,
+            set_app_theme,
             webview_toolbar::browser_go_back,
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,

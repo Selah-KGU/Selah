@@ -2,9 +2,9 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>お知らせ詳細</title>
-<style>
   :root {
     --bg-primary: #ffffff;
     --bg-secondary: #f5f5f7;
@@ -213,9 +213,13 @@
           html += '</div>';
         }
 
-        // Body HTML (already sanitized on backend)
+        // Body HTML (sanitized on backend + CSP blocks inline scripts, strip dangerous tags as defense-in-depth)
         if (detail.body_html) {
-          html += '<div class="body-content">' + detail.body_html + '</div>';
+          const sanitized = detail.body_html
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '')
+            .replace(/\son\w+\s*=/gi, ' data-removed=');
+          html += '<div class=\"body-content\">' + sanitized + '</div>';
         } else {
           html += '<div class="error">本文が取得できませんでした</div>';
         }

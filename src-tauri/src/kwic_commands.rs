@@ -1,13 +1,51 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{atomic::{AtomicU32, Ordering}, LazyLock};
 
 use crate::auth;
+use crate::config;
 use crate::AppState;
 
 const KWIC_SAML_CALLBACK_HOST: &str = "kwic-saml-callback.localhost";
 
 static KWIC_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+// ============ Cached Selectors ============
+
+macro_rules! sel {
+    ($name:ident, $s:expr) => {
+        static $name: LazyLock<scraper::Selector> =
+            LazyLock::new(|| scraper::Selector::parse($s).expect(concat!("bad selector: ", $s)));
+    };
+}
+
+sel!(SEL_NOTICE_A, ".portal-notice-li a.portal-notice-li-a");
+sel!(SEL_MAINLINK_A, ".portal-mainlink-li a");
+sel!(SEL_INFO_LI, "li.portal-info-content-li");
+sel!(SEL_INFO_A, "a.portal-info-content-li-a");
+sel!(SEL_INFO_DATE, ".portal-subblock-infolist-left-item2 > div");
+sel!(SEL_INFO_TITLE, ".portal-subblock-infolist-left-item2 > span");
+sel!(SEL_INFO_CATEGORY, ".portal-subblock-infolist-right");
+sel!(SEL_INFO_NEW, ".portal-information-new");
+sel!(SEL_CSRF, r#"input[name="_csrf"]"#);
+sel!(SEL_BLOCK_TITLE, ".block-title-txt");
+sel!(SEL_CONTENTS_HTML, "#contentsHtml");
+sel!(SEL_OUTGOING_DIV, ".portal-information-outgoing-division");
+sel!(SEL_CONTENTS_DETAIL, ".contents-detail");
+sel!(SEL_HEADER_BOLD, ".contents-header-txt .bold-txt");
+sel!(SEL_INPUT_AREA, ".contents-input-area");
+sel!(SEL_FILE_OBJECT, ".file-object");
+sel!(SEL_FILE_NAME, ".downloadFile, .fileName");
+sel!(SEL_OBJECT_NAME, ".objectName");
+sel!(SEL_SUBPORTAL_TITLE, ".subportal-title-txt");
+sel!(SEL_SUBPORTAL_LINK, "li.subportal-block-relation-list-li a.subportal-block-txtlink-li-b");
+sel!(SEL_SYSTEM_IMAGE, "img.systemlink-image");
+sel!(SEL_SUBPORTAL_LI, "li.subportal-block-info-list-li");
+sel!(SEL_SUBPORTAL_CAT, ".subportal-block-list-li-txt-info1");
+sel!(SEL_SUBPORTAL_TITLE_SPAN, ".subportal-block-list-li-txt-info2 span.link-txt");
+sel!(SEL_SUBPORTAL_DATE, ".subportal-block-list-li-txt-info3 span");
+sel!(SEL_SUBPORTAL_DEPT, ".subportal-block-list-li-txt-info4");
+sel!(SEL_SUBPORTAL_NEW, ".portal-information-priority-urgency-color");
 
 // ============ Types ============
 
@@ -90,8 +128,8 @@ pub async fn kwic_fetch_page(
     // In debug builds, also dump to /tmp for analysis
     #[cfg(debug_assertions)]
     {
-        let safe_name = path.replace('/', "_").replace('?', "_");
-        let _ = std::fs::write(format!("/tmp/kwic-portal{}.html", safe_name), &html);
+        let safe_name = path.replace(['/', '?'], "_");
+        let _ = std::fs::write(std::env::temp_dir().join(format!("kwic-portal{}.html", safe_name)), &html);
     }
     Ok(html)
 }
@@ -105,7 +143,7 @@ pub async fn kwic_fetch_home(
     let html = kwic.fetch_page("/portal/home").await?;
 
     #[cfg(debug_assertions)]
-    { let _ = std::fs::write("/tmp/kwic-portal-home.html", &html); }
+    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-home.html"), &html); }
 
     let sections = parse_portal_home(&html);
 
@@ -128,7 +166,7 @@ pub async fn kwic_fetch_notifications(
     let html = kwic.fetch_page("/portal/home").await?;
 
     #[cfg(debug_assertions)]
-    { let _ = std::fs::write("/tmp/kwic-portal-notifications-from-home.html", &html); }
+    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-notifications-from-home.html"), &html); }
 
     Ok(parse_portal_notifications(&html))
 }
@@ -181,7 +219,7 @@ pub async fn kwic_fetch_detail(
     ]).await?;
 
     #[cfg(debug_assertions)]
-    { let _ = std::fs::write("/tmp/kwic-portal-detail.html", &detail_html); }
+    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-detail.html"), &detail_html); }
 
     // 3. Parse the detail HTML page
     Ok(parse_detail_html(&detail_html))
@@ -211,12 +249,15 @@ pub async fn kwic_fetch_subportal(
     state: State<'_, AppState>,
     tag_cd: String,
 ) -> Result<KwicSubportalData, String> {
+    if !tag_cd.chars().all(|c| c.is_ascii_digit()) {
+        return Err("無効なtagCdです".into());
+    }
     let kwic = state.kwic.lock().await;
     let path = format!("/portal/subportal?tagCd={}", tag_cd);
     let html = kwic.fetch_page(&path).await?;
 
     #[cfg(debug_assertions)]
-    { let _ = std::fs::write(format!("/tmp/kwic-portal-subportal-{}.html", tag_cd), &html); }
+    { let _ = std::fs::write(std::env::temp_dir().join(format!("kwic-portal-subportal-{}.html", tag_cd)), &html); }
 
     Ok(parse_subportal(&html))
 }
@@ -287,8 +328,8 @@ pub async fn kwic_open_link(
             // WKWebView shares Okta SSO cookies from the login flow, so Okta auto-authenticates.
             // After SAML completes, KWIC sets session cookies and redirects to /portal/home.
             // Our initialization_script then redirects to the actual target URL.
-            let saml_url: url::Url = "https://kwic.kwansei.ac.jp/saml/login?disco=true"
-                .parse().unwrap();
+            let saml_url: url::Url = config::KWIC_SAML_URL
+                .parse().expect("hardcoded KWIC SAML URL is valid");
 
             // Escape the target URL for safe embedding in JS
             let escaped_url = url
@@ -361,7 +402,7 @@ pub async fn kwic_open_login(
     // Navigate directly to KWIC Portal's SAML login URL.
     // The webview shares the WKWebView cookie jar, so if Okta SSO is still alive
     // it will auto-authenticate. Otherwise the user sees the Okta login form.
-    let saml_url = "https://kwic.kwansei.ac.jp/saml/login?disco=true";
+    let saml_url = config::KWIC_SAML_URL;
     let parsed_url: url::Url = saml_url.parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
 
@@ -373,7 +414,7 @@ pub async fn kwic_open_login(
     .title("KWIC Portal - サインイン")
     .inner_size(480.0, 700.0)
     .resizable(true)
-    .initialization_script(&auth::saml_intercept_script(KWIC_SAML_CALLBACK_HOST))
+    .initialization_script(auth::saml_intercept_script(KWIC_SAML_CALLBACK_HOST))
     .on_navigation(move |url| {
         if url.host_str() == Some(KWIC_SAML_CALLBACK_HOST) {
             let pairs: std::collections::HashMap<String, String> =
@@ -453,7 +494,8 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
     let mut sections = Vec::new();
 
     // 1. Parse pinned important links (注目コンテンツ)
-    if let Ok(sel) = Selector::parse(".portal-notice-li a.portal-notice-li-a") {
+    {
+        let sel = &*SEL_NOTICE_A;
         let items: Vec<KwicPortalItem> = document.select(&sel).filter_map(|a| {
             let title: String = a.text().collect::<Vec<_>>().join(" ").trim().to_string();
             let href = a.value().attr("href").unwrap_or_default();
@@ -509,7 +551,8 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
     }
 
     // 3. Parse main link categories (メインリンク)
-    if let Ok(sel) = Selector::parse(".portal-mainlink-li a") {
+    {
+        let sel = &*SEL_MAINLINK_A;
         let items: Vec<KwicPortalItem> = document.select(&sel).filter_map(|a| {
             let title: String = a.text().collect::<Vec<_>>().join(" ").trim().to_string();
             let href = a.value().attr("href").unwrap_or_default();
@@ -522,7 +565,7 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
                 url: if href.starts_with("http") {
                     href.to_string()
                 } else {
-                    format!("https://kwic.kwansei.ac.jp{}", href)
+                    format!("{}{}",config::KWIC_BASE, href)
                 },
                 important: false,
                 information_type: String::new(),
@@ -545,48 +588,38 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
 /// Returns (KwicPortalItem, data2, data3, data4)
 fn parse_info_item(li: &scraper::ElementRef) -> Option<(KwicPortalItem, String, String, String)> {
     // Extract informationId and data attributes from `a[data1]`
-    let a_sel = scraper::Selector::parse("a.portal-info-content-li-a").ok()?;
-    let a = li.select(&a_sel).next()?;
+    let a = li.select(&*SEL_INFO_A).next()?;
     let id = a.value().attr("data1").unwrap_or_default().to_string();
     let data2 = a.value().attr("data2").unwrap_or_default().to_string();
     let data3 = a.value().attr("data3").unwrap_or_default().to_string();
     let data4 = a.value().attr("data4").unwrap_or_default().to_string();
 
     // Date: .portal-subblock-infolist-left-item2 > div
-    let date = scraper::Selector::parse(".portal-subblock-infolist-left-item2 > div")
-        .ok()
-        .and_then(|sel| li.select(&sel).next())
+    let date = li.select(&*SEL_INFO_DATE).next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
     // Title: .portal-subblock-infolist-left-item2 > span
-    let title = scraper::Selector::parse(".portal-subblock-infolist-left-item2 > span")
-        .ok()
-        .and_then(|sel| li.select(&sel).next())
+    let title = li.select(&*SEL_INFO_TITLE).next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
     if title.is_empty() { return None; }
 
     // Category/department: .portal-subblock-infolist-right
-    let category = scraper::Selector::parse(".portal-subblock-infolist-right")
-        .ok()
-        .and_then(|sel| li.select(&sel).next())
+    let category = li.select(&*SEL_INFO_CATEGORY).next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
     // NEW badge
-    let is_new = scraper::Selector::parse(".portal-information-new")
-        .ok()
-        .map(|sel| li.select(&sel).next().is_some())
-        .unwrap_or(false);
+    let is_new = li.select(&*SEL_INFO_NEW).next().is_some();
 
     Some((KwicPortalItem {
         id: id.clone(),
         title,
         date,
         category,
-        url: format!("https://kwic.kwansei.ac.jp/portal/home/information/detail?informationId={}&directLink=1", id),
+        url: format!("{}/portal/home/information/detail?informationId={}&directLink=1", config::KWIC_BASE, id),
         important: is_new,
         information_type: String::new(),
         person_category_cd: String::new(),
@@ -598,25 +631,23 @@ fn parse_info_item(li: &scraper::ElementRef) -> Option<(KwicPortalItem, String, 
 /// (The standalone /portal/home/information endpoint returns SystemError,
 ///  so we parse from the home page instead.)
 fn parse_portal_notifications(html: &str) -> Vec<KwicPortalNotification> {
-    use scraper::{Html, Selector};
+    use scraper::Html;
     let document = Html::parse_document(html);
     let mut notifications = Vec::new();
 
     // Parse all notification items across all tabs
-    if let Ok(sel) = Selector::parse("li.portal-info-content-li") {
-        for li in document.select(&sel) {
-            if let Some((item, data2, data3, data4)) = parse_info_item(&li) {
-                notifications.push(KwicPortalNotification {
-                    id: item.id,
-                    title: item.title,
-                    date: item.date,
-                    category: item.category,
-                    important: item.important,
-                    information_type: data2,
-                    person_category_cd: data3,
-                    category_cd: data4,
-                });
-            }
+    for li in document.select(&*SEL_INFO_LI) {
+        if let Some((item, data2, data3, data4)) = parse_info_item(&li) {
+            notifications.push(KwicPortalNotification {
+                id: item.id,
+                title: item.title,
+                date: item.date,
+                category: item.category,
+                important: item.important,
+                information_type: data2,
+                person_category_cd: data3,
+                category_cd: data4,
+            });
         }
     }
 
@@ -625,12 +656,10 @@ fn parse_portal_notifications(html: &str) -> Vec<KwicPortalNotification> {
 
 /// Extract CSRF token from KWIC Portal HTML
 fn extract_csrf_token(html: &str) -> Option<String> {
-    use scraper::{Html, Selector};
+    use scraper::Html;
     let doc = Html::parse_document(html);
-    if let Ok(sel) = Selector::parse(r#"input[name="_csrf"]"#) {
-        if let Some(el) = doc.select(&sel).next() {
-            return el.value().attr("value").map(|v| v.to_string());
-        }
+    if let Some(el) = doc.select(&*SEL_CSRF).next() {
+        return el.value().attr("value").map(|v| v.to_string());
     }
     None
 }
@@ -638,19 +667,17 @@ fn extract_csrf_token(html: &str) -> Option<String> {
 /// Parse the detail HTML fragment returned by /lms/course/information/listdetail.
 /// This is typically a dialog fragment containing info_preview with title, body, sender, date, attachments.
 fn parse_detail_html(html: &str) -> KwicNotificationDetail {
-    use scraper::{Html, Selector};
+    use scraper::Html;
     let doc = Html::parse_document(html);
 
-    let text_of = |selector: &str| -> String {
-        Selector::parse(selector).ok()
-            .and_then(|sel| doc.select(&sel).next())
+    let text_of = |sel: &scraper::Selector| -> String {
+        doc.select(sel).next()
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default()
     };
 
-    let html_of = |selector: &str| -> String {
-        Selector::parse(selector).ok()
-            .and_then(|sel| doc.select(&sel).next())
+    let html_of = |sel: &scraper::Selector| -> String {
+        doc.select(sel).next()
             .map(|el| el.inner_html().trim().to_string())
             .unwrap_or_default()
     };
@@ -660,32 +687,26 @@ fn parse_detail_html(html: &str) -> KwicNotificationDetail {
     // Body:  #contentsHtml (quill editor content)
     // Sender: .portal-information-outgoing-division (contains "配信部署:" + dept name)
     // Date:  掲載期間 section — we extract from the first .contents-input-area with date-like text
-    let title = text_of(".block-title-txt");
-    let body_html = html_of("#contentsHtml");
+    let title = text_of(&*SEL_BLOCK_TITLE);
+    let body_html = html_of(&*SEL_CONTENTS_HTML);
 
     // Sender: extract department from .portal-information-outgoing-division
     let sender = {
-        let raw = text_of(".portal-information-outgoing-division");
+        let raw = text_of(&*SEL_OUTGOING_DIV);
         raw.replace("配信部署:", "").trim().to_string()
     };
 
     // Date: look for 掲載期間 section, then get the spans inside its .contents-input-area
     let date = {
         let mut found = String::new();
-        if let (Ok(detail_sel), Ok(header_sel), Ok(input_sel)) = (
-            Selector::parse(".contents-detail"),
-            Selector::parse(".contents-header-txt .bold-txt"),
-            Selector::parse(".contents-input-area"),
-        ) {
-            for detail in doc.select(&detail_sel) {
-                if let Some(header) = detail.select(&header_sel).next() {
-                    let header_text = header.text().collect::<Vec<_>>().join("");
-                    if header_text.contains("掲載期間") {
-                        if let Some(input) = detail.select(&input_sel).next() {
-                            found = input.text().collect::<Vec<_>>().join("").trim().to_string();
-                        }
-                        break;
+        for detail in doc.select(&*SEL_CONTENTS_DETAIL) {
+            if let Some(header) = detail.select(&*SEL_HEADER_BOLD).next() {
+                let header_text = header.text().collect::<Vec<_>>().join("");
+                if header_text.contains("掲載期間") {
+                    if let Some(input) = detail.select(&*SEL_INPUT_AREA).next() {
+                        found = input.text().collect::<Vec<_>>().join("").trim().to_string();
                     }
+                    break;
                 }
             }
         }
@@ -694,32 +715,27 @@ fn parse_detail_html(html: &str) -> KwicNotificationDetail {
 
     // Attachments: .file-object elements → .downloadFile (name), .objectName (object path)
     let mut attachments = Vec::new();
-    if let (Ok(fo_sel), Ok(name_sel), Ok(obj_sel)) = (
-        Selector::parse(".file-object"),
-        Selector::parse(".downloadFile, .fileName"),
-        Selector::parse(".objectName"),
-    ) {
-        for fo in doc.select(&fo_sel) {
-            let name = fo.select(&name_sel).next()
-                .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
-                .unwrap_or_default();
-            let object_name = fo.select(&obj_sel).next()
-                .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
-                .unwrap_or_default();
-            if name.is_empty() { continue; }
-            let url = format!(
-                "https://kwic.kwansei.ac.jp/portal/home/information/detail/download?downloadFileName={}&objectName={}&downloadMode=1",
-                urlencoding::encode(&name),
-                urlencoding::encode(&object_name),
-            );
-            attachments.push(KwicAttachment { name, url });
-        }
+    for fo in doc.select(&*SEL_FILE_OBJECT) {
+        let name = fo.select(&*SEL_FILE_NAME).next()
+            .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
+            .unwrap_or_default();
+        let object_name = fo.select(&*SEL_OBJECT_NAME).next()
+            .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
+            .unwrap_or_default();
+        if name.is_empty() { continue; }
+        let url = format!(
+            "{}/portal/home/information/detail/download?downloadFileName={}&objectName={}&downloadMode=1",
+            config::KWIC_BASE,
+            urlencoding::encode(&name),
+            urlencoding::encode(&object_name),
+        );
+        attachments.push(KwicAttachment { name, url });
     }
 
     // Strip <script> tags from body for safety
     let body_clean = {
         use regex::Regex;
-        let re = Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap();
+        let re = Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex");
         re.replace_all(&body_html, "").to_string()
     };
 
@@ -735,49 +751,42 @@ fn parse_detail_html(html: &str) -> KwicNotificationDetail {
 /// Parse a KWIC Portal subportal page.
 /// Subportal pages contain link lists and notification items similar to the home page.
 fn parse_subportal(html: &str) -> KwicSubportalData {
-    use scraper::{Html, Selector};
+    use scraper::Html;
     let doc = Html::parse_document(html);
 
     // Page title: .subportal-title-txt
-    let page_title = Selector::parse(".subportal-title-txt")
-        .ok()
-        .and_then(|sel| doc.select(&sel).next())
+    let page_title = doc.select(&*SEL_SUBPORTAL_TITLE).next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
     // Links: li.subportal-block-relation-list-li a.subportal-block-txtlink-li-b
     // Each <a> contains <img class="systemlink-image"> (icon) + <span> (title)
     let mut links = Vec::new();
-    if let (Ok(a_sel), Ok(img_sel)) = (
-        Selector::parse("li.subportal-block-relation-list-li a.subportal-block-txtlink-li-b"),
-        Selector::parse("img.systemlink-image"),
-    ) {
-        for a in doc.select(&a_sel) {
-            let title: String = a.text().collect::<Vec<_>>().join("").trim().to_string();
-            let href = a.value().attr("href").unwrap_or_default();
-            if title.is_empty() || href.is_empty() || href == "#" { continue; }
-            if href.starts_with("javascript:") { continue; }
-            let url = if href.starts_with("http") {
-                href.to_string()
+    for a in doc.select(&*SEL_SUBPORTAL_LINK) {
+        let title: String = a.text().collect::<Vec<_>>().join("").trim().to_string();
+        let href = a.value().attr("href").unwrap_or_default();
+        if title.is_empty() || href.is_empty() || href == "#" { continue; }
+        if href.starts_with("javascript:") { continue; }
+        let url = if href.starts_with("http") {
+            href.to_string()
+        } else {
+            format!("{}{}",config::KWIC_BASE, href)
+        };
+        let icon_url = a.select(&*SEL_SYSTEM_IMAGE).next()
+            .and_then(|img| img.value().attr("src"))
+            .map(|src| if src.starts_with("http") {
+                src.to_string()
             } else {
-                format!("https://kwic.kwansei.ac.jp{}", href)
-            };
-            let icon_url = a.select(&img_sel).next()
-                .and_then(|img| img.value().attr("src"))
-                .map(|src| if src.starts_with("http") {
-                    src.to_string()
-                } else {
-                    format!("https://kwic.kwansei.ac.jp{}", src)
-                })
-                .unwrap_or_default();
-            if links.iter().any(|l: &KwicSubportalLink| l.url == url) { continue; }
-            links.push(KwicSubportalLink {
-                title,
-                url,
-                icon_url,
-                description: String::new(),
-            });
-        }
+                format!("{}{}",config::KWIC_BASE, src)
+            })
+            .unwrap_or_default();
+        if links.iter().any(|l: &KwicSubportalLink| l.url == url) { continue; }
+        links.push(KwicSubportalLink {
+            title,
+            url,
+            icon_url,
+            description: String::new(),
+        });
     }
 
     // Notifications: li.subportal-block-info-list-li
@@ -787,53 +796,42 @@ fn parse_subportal(html: &str) -> KwicSubportalData {
     //   .subportal-block-list-li-txt-info3 span:first = date
     //   .subportal-block-list-li-txt-info4 = department
     let mut notifications = Vec::new();
-    if let Ok(li_sel) = Selector::parse("li.subportal-block-info-list-li") {
-        let cat_sel = Selector::parse(".subportal-block-list-li-txt-info1").ok();
-        let title_sel = Selector::parse(".subportal-block-list-li-txt-info2 span.link-txt").ok();
-        let date_sel = Selector::parse(".subportal-block-list-li-txt-info3 span").ok();
-        let dept_sel = Selector::parse(".subportal-block-list-li-txt-info4").ok();
-        let new_sel = Selector::parse(".portal-information-priority-urgency-color").ok();
+    for li in doc.select(&*SEL_SUBPORTAL_LI) {
+        let title_el = match li.select(&*SEL_SUBPORTAL_TITLE_SPAN).next() {
+            Some(el) => el,
+            None => continue,
+        };
 
-        for li in doc.select(&li_sel) {
-            let title_el = title_sel.as_ref().and_then(|s| li.select(s).next());
-            let title_el = match title_el { Some(el) => el, None => continue };
+        let id = title_el.value().attr("data1").unwrap_or_default().to_string();
+        let data2 = title_el.value().attr("data2").unwrap_or_default().to_string();
+        let title = title_el.text().collect::<Vec<_>>().join("").trim().to_string();
+        if title.is_empty() { continue; }
 
-            let id = title_el.value().attr("data1").unwrap_or_default().to_string();
-            let data2 = title_el.value().attr("data2").unwrap_or_default().to_string();
-            let title = title_el.text().collect::<Vec<_>>().join("").trim().to_string();
-            if title.is_empty() { continue; }
+        let category = li.select(&*SEL_SUBPORTAL_CAT).next()
+            .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
+            .unwrap_or_default();
 
-            let category = cat_sel.as_ref()
-                .and_then(|s| li.select(s).next())
-                .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
-                .unwrap_or_default();
+        let date = li.select(&*SEL_SUBPORTAL_DATE).next()
+            .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
+            .unwrap_or_default();
 
-            let date = date_sel.as_ref()
-                .and_then(|s| li.select(s).next())
-                .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
-                .unwrap_or_default();
+        let dept = li.select(&*SEL_SUBPORTAL_DEPT).next()
+            .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
+            .unwrap_or_default();
 
-            let dept = dept_sel.as_ref()
-                .and_then(|s| li.select(s).next())
-                .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
-                .unwrap_or_default();
+        let is_new = li.select(&*SEL_SUBPORTAL_NEW).next().is_some();
 
-            let is_new = new_sel.as_ref()
-                .map(|s| li.select(s).next().is_some())
-                .unwrap_or(false);
-
-            notifications.push(KwicPortalNotification {
-                id,
-                title,
-                date,
-                category: if !dept.is_empty() { dept } else { category },
-                important: is_new,
-                information_type: data2,
-                // Subportal notifications only have data1/data2 in onclick
-                person_category_cd: String::new(),
-                category_cd: String::new(),
-            });
-        }
+        notifications.push(KwicPortalNotification {
+            id,
+            title,
+            date,
+            category: if !dept.is_empty() { dept } else { category },
+            important: is_new,
+            information_type: data2,
+            // Subportal notifications only have data1/data2 in onclick
+            person_category_cd: String::new(),
+            category_cd: String::new(),
+        });
     }
 
     KwicSubportalData {

@@ -19,7 +19,7 @@
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal-backdrop" onclick={() => closeable && onclose()} onkeydown={() => {}}></div>
-  <div class="modal-container">
+  <div class="modal-container" role="dialog" aria-modal="true" aria-label={title || ''}>
     <div class="modal-header">
       <div class="modal-title-area">
         {#if subtitle}
