@@ -8,6 +8,7 @@
   import ViewLoader from "../ViewLoader.svelte";
   import StudentBar from "../StudentBar.svelte";
   import Icon from "../Icon.svelte";
+  import type { LunaCourse, LunaCommunity } from "../types";
 
   // ── KG-Course weekly state ──
   let loading = $state(true);
@@ -20,8 +21,6 @@
   let examData = $state<ExamTimetableData | null>(null);
 
   // ── Luna state ──
-  interface LunaCourse { idnumber: string; name: string; teacher: string; period: number; day: number; }
-  interface LunaCommunity { idnumber: string; name: string; }
   interface SelectOption { value: string; label: string; selected: boolean; }
   interface LunaTimetable {
     year: string; term: string; year_label: string; term_label: string;
@@ -154,6 +153,13 @@
   let autoSync = $state(localStorage.getItem("selah-auto-sync") === "true");
   let showCalMenu = $state(false);
   let calInfo = $state<{ exists: boolean; count: number } | null>(null);
+  let syncMsgTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showSyncMsg(msg: string, duration: number) {
+    syncMsg = msg;
+    if (syncMsgTimer) clearTimeout(syncMsgTimer);
+    syncMsgTimer = setTimeout(() => syncMsg = "", duration);
+  }
 
   async function syncCalendar(silent = false) {
     if (!data || syncing) return;
@@ -165,9 +171,9 @@
         room: e.room, is_cancelled: e.is_cancelled,
       }));
       const result = await invoke<string>("sync_calendar", { entries, weekLabel: data.week_label });
-      if (!silent) { syncMsg = result; setTimeout(() => syncMsg = "", 3000); }
+      if (!silent) showSyncMsg(result, 3000);
     } catch (e: any) {
-      if (!silent) { syncMsg = "同期失敗: " + (e?.message || String(e)); setTimeout(() => syncMsg = "", 5000); }
+      if (!silent) showSyncMsg("同期失敗: " + (e?.message || String(e)), 5000);
     } finally { syncing = false; }
   }
 
@@ -185,20 +191,20 @@
   async function clearCalendarEvents() {
     try {
       const result = await invoke<string>("clear_calendar", { deleteCalendar: false });
-      syncMsg = result; setTimeout(() => syncMsg = "", 3000);
+      showSyncMsg(result, 3000);
       await loadCalendarInfo();
     } catch (e: any) {
-      syncMsg = "削除失敗: " + (e?.message || String(e)); setTimeout(() => syncMsg = "", 5000);
+      showSyncMsg("削除失敗: " + (e?.message || String(e)), 5000);
     }
   }
 
   async function deleteCalendar() {
     try {
       const result = await invoke<string>("clear_calendar", { deleteCalendar: true });
-      syncMsg = result; setTimeout(() => syncMsg = "", 3000);
+      showSyncMsg(result, 3000);
       showCalMenu = false; calInfo = null;
     } catch (e: any) {
-      syncMsg = "削除失敗: " + (e?.message || String(e)); setTimeout(() => syncMsg = "", 5000);
+      showSyncMsg("削除失敗: " + (e?.message || String(e)), 5000);
     }
   }
 
@@ -230,7 +236,7 @@
   });
   const unsubExams = onCacheUpdate<ExamTimetableData>("exams", (fresh) => { examData = fresh; });
   const unsubLuna = onCacheUpdate<LunaTimetable>("luna_timetable", (fresh) => { lunaTimetable = fresh; });
-  onDestroy(() => { unsubTimetable(); unsubExams(); unsubLuna(); });
+  onDestroy(() => { unsubTimetable(); unsubExams(); unsubLuna(); if (syncMsgTimer) clearTimeout(syncMsgTimer); });
 
   onMount(async () => {
     const kgcPromise = (async () => {

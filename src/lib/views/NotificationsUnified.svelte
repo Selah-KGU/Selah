@@ -7,15 +7,7 @@
   import type { KwicPortalHome } from "../api";
   import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "../notify";
   import ViewLoader from "../ViewLoader.svelte";
-
-  interface LunaNotification {
-    date: string;
-    course_info: string;
-    module: string;
-    content: string;
-    url: string;
-    idnumber: string;
-  }
+  import type { LunaNotification } from "../types";
 
   // Unified notification item for all sources
   interface UnifiedNotif {

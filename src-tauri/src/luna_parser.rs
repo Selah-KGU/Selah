@@ -1643,13 +1643,6 @@ fn extract_select_options(doc: &Html, selector: &str) -> Vec<SelectOption> {
     }).collect()
 }
 
-#[allow(dead_code)]
-fn extract_text(doc: &Html, tag: &str) -> Option<String> {
-    let sel = Selector::parse(tag).ok()?;
-    let el = doc.select(&sel).next()?;
-    Some(el.text().collect::<String>().trim().to_string())
-}
-
 fn parse_japanese_number(s: &str) -> u32 {
     if s.contains('１') { return 1; }
     if s.contains('２') { return 2; }

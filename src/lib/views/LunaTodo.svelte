@@ -4,16 +4,7 @@
   import { cachedFetch, onCacheUpdate, lunaAuthState } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import Icon from "../Icon.svelte";
-
-  interface LunaTodoItem {
-    course_name: string;
-    content_type: string;
-    content_name: string;
-    url: string;
-    deadline: string;
-    status: string;
-    feedback: string;
-  }
+  import type { LunaTodoItem } from "../types";
 
   let loading = $state(true);
   let error = $state("");

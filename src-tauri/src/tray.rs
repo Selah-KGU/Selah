@@ -65,21 +65,35 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .icon_as_template(true)
         .tooltip("Selah")
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
-            "quit" => {
-                app.exit(0);
-            }
-            _ => {}
-        })
+        .on_menu_event(|app, event| handle_tray_menu_event(app, &event))
         .build(app)?;
 
     Ok(())
+}
+
+/// Common tray menu event handler
+fn handle_tray_menu_event(app: &AppHandle, event: &tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        "show" => {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }
+        "quit" => {
+            app.exit(0);
+        }
+        _ => {}
+    }
+}
+
+/// Append common footer items (show + quit) to a menu builder
+macro_rules! menu_footer {
+    ($app:expr, $builder:expr) => {{
+        let show_item = MenuItemBuilder::with_id("show", "Selah を表示").build($app).map_err(|e| e.to_string())?;
+        let quit_item = MenuItemBuilder::with_id("quit", "終了").build($app).map_err(|e| e.to_string())?;
+        $builder.item(&show_item).separator().item(&quit_item)
+    }};
 }
 
 /// Update the tray tooltip and menu with next class info
@@ -186,55 +200,22 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
 
         builder = builder.separator();
 
-        let show_item = MenuItemBuilder::with_id("show", "Selah を表示").build(&app).map_err(|e| e.to_string())?;
-        let quit_item = MenuItemBuilder::with_id("quit", "終了").build(&app).map_err(|e| e.to_string())?;
-        builder = builder.item(&show_item).separator().item(&quit_item);
+        let builder = menu_footer!(&app, builder);
 
         let menu = builder.build().map_err(|e| e.to_string())?;
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
-
-        // Re-register menu event handler
-        tray.on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
-            "quit" => {
-                app.exit(0);
-            }
-            _ => {}
-        });
+        tray.on_menu_event(|app, event| handle_tray_menu_event(app, &event));
     } else {
         let _ = tray.set_tooltip(Some("Selah - 授業なし"));
 
         let no_class = MenuItemBuilder::with_id("noclass", "授業予定なし").enabled(false).build(&app).map_err(|e| e.to_string())?;
-        let show_item = MenuItemBuilder::with_id("show", "Selah を表示").build(&app).map_err(|e| e.to_string())?;
-        let quit_item = MenuItemBuilder::with_id("quit", "終了").build(&app).map_err(|e| e.to_string())?;
 
-        let menu = MenuBuilder::new(&app)
-            .item(&no_class)
-            .separator()
-            .item(&show_item)
-            .separator()
-            .item(&quit_item)
-            .build()
-            .map_err(|e| e.to_string())?;
+        let builder = MenuBuilder::new(&app).item(&no_class).separator();
+        let builder = menu_footer!(&app, builder);
 
+        let menu = builder.build().map_err(|e| e.to_string())?;
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
-        tray.on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
-            "quit" => {
-                app.exit(0);
-            }
-            _ => {}
-        });
+        tray.on_menu_event(|app, event| handle_tray_menu_event(app, &event));
     }
 
     Ok(())
@@ -263,7 +244,6 @@ pub fn start_tray_cycle(app: &AppHandle, state: Arc<TrayStatusState>) {
         return; // already running
     }
     let app = app.clone();
-    log::info!("[TrayStatus] cycling thread started");
     std::thread::spawn(move || {
         let mut last_text = String::new();
         loop {
@@ -277,7 +257,6 @@ pub fn start_tray_cycle(app: &AppHandle, state: Arc<TrayStatusState>) {
             }
             *idx = *idx % items.len();
             let text = format!(" {}", items[*idx]);
-            log::info!("[TrayStatus] showing: {}", text.trim());
             *idx = (*idx + 1) % items.len();
             drop(guard);
             if text != last_text {
@@ -296,7 +275,6 @@ pub fn set_tray_status_items(
     state: tauri::State<'_, Arc<TrayStatusState>>,
     items: Vec<String>,
 ) -> Result<(), String> {
-    log::info!("[TrayStatus] received {} items: {:?}", items.len(), items);
     let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
     if !items.is_empty() {
         guard.0 = items;

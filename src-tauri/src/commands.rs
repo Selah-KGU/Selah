@@ -137,7 +137,8 @@ pub async fn open_login_window(
                         if let Some(win) = app_clone.get_webview_window("login") {
                             let luna_saml_url = "https://luna.kwansei.ac.jp/saml/login?disco=true";
                             log::info!("Navigating login webview to Luna SAML: {}", luna_saml_url);
-                            let luna_url: url::Url = luna_saml_url.parse().unwrap();
+                            let luna_url: url::Url = luna_saml_url.parse()
+                                .expect("hardcoded Luna SAML URL is valid");
                             let _ = win.navigate(luna_url);
 
                             // Wait for Luna's SAMLResponse
@@ -179,7 +180,8 @@ pub async fn open_login_window(
                             if let Some(win) = app_clone.get_webview_window("login") {
                                 let kwic_saml_url = "https://kwic.kwansei.ac.jp/saml/login?disco=true";
                                 log::info!("Navigating login webview to KWIC Portal SAML: {}", kwic_saml_url);
-                                let kwic_url: url::Url = kwic_saml_url.parse().unwrap();
+                                let kwic_url: url::Url = kwic_saml_url.parse()
+                                    .expect("hardcoded KWIC SAML URL is valid");
                                 let _ = win.navigate(kwic_url);
 
                                 match tokio::time::timeout(
@@ -345,7 +347,8 @@ pub async fn validate_session(state: State<'_, AppState>) -> Result<SessionStatu
     // Actually try to fetch a page to check if server session is still valid
     match client.fetch_page("/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014").await {
         Ok(_) => {
-            let session = client.session.as_ref().unwrap();
+            let session = client.session.as_ref()
+                .ok_or_else(|| "session lost after fetch".to_string())?;
             Ok(SessionStatus {
                 valid: true,
                 username: session.username.clone(),
@@ -465,9 +468,9 @@ fn parse_week_start(week_label: &str) -> Result<(i32, u32, u32), String> {
     let caps = WEEK_MONDAY_RE.captures(week_label)
         .or_else(|| WEEK_DATE_RE.captures(week_label));
     if let Some(caps) = caps {
-        let y: i32 = caps[1].parse().unwrap();
-        let m: u32 = caps[2].parse().unwrap();
-        let d: u32 = caps[3].parse().unwrap();
+        let y: i32 = caps[1].parse().map_err(|e| format!("year parse error: {}", e))?;
+        let m: u32 = caps[2].parse().map_err(|e| format!("month parse error: {}", e))?;
+        let d: u32 = caps[3].parse().map_err(|e| format!("day parse error: {}", e))?;
         return Ok((y, m, d));
     }
     Err(format!("週ラベルを解析できません: {}", week_label))
