@@ -26,8 +26,8 @@
       const session = await restoreAllSessions();
       if (session) {
         startBackgroundPolling();
-        startTrayStatus();
       }
+      startTrayStatus();
     } catch (e) {
       console.warn("Session restore failed:", e);
     } finally {

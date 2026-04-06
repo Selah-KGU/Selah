@@ -2,9 +2,8 @@
  * Tray status cycling: collects data from cache and sends cycling items to the backend tray.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { onCacheUpdate, cachedFetch } from "./stores";
-import type { TimetableData, TimetableEntry, NotificationsData } from "./stores";
-import type { KwicPortalHome } from "./api";
+import { onCacheUpdate, getCached } from "./stores";
+import type { TimetableData } from "./stores";
 
 // ============ Types (local) ============
 
@@ -43,14 +42,21 @@ const DAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
 
 let timetableData: TimetableData | null = null;
 let todoItems: LunaTodoItem[] = [];
-let kgcNotifs: NotificationsData | null = null;
-let lunaNotifs: LunaNotification[] = [];
-let kwicHome: KwicPortalHome | null = null;
 
 let unsubscribers: (() => void)[] = [];
 let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ============ Core Logic ============
+
+function findNextSchoolDay(entries: { day: string; period: number; course_name: string; is_cancelled: boolean }[], fromDay: number): { dayLabel: string; dayOffset: number; classes: typeof entries } | null {
+  for (let offset = 1; offset <= 7; offset++) {
+    const idx = (fromDay + offset) % 7;
+    const dayLabel = DAY_LABELS[idx];
+    const classes = entries.filter(e => e.day === dayLabel && !e.is_cancelled).sort((a, b) => a.period - b.period);
+    if (classes.length > 0) return { dayLabel, dayOffset: offset, classes };
+  }
+  return null;
+}
 
 function buildStatusItems(): string[] {
   const items: string[] = [];
@@ -58,7 +64,7 @@ function buildStatusItems(): string[] {
   const todayDay = DAY_LABELS[now.getDay()];
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
-  // 1. Next/current class
+  // 1. Today's classes
   if (timetableData?.entries.length) {
     const todayClasses = timetableData.entries
       .filter(e => e.day === todayDay && !e.is_cancelled)
@@ -82,72 +88,55 @@ function buildStatusItems(): string[] {
       }
     }
 
-    // Today's remaining count
     const remaining = todayClasses.filter(e => {
       const pt = PERIOD_TIMES[e.period];
       return pt && nowMin < pt.endH * 60 + pt.endM;
     });
     if (remaining.length > 1) {
       items.push(`今日あと${remaining.length}コマ`);
-    } else if (!foundNext) {
-      // No more classes today - show tomorrow preview
-      const tomorrowIdx = (now.getDay() + 1) % 7;
-      const tomorrowDay = DAY_LABELS[tomorrowIdx];
-      const tomorrowClasses = timetableData.entries
-        .filter(e => e.day === tomorrowDay && !e.is_cancelled);
-      if (tomorrowClasses.length > 0) {
-        items.push(`明日 ${tomorrowClasses.length}コマ`);
-        const first = tomorrowClasses.sort((a, b) => a.period - b.period)[0];
+    }
+
+    // 2. Next school day preview (always show, not just when today has no classes)
+    if (!foundNext) {
+      const next = findNextSchoolDay(timetableData.entries, now.getDay());
+      if (next) {
+        const label = next.dayOffset === 1 ? "明日" : `${next.dayLabel}曜`;
+        items.push(`${label} ${next.classes.length}コマ`);
+        const first = next.classes[0];
         const pt = PERIOD_TIMES[first.period];
         if (pt) {
-          items.push(`明日${first.period}限 ${first.course_name} ${pt.start}~`);
+          items.push(`${label}${first.period}限 ${first.course_name} ${pt.start}~`);
         }
       }
     }
   }
 
-  // 2. Urgent todos (within 5 days, not submitted)
+  // 3. All pending todos (not just within 5 days)
   if (todoItems.length > 0) {
-    const limit = new Date(now);
-    limit.setDate(limit.getDate() + 5);
-    const urgent = todoItems
-      .filter(t => {
-        if (t.status.includes("提出済")) return false;
-        if (!t.deadline) return false;
-        const d = new Date(t.deadline.replace(/\//g, "-"));
-        return d >= now && d <= limit;
-      })
+    const pending = todoItems
+      .filter(t => !t.status.includes("提出済"))
       .sort((a, b) => {
-        const da = new Date(a.deadline.replace(/\//g, "-")).getTime();
-        const db = new Date(b.deadline.replace(/\//g, "-")).getTime();
+        const da = a.deadline ? new Date(a.deadline.replace(/\//g, "-")).getTime() : Infinity;
+        const db = b.deadline ? new Date(b.deadline.replace(/\//g, "-")).getTime() : Infinity;
         return da - db;
       });
 
-    if (urgent.length > 0) {
-      // Show the most urgent one
-      const first = urgent[0];
-      const dl = new Date(first.deadline.replace(/\//g, "-"));
-      const diffDays = Math.ceil((dl.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-      const dlLabel = diffDays <= 0 ? "今日〆" : diffDays === 1 ? "明日〆" : `${diffDays}日後〆`;
-      items.push(`${first.content_name} ${dlLabel}`);
+    if (pending.length > 0) {
+      // Show the nearest deadline
+      const first = pending[0];
+      if (first.deadline) {
+        const dl = new Date(first.deadline.replace(/\//g, "-"));
+        const diffDays = Math.ceil((dl.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        const dlLabel = diffDays <= 0 ? "今日〆" : diffDays === 1 ? "明日〆" : `${diffDays}日後〆`;
+        items.push(`${first.content_name} ${dlLabel}`);
+      } else {
+        items.push(`${first.content_name}`);
+      }
 
-      if (urgent.length > 1) {
-        items.push(`課題${urgent.length}件 未提出`);
+      if (pending.length > 1) {
+        items.push(`未提出 ${pending.length}件`);
       }
     }
-  }
-
-  // 3. Notification counts
-  const kgcCount = kgcNotifs?.entries?.length ?? 0;
-  const lunaCount = lunaNotifs.length;
-  const kwicCount = kwicHome?.sections?.reduce((sum, s) => sum + s.items.length, 0) ?? 0;
-  const totalNotifs = kgcCount + lunaCount + kwicCount;
-  if (totalNotifs > 0) {
-    const parts: string[] = [];
-    if (kgcCount > 0) parts.push(`KGC ${kgcCount}`);
-    if (lunaCount > 0) parts.push(`Luna ${lunaCount}`);
-    if (kwicCount > 0) parts.push(`KWIC ${kwicCount}`);
-    items.push(`通知: ${parts.join(" / ")}`);
   }
 
   return items;
@@ -157,6 +146,7 @@ function scheduleRebuild() {
   if (rebuildTimer) clearTimeout(rebuildTimer);
   rebuildTimer = setTimeout(() => {
     const items = buildStatusItems();
+    console.warn("[TrayStatus] timetable:", timetableData ? `${timetableData.entries?.length} entries` : "null", "| todo:", todoItems.length, "| items:", items);
     invoke("set_tray_status_items", { items }).catch((e) => {
       console.warn("[TrayStatus] failed to send items:", e);
     });
@@ -166,12 +156,13 @@ function scheduleRebuild() {
 // ============ Public API ============
 
 export function startTrayStatus() {
+  // Bootstrap from existing cache (disk or memory)
+  timetableData = getCached<TimetableData>("timetable");
+  todoItems = getCached<LunaTodoItem[]>("luna_todo") ?? [];
+
   unsubscribers.push(
     onCacheUpdate<TimetableData>("timetable", (data) => { timetableData = data; scheduleRebuild(); }),
     onCacheUpdate<LunaTodoItem[]>("luna_todo", (data) => { todoItems = data ?? []; scheduleRebuild(); }),
-    onCacheUpdate<NotificationsData>("notifications", (data) => { kgcNotifs = data; scheduleRebuild(); }),
-    onCacheUpdate<LunaNotification[]>("luna_updates", (data) => { lunaNotifs = data ?? []; scheduleRebuild(); }),
-    onCacheUpdate<KwicPortalHome>("kwic_home", (data) => { kwicHome = data ?? null; scheduleRebuild(); }),
   );
 
   // Also rebuild periodically (every 60s) to update time-sensitive items like "current class"

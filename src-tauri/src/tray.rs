@@ -244,16 +244,14 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
 
 /// Shared state for cycling tray title text
 pub struct TrayStatusState {
-    items: Mutex<Vec<String>>,
-    index: Mutex<usize>,
+    inner: Mutex<(Vec<String>, usize)>,
     running: AtomicBool,
 }
 
 impl TrayStatusState {
     pub fn new() -> Self {
         Self {
-            items: Mutex::new(Vec::new()),
-            index: Mutex::new(0),
+            inner: Mutex::new((Vec::new(), 0)),
             running: AtomicBool::new(false),
         }
     }
@@ -265,24 +263,28 @@ pub fn start_tray_cycle(app: &AppHandle, state: Arc<TrayStatusState>) {
         return; // already running
     }
     let app = app.clone();
+    log::info!("[TrayStatus] cycling thread started");
     std::thread::spawn(move || {
+        let mut last_text = String::new();
         loop {
             std::thread::sleep(std::time::Duration::from_secs(8));
-            let items = state.items.lock().unwrap();
+            let mut guard = state.inner.lock().unwrap();
+            let (ref items, ref mut idx) = *guard;
             if items.is_empty() {
-                if let Some(tray) = app.tray_by_id("main-tray") {
-                    let _ = tray.set_title(None::<&str>);
-                }
+                drop(guard);
+                // Keep showing last text rather than clearing
                 continue;
             }
-            let mut idx = state.index.lock().unwrap();
             *idx = *idx % items.len();
             let text = format!(" {}", items[*idx]);
+            log::info!("[TrayStatus] showing: {}", text.trim());
             *idx = (*idx + 1) % items.len();
-            drop(items);
-            drop(idx);
-            if let Some(tray) = app.tray_by_id("main-tray") {
-                let _ = tray.set_title(Some(&text));
+            drop(guard);
+            if text != last_text {
+                last_text = text.clone();
+                if let Some(tray) = app.tray_by_id("main-tray") {
+                    let _ = tray.set_title(Some(&text));
+                }
             }
         }
     });
@@ -294,9 +296,11 @@ pub fn set_tray_status_items(
     state: tauri::State<'_, Arc<TrayStatusState>>,
     items: Vec<String>,
 ) -> Result<(), String> {
-    let mut current = state.items.lock().map_err(|e| e.to_string())?;
-    *current = items;
-    let mut idx = state.index.lock().map_err(|e| e.to_string())?;
-    *idx = 0;
+    log::info!("[TrayStatus] received {} items: {:?}", items.len(), items);
+    let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
+    if !items.is_empty() {
+        guard.0 = items;
+        guard.1 = 0;
+    }
     Ok(())
 }

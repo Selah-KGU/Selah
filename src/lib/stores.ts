@@ -450,6 +450,20 @@ export function getCacheTimestamp(key: string): number | null {
   return entry ? entry.ts : null;
 }
 
+/** Read cached data (memory or disk) without triggering a fetch */
+export function getCached<T>(key: string): T | null {
+  const entry = cache.get(key);
+  if (entry) return entry.data as T;
+  if (DISK_CACHE_KEYS.has(key)) {
+    const disk = loadDiskCache(key);
+    if (disk) {
+      cache.set(key, disk);
+      return disk.data as T;
+    }
+  }
+  return null;
+}
+
 export function invalidateCache(key?: string) {
   if (key) {
     cache.delete(key);
