@@ -335,6 +335,8 @@ const CACHE_TTLS: Record<string, number> = {
   luna_timetable: 30 * 60 * 1000,
   luna_todo: 5 * 60 * 1000,
   luna_updates: 5 * 60 * 1000,
+  // Weather
+  weather: 60 * 60 * 1000,
 };
 
 // Keys eligible for disk persistence (survive app restart, stale-while-revalidate)

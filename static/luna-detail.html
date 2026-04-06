@@ -1173,7 +1173,6 @@
       if (mode === 'course') {
         var idnumber = params.get('idnumber');
         var kgcPath = params.get('kgcPath') || '';
-        console.log('[DEBUG luna-detail] course mode', { idnumber: idnumber, kgcPath: kgcPath, fullUrl: window.location.href });
         if (!idnumber) {
           renderDetail({ error: 'コース番号が指定されていません' });
           return;

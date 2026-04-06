@@ -389,6 +389,39 @@ export async function kwicFetchNotifications(): Promise<KwicPortalNotification[]
   return kwicInvoke<KwicPortalNotification[]>("kwic_fetch_notifications");
 }
 
+// ============ Weather (Open-Meteo, no auth) ============
+
+export interface WeatherData {
+  temperature: number;
+  weatherCode: number;
+  humidity: number;
+  windSpeed: number;
+  tomorrow: { tempMax: number; tempMin: number; weatherCode: number } | null;
+}
+
+export async function fetchWeather(): Promise<WeatherData> {
+  const res = await fetch(
+    "https://api.open-meteo.com/v1/forecast?latitude=34.7383&longitude=135.3416&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo&forecast_days=2"
+  );
+  if (!res.ok) throw new Error(`Weather API error: ${res.status}`);
+  const data = await res.json();
+  let tomorrow: WeatherData["tomorrow"] = null;
+  if (data.daily?.time?.length >= 2) {
+    tomorrow = {
+      tempMax: Math.round(data.daily.temperature_2m_max[1]),
+      tempMin: Math.round(data.daily.temperature_2m_min[1]),
+      weatherCode: data.daily.weather_code[1],
+    };
+  }
+  return {
+    temperature: Math.round(data.current.temperature_2m),
+    weatherCode: data.current.weather_code,
+    humidity: data.current.relative_humidity_2m,
+    windSpeed: Math.round(data.current.wind_speed_10m),
+    tomorrow,
+  };
+}
+
 export async function kwicFetchPage(path: string): Promise<string> {
   return kwicInvoke<string>("kwic_fetch_page", { path });
 }
@@ -572,6 +605,7 @@ function getVolatileTargets(): PollTarget[] {
     { key: "luna_updates", fetcher: () => lunaInvoke<any>("luna_fetch_updates"), guard: () => get(lunaAuthState).authenticated },
     { key: "kwic_notifications", fetcher: kwicFetchNotifications, guard: () => get(kwicAuthState).authenticated },
     { key: "kwic_home", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
+    { key: "weather", fetcher: fetchWeather },
   ];
 }
 

@@ -398,16 +398,24 @@ pub async fn request_ai_refresh(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn test_notification(app: tauri::AppHandle, title: String, body: String) -> Result<String, String> {
+pub async fn test_notification(_app: tauri::AppHandle, title: String, body: String) -> Result<String, String> {
     log::info!("test_notification called: title={}, body={}", title, body);
-    use tauri_plugin_notification::NotificationExt;
-    app.notification()
-        .builder()
-        .title(&title)
-        .body(&body)
-        .show()
-        .map_err(|e| format!("notification show failed: {}", e))?;
-    Ok("Notification sent via plugin".to_string())
+    // Use osascript for reliable macOS notification banners
+    let script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        body.replace('\\', "\\\\").replace('"', "\\\""),
+        title.replace('\\', "\\\\").replace('"', "\\\""),
+    );
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("osascript failed: {}", e))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("osascript error: {}", err));
+    }
+    Ok("Notification sent via osascript".to_string())
 }
 
 #[tauri::command]

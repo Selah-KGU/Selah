@@ -4,7 +4,7 @@
   import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState } from "../stores";
   import type { NotificationsData } from "../stores";
   import type { KwicPortalHome } from "../api";
-  import { notifyNewKgc, notifyNewLuna } from "../notify";
+  import { notifyNewKgc, notifyNewLuna, notifyNewKwic } from "../notify";
   import ViewLoader from "../ViewLoader.svelte";
 
   interface LunaNotification {
@@ -50,6 +50,17 @@
 
   // KWIC detail view state (removed - now opens in window)
 
+  /** Extract all KWIC notification items and push native notifications for new ones */
+  function notifyKwicItems(home: KwicPortalHome) {
+    const items = home.sections
+      .filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ")
+      .flatMap(s => s.items.map(i => ({
+        id: i.id, title: i.title, date: i.date,
+        category: i.category || s.title, important: i.important,
+      })));
+    if (items.length) notifyNewKwic(items);
+  }
+
   // SWR: update UI when background polling brings fresh data
   const unsubKgc = onCacheUpdate<NotificationsData>("notifications", (fresh) => {
     kgcData = fresh;
@@ -61,6 +72,7 @@
   });
   const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => {
     kwicHome = fresh ?? null;
+    if (fresh) notifyKwicItems(fresh);
   });
   onDestroy(() => { unsubKgc(); unsubLuna(); unsubKwicHome(); });
 
@@ -86,6 +98,7 @@
       }
       if (kwic.status === "fulfilled" && kwic.value) {
         kwicHome = kwic.value as KwicPortalHome;
+        notifyKwicItems(kwicHome);
       }
     } catch (e: any) {
       error = e?.message || String(e);

@@ -234,30 +234,7 @@
   }
 
   // Notification test
-  let notifPermission = $state<string>("unknown");
   let notifTestMsg = $state("Selah テスト通知");
-
-  async function checkNotifPermission() {
-    try {
-      const granted: boolean = await invoke("plugin:notification|is_permission_granted");
-      notifPermission = granted ? "granted" : "denied";
-      addLog("info", `通知権限: ${notifPermission}`);
-    } catch (e: any) {
-      notifPermission = "error";
-      addLog("error", `通知権限チェック失敗: ${e}`);
-    }
-  }
-
-  async function requestNotifPermission() {
-    try {
-      // On macOS, sending a notification will trigger the OS permission prompt
-      await nativeNotify("Selah", "通知権限テスト");
-      notifPermission = "granted";
-      addLog("info", "通知権限リクエスト: 通知を送信しました（OSが権限を確認します）");
-    } catch (e: any) {
-      addLog("error", `通知権限リクエスト失敗: ${e}`);
-    }
-  }
 
   async function sendTestNotification() {
     try {
@@ -340,41 +317,6 @@
     <div class="win-body">
       {#if activeSection === "info"}
         <div class="section" style="animation: fade-in 0.2s ease;">
-          <!-- Session Status (prominent) -->
-          <h4>セッション状態</h4>
-          <div class="session-cards">
-            <div class="session-card" class:session-ok={sessionCheck.kg.valid} class:session-ng={!sessionCheck.kg.valid && !sessionCheck.kg.checking}>
-              <div class="session-label">KG Course</div>
-              <div class="session-status">
-                {#if sessionCheck.kg.checking}
-                  <span class="loading-spinner-sm"></span> 検証中...
-                {:else}
-                  <span class="dot-status" class:ok={sessionCheck.kg.valid} class:ng={!sessionCheck.kg.valid}></span>
-                  {sessionCheck.kg.valid ? `有効 (${sessionCheck.kg.username})` : "無効・期限切れ"}
-                {/if}
-              </div>
-            </div>
-            <div class="session-card" class:session-ok={sessionCheck.luna.valid} class:session-ng={!sessionCheck.luna.valid && !sessionCheck.luna.checking}>
-              <div class="session-label">Luna LMS</div>
-              <div class="session-status">
-                {#if sessionCheck.luna.checking}
-                  <span class="loading-spinner-sm"></span> 検証中...
-                {:else}
-                  <span class="dot-status" class:ok={sessionCheck.luna.valid} class:ng={!sessionCheck.luna.valid}></span>
-                  {sessionCheck.luna.valid ? "有効" : "無効・未接続"}
-                {/if}
-              </div>
-            </div>
-          </div>
-          <div class="session-actions">
-            <button class="action-btn" onclick={validateAllSessions} disabled={isValidatingSession}>
-              {isValidatingSession ? "検証中..." : "セッション再検証"}
-            </button>
-            <button class="action-btn btn-warn" onclick={handleRelogin}>
-              再ログイン
-            </button>
-          </div>
-
           <!-- App info -->
           <h4>アプリケーション</h4>
           {#if debugInfo}
@@ -388,25 +330,6 @@
           {:else}
             <p class="muted">読み込み中...</p>
           {/if}
-
-          <h4>通知システム</h4>
-          <div class="session-cards">
-            <div class="session-card" class:session-ok={notifPermission === "granted"} class:session-ng={notifPermission === "denied"}>
-              <div class="session-label">通知権限</div>
-              <div class="session-status">
-                <span class="dot-status" class:ok={notifPermission === "granted"} class:ng={notifPermission === "denied" || notifPermission === "error"}></span>
-                {notifPermission === "granted" ? "許可済" : notifPermission === "denied" ? "拒否" : notifPermission === "error" ? "エラー" : "未確認"}
-              </div>
-            </div>
-          </div>
-          <div class="session-actions">
-            <button class="action-btn" onclick={checkNotifPermission}>権限確認</button>
-            <button class="action-btn" onclick={requestNotifPermission}>権限リクエスト</button>
-          </div>
-          <div class="browser-url-bar" style="margin-top:8px;">
-            <input type="text" bind:value={notifTestMsg} placeholder="通知メッセージ" onkeydown={(e) => e.key === "Enter" && sendTestNotification()} />
-            <button class="action-btn" style="margin-top:0;" onclick={sendTestNotification}>送信</button>
-          </div>
 
           <h4>フロントエンド</h4>
           <div class="info-grid">
@@ -613,25 +536,6 @@
   .section h4:first-child { margin-top: 0; }
   .count { font-weight: 400; color: var(--text-tertiary); }
   .section-header { display: flex; justify-content: space-between; align-items: center; }
-
-  /* Session cards */
-  .session-cards { display: flex; gap: 8px; margin-bottom: 8px; }
-  .session-card {
-    flex: 1; padding: 8px 10px; border-radius: 8px;
-    background: var(--bg-secondary); border: 0.5px solid var(--border);
-    transition: border-color 0.2s, background 0.2s;
-  }
-  .session-card.session-ok { border-color: rgba(52, 199, 89, 0.3); background: rgba(52, 199, 89, 0.05); }
-  .session-card.session-ng { border-color: rgba(255, 59, 48, 0.2); background: rgba(255, 59, 48, 0.04); }
-  .session-label { font-size: 10px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 3px; }
-  .session-status { font-size: 11px; color: var(--text-primary); display: flex; align-items: center; gap: 4px; }
-  .session-actions { display: flex; gap: 6px; margin-bottom: 4px; }
-
-  .loading-spinner-sm {
-    display: inline-block; width: 10px; height: 10px;
-    border: 1.5px solid var(--border); border-top-color: var(--accent);
-    border-radius: 50%; animation: spin 0.6s linear infinite;
-  }
 
   /* Info rows */
   .info-grid { background: var(--bg-secondary); border-radius: 8px; overflow: hidden; }

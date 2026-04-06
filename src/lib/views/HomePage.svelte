@@ -2,8 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate } from "../stores";
   import type { TimetableData, TimetableEntry, NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
-  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, getAiConfig, aiChat } from "../api";
-  import type { KwicPortalHome, KwicPortalSection, KwicSubportalData } from "../api";
+  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, getAiConfig, aiChat, fetchWeather } from "../api";
+  import type { KwicPortalHome, KwicPortalSection, KwicSubportalData, WeatherData } from "../api";
   import { invoke } from "@tauri-apps/api/core";
 
   // ============ Types ============
@@ -131,30 +131,87 @@
 
   // ============ Derived ============
 
+  // ============ Weather ============
+
+  const WMO_DESCRIPTIONS: Record<number, { label: string; icon: string }> = {
+    0: { label: "快晴", icon: "☀️" },
+    1: { label: "晴れ", icon: "🌤" },
+    2: { label: "くもり", icon: "⛅" },
+    3: { label: "曇天", icon: "☁️" },
+    45: { label: "霧", icon: "🌫" },
+    48: { label: "霧氷", icon: "🌫" },
+    51: { label: "小雨", icon: "🌦" },
+    53: { label: "雨", icon: "🌧" },
+    55: { label: "強い雨", icon: "🌧" },
+    56: { label: "着氷性の霧雨", icon: "🌧" },
+    57: { label: "着氷性の雨", icon: "🌧" },
+    61: { label: "小雨", icon: "🌦" },
+    63: { label: "雨", icon: "🌧" },
+    65: { label: "大雨", icon: "🌧" },
+    66: { label: "着氷性の雨", icon: "🧊" },
+    67: { label: "着氷性の大雨", icon: "🧊" },
+    71: { label: "小雪", icon: "🌨" },
+    73: { label: "雪", icon: "❄️" },
+    75: { label: "大雪", icon: "❄️" },
+    77: { label: "霧雪", icon: "🌨" },
+    80: { label: "にわか雨", icon: "🌦" },
+    81: { label: "にわか雨", icon: "🌧" },
+    82: { label: "激しいにわか雨", icon: "⛈" },
+    85: { label: "にわか雪", icon: "🌨" },
+    86: { label: "激しいにわか雪", icon: "❄️" },
+    95: { label: "雷雨", icon: "⛈" },
+    96: { label: "雷雨（雹）", icon: "⛈" },
+    99: { label: "激しい雷雨（雹）", icon: "⛈" },
+  };
+
+  let weather = $state<WeatherData | null>(null);
+  let tomorrowWeather = $state<WeatherData["tomorrow"]>(null);
+
+  // Weather cycling between today and tomorrow
+  let weatherShowTomorrow = $state(false);
+  let weatherCycleInterval: ReturnType<typeof setInterval> | undefined;
+
+  function startWeatherCycle() {
+    stopWeatherCycle();
+    if (!tomorrowWeather) return;
+    weatherCycleInterval = setInterval(() => {
+      weatherShowTomorrow = !weatherShowTomorrow;
+    }, 6000);
+  }
+
+  function stopWeatherCycle() {
+    if (weatherCycleInterval) {
+      clearInterval(weatherCycleInterval);
+      weatherCycleInterval = undefined;
+    }
+  }
+
+  function applyWeather(data: WeatherData) {
+    weather = data;
+    tomorrowWeather = data.tomorrow;
+    if (tomorrowWeather) startWeatherCycle();
+  }
+
+  function getWeatherInfo(code: number) {
+    return WMO_DESCRIPTIONS[code] ?? { label: "不明", icon: "🌡" };
+  }
+
   const GREETINGS: Record<string, string[]> = {
     night: [
-      "おやすみなさい", "夜更かしはほどほどに", "今日もおつかれ",
-      "もう寝た方がいいよ", "静かな夜だね", "明日に備えよう",
-      "夜風が気持ちいいね", "星がきれいだよ", "いい夢見てね",
-      "そろそろ休もう",
+      "おやすみなさい", "夜更かしはほどほどに",
+      "明日に備えよう", "そろそろ休もう",
     ],
     morning: [
-      "おはよう", "いい朝だね", "今日もがんばろう",
-      "すっきり起きれた？", "朝ごはん食べた？", "いい一日にしよう",
-      "目覚めはどう？", "今日は何する？", "新しい一日だね",
-      "コーヒーでも飲もう", "早起きえらい", "空気がおいしいね",
+      "おはよう", "いい朝だね",
+      "今日もがんばろう", "いい一日にしよう",
     ],
     day: [
-      "こんにちは", "調子はどう？", "いい天気だね",
-      "お昼食べた？", "午後もがんばろう", "ちょっと休憩しよう",
-      "散歩でもどう？", "眠くない？", "水分とった？",
-      "いい感じだね", "順調？", "ファイト",
+      "こんにちは", "午後もがんばろう",
+      "もうひとふんばり", "いい調子",
     ],
     evening: [
-      "おつかれさま", "今日もよくやったね", "ゆっくり休んでね",
-      "一日おつかれ", "お腹すいた？", "今日はどうだった？",
-      "夕焼けきれいだよ", "もうひと息", "リラックスしよう",
-      "自分を褒めよう", "帰り道気をつけて", "明日も楽しみだね",
+      "おつかれさま", "今日もおつかれ",
+      "ゆっくり休んでね", "もうひと息",
     ],
   };
 
@@ -209,7 +266,6 @@
 
   let upcomingDays = $derived.by(() => {
     if (!timetableData?.entries.length) {
-      console.log("[HomePage] no timetable entries");
       return [];
     }
     const todayDow = now.getDay(); // 0=Sun..6=Sat
@@ -223,8 +279,6 @@
       arr.push(e);
       dayMap.set(e.day, arr);
     }
-
-    console.log("[HomePage] days with classes:", [...dayMap.keys()], "todayDow:", todayDow, "DAY_LABELS[todayDow]:", DAY_LABELS[todayDow]);
 
     const result: { label: string; relLabel: string; entries: TimetableEntry[] }[] = [];
 
@@ -252,7 +306,6 @@
       result.push({ label, relLabel, entries: sorted });
     }
 
-    console.log("[HomePage] upcomingDays result:", result.map(r => `${r.label}: ${r.entries.length}コマ`));
     return result;
   });
 
@@ -313,6 +366,40 @@
 
   let totalUpcoming = $derived(urgentTodos.length);
 
+  // ============ AI Suggestion Cycling ============
+
+  let aiSuggestionIndex = $state(0);
+  let aiSuggestionFade = $state(true);
+  let suggestionInterval: ReturnType<typeof setInterval> | undefined;
+
+  function startSuggestionCycle() {
+    stopSuggestionCycle();
+    if (!aiNotifResult?.suggestions?.length) return;
+    suggestionInterval = setInterval(() => {
+      aiSuggestionFade = false;
+      setTimeout(() => {
+        aiSuggestionIndex = (aiSuggestionIndex + 1) % (aiNotifResult?.suggestions?.length || 1);
+        aiSuggestionFade = true;
+      }, 400);
+    }, 8000);
+  }
+
+  function stopSuggestionCycle() {
+    if (suggestionInterval) {
+      clearInterval(suggestionInterval);
+      suggestionInterval = undefined;
+    }
+  }
+
+  let displayText = $derived.by(() => {
+    if (aiNotifResult?.suggestions?.length) {
+      return aiNotifResult.suggestions[aiSuggestionIndex % aiNotifResult.suggestions.length];
+    }
+    return greeting;
+  });
+
+  let isAiSuggestion = $derived(!!(aiNotifResult?.suggestions?.length));
+
   // ============ Lifecycle ============
 
   let clockInterval: ReturnType<typeof setInterval>;
@@ -320,17 +407,21 @@
 
   onMount(async () => {
     clockInterval = setInterval(() => { now = new Date(); }, 30_000);
+    cachedFetch<WeatherData>("weather", fetchWeather).then(applyWeather).catch(() => {});
     await loadData();
     hasLoadedOnce = true;
   });
   onDestroy(() => {
     clearInterval(clockInterval);
+    stopSuggestionCycle();
+    stopWeatherCycle();
     unsubTimetable();
     unsubLunaTimetable();
     unsubTodo();
     unsubKgcNotifs();
     unsubLunaNotifs();
     unsubKwicHome();
+    unsubWeather();
     unsubAuth();
   });
 
@@ -340,6 +431,7 @@
   const unsubKgcNotifs = onCacheUpdate<NotificationsData>("notifications", (fresh) => { kgcNotifs = fresh?.entries ?? []; });
   const unsubLunaNotifs = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => { lunaNotifs = fresh ?? []; });
   const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => { kwicHome = fresh ?? null; });
+  const unsubWeather = onCacheUpdate<WeatherData>("weather", (fresh) => { if (fresh) applyWeather(fresh); });
 
   // Re-fetch when auth state changes (e.g. after re-login from session expiry)
   const unsubAuth = authState.subscribe((state) => {
@@ -367,29 +459,23 @@
           ? cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome)
           : Promise.resolve(null),
       ]);
-      console.log("[HomePage] loadData results:", tt.status, td.status, nt.status, ln.status, lt.status, kh.status);
       if (tt.status === "fulfilled" && tt.value) {
         timetableData = tt.value;
-        console.log("[HomePage] timetable loaded:", tt.value.entries?.length, "entries, days:", [...new Set(tt.value.entries?.map((e: TimetableEntry) => e.day))]);
       } else {
-        console.log("[HomePage] timetable failed:", tt.status === "rejected" ? tt.reason : "no value");
+        // timetable load failed
       }
       if (td.status === "fulfilled" && td.value) todoItems = td.value;
       if (nt.status === "fulfilled" && nt.value) {
         kgcNotifs = nt.value.entries ?? [];
-        console.log("[HomePage] kgc notifications loaded:", kgcNotifs.length);
       }
       if (ln.status === "fulfilled" && ln.value) {
         lunaNotifs = (ln.value as LunaNotification[]) ?? [];
-        console.log("[HomePage] luna notifications loaded:", lunaNotifs.length);
       }
       if (lt.status === "fulfilled" && lt.value) {
         lunaTimetable = lt.value as LunaTimetable;
-        console.log("[HomePage] luna timetable loaded:", lunaTimetable.courses?.length, "courses");
       }
       if (kh.status === "fulfilled" && kh.value) {
         kwicHome = kh.value as KwicPortalHome;
-        console.log("[HomePage] kwic home loaded:", kwicHome.sections?.length, "sections");
       }
     } catch (err) { console.error("[HomePage] loadData error:", err); }
     loading = false;
@@ -418,6 +504,7 @@
           if (Date.now() - cache.timestamp < AI_REFRESH_MS) {
             aiNotifResult = cache.result;
             aiNotifSources = cache.sources || [];
+            startSuggestionCycle();
             return;
           }
         }
@@ -571,6 +658,7 @@
 
       aiNotifResult = parsed;
       localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result: parsed, sources: aiNotifSources }));
+      startSuggestionCycle();
     } catch (e: any) {
       aiNotifError = e?.message || String(e);
     } finally {
@@ -579,6 +667,12 @@
   }
 
   async function refreshAiNotifs() {
+    // Re-read config in case settings changed
+    try {
+      const cfg = await getAiConfig();
+      aiEnabled = !!(cfg.api_key && cfg.api_key.trim());
+      aiReplyLanguage = cfg.reply_language || "";
+    } catch { /* keep existing */ }
     await loadAiNotifs(true);
   }
 
@@ -651,13 +745,35 @@
 </script>
 
 <div class="home">
-  <!-- ===== Header: two lines ===== -->
+  <!-- ===== Header: date + greeting + weather ===== -->
   <div class="header">
     <div class="header-line1">
       <span class="header-date">{dateLabel}</span>
+      {#if weather}
+        <span class="weather-cycle">
+          <span class="weather-layer" class:weather-visible={!weatherShowTomorrow} class:weather-hidden={weatherShowTomorrow}>
+            <span class="weather-icon">{getWeatherInfo(weather.weatherCode).icon}</span>
+            <span class="weather-temp">{weather.temperature}°</span>
+            <span class="weather-label">{getWeatherInfo(weather.weatherCode).label}</span>
+          </span>
+          {#if tomorrowWeather}
+            <span class="weather-layer" class:weather-visible={weatherShowTomorrow} class:weather-hidden={!weatherShowTomorrow}>
+              <span class="weather-prefix">明日</span>
+              <span class="weather-icon">{getWeatherInfo(tomorrowWeather.weatherCode).icon}</span>
+              <span class="weather-temp">{tomorrowWeather.tempMin}°/{tomorrowWeather.tempMax}°</span>
+            </span>
+          {/if}
+        </span>
+      {/if}
       <span class="header-id">{$authState.studentId}</span>
     </div>
-    <span class="header-greeting">{greeting}</span>
+    <div class="header-line2">
+      {#if isAiSuggestion}
+        <span class="header-greeting header-ai-suggestion" class:fade-in={aiSuggestionFade} class:fade-out={!aiSuggestionFade}>{displayText}</span>
+      {:else}
+        <span class="header-greeting">{greeting}</span>
+      {/if}
+    </div>
   </div>
 
   <!-- ===== NOW / NEXT — hero row ===== -->
@@ -906,7 +1022,7 @@
 
   .header-line1 {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
   }
 
@@ -922,6 +1038,68 @@
     font-weight: 700;
     color: var(--text-primary);
     letter-spacing: -0.02em;
+    transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
+  }
+
+  .header-ai-suggestion {
+    font-size: 20px;
+  }
+
+  .fade-in { opacity: 1; transform: translateY(0); }
+  .fade-out { opacity: 0; transform: translateY(4px); }
+
+  .header-line2 {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .weather-cycle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-width: 100px;
+    height: 20px;
+  }
+
+  .weather-layer {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: nowrap;
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%) translateZ(0);
+    will-change: opacity;
+    transition: opacity 0.6s ease;
+  }
+
+  .weather-visible { opacity: 1; }
+  .weather-hidden { opacity: 0; pointer-events: none; }
+
+  .weather-prefix {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-weight: 500;
+  }
+
+  .weather-icon {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  .weather-temp {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .weather-label {
+    font-size: 12px;
+    color: var(--text-tertiary);
   }
 
   .header-id {

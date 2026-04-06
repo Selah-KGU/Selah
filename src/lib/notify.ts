@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 const SEEN_KGC_KEY = "selah_seen_kgc_notifs";
 const SEEN_LUNA_KEY = "selah_seen_luna_notifs";
+const SEEN_KWIC_KEY = "selah_seen_kwic_notifs";
 
 /** Send a native macOS notification via osascript */
 export async function nativeNotify(title: string, body?: string) {
@@ -108,4 +109,38 @@ export async function notifyNewLuna(items: LunaNotif[]) {
     seen.add(makeKey(n));
   }
   saveSeenIds(SEEN_LUNA_KEY, seen);
+}
+
+export interface KwicNotif {
+  id: string;
+  title: string;
+  date: string;
+  category: string;
+  important: boolean;
+}
+
+/** Check KWIC Portal notifications for new items and send native notifications */
+export async function notifyNewKwic(items: KwicNotif[]) {
+  if (!items.length) return;
+  const seen = getSeenIds(SEEN_KWIC_KEY);
+  const newItems = items.filter((n) => n.id && !seen.has(n.id));
+  if (!newItems.length) {
+    if (seen.size === 0) {
+      for (const n of items) if (n.id) seen.add(n.id);
+      saveSeenIds(SEEN_KWIC_KEY, seen);
+    }
+    return;
+  }
+
+  const granted = await ensurePermission();
+  if (!granted) return;
+
+  for (const n of newItems) {
+    nativeNotify(
+      n.category ? `[${n.category}] ${n.title}` : n.title,
+      n.date,
+    );
+    seen.add(n.id);
+  }
+  saveSeenIds(SEEN_KWIC_KEY, seen);
 }

@@ -187,11 +187,9 @@
       // Try invoke first, fallback to emit
       var invoke = window.__TAURI__?.core?.invoke;
       var emit = window.__TAURI__?.event?.emit;
-      console.log('[ai-result] requestRefresh: invoke=', !!invoke, 'emit=', !!emit);
 
       if (invoke) {
         invoke('request_ai_refresh').then(function() {
-          console.log('[ai-result] invoke request_ai_refresh succeeded');
         }).catch(function(e) {
           console.error('[ai-result] invoke failed:', e);
           // Fallback: try emit
