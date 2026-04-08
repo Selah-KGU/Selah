@@ -191,6 +191,7 @@ pub fn parse_luna_notifications(html: &str) -> Vec<LunaNotification> {
     let content_sel = Selector::parse(".update-info-contents .break-word").expect("valid selector");
     let url_sel = Selector::parse(".updateInfoUrl").expect("valid selector");
     let id_sel = Selector::parse("input[id='idnumber']").expect("valid selector");
+    let id_sel2 = Selector::parse("input[name='idnumber']").expect("valid selector");
 
     for item in doc.select(&list_sel) {
         let date = item.select(&date_sel).next()
@@ -215,6 +216,7 @@ pub fn parse_luna_notifications(html: &str) -> Vec<LunaNotification> {
             .to_string();
 
         let idnumber = item.select(&id_sel).next()
+            .or_else(|| item.select(&id_sel2).next())
             .and_then(|e| e.value().attr("value"))
             .unwrap_or_default()
             .to_string();

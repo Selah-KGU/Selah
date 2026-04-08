@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
-  import { activeTab, aiRefreshRequested } from "./stores";
+  import { activeTab, aiRefreshRequested, unreadNotifCount, unreadMailCount, onCacheUpdate, getCached } from "./stores";
+  import type { NotificationsData } from "./stores";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./Icon.svelte";
   import Titlebar from "./Titlebar.svelte";
@@ -15,6 +16,9 @@
   import ChangeInfo from "./views/ChangeInfo.svelte";
   import HomePage from "./views/HomePage.svelte";
   import MailView from "./views/MailView.svelte";
+  import type { MailMessage, KwicPortalHome, ReadIdsResponse } from "./api";
+  import { getReadNotifications } from "./api";
+  import type { LunaNotification } from "./types";
 
   interface Tab {
     id: string;
@@ -46,14 +50,70 @@
     }
   });
 
+  function badgeCount(tabId: string): number {
+    if (tabId === "notifications") return $unreadNotifCount;
+    if (tabId === "mail") return $unreadMailCount;
+    return 0;
+  }
+
   let unlistenRefresh: (() => void) | null = null;
+
+  // --- Notification badge: compute from cache (works before NotificationsUnified is visited) ---
+  let readIds: ReadIdsResponse = { kgc: [], luna: [], kwic: [] };
+  function isReadById(source: string, id: string): boolean {
+    const ids = readIds[source as keyof ReadIdsResponse];
+    return ids ? ids.includes(id) : false;
+  }
+
+  function recalcNotifBadge() {
+    const kgcItems = getCached<NotificationsData>("notifications")?.entries ?? [];
+    const lunaItems = getCached<LunaNotification[]>("luna_updates") ?? [];
+    const kwicHome = getCached<KwicPortalHome>("kwic_home");
+    let count = 0;
+    for (const n of kgcItems) {
+      const key = n.id || `${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
+      if (!isReadById("kgc", key)) count++;
+    }
+    for (const n of lunaItems) {
+      const key = (n.url || n.idnumber || "") || `${n.content.trim().replace(/\s+/g, "")}|${n.date}`;
+      if (!isReadById("luna", key)) count++;
+    }
+    if (kwicHome) {
+      for (const sec of kwicHome.sections) {
+        if (sec.title === "メインリンク" || sec.title === "注目コンテンツ") continue;
+        for (const item of sec.items) {
+          const key = item.id || `${item.title.trim().replace(/\s+/g, "")}|${item.date}`;
+          if (!isReadById("kwic", key)) count++;
+        }
+      }
+    }
+    unreadNotifCount.set(count);
+  }
+
+  const unsubNotif = onCacheUpdate<NotificationsData>("notifications", () => recalcNotifBadge());
+  const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", () => recalcNotifBadge());
+  const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", () => recalcNotifBadge());
+
+  // Keep mail unread count updated from cache (works even before MailView is visited)
+  const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (msgs) => {
+    if (msgs) unreadMailCount.set(msgs.filter(m => !m.isRead).length);
+  });
+
+  // Initialize from cache on first render
+  {
+    const cached = getCached<MailMessage[]>("mail_inbox");
+    if (cached) unreadMailCount.set(cached.filter(m => !m.isRead).length);
+    // Load read IDs then compute initial notification badge
+    getReadNotifications().then(ids => { readIds = ids; recalcNotifBadge(); }).catch(() => {});
+    recalcNotifBadge(); // also compute immediately with empty readIds (all unread)
+  }
   onMount(async () => {
     unlistenRefresh = await listen('ai-refresh-request', () => {
       activeTab.set('timetable');
       aiRefreshRequested.set(true);
     });
   });
-  onDestroy(() => { if (unlistenRefresh) unlistenRefresh(); });
+  onDestroy(() => { if (unlistenRefresh) unlistenRefresh(); unsubMail(); unsubNotif(); unsubLuna(); unsubKwicHome(); });
 </script>
 
 <div class="dashboard">
@@ -72,6 +132,7 @@
         >
           <Icon name={tab.icon} size={16} />
           <span class="nav-label">{tab.label}</span>
+          {#if badgeCount(tab.id) > 0}<span class="nav-badge">{badgeCount(tab.id)}</span>{/if}
         </button>
       {/each}
     </div>
@@ -208,6 +269,20 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .nav-badge {
+    margin-left: auto;
+    font-size: 10px;
+    min-width: 18px;
+    padding: 1px 5px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    text-align: center;
+    line-height: 16px;
+    flex-shrink: 0;
   }
 
   .main-area {

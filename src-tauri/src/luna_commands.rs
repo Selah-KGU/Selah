@@ -1,11 +1,117 @@
-use tauri::{State, Emitter, Manager};
+use tauri::State;
 use crate::AppState;
-use crate::auth;
+use crate::config;
+use crate::client;
+use crate::cookie_bridge;
+use crate::luna_client;
 use crate::luna_parser;
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Briefly lock Luna client, check auth and clone http. Releases lock immediately.
+async fn luna_http(state: &AppState) -> Result<reqwest::Client, String> {
+    let luna = state.luna.lock().await;
+    if !luna.authenticated {
+        return Err(luna_client::LUNA_AUTH_REQUIRED_MSG.into());
+    }
+    Ok(luna.http.clone())
+}
+
+/// Luna GET: fetch a page without holding the lock.
+async fn luna_get(http: &reqwest::Client, path: &str) -> Result<String, String> {
+    let url = format!("{}{}", config::LUNA_BASE, path);
+    client::fetch_with_redirect(
+        http, &url, config::LUNA_BASE,
+        luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
+    ).await
+}
+
+/// Luna POST: submit a form without holding the lock.
+async fn luna_post(http: &reqwest::Client, path: &str, params: &[(String, String)]) -> Result<String, String> {
+    let url = format!("{}{}", config::LUNA_BASE, path);
+    client::post_form_with_redirect(
+        http, &url, config::LUNA_BASE,
+        luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
+        params.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        &[],
+    ).await
+}
+
+/// Luna multipart POST: submit a multipart form without holding the lock.
+async fn luna_post_multipart(http: &reqwest::Client, path: &str, form: reqwest::multipart::Form) -> Result<String, String> {
+    let url = format!("{}{}", config::LUNA_BASE, path);
+    let builder = http.post(&url).multipart(form);
+    client::send_and_follow_redirect(
+        http, builder, config::LUNA_BASE,
+        luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
+    ).await
+}
+
+/// Luna download: download a file without holding the lock. Returns bytes.
+async fn luna_download(http: &reqwest::Client, path: &str) -> Result<Vec<u8>, String> {
+    let url = if path.starts_with("http") {
+        path.to_string()
+    } else {
+        format!("{}{}", config::LUNA_BASE, path)
+    };
+
+    let mut current_url = url;
+    for i in 0..10 {
+        let resp = http.get(&current_url)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Sec-Fetch-Dest", "document")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-Site", "same-origin")
+            .send().await
+            .map_err(|e| format!("ダウンロード失敗: {}", e))?;
+
+        let status = resp.status();
+        let content_type = resp.headers().get("content-type")
+            .and_then(|v| v.to_str().ok()).unwrap_or("unknown").to_string();
+        let content_len = resp.headers().get("content-length")
+            .and_then(|v| v.to_str().ok()).unwrap_or("unknown").to_string();
+        let content_disp = resp.headers().get("content-disposition")
+            .and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        log::info!("luna_download #{}: status={}, type={}, len={}, disp='{}'",
+            i, status, content_type, content_len, content_disp);
+
+        if status.is_redirection() {
+            if let Some(loc) = resp.headers().get("location") {
+                let loc_str = loc.to_str().unwrap_or_default();
+                current_url = if loc_str.starts_with('/') {
+                    format!("{}{}", config::LUNA_BASE, loc_str)
+                } else {
+                    loc_str.to_string()
+                };
+                if current_url.contains("sso.kwansei.ac.jp") {
+                    return Err(luna_client::LUNA_SESSION_EXPIRED_MSG.into());
+                }
+                log::info!("luna_download: redirect -> {}", current_url);
+                continue;
+            }
+        }
+
+        if !status.is_success() {
+            return Err(format!("HTTP {}", status));
+        }
+
+        // Check for session expired in HTML responses
+        if content_type.contains("text/html") {
+            let text = resp.text().await.map_err(|e| format!("読み取り失敗: {}", e))?;
+            if luna_client::is_luna_session_expired(&text) {
+                return Err(luna_client::LUNA_SESSION_EXPIRED_MSG.into());
+            }
+            return Ok(text.into_bytes());
+        }
+
+        return resp.bytes().await
+            .map(|b| b.to_vec())
+            .map_err(|e| format!("ダウンロード読み取り失敗: {}", e));
+    }
+    Err("リダイレクトが多すぎます".into())
+}
 
 /// Save bytes to the Downloads folder with conflict avoidance (appends " (N)" if the file exists).
 fn save_to_downloads(filename: &str, bytes: &[u8]) -> Result<String, String> {
@@ -29,8 +135,11 @@ fn save_to_downloads(filename: &str, bytes: &[u8]) -> Result<String, String> {
                 format!("{} ({}).{}", stem, i, ext)
             };
             let candidate = downloads.join(&name);
-            if !candidate.exists() || i >= 999 {
+            if !candidate.exists() {
                 break candidate;
+            }
+            if i >= 999 {
+                return Err("ファイル名の競合を解決できません".into());
             }
             i += 1;
         }
@@ -145,9 +254,8 @@ pub async fn luna_open_detail_window(
 /// Launch an LTI tool (Zoom, Panopto, etc.) and open the final URL in app webview
 #[tauri::command]
 pub async fn luna_launch_lti(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let luna = state.luna.lock().await;
-    let final_url = luna.launch_lti(&path).await?;
-    drop(luna);
+    let http = luna_http(&state).await?;
+    let final_url = luna_client::launch_lti(&http, &path).await?;
     crate::commands::open_external_url(app, final_url, None).await
 }
 
@@ -171,89 +279,27 @@ pub async fn luna_reveal_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
-const LUNA_SAML_CALLBACK_HOST: &str = "luna-saml-callback.localhost";
-
-/// Open Luna login window — uses the same Okta SSO
-/// If user already has an active Okta session from KG-Course login,
-/// Luna SAML should auto-authenticate
+/// Open Luna login window using Cookie Bridge.
+/// Navigates to Luna's SAML entry — if Okta SSO session is still alive
+/// (from KG-Course login), it auto-authenticates. Otherwise shows Okta login form.
+/// After SAML completes natively in the webview, cookies are extracted and injected
+/// into Luna's reqwest cookie jar.
 #[tauri::command]
 pub async fn luna_open_login(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // Get Luna's Okta SAML URL
-    let luna = state.luna.lock().await;
-    let saml_url = luna.initiate_saml_auth().await?;
-    drop(luna);
-
-    log::info!("Opening Luna login webview: {}", &saml_url[..120.min(saml_url.len())]);
-
-    // Close existing Luna login window
-    if let Some(existing) = app.get_webview_window("luna-login") {
-        let _ = existing.close();
-    }
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<auth::SamlCallbackData>(1);
-
-    let parsed_url: url::Url = saml_url.parse()
-        .map_err(|e| format!("URL parse error: {}", e))?;
-
-    let _win = tauri::WebviewWindowBuilder::new(
-        &app,
-        "luna-login",
-        tauri::WebviewUrl::External(parsed_url),
-    )
-    .title("Luna - サインイン")
-    .inner_size(480.0, 700.0)
-    .resizable(true)
-    .initialization_script(crate::auth::saml_intercept_script(LUNA_SAML_CALLBACK_HOST))
-    .on_navigation(move |url| {
-        if url.host_str() == Some("luna-saml-callback.localhost") {
-            let pairs: std::collections::HashMap<String, String> =
-                url.query_pairs().into_owned().collect();
-            if let Some(saml_response) = pairs.get("saml_response") {
-                let data = auth::SamlCallbackData {
-                    saml_response: saml_response.clone(),
-                    relay_state: pairs.get("relay_state").cloned().unwrap_or_default(),
-                    acs_url: pairs.get("acs_url").cloned().unwrap_or_default(),
-                };
-                log::info!("Intercepted Luna SAMLResponse (len={})", data.saml_response.len());
-                let _ = tx.try_send(data);
-            }
-            return false;
-        }
-        true
+    log::info!("Cookie Bridge: opening Luna login webview");
+    cookie_bridge::spawn_saml_login(&app, cookie_bridge::SamlLoginConfig {
+        window_label: "luna-login",
+        title: "Luna - \u{30b5}\u{30a4}\u{30f3}\u{30a4}\u{30f3}",
+        saml_url: config::LUNA_SAML_URL,
+        sp_domain: "luna.kwansei.ac.jp",
+        base_url: config::LUNA_BASE,
+        success_event: "luna-login-success",
+        error_event: "luna-login-error",
+        service: cookie_bridge::ServiceTarget::Luna,
     })
-    .build()
-    .map_err(|e| format!("Lunaログインウィンドウ作成失敗: {}", e))?;
-
-    let app_clone = app.clone();
-    tokio::spawn(async move {
-        match rx.recv().await {
-            Some(data) => {
-                let app_state = app_clone.state::<AppState>();
-                let mut luna = app_state.luna.lock().await;
-                match luna.complete_saml_login(&data.saml_response, &data.relay_state).await {
-                    Ok(()) => {
-                        log::info!("Luna login successful");
-                        let _ = app_clone.emit("luna-login-success", ());
-                    }
-                    Err(e) => {
-                        log::error!("Luna login failed: {}", e);
-                        let _ = app_clone.emit("luna-login-error", &e);
-                    }
-                }
-                if let Some(win) = app_clone.get_webview_window("luna-login") {
-                    let _ = win.close();
-                }
-            }
-            None => {
-                log::info!("Luna login cancelled");
-            }
-        }
-    });
-
-    Ok(())
 }
 
 /// Fetch a Luna page (generic)
@@ -262,12 +308,16 @@ pub async fn luna_fetch_page(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<String, String> {
-    // Only allow relative paths on Luna
+    // Only allow known Luna paths
     if path.contains("://") || !path.starts_with('/') {
         return Err("許可されていないパスです".into());
     }
-    let luna = state.luna.lock().await;
-    luna.fetch_page(&path).await
+    let allowed_prefixes = ["/top", "/lms/", "/course/", "/notification", "/updateinfo", "/message", "/attend", "/report", "/survey", "/material"];
+    if !allowed_prefixes.iter().any(|p| path.starts_with(p)) {
+        return Err("許可されていないパスです".into());
+    }
+    let http = luna_http(&state).await?;
+    luna_get(&http, &path).await
 }
 
 /// Check if Luna session is valid
@@ -275,14 +325,30 @@ pub async fn luna_fetch_page(
 pub async fn luna_check_session(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let luna = state.luna.lock().await;
-    if !luna.authenticated {
+    let (http, authenticated) = {
+        let luna = state.luna.lock().await;
+        (luna.http.clone(), luna.authenticated)
+    };
+    if !authenticated {
         return Ok(false);
     }
-    // Try fetching the top page to verify session
-    match luna.fetch_page("/top").await {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
+    // Validate against server without holding the lock
+    let url = format!("{}/lms/timetable", crate::config::LUNA_BASE);
+    match crate::client::fetch_with_redirect(
+        &http, &url, crate::config::LUNA_BASE,
+        crate::luna_client::LUNA_SESSION_EXPIRED_MSG, crate::luna_client::is_luna_session_expired,
+    ).await {
+        Ok(_) => {
+            let luna = state.luna.lock().await;
+            luna.save_session();
+            Ok(true)
+        }
+        Err(e) if e == crate::luna_client::LUNA_SESSION_EXPIRED_MSG => {
+            let mut luna = state.luna.lock().await;
+            luna.authenticated = false;
+            Ok(false)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -291,8 +357,8 @@ pub async fn luna_check_session(
 pub async fn luna_fetch_dashboard(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let luna = state.luna.lock().await;
-    luna.fetch_page("/top").await
+    let http = luna_http(&state).await?;
+    luna_get(&http, "/top").await
 }
 
 /// Fetch Luna course list
@@ -300,8 +366,8 @@ pub async fn luna_fetch_dashboard(
 pub async fn luna_fetch_courses(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let luna = state.luna.lock().await;
-    luna.fetch_page("/course").await
+    let http = luna_http(&state).await?;
+    luna_get(&http, "/course").await
 }
 
 /// Fetch Luna notifications/announcements
@@ -309,8 +375,8 @@ pub async fn luna_fetch_courses(
 pub async fn luna_fetch_notifications(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let luna = state.luna.lock().await;
-    luna.fetch_page("/notification").await
+    let http = luna_http(&state).await?;
+    luna_get(&http, "/notification").await
 }
 
 /// Fetch parsed timetable
@@ -320,16 +386,16 @@ pub async fn luna_fetch_timetable(
     year: Option<String>,
     term: Option<String>,
 ) -> Result<luna_parser::LunaTimetable, String> {
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
     if let (Some(y), Some(t)) = (&year, &term) {
         if !is_safe_param(y) || !is_safe_param(t) {
             return Err("無効なパラメータです".into());
         }
         let path = format!("/lms/timetable?risyunen={}&kikanCd={}", y, t);
-        let html = luna.fetch_page(&path).await?;
+        let html = luna_get(&http, &path).await?;
         return Ok(luna_parser::parse_luna_timetable(&html));
     }
-    let html = luna.fetch_page("/lms/timetable").await?;
+    let html = luna_get(&http, "/lms/timetable").await?;
     Ok(luna_parser::parse_luna_timetable(&html))
 }
 
@@ -338,8 +404,8 @@ pub async fn luna_fetch_timetable(
 pub async fn luna_fetch_todo(
     state: State<'_, AppState>,
 ) -> Result<Vec<luna_parser::LunaTodoItem>, String> {
-    let luna = state.luna.lock().await;
-    let html = luna.fetch_page("/lms/todo").await?;
+    let http = luna_http(&state).await?;
+    let html = luna_get(&http, "/lms/todo").await?;
     Ok(luna_parser::parse_luna_todo(&html))
 }
 
@@ -348,8 +414,8 @@ pub async fn luna_fetch_todo(
 pub async fn luna_fetch_updates(
     state: State<'_, AppState>,
 ) -> Result<Vec<luna_parser::LunaNotification>, String> {
-    let luna = state.luna.lock().await;
-    let html = luna.fetch_page("/updateinfo").await?;
+    let http = luna_http(&state).await?;
+    let html = luna_get(&http, "/updateinfo").await?;
     Ok(luna_parser::parse_luna_notifications(&html))
 }
 
@@ -362,9 +428,9 @@ pub async fn luna_fetch_course_content(
     if !is_safe_param(&idnumber) {
         return Err("無効なパラメータです".into());
     }
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
     let path = format!("/lms/contents?idnumber={}", idnumber);
-    luna.fetch_page(&path).await
+    luna_get(&http, &path).await
 }
 
 /// Fetch and parse a Luna detail page (any path)
@@ -373,8 +439,12 @@ pub async fn luna_fetch_detail(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<luna_parser::LunaDetailPage, String> {
-    let luna = state.luna.lock().await;
-    let html = luna.fetch_page(&path).await?;
+    // Reject absolute URLs and enforce known Luna path prefixes
+    if path.starts_with("http") || !path.starts_with('/') {
+        return Err("許可されていないパスです".into());
+    }
+    let http = luna_http(&state).await?;
+    let html = luna_get(&http, &path).await?;
     // Debug: dump to /tmp for inspection
     #[cfg(debug_assertions)]
     {
@@ -396,12 +466,12 @@ pub async fn luna_fetch_announcement_detail(
     if !is_safe_param(&idnumber) || !is_safe_param(&info_id) {
         return Err("無効なパラメータです".into());
     }
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
     let path = format!(
         "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
         idnumber, info_id
     );
-    let html = luna.fetch_page(&path).await?;
+    let html = luna_get(&http, &path).await?;
     #[cfg(debug_assertions)]
     {
         let dump_path = std::env::temp_dir().join(format!("luna_announcement_{}_{}.html", idnumber, info_id));
@@ -420,14 +490,14 @@ pub async fn luna_fetch_course_detail(
     if !is_safe_param(&idnumber) {
         return Err("無効なパラメータです".into());
     }
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
 
     let course_path = format!("/lms/course?idnumber={}", idnumber);
     let contents_path = format!("/lms/contents?idnumber={}", idnumber);
 
     // Fetch course top page — Luna sometimes returns an incomplete/redirect page
     // on the very first access after session restore, so we retry once if menus are empty.
-    let course_html = luna.fetch_page(&course_path).await?;
+    let course_html = luna_get(&http, &course_path).await?;
     let mut result = luna_parser::parse_luna_course_contents(&course_html, &idnumber);
 
     if result.menus.is_empty() {
@@ -438,7 +508,7 @@ pub async fn luna_fetch_course_detail(
             let _ = std::fs::write(&dump, &course_html);
         }
         // Retry: the first request may have warmed up the Luna session/course state
-        if let Ok(retry_html) = luna.fetch_page(&course_path).await {
+        if let Ok(retry_html) = luna_get(&http, &course_path).await {
             let retry_result = luna_parser::parse_luna_course_contents(&retry_html, &idnumber);
             if !retry_result.menus.is_empty() {
                 log::info!("Retry succeeded for course {}", idnumber);
@@ -459,7 +529,7 @@ pub async fn luna_fetch_course_detail(
     }
 
     // Fetch contents top page (actual content items)
-    let contents_html = luna.fetch_page(&contents_path).await?;
+    let contents_html = luna_get(&http, &contents_path).await?;
 
     #[cfg(debug_assertions)]
     {
@@ -484,15 +554,13 @@ pub async fn luna_download_file(
     url: String,
     filename: String,
 ) -> Result<String, String> {
-    let luna = state.luna.lock().await;
-
     // For external URLs (SharePoint etc.), just return the URL for the frontend to open
     if url.starts_with("http") {
         return Ok(url);
     }
 
-    let bytes = luna.download_file(&url).await?;
-    drop(luna); // Release lock before blocking fs::write
+    let http = luna_http(&state).await?;
+    let bytes = luna_download(&http, &url).await?;
 
     save_to_downloads(&filename, &bytes)
 }
@@ -540,7 +608,7 @@ pub async fn luna_download_material(
     display_name: Option<String>,
     end_date: Option<String>,
 ) -> Result<String, String> {
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
 
     log::info!("Material download: file='{}', object='{}', resource='{}', type='{}', matId={:?}",
         file_name, object_name, resource_id, file_type, material_id);
@@ -548,12 +616,9 @@ pub async fn luna_download_material(
     // Step 0: Visit the course contents page first to establish server-side session context
     // (the browser is always on this page when downloading)
     let course_url = format!("/lms/course?idnumber={}", idnumber);
-    let _ = luna.fetch_page(&course_url).await;
-    let _referer = format!("{}/lms/course?idnumber={}", crate::config::LUNA_BASE, idnumber);
+    let _ = luna_get(&http, &course_url).await;
 
     // Step 1: Prepare tempfile (GET /lms/course/make/tempfile)
-    // jQuery $.ajax({ type: "GET", data: params }) sends as query string
-    // The response is a server-side temp path used as fileId in the download form
     let tempfile_query = format!(
         "fileName={}&objectName={}&id={}&idnumber={}",
         urlencoding::encode(&file_name),
@@ -563,7 +628,7 @@ pub async fn luna_download_material(
     );
     let tempfile_url = format!("/lms/course/make/tempfile?{}", tempfile_query);
     log::info!("Material tempfile URL: {}", tempfile_url);
-    let file_id = luna.fetch_page(&tempfile_url).await
+    let file_id = luna_get(&http, &tempfile_url).await
         .map_err(|e| format!("ファイル準備失敗: {}", e))?;
     let file_id = file_id.trim().to_string();
 
@@ -621,8 +686,7 @@ pub async fn luna_download_material(
 
     log::info!("Material download full URL: {}", full_download_url);
 
-    let bytes = luna.download_file(&full_download_url).await?;
-    drop(luna); // Release lock before blocking fs::write
+    let bytes = luna_download(&http, &full_download_url).await?;
 
     log::info!("Material downloaded {} bytes", bytes.len());
 
@@ -656,7 +720,7 @@ pub async fn luna_submit_report(
     file_base64: String,
 ) -> Result<String, String> {
     use base64::Engine;
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
 
     // Decode base64 file data
     let file_bytes = base64::engine::general_purpose::STANDARD
@@ -670,7 +734,7 @@ pub async fn luna_submit_report(
         "/lms/course/report/submission?idnumber={}&reportId={}",
         idnumber, report_id
     );
-    let page_html = luna.fetch_page(&submission_url).await?;
+    let page_html = luna_get(&http, &submission_url).await?;
 
     let cid = extract_input_value(&page_html, "_cid")
         .ok_or("_cid トークンが見つかりません")?;
@@ -692,7 +756,7 @@ pub async fn luna_submit_report(
             .map_err(|e| format!("MIME error: {}", e))?
         );
 
-    let upload_resp = luna.post_multipart("/lms/course/report/upload", upload_form).await?;
+    let upload_resp = luna_post_multipart(&http, "/lms/course/report/upload", upload_form).await?;
 
     let upload_json: serde_json::Value = serde_json::from_str(&upload_resp)
         .map_err(|e| format!("アップロード応答の解析失敗: {} — body: {}", e, &upload_resp[..200.min(upload_resp.len())]))?;
@@ -720,7 +784,7 @@ pub async fn luna_submit_report(
         ("rowCounter".to_string(), "1".to_string()),
     ];
 
-    let _submit_resp = luna.post_form("/lms/course/report/submission", &submit_params).await?;
+    let _submit_resp = luna_post(&http, "/lms/course/report/submission", &submit_params).await?;
 
     log::info!("Report submitted successfully");
     Ok(format!("「{}」を提出しました", file_name))
@@ -732,8 +796,11 @@ pub async fn luna_fetch_discussion_detail(
     state: State<'_, AppState>,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
-    let luna = state.luna.lock().await;
-    let html = luna.fetch_page(&url).await?;
+    if url.starts_with("http") || !url.starts_with('/') {
+        return Err("許可されていないパスです".into());
+    }
+    let http = luna_http(&state).await?;
+    let html = luna_get(&http, &url).await?;
     #[cfg(debug_assertions)]
     {
         let dump_path = std::env::temp_dir().join(format!("luna_discussion_{}.html",
@@ -754,7 +821,7 @@ pub async fn luna_post_discussion(
     title: String,
     content: String,
 ) -> Result<String, String> {
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
 
     // Extract idnumber and forumId from the themetop URL
     let idnumber = extract_url_param(&url, "idnumber")
@@ -767,7 +834,7 @@ pub async fn luna_post_discussion(
         "/lms/course/forums/setthread?idnumber={}&forumId={}&threadId=&groupId=",
         idnumber, forum_id
     );
-    let html = luna.fetch_page(&setthread_url).await?;
+    let html = luna_get(&http, &setthread_url).await?;
 
     // Dump for debugging
     #[cfg(debug_assertions)]
@@ -804,7 +871,7 @@ pub async fn luna_post_discussion(
         ("contentsHtml".to_string(), format!("<p>{}</p>", html_escape(&content))),
     ];
 
-    let resp = luna.post_form("/lms/course/forums/setthread", &post_params).await?;
+    let resp = luna_post(&http, "/lms/course/forums/setthread", &post_params).await?;
 
     if resp.contains("error") && resp.contains("\"success\":false") {
         return Err(format!("投稿失敗: {}", &resp[..200.min(resp.len())]));
@@ -823,10 +890,10 @@ pub async fn luna_reply_discussion(
     url: String,
     content: String,
 ) -> Result<String, String> {
-    let luna = state.luna.lock().await;
+    let http = luna_http(&state).await?;
 
     // Fetch thread page to get tokens
-    let html = luna.fetch_page(&url).await?;
+    let html = luna_get(&http, &url).await?;
 
     let cid = extract_input_value(&html, "_cid")
         .ok_or("_cid トークンが見つかりません")?;
@@ -878,7 +945,7 @@ pub async fn luna_reply_discussion(
         .text("forum.title", forum_title)
         .text("forum.contents", forum_contents);
 
-    let resp = luna.post_multipart("/lms/course/forums/thread", form).await?;
+    let resp = luna_post_multipart(&http, "/lms/course/forums/thread", form).await?;
 
     if resp.contains("error") && resp.contains("\"success\":false") {
         return Err(format!("投稿失敗: {}", &resp[..200.min(resp.len())]));
@@ -895,8 +962,11 @@ pub async fn luna_fetch_thread_posts(
     state: State<'_, AppState>,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
-    let luna = state.luna.lock().await;
-    let html = luna.fetch_page(&url).await?;
+    if url.starts_with("http") || !url.starts_with('/') {
+        return Err("許可されていないパスです".into());
+    }
+    let http = luna_http(&state).await?;
+    let html = luna_get(&http, &url).await?;
 
     #[cfg(debug_assertions)]
     {

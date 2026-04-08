@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox } from "../api";
-  import type { MailMessage } from "../api";
-  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab } from "../stores";
+  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox, markNotificationRead, getReadNotifications } from "../api";
+  import type { MailMessage, ReadIdsResponse } from "../api";
+  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, unreadNotifCount, unreadMailCount } from "../stores";
   import type { NotificationsData } from "../stores";
   import type { KwicPortalHome } from "../api";
   import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "../notify";
@@ -41,6 +41,23 @@
   let lunaNotifications = $state<LunaNotification[]>([]);
   let kwicHome = $state<KwicPortalHome | null>(null);
   let mailMessages = $state<MailMessage[]>([]);
+  let readIds = $state<ReadIdsResponse>({ kgc: [], luna: [], kwic: [] });
+  let readSets = $derived({
+    kgc: new Set(readIds.kgc),
+    luna: new Set(readIds.luna),
+    kwic: new Set(readIds.kwic),
+  });
+
+  function notifKey(title: string, date: string): string {
+    return `${title.trim().replace(/\s+/g, "")}|${date}`;
+  }
+
+  function isNotifRead(n: { source: string; id: string; title: string; date: string }): boolean {
+    if (n.source === "mail") return false; // mail has its own read state
+    const key = n.id || notifKey(n.title, n.date);
+    const set = readSets[n.source as keyof typeof readSets];
+    return set ? set.has(key) : false;
+  }
 
   // KWIC detail view state (removed - now opens in window)
 
@@ -77,7 +94,7 @@
   onMount(async () => {
     loading = true;
     try {
-      const [kgc, luna, kwic, mail] = await Promise.allSettled([
+      const [kgc, luna, kwic, mail, readResult] = await Promise.allSettled([
         cachedFetch("notifications", fetchNotifications),
         $lunaAuthState.authenticated
           ? cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"))
@@ -88,7 +105,11 @@
         $mailAuthState.authenticated
           ? cachedFetch<MailMessage[]>("mail_inbox", () => mailFetchInbox(20, 0))
           : Promise.resolve([]),
+        getReadNotifications(),
       ]);
+      if (readResult.status === "fulfilled" && readResult.value) {
+        readIds = readResult.value as ReadIdsResponse;
+      }
       if (kgc.status === "fulfilled" && kgc.value) {
         kgcData = kgc.value as NotificationsData;
         if (kgcData?.entries) notifyNewKgc(kgcData.entries);
@@ -127,7 +148,7 @@
     if (kgcData?.entries) {
       for (const n of kgcData.entries) {
         addUniq({
-          id: "", title: n.title, date: n.date, category: n.category,
+          id: n.id, title: n.title, date: n.date, category: n.category,
           tab: "授業のお知らせ", source: "kgc", important: false,
         });
       }
@@ -136,7 +157,7 @@
     // Luna → 授業のお知らせ
     for (const n of lunaNotifications) {
       addUniq({
-        id: "", title: n.content, date: n.date, category: n.module || n.course_info,
+        id: n.url || n.idnumber || "", title: n.content, date: n.date, category: n.module || n.course_info,
         tab: "授業のお知らせ", source: "luna", important: false,
         url: n.url, courseInfo: n.course_info,
       });
@@ -203,13 +224,43 @@
 
   let tabCounts = $derived.by(() => {
     const counts: Record<string, number> = {};
-    for (const tab of TAB_ORDER) counts[tab] = groupedByTab.get(tab)?.length ?? 0;
+    for (const tab of TAB_ORDER) {
+      const items = groupedByTab.get(tab) ?? [];
+      counts[tab] = items.filter(n => !isNotifRead(n)).length;
+    }
     return counts;
+  });
+
+  // Sync unread totals to stores (must be in $effect, not $derived)
+  $effect(() => {
+    let totalNotif = 0;
+    let totalMail = 0;
+    for (const tab of TAB_ORDER) {
+      const items = groupedByTab.get(tab) ?? [];
+      for (const n of items) {
+        if (isNotifRead(n)) continue;
+        if (n.source === "mail") totalMail++;
+        else totalNotif++;
+      }
+    }
+    unreadNotifCount.set(totalNotif);
+    unreadMailCount.set(totalMail);
   });
 
   let currentItems = $derived(groupedByTab.get(selectedTab) ?? []);
 
   async function openNotif(n: UnifiedNotif) {
+    // Mark as read locally
+    if (n.source !== "mail") {
+      const key = n.id || notifKey(n.title, n.date);
+      markNotificationRead(n.source, key).catch(console.error);
+      // Optimistic update
+      readIds = {
+        ...readIds,
+        [n.source]: [...readIds[n.source as keyof ReadIdsResponse], key],
+      };
+    }
+
     if (n.source === "mail") {
       activeTab.set("mail");
     } else if (n.source === "luna" && n.url) {
@@ -256,15 +307,14 @@
           <button
             class="notif-item"
             class:clickable={n.source === "luna" || n.source === "kwic" || n.source === "mail"}
-            style="animation: slide-up 0.3s ease {Math.min(i * 0.04, 0.4)}s both;"
+            class:read={isNotifRead(n)}
+            style="animation: notif-enter 0.3s ease {Math.min(i * 0.04, 0.4)}s both;"
             onclick={() => openNotif(n)}
-            disabled={n.source === "kgc"}
           >
             <div class="notif-header">
               {#if n.category}
                 <span class="notif-badge" class:badge-kwic={n.source === "kwic"} class:badge-luna={n.source === "luna"} class:badge-mail={n.source === "mail"}>{n.category}</span>
               {/if}
-              {#if n.important}<span class="notif-important">NEW</span>{/if}
               <span class="notif-title">{n.title}</span>
               <span class="notif-date">{n.date}</span>
             </div>
@@ -347,18 +397,13 @@
   .notif-item.clickable {
     cursor: pointer;
   }
+  .notif-item.read {
+    opacity: 0.55;
+  }
   .notif-item.clickable:hover {
     background: var(--bg-hover);
     transform: translateX(2px);
     box-shadow: var(--shadow-md);
-  }
-  .notif-item:disabled {
-    cursor: default;
-  }
-  .notif-item:disabled:hover {
-    background: var(--bg-card);
-    transform: none;
-    box-shadow: var(--shadow-sm);
   }
   .notif-item:active {
     transform: scale(0.995);
@@ -402,15 +447,14 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-  .notif-important {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--red, #ef4444);
-    flex-shrink: 0;
-  }
+
   .notif-course {
     margin-top: 4px;
     font-size: 12px;
     color: var(--text-tertiary);
+  }
+  @keyframes notif-enter {
+    from { transform: translateY(12px); }
+    to { transform: translateY(0); }
   }
 </style>

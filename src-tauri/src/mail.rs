@@ -6,7 +6,7 @@ use crate::config;
 
 pub const DEFAULT_CLIENT_ID_STR: &str = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
 const MS_REDIRECT_URI: &str = "http://localhost";
-const MS_SCOPES: &str = "Mail.Read offline_access";
+const MS_SCOPES: &str = "Mail.ReadWrite offline_access";
 
 const TOKEN_FILE: &str = "ms_mail_token.json";
 const MAIL_CONFIG_FILE: &str = "ms_mail_config.json";
@@ -169,7 +169,7 @@ impl MailClient {
         }
     }
 
-    fn save_token(&self) {
+    pub fn save_token(&self) {
         if let Some(ref token) = self.token {
             let path = token_path();
             if let Ok(json) = serde_json::to_string_pretty(token) {
@@ -375,13 +375,19 @@ impl MailClient {
         let access_token = self.ensure_token().await?;
         let url = format!("{}/me/messages/{}", config::GRAPH_BASE, message_id);
         let body = serde_json::json!({"isRead": true});
-        self.http
+        let resp = self.http
             .patch(&url)
             .bearer_auth(&access_token)
             .json(&body)
             .send()
             .await
             .map_err(|e| format!("既読設定失敗: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            log::warn!("mark_as_read failed: HTTP {} - {}", status, body);
+            return Err(format!("既読設定失敗: HTTP {}", status));
+        }
         Ok(())
     }
 }

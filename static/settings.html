@@ -259,6 +259,14 @@
     </svg>
     メール
   </div>
+  <div class="nav-item" data-panel="calendar" onclick="switchPanel('calendar')">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3">
+      <rect x="2.5" y="3.5" width="15" height="13" rx="2"/>
+      <path d="M2.5 7.5h15" stroke-linecap="round"/>
+      <path d="M6 2v3M14 2v3" stroke-linecap="round"/>
+    </svg>
+    カレンダー
+  </div>
   <div class="nav-item" data-panel="notification" onclick="switchPanel('notification')">
     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3">
       <path d="M10 2.5a5 5 0 015 5v3l1.5 2H3.5l1.5-2v-3a5 5 0 015-5z" stroke-linejoin="round"/>
@@ -430,7 +438,6 @@
       </div>
     </div>
     <div style="display:flex;gap:6px;margin-top:4px;align-items:center;">
-      <button class="btn-test" id="mailSaveBtn" onclick="saveMailConfig()">保存</button>
       <button class="btn-test" id="mailLogoutBtn" onclick="mailLogout()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">ログアウト</button>
       <span id="mailStatus" class="hint" style="margin-left:4px;"></span>
     </div>
@@ -442,6 +449,99 @@
         <li>リダイレクト URI: 「パブリッククライアント」→ <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">http://localhost</code></li>
         <li>API のアクセス許可: Microsoft Graph → <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">Mail.Read</code></li>
         <li>認証 → 「パブリッククライアントフローを許可する」を「はい」に</li>
+      </ol>
+    </div>
+  </div>
+  <div class="panel" id="panel-calendar">
+    <div class="hero-card">
+      <div class="hero-icon" style="background:linear-gradient(135deg,rgba(52,199,89,0.15),rgba(255,150,0,0.15));">
+        <svg viewBox="0 0 20 20" fill="none" stroke="#2d8a4e" stroke-width="1.3" style="width:19px;height:19px;">
+          <rect x="2.5" y="3.5" width="15" height="13" rx="2"/>
+          <path d="M2.5 7.5h15" stroke-linecap="round"/>
+          <path d="M6 2v3M14 2v3" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="hero-text">
+        <h2 class="panel-title">カレンダー設定</h2>
+        <p class="panel-desc">時間割をシステムカレンダー (Calendar.app) や Google Calendar に同期する設定を管理します。</p>
+      </div>
+    </div>
+
+    <div class="card-label">システムカレンダー (Calendar.app)</div>
+    <div class="card">
+      <div class="row">
+        <span class="row-label">状態</span>
+        <div class="row-input">
+          <div class="session-indicator" id="syscal-status">未確認</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">自動同期</span>
+        <div class="row-input">
+          <select id="sysCalAutoSync" onchange="onSysCalAutoSyncChange()">
+            <option value="false">オフ</option>
+            <option value="true">オン (時間割表示時に自動同期)</option>
+          </select>
+          <div class="hint">有効にすると、時間割を表示するたびに自動的にシステムカレンダーに同期します。</div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:4px;align-items:center;">
+      <button class="btn-test" id="syscalClearBtn" onclick="syscalClear()">全イベントを削除</button>
+      <button class="btn-test" id="syscalDeleteBtn" onclick="syscalDelete()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">カレンダーごと削除</button>
+      <span id="syscalStatus" class="hint" style="margin-left:4px;"></span>
+    </div>
+
+    <div class="card-label" style="margin-top:20px;">Google Calendar</div>
+    <div class="card">
+      <div class="row">
+        <span class="row-label">クライアント ID</span>
+        <div class="row-input">
+          <input type="text" id="gcalClientId" placeholder="xxxxx.apps.googleusercontent.com" spellcheck="false" style="font-family:monospace;font-size:11px;">
+          <div class="hint">Google Cloud Console で作成した OAuth 2.0 クライアント ID を入力してください。</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">クライアント シークレット</span>
+        <div class="row-input">
+          <input type="password" id="gcalClientSecret" placeholder="GOCSPX-xxxxx" spellcheck="false" style="font-family:monospace;font-size:11px;">
+          <div class="hint">「ウェブ アプリケーション」タイプの場合に必要です。「デスクトップ アプリ」タイプの場合は空欄で構いません。</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">アカウント</span>
+        <div class="row-input">
+          <div class="session-indicator" id="gcal-session-status">未確認</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">自動同期</span>
+        <div class="row-input">
+          <select id="gcalAutoSync" onchange="onGcalAutoSyncChange()">
+            <option value="false">オフ</option>
+            <option value="true">オン (時間割表示時に自動同期)</option>
+          </select>
+          <div class="hint">有効にすると、時間割を表示するたびに自動的に Google Calendar に同期します。</div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap;">
+      <button class="btn-test" id="gcalLoginBtn" onclick="gcalLogin()">Google 認証</button>
+      <button class="btn-test" id="gcalClearBtn" onclick="gcalClear()">全イベントを削除</button>
+      <button class="btn-test" id="gcalDeleteCalBtn" onclick="gcalDeleteCal()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">カレンダーごと削除</button>
+      <button class="btn-test" id="gcalLogoutBtn" onclick="gcalLogout()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">連携解除</button>
+      <span id="gcalStatus" class="hint" style="margin-left:4px;"></span>
+    </div>
+    <div class="card-label" style="margin-top:20px;">Google Cloud Console での設定手順</div>
+    <div class="card" style="padding:12px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+      <ol style="margin:0;padding-left:18px;">
+        <li><a href="https://console.cloud.google.com" style="color:var(--blue);" onclick="event.preventDefault()">console.cloud.google.com</a> で新しいプロジェクトを作成</li>
+        <li>「API とサービス」 → 「ライブラリ」 → <strong>Google Calendar API</strong> を有効化</li>
+        <li>「API とサービス」 → 「認証情報」 → 「認証情報を作成」 → 「OAuth クライアント ID」</li>
+        <li>アプリケーションの種類: 「ウェブ アプリケーション」を選択</li>
+        <li>「承認済みのリダイレクト URI」に <code>http://127.0.0.1</code> を追加</li>
+        <li>作成されたクライアント ID とクライアント シークレットをコピーして上の入力欄に貼り付け</li>
+        <li>「OAuth 同意画面」でテストユーザーに自分のメールアドレスを追加</li>
       </ol>
     </div>
   </div>
@@ -512,7 +612,8 @@
   (function(){var s='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60"><rect width="60" height="60" rx="12" fill="%23002855"/><g transform="translate(6 4) scale(0.8)"><path d="M18.418,55.234A29.957,29.957,0,0,1,1.68,43.573a30.258,30.258,0,0,0,5.243,1.9,31.463,31.463,0,0,0,38.555-22.24A31.168,31.168,0,0,0,43.55,1.68,30.052,30.052,0,0,1,18.395,55.234" transform="translate(2.27 2.27)" fill="%23fff200"/><path d="M44.479,1.364C43.656.87,42.787.423,41.893,0c.541.776,1.058,1.575,1.552,2.421A30.069,30.069,0,0,1,2.421,43.445C1.6,42.975.776,42.457,0,41.917c.423.893.87,1.74,1.364,2.586A31.477,31.477,0,1,0,44.456,1.387M20.688,57.5A29.957,29.957,0,0,1,3.95,45.843a30.258,30.258,0,0,0,5.243,1.9,31.463,31.463,0,0,0,38.555-22.24A31.168,31.168,0,0,0,45.819,3.95,30.052,30.052,0,0,1,20.665,57.5Z" fill="%23231f20"/><path d="M15.243,19.32s.118-.071.141-.047c.047.024.024.118.047.235a.923.923,0,0,0,.188.423c.141.235,5.219,8.3,5.384,8.557a1.406,1.406,0,0,0,.517.541c.118.047.141.094.118.141,0,.047-.071.071-.141.118s-1.622.846-1.693.893a.179.179,0,0,1-.212.024.253.253,0,0,1-.047-.188,1.39,1.39,0,0,0-.282-.682c-.282-.447-5.172-8.2-5.266-8.369a1.6,1.6,0,0,0-.494-.494c-.071-.024-.118-.094-.024-.141S15.2,19.32,15.2,19.32" transform="translate(18.14 26.029)" fill="%23231f20"/><path d="M15.35,25.782s.541-4.161.588-4.843c.024-.682,0-.964-.071-1.058a.4.4,0,0,0-.188-.165c-.094-.047-.071-.118,0-.165s2.257-1.716,2.351-1.787.141-.047.165,0,0,.094-.047.188a2.359,2.359,0,0,0-.188.87c-.071.705-.729,6.441-.729,6.441l-1.834.541" transform="translate(20.737 23.94)" fill="%23231f20"/><path d="M16.234,23.227a5.064,5.064,0,0,1,6.3,1.011,3.112,3.112,0,0,1,.47.752c.047.212.165.188.282.118.141-.071,1.693-1.1,1.693-1.1.047-.024.094-.071.094-.094,0-.047-.024-.094-.071-.094a1.328,1.328,0,0,1-.517-.447,7.593,7.593,0,0,0-4.725-2.586,10.324,10.324,0,0,0-4.49.987l1.011,1.481" transform="translate(20.628 28.046)" fill="%23231f20"/><path d="M21.7,20.8a1.21,1.21,0,1,1-1.669-.376A1.214,1.214,0,0,1,21.7,20.8" transform="translate(26.304 27.344)" fill="%23231f20"/><path d="M25.422,14.8a1.21,1.21,0,1,1-1.669-.376,1.214,1.214,0,0,1,1.669.376" transform="translate(31.329 19.239)" fill="%23231f20"/><path d="M24.457,21.137s.118.094.165.071.047-.118.071-.212a1.3,1.3,0,0,1,.259-.423c.094-.141,1.434-1.9,1.5-2.022a.168.168,0,0,1,.259-.024c.071.047,1.5,1.128,1.81,1.34.282.235.165.658.141.823a5.44,5.44,0,0,1-.893,1.575,4.308,4.308,0,0,1-5.995.752,4.148,4.148,0,0,1-.705-5.83,4.631,4.631,0,0,1,1.9-1.434c.141-.047.141-.118.141-.141a.084.084,0,0,0-.047-.071c-.047-.024-1.693-1.269-1.74-1.293-.024-.024-.071-.047-.094-.024-.047,0-.071.094-.141.235a3.606,3.606,0,0,1-.682.658A6.2,6.2,0,0,0,18.3,20.173a5.924,5.924,0,0,0,2.327,4.3,6.222,6.222,0,0,0,6.347.729,6.647,6.647,0,0,0,3.479-4.185,7.376,7.376,0,0,1,.517-1.693c.047-.188-.047-.212-.118-.212a.173.173,0,0,1-.141-.047c-.047-.047-4.3-3.221-4.349-3.244-.047-.047-.141,0-.165.024,0,0-2.515,3.362-2.68,3.6a.738.738,0,0,1-.376.306c-.094.047-.165.094-.165.141a.174.174,0,0,0,.118.141l1.387,1.034" transform="translate(24.7 19.204)" fill="%23231f20"/></g></svg>';
   document.getElementById("aboutIcon").src="data:image/svg+xml,"+s})();
 
-  function switchPanel(n){document.querySelectorAll(".panel").forEach(function(p){p.classList.remove("active")});document.querySelectorAll(".nav-item").forEach(function(i){i.classList.remove("active")});var p=document.getElementById("panel-"+n);var nav=document.querySelector('.nav-item[data-panel="'+n+'"]');if(p)p.classList.add("active");if(nav)nav.classList.add("active");var sb=document.querySelector(".save-bar");if(sb)sb.style.display=n==="ai"?"flex":"none";if(n==="mail")checkMailSession()}
+  var activePanel="ai";
+  function switchPanel(n){activePanel=n;document.querySelectorAll(".panel").forEach(function(p){p.classList.remove("active")});document.querySelectorAll(".nav-item").forEach(function(i){i.classList.remove("active")});var p=document.getElementById("panel-"+n);var nav=document.querySelector('.nav-item[data-panel="'+n+'"]');if(p)p.classList.add("active");if(nav)nav.classList.add("active");var sb=document.querySelector(".save-bar");var savePanels=["ai","mail","calendar"];if(sb)sb.style.display=savePanels.indexOf(n)>=0?"flex":"none";if(n==="mail")checkMailSession()}
 
   var invoke=window.__TAURI__.core.invoke;
 
@@ -537,7 +638,7 @@
 
   function getConfig(){return{provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value}}
 
-  async function saveSettings(){try{document.getElementById("saveBtn").disabled=true;await invoke("save_ai_config",{config:getConfig()});showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{document.getElementById("saveBtn").disabled=false}}
+  async function saveSettings(){var btn=document.getElementById("saveBtn");try{btn.disabled=true;if(activePanel==="ai"){await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="mail"){await invoke("mail_save_config",{config:{client_id:$mailClientId.value.trim()}});checkMailSession()}else if(activePanel==="calendar"){await invoke("gcal_save_config",{config:{client_id:$gcalClientId.value.trim(),client_secret:$gcalClientSecret.value.trim()}})}showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{btn.disabled=false}}
 
   async function testConnection(){var btn=document.getElementById("testBtn");btn.disabled=true;showStatus("接続をテスト中...","loading");try{await invoke("save_ai_config",{config:getConfig()});var r=await invoke("ai_test_connection");showStatus("接続成功: "+r.substring(0,80),"success")}catch(e){showStatus("接続失敗: "+e,"error")}finally{btn.disabled=false}}
 
@@ -547,6 +648,11 @@
   function setSessionStatus(id, ok, label) {
     var el = document.getElementById(id);
     if (!el) return;
+    if (ok === null) {
+      // Recovering state — show spinner with label
+      el.innerHTML = '<span class="spinner" style="width:10px;height:10px;border-width:1.5px;"></span> ' + escapeHtml(label);
+      return;
+    }
     var dot = ok ? '<span class="session-dot ok"></span>' : '<span class="session-dot ng"></span>';
     el.innerHTML = dot + ' ' + escapeHtml(label);
   }
@@ -562,26 +668,58 @@
       var s = await invoke('validate_session');
       var label = s.valid ? '有効' + (s.student_id ? ' (' + s.student_id + ')' : '') : '無効・期限切れ';
       setSessionStatus('session-kg', s.valid, label);
-    } catch (e) { setSessionStatus('session-kg', false, 'エラー'); }
+      return s.valid;
+    } catch (e) { setSessionStatus('session-kg', false, 'エラー'); return false; }
   }
   async function checkLunaSession() {
     setSessionChecking('session-luna');
     try {
       var ok = await invoke('luna_check_session');
       setSessionStatus('session-luna', ok, ok ? '有効' : '無効・未接続');
-    } catch (e) { setSessionStatus('session-luna', false, 'エラー'); }
+      return ok;
+    } catch (e) { setSessionStatus('session-luna', false, 'エラー'); return false; }
   }
   async function checkKwicSession() {
     setSessionChecking('session-kwic');
     try {
       var ok = await invoke('kwic_check_session');
       setSessionStatus('session-kwic', ok, ok ? '有効' : '無効・未接続');
-    } catch (e) { setSessionStatus('session-kwic', false, 'エラー'); }
+      return ok;
+    } catch (e) { setSessionStatus('session-kwic', false, 'エラー'); return false; }
   }
 
   async function recheckSessions() {
     document.getElementById('recheckBtn').disabled = true;
-    await Promise.all([checkKgSession(), checkLunaSession(), checkKwicSession()]);
+    var [kgc, luna, kwic] = await Promise.all([checkKgSession(), checkLunaSession(), checkKwicSession()]);
+
+    // Auto-recover: if any service is dead, try headless sync (cross-renewal)
+    var dead = [];
+    if (!kgc) dead.push('kgc');
+    if (!luna) dead.push('luna');
+    if (!kwic) dead.push('kwic');
+
+    if (dead.length > 0 && dead.length < 3) {
+      // Some alive, some dead — targeted recovery with cross-renewal
+      var st = document.getElementById('sessionStatus');
+      if (st) { st.style.color = 'var(--text-secondary)'; st.textContent = '自動復旧中...'; }
+      var anyRecovered = false;
+      await Promise.all(dead.map(async function(svc) {
+        var elId = svc === 'kgc' ? 'session-kg' : svc === 'luna' ? 'session-luna' : 'session-kwic';
+        setSessionStatus(elId, null, '復旧中...');
+        try {
+          var ok = await invoke('sync_session', { service: svc });
+          if (ok) { anyRecovered = true; }
+        } catch (e) { /* ignore */ }
+      }));
+      // Re-verify all after recovery
+      await Promise.all([checkKgSession(), checkLunaSession(), checkKwicSession()]);
+      if (st) {
+        if (anyRecovered) { st.style.color = 'var(--green)'; st.textContent = '自動復旧完了'; }
+        else { st.style.color = 'var(--orange,#ff9500)'; st.textContent = '復旧失敗 - 再ログインが必要です'; }
+        setTimeout(function(){ st.textContent = ''; }, 5000);
+      }
+    }
+
     document.getElementById('recheckBtn').disabled = false;
   }
 
@@ -591,9 +729,13 @@
     btn.disabled = true;
     if (st) { st.style.color = 'var(--text-secondary)'; st.textContent = '再ログイン中...'; }
     try {
-      await invoke('sync_session', { service: 'all' });
-      if (st) { st.style.color = 'var(--green)'; st.textContent = '再ログイン成功'; }
-      recheckSessions();
+      var ok = await invoke('sync_session', { service: 'all' });
+      if (ok) {
+        if (st) { st.style.color = 'var(--green)'; st.textContent = '再ログイン成功'; }
+      } else {
+        if (st) { st.style.color = 'var(--red)'; st.textContent = 'Okta SSO 期限切れ - アプリ内で再ログインしてください'; }
+      }
+      await Promise.all([checkKgSession(), checkLunaSession(), checkKwicSession()]);
     } catch (e) {
       if (st) { st.style.color = 'var(--red)'; st.textContent = '失敗: ' + e; }
     } finally {
@@ -690,22 +832,6 @@
     }
   }
 
-  async function saveMailConfig() {
-    var btn = document.getElementById('mailSaveBtn');
-    var st = document.getElementById('mailStatus');
-    btn.disabled = true;
-    try {
-      await invoke('mail_save_config', { config: { client_id: $mailClientId.value.trim() } });
-      if (st) { st.style.color = 'var(--green)'; st.textContent = '保存しました'; }
-      checkMailSession();
-    } catch (e) {
-      if (st) { st.style.color = 'var(--red)'; st.textContent = '保存失敗: ' + e; }
-    } finally {
-      btn.disabled = false;
-      setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
-    }
-  }
-
   async function mailLogout() {
     var st = document.getElementById('mailStatus');
     try {
@@ -723,6 +849,174 @@
   // Auto-check sessions when panel becomes visible
   recheckSessions();
   checkNotifPermission();
+
+  // ---- System Calendar (Calendar.app) ----
+  var $sysCalAutoSyncSel = document.getElementById('sysCalAutoSync');
+
+  function loadSysCalConfig() {
+    var autoSync = localStorage.getItem('selah-auto-sync') === 'true';
+    $sysCalAutoSyncSel.value = autoSync ? 'true' : 'false';
+    checkSysCalStatus();
+  }
+
+  function onSysCalAutoSyncChange() {
+    localStorage.setItem('selah-auto-sync', $sysCalAutoSyncSel.value);
+  }
+
+  async function checkSysCalStatus() {
+    var el = document.getElementById('syscal-status');
+    if (!el) return;
+    el.innerHTML = '<span class="spinner" style="width:10px;height:10px;border-width:1.5px;"></span> 確認中...';
+    try {
+      var info = await invoke('get_calendar_info');
+      if (info.exists) {
+        el.innerHTML = '<span class="session-dot ok"></span> ' + escapeHtml(info.count + '件のイベント');
+      } else {
+        el.innerHTML = '<span class="session-dot ng"></span> カレンダー未作成';
+      }
+    } catch (e) {
+      el.innerHTML = '<span class="session-dot ng"></span> エラー';
+    }
+  }
+
+  async function syscalClear() {
+    var st = document.getElementById('syscalStatus');
+    var btn = document.getElementById('syscalClearBtn');
+    var origText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '削除中...'; }
+    if (st) { st.style.color = ''; st.textContent = ''; }
+    try {
+      var r = await invoke('clear_calendar', { deleteCalendar: false });
+      if (st) { st.style.color = 'var(--green)'; st.textContent = r; }
+      checkSysCalStatus();
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = '削除失敗: ' + e; }
+    }
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+    setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+  }
+
+  async function syscalDelete() {
+    var st = document.getElementById('syscalStatus');
+    var btn = document.getElementById('syscalDeleteBtn');
+    var origText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '削除中...'; }
+    if (st) { st.style.color = ''; st.textContent = ''; }
+    try {
+      var r = await invoke('clear_calendar', { deleteCalendar: true });
+      if (st) { st.style.color = 'var(--green)'; st.textContent = r; }
+      checkSysCalStatus();
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = '削除失敗: ' + e; }
+    }
+    if (btn) { btn.disabled = false; btn.textContent = origText; }
+    setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+  }
+
+  loadSysCalConfig();
+
+  // ---- Google Calendar Config ----
+  var $gcalClientId = document.getElementById('gcalClientId');
+  var $gcalClientSecret = document.getElementById('gcalClientSecret');
+  var $gcalAutoSyncSel = document.getElementById('gcalAutoSync');
+
+  async function loadGcalConfig() {
+    try {
+      var cfg = await invoke('gcal_get_config');
+      $gcalClientId.value = cfg.client_id || '';
+      $gcalClientSecret.value = cfg.client_secret || '';
+    } catch (e) { console.error('Failed to load gcal config:', e); }
+    // Load auto-sync preference from localStorage
+    var autoSync = localStorage.getItem('selah-gcal-auto-sync') === 'true';
+    $gcalAutoSyncSel.value = autoSync ? 'true' : 'false';
+    checkGcalSession();
+  }
+
+  function onGcalAutoSyncChange() {
+    localStorage.setItem('selah-gcal-auto-sync', $gcalAutoSyncSel.value);
+  }
+
+  async function checkGcalSession() {
+    var el = document.getElementById('gcal-session-status');
+    if (!el) return;
+    el.innerHTML = '<span class="spinner" style="width:10px;height:10px;border-width:1.5px;"></span> 確認中...';
+    try {
+      var s = await invoke('gcal_check_session');
+      if (s.authenticated) {
+        var info = s.calendar_exists ? '認証済み (' + s.synced_events + '件同期済)' : '認証済み (未同期)';
+        el.innerHTML = '<span class="session-dot ok"></span> ' + escapeHtml(info);
+      } else {
+        el.innerHTML = '<span class="session-dot ng"></span> 未接続';
+      }
+    } catch (e) {
+      el.innerHTML = '<span class="session-dot ng"></span> エラー';
+    }
+  }
+
+  async function gcalLogin() {
+    var st = document.getElementById('gcalStatus');
+    if (!$gcalClientId.value.trim()) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = 'クライアント ID を入力してください'; }
+      setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+      return;
+    }
+    try {
+      // Save config first, then open login
+      await invoke('gcal_save_config', { config: { client_id: $gcalClientId.value.trim(), client_secret: $gcalClientSecret.value.trim() } });
+      await invoke('gcal_open_login');
+      if (st) { st.style.color = 'var(--text-secondary)'; st.textContent = 'ブラウザで認証中...'; }
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = '認証失敗: ' + e; }
+    }
+    setTimeout(function(){ if (st) st.textContent = ''; }, 5000);
+  }
+
+  // Listen for login success
+  var tauriEvent = window.__TAURI__.event;
+  tauriEvent.listen('gcal-login-success', function() {
+    var st = document.getElementById('gcalStatus');
+    if (st) { st.style.color = 'var(--green)'; st.textContent = 'Google Calendar 認証成功'; }
+    checkGcalSession();
+    setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+  });
+
+  async function gcalLogout() {
+    var st = document.getElementById('gcalStatus');
+    try {
+      await invoke('gcal_disconnect');
+      if (st) { st.style.color = 'var(--green)'; st.textContent = '連携を解除しました'; }
+      checkGcalSession();
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = '解除失敗: ' + e; }
+    }
+    setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+  }
+
+  async function gcalClear() {
+    var st = document.getElementById('gcalStatus');
+    try {
+      var r = await invoke('gcal_clear_calendar', { deleteCalendar: false });
+      if (st) { st.style.color = 'var(--green)'; st.textContent = r; }
+      checkGcalSession();
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = '削除失敗: ' + e; }
+    }
+    setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+  }
+
+  async function gcalDeleteCal() {
+    var st = document.getElementById('gcalStatus');
+    try {
+      var r = await invoke('gcal_clear_calendar', { deleteCalendar: true });
+      if (st) { st.style.color = 'var(--green)'; st.textContent = r; }
+      checkGcalSession();
+    } catch (e) {
+      if (st) { st.style.color = 'var(--red)'; st.textContent = '削除失敗: ' + e; }
+    }
+    setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
+  }
+
+  loadGcalConfig();
 </script>
 </body>
 </html>

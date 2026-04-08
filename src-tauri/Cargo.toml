@@ -31,4 +31,12 @@ dirs = "6"
 cookie_store = "0.21"
 reqwest_cookie_store = "0.8"
 chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+sha2 = "0.10"
 tauri-plugin-notification = "2.3.3"
+time = "0.3.41"
+objc2 = "0.6.4"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", features = ["NSHTTPCookie", "NSArray", "NSString"] }
+objc2-web-kit = { version = "0.3.2", features = ["WKWebsiteDataStore", "WKHTTPCookieStore", "block2"] }

@@ -2,8 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { fetchTimetable, fetchTimetableWeek, fetchExamTimetable, fetchGrades, fetchRegistration, fetchSyllabusFavorites, getAiConfig, aiChat, lunaInvoke, openSyllabusDetail } from "../api";
-  import { cachedFetch, onCacheUpdate, syllabusSearchState, lunaAuthState, aiRefreshRequested } from "../stores";
+  import { fetchTimetable, fetchTimetableWeek, fetchExamTimetable, fetchGrades, fetchRegistration, fetchSyllabusFavorites, getAiConfig, aiChat, lunaInvoke, openSyllabusDetail, gcalCheckSession, gcalSyncTimetable } from "../api";
+  import { cachedFetch, onCacheUpdate, syllabusSearchState, lunaAuthState, gcalAuthState, aiRefreshRequested } from "../stores";
   import type { TimetableData, TimetableEntry, SyllabusEntry, ExamTimetableData, ExamEntry, AiChatMessage } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import StudentBar from "../StudentBar.svelte";
@@ -160,101 +160,234 @@
 
   // ── Calendar sync ──
   let syncing = $state(false);
-  let syncMsg = $state("");
+  let syncTooltip = $state("");
+  let gcalTooltip = $state("");
   let autoSync = $state(localStorage.getItem("selah-auto-sync") === "true");
-  let showCalMenu = $state(false);
-  let calInfo = $state<{ exists: boolean; count: number } | null>(null);
-  let syncMsgTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function showSyncMsg(msg: string, duration: number) {
-    syncMsg = msg;
-    if (syncMsgTimer) clearTimeout(syncMsgTimer);
-    syncMsgTimer = setTimeout(() => syncMsg = "", duration);
+  const SYNC_HASH_KEY = "selah-sync-hash";
+
+  type SyncEntry = { day: string; period: number; course_name: string; room: string; is_cancelled: boolean };
+
+  function computeSyncHash(entries: SyncEntry[], weekLabel: string): string {
+    const payload = weekLabel + "|" + entries
+      .map(e => `${e.day}:${e.period}:${e.course_name}:${e.room}:${e.is_cancelled}`)
+      .sort()
+      .join(";");
+    let h = 0;
+    for (let i = 0; i < payload.length; i++) {
+      h = ((h << 5) - h + payload.charCodeAt(i)) | 0;
+    }
+    return h.toString(36);
   }
 
-  async function syncCalendar(silent = false) {
-    if (!data || syncing) return;
-    syncing = true;
-    if (!silent) syncMsg = "";
+  /** Mon-Thu: this week's Monday; Fri-Sun: next week's Monday */
+  function getSyncTargetMonday(): string {
+    const now = new Date();
+    const dow = now.getDay(); // 0=Sun,1=Mon,...,5=Fri,6=Sat
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((dow + 6) % 7)); // back to this Monday
+    if (dow === 0 || dow >= 5) {
+      monday.setDate(monday.getDate() + 7); // advance to next Monday
+    }
+    const y = monday.getFullYear();
+    const m = String(monday.getMonth() + 1).padStart(2, "0");
+    const d = String(monday.getDate()).padStart(2, "0");
+    return `${y}/${m}/${d}`;
+  }
+
+  /** Get the sync target week's data, fetching if displayed week doesn't match */
+  async function getSyncData(): Promise<{ entries: SyncEntry[]; weekLabel: string } | null> {
+    const target = getSyncTargetMonday();
+    if (data && data.week_label === target) {
+      return {
+        entries: data.entries.map(e => ({
+          day: e.day, period: e.period, course_name: e.course_name,
+          room: e.room, is_cancelled: e.is_cancelled,
+        })),
+        weekLabel: target,
+      };
+    }
+    // Displayed week differs from sync target — fetch the correct week
     try {
-      const entries = data.entries.map(e => ({
-        day: e.day, period: e.period, course_name: e.course_name,
-        room: e.room, is_cancelled: e.is_cancelled,
-      }));
-      const result = await invoke<string>("sync_calendar", { entries, weekLabel: data.week_label });
-      if (!silent) showSyncMsg(result, 3000);
+      const current = await fetchTimetable();
+      if (current.week_label === target) {
+        return {
+          entries: current.entries.map(e => ({
+            day: e.day, period: e.period, course_name: e.course_name,
+            room: e.room, is_cancelled: e.is_cancelled,
+          })),
+          weekLabel: target,
+        };
+      }
+      // Navigate forward/backward to reach the target week (max 4 hops)
+      let result = current;
+      const targetDate = new Date(target.replace(/\//g, "-"));
+      for (let i = 0; i < 4; i++) {
+        const resultDate = new Date((result.week_label || "").replace(/\//g, "-"));
+        if (result.week_label === target) break;
+        const direction = targetDate > resultDate ? "next" : "prev";
+        result = await fetchTimetableWeek(direction);
+      }
+      if (result.week_label === target) {
+        return {
+          entries: result.entries.map(e => ({
+            day: e.day, period: e.period, course_name: e.course_name,
+            room: e.room, is_cancelled: e.is_cancelled,
+          })),
+          weekLabel: target,
+        };
+      }
+      // Fallback: use whatever we got
+      return {
+        entries: result.entries.map(e => ({
+          day: e.day, period: e.period, course_name: e.course_name,
+          room: e.room, is_cancelled: e.is_cancelled,
+        })),
+        weekLabel: result.week_label || "",
+      };
+    } catch {
+      // If fetching fails, fall back to displayed data
+      if (!data) return null;
+      return {
+        entries: data.entries.map(e => ({
+          day: e.day, period: e.period, course_name: e.course_name,
+          room: e.room, is_cancelled: e.is_cancelled,
+        })),
+        weekLabel: data.week_label || "",
+      };
+    }
+  }
+
+  function hasDataChanged(entries: SyncEntry[], weekLabel: string): { changed: boolean; hash: string } {
+    const hash = computeSyncHash(entries, weekLabel);
+    const lastHash = localStorage.getItem(SYNC_HASH_KEY) || "";
+    return { changed: hash !== lastHash, hash };
+  }
+
+  function flashTooltip(target: "sys" | "gcal", msg: string, duration: number) {
+    if (target === "sys") {
+      syncTooltip = msg;
+      setTimeout(() => { if (syncTooltip === msg) syncTooltip = ""; }, duration);
+    } else {
+      gcalTooltip = msg;
+      setTimeout(() => { if (gcalTooltip === msg) gcalTooltip = ""; }, duration);
+    }
+  }
+
+  async function syncCalendar(entries: SyncEntry[], weekLabel: string, silent = false) {
+    if (syncing) return;
+    syncing = true;
+    try {
+      const result = await invoke<string>("sync_calendar", { entries, weekLabel });
+      if (!silent) flashTooltip("sys", result, 3000);
     } catch (e: any) {
-      if (!silent) showSyncMsg("同期失敗: " + (e?.message || String(e)), 5000);
+      if (!silent) flashTooltip("sys", "同期失敗: " + (e?.message || String(e)), 5000);
     } finally { syncing = false; }
   }
 
-  function toggleAutoSync() {
-    autoSync = !autoSync;
-    localStorage.setItem("selah-auto-sync", autoSync ? "true" : "false");
-    if (autoSync && data) syncCalendar(true);
-  }
+  // ── Google Calendar sync ──
+  let gcalSyncing = $state(false);
+  let gcalAutoSync = $state(localStorage.getItem("selah-gcal-auto-sync") === "true");
 
-  async function loadCalendarInfo() {
-    try { calInfo = await invoke<{ exists: boolean; count: number }>("get_calendar_info"); }
-    catch { calInfo = null; }
-  }
-
-  async function clearCalendarEvents() {
+  async function loadGcalStatus() {
     try {
-      const result = await invoke<string>("clear_calendar", { deleteCalendar: false });
-      showSyncMsg(result, 3000);
-      await loadCalendarInfo();
-    } catch (e: any) {
-      showSyncMsg("削除失敗: " + (e?.message || String(e)), 5000);
-    }
+      const status = await gcalCheckSession();
+      gcalAuthState.set({
+        authenticated: status.authenticated,
+        calendarExists: status.calendar_exists,
+        syncedEvents: status.synced_events,
+      });
+    } catch { /* ignore */ }
   }
 
-  async function deleteCalendar() {
+  async function syncGoogleCalendar(entries: SyncEntry[], weekLabel: string, silent = false) {
+    if (gcalSyncing || !$gcalAuthState.authenticated) return;
+    gcalSyncing = true;
     try {
-      const result = await invoke<string>("clear_calendar", { deleteCalendar: true });
-      showSyncMsg(result, 3000);
-      showCalMenu = false; calInfo = null;
+      const result = await gcalSyncTimetable(entries, weekLabel);
+      if (!silent) flashTooltip("gcal", result, 3000);
+      await loadGcalStatus();
     } catch (e: any) {
-      showSyncMsg("削除失敗: " + (e?.message || String(e)), 5000);
+      if (!silent) flashTooltip("gcal", "Google同期失敗: " + (e?.message || String(e)), 5000);
+    } finally { gcalSyncing = false; }
+  }
+
+  /** Sync calendars only if timetable data has changed since last sync */
+  async function syncIfChanged(silent = false) {
+    const syncData = await getSyncData();
+    if (!syncData) return;
+    const { entries, weekLabel } = syncData;
+    const { changed, hash } = hasDataChanged(entries, weekLabel);
+    if (!changed) {
+      if (!silent) flashTooltip("sys", "変更なし - 同期不要", 2000);
+      return;
     }
+    const promises: Promise<void>[] = [];
+    promises.push(syncCalendar(entries, weekLabel, silent));
+    if ($gcalAuthState.authenticated) promises.push(syncGoogleCalendar(entries, weekLabel, silent));
+    await Promise.allSettled(promises);
+    localStorage.setItem(SYNC_HASH_KEY, hash);
   }
 
   async function afterDataLoaded() {
-    if (autoSync && data) await syncCalendar(true);
+    if (autoSync || (gcalAutoSync && $gcalAuthState.authenticated)) {
+      await syncIfChanged(true);
+    }
   }
 
-  function shouldShowNextWeek(d: TimetableData): boolean {
-    if (d.entries.length === 0) return true;
-    const today = new Date().getDay();
-    if (today === 6 || today === 0) {
-      const weekLabel = d.week_label || "";
-      const match = weekLabel.match(/(\d{4})\/(\d{2})\/(\d{2})/);
-      if (match) {
-        const weekStart = new Date(+match[1], +match[2] - 1, +match[3]);
-        const diff = (new Date().getTime() - weekStart.getTime()) / (1000 * 60 * 60 * 24);
-        if (diff >= 0 && diff < 7) return true;
+  // ── Week auto-selection ──
+  // On initial load, if the server-default week is fully in the past, advance
+  // to the current/future week. Manual navigation blocks SWR overwrites.
+  let userNavigated = false;
+
+  function isWeekFullyPast(d: TimetableData): boolean {
+    const m = (d.week_label || "").match(/(\d{4})\/(\d{2})\/(\d{2})/);
+    if (!m) return false;
+    const weekEnd = new Date(+m[1], +m[2] - 1, +m[3]);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+    return new Date() > weekEnd;
+  }
+
+  /** Skip past fully-elapsed weeks (max 4 hops). */
+  async function autoAdvanceToRelevantWeek(initial: TimetableData): Promise<TimetableData> {
+    let current = initial;
+    for (let i = 0; i < 4; i++) {
+      if (!isWeekFullyPast(current)) return current;
+      if (!current.form_fields) break;
+      try {
+        current = await fetchTimetableWeek("next");
+      } catch {
+        return current;
       }
     }
-    return false;
+    return current;
   }
+
+  // Track whether auto-advance moved us past the server default week
+  let advancedPastDefault = false;
 
   // ── Data loading (all sources in parallel) ──
   // SWR: update UI when background refresh brings fresh data
   const unsubTimetable = onCacheUpdate<TimetableData>("timetable", (fresh) => {
+    // Don't overwrite if user manually navigated or we auto-advanced past the default week
+    if (userNavigated || advancedPastDefault) return;
     data = fresh;
     afterDataLoaded();
     updateTray();
   });
   const unsubExams = onCacheUpdate<ExamTimetableData>("exams", (fresh) => { examData = fresh; });
   const unsubLuna = onCacheUpdate<LunaTimetable>("luna_timetable", (fresh) => { lunaTimetable = fresh; });
-  onDestroy(() => { unsubTimetable(); unsubExams(); unsubLuna(); if (syncMsgTimer) clearTimeout(syncMsgTimer); });
+  onDestroy(() => { unsubTimetable(); unsubExams(); unsubLuna(); });
 
   onMount(async () => {
     const kgcPromise = (async () => {
       try {
-        data = await cachedFetch("timetable", fetchTimetable);
-        if (data && data.form_fields && shouldShowNextWeek(data)) {
-          data = await fetchTimetableWeek("next");
+        const cached = await cachedFetch("timetable", fetchTimetable);
+        if (cached) {
+          const result = await autoAdvanceToRelevantWeek(cached);
+          advancedPastDefault = result.week_label !== cached.week_label;
+          data = result;
         }
         await afterDataLoaded();
       } catch (e: any) { error = e?.message || String(e); }
@@ -277,6 +410,7 @@
 
     await Promise.allSettled([kgcPromise, lunaPromise, examPromise]);
     updateTray();
+    loadGcalStatus();
   });
 
   function updateTray() {
@@ -292,6 +426,7 @@
 
   async function navigateWeek(direction: "prev" | "next") {
     if (!data?.form_fields || navigating) return;
+    userNavigated = true;
     navigating = true;
     try {
       data = await fetchTimetableWeek(direction);
@@ -668,65 +803,33 @@
       </button>
       {#if data}
         <div class="cal-controls">
-          <button class="sync-btn" onclick={() => syncCalendar()} disabled={syncing}
-            title="この週の時間割をシステムカレンダーに同期">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" class:spin={syncing}>
-              <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            {syncing ? "同期中..." : "同期"}
-          </button>
-          <button class="sync-btn cal-menu-btn"
-            onclick={() => { showCalMenu = !showCalMenu; if (showCalMenu) loadCalendarInfo(); }}
-            title="カレンダー管理">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="3" r="1.2" fill="currentColor"/>
-              <circle cx="8" cy="8" r="1.2" fill="currentColor"/>
-              <circle cx="8" cy="13" r="1.2" fill="currentColor"/>
-            </svg>
-          </button>
-          {#if showCalMenu}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="cal-menu-backdrop" onclick={() => showCalMenu = false}></div>
-            <div class="cal-menu">
-              <div class="cal-menu-header">KGC 時間割 カレンダー</div>
-              {#if calInfo}
-                <div class="cal-menu-info">
-                  {calInfo.exists ? `${calInfo.count}件のイベント` : "カレンダー未作成"}
-                </div>
-              {:else}
-                <div class="cal-menu-info">読み込み中...</div>
+          <button class="sync-btn" class:auto-active={autoSync || gcalAutoSync} onclick={() => syncIfChanged()} disabled={syncing || gcalSyncing}
+            title={(syncing || gcalSyncing) ? "同期中..." : "カレンダーに同期"}>
+            <span class="sync-icons">
+              <svg width="12" height="12" viewBox="0 0 384 512" fill="currentColor" class="btn-icon apple">
+                <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184 4 273.5c0 26.2 4.8 53.3 14.4 81.2 12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/>
+              </svg>
+              {#if $gcalAuthState.authenticated}
+                <svg width="12" height="12" viewBox="0 0 24 24" class="btn-icon gcal">
+                  <path class="g-blue" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
+                  <path class="g-green" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                  <path class="g-yellow" d="M5.84 14.09A6.97 6.97 0 015.48 12c0-.72.13-1.43.36-2.09V7.07H2.18A11.96 11.96 0 001 12c0 1.94.46 3.77 1.18 4.93l3.66-2.84z"/>
+                  <path class="g-red" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
               {/if}
-              <button class="cal-menu-item" class:active={autoSync} onclick={toggleAutoSync}>
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  {#if autoSync}
-                    <path d="M3 8.5l3 3 7-7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-                  {:else}
-                    <rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.2" fill="none"/>
-                  {/if}
-                </svg>
-                週移動時に自動同期
-              </button>
-              <button class="cal-menu-item" onclick={clearCalendarEvents}
-                disabled={!calInfo?.exists || calInfo?.count === 0}>
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  <path d="M3 4h10l-1 10H4L3 4zM6 7v4M10 7v4M5 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-                </svg>
-                全イベントを削除
-              </button>
-              <button class="cal-menu-item danger" onclick={deleteCalendar} disabled={!calInfo?.exists}>
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                </svg>
-                カレンダーごと削除
-              </button>
-            </div>
-          {/if}
+            </span>
+            {#if syncing || gcalSyncing}
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" class="spin">
+                <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              同期中...
+            {:else}
+              同期
+            {/if}
+            {#if autoSync || gcalAutoSync}<span class="auto-dot"></span>{/if}
+          </button>
         </div>
-        {#if syncMsg}
-          <span class="sync-msg">{syncMsg}</span>
-        {/if}
       {/if}
     </div>
   </div>
@@ -967,62 +1070,25 @@
   .sync-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .sync-btn:disabled { opacity: 0.5; cursor: default; }
   .sync-btn .spin { animation: spin 0.8s linear infinite; }
-  .sync-btn.cal-menu-btn { padding: 5px 6px; }
 
-  .cal-menu-backdrop { position: fixed; inset: 0; z-index: 99; }
-  .cal-menu {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 4px;
-    min-width: 200px;
-    background: var(--bg-secondary, #f5f5f5);
-    border: 0.5px solid var(--border);
-    border-radius: 10px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.15), 0 0 0 0.5px rgba(0,0,0,0.06);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    z-index: 100;
-    padding: 6px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .cal-menu-header {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    padding: 4px 8px 2px;
-  }
-  .cal-menu-info {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    padding: 0 8px 4px;
-  }
-  .cal-menu-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
-    border: none;
-    border-radius: 6px;
-    background: none;
-    font-size: 12px;
-    font-family: inherit;
-    color: var(--text-primary);
-    cursor: pointer;
-    transition: background 0.1s;
-  }
-  .cal-menu-item:hover { background: var(--bg-hover); }
-  .cal-menu-item:disabled { opacity: 0.4; cursor: default; }
-  .cal-menu-item:disabled:hover { background: none; }
-  .cal-menu-item.active { color: var(--accent, #007aff); }
-  .cal-menu-item.danger { color: #ff3b30; }
+  .btn-icon { flex-shrink: 0; }
+  .sync-icons { display: flex; align-items: center; gap: 3px; }
+  .btn-icon.gcal .g-blue { fill: #4285F4; }
+  .btn-icon.gcal .g-green { fill: #34A853; }
+  .btn-icon.gcal .g-yellow { fill: #FBBC05; }
+  .btn-icon.gcal .g-red { fill: #EA4335; }
 
-  .sync-msg {
-    font-size: 11px;
-    color: var(--text-secondary);
-    white-space: nowrap;
+  .sync-btn.auto-active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .auto-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
   }
 
   /* ── Week navigation ── */

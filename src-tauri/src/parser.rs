@@ -901,7 +901,6 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
     let a_sel = Selector::parse("a").expect("valid selector");
 
     let mut headers: Vec<String> = Vec::new();
-    let mut idx = 0;
 
     for tr in doc.select(&SEL_TR) {
         let ths: Vec<String> = tr
@@ -962,9 +961,10 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
             .map(|td| td.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        idx += 1;
+        // Build a stable ID from title+date so read-state tracking survives list changes
+        let stable_id = format!("{}|{}", title.trim(), date.trim());
         entries.push(NotificationEntry {
-            id: idx.to_string(),
+            id: stable_id,
             title,
             date,
             category,

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { authState, lunaAuthState, debugVisible } from "./stores";
+  import { authState, lunaAuthState, kwicAuthState, debugVisible } from "./stores";
   import Icon from "./Icon.svelte";
   import { fetchPage, checkSession, triggerRelogin } from "./api";
   import { nativeNotify } from "./notify";
@@ -34,6 +34,7 @@
   interface SessionCheck {
     kg: { valid: boolean; username: string; checking: boolean };
     luna: { valid: boolean; checking: boolean };
+    kwic: { valid: boolean; checking: boolean };
   }
 
   let activeSection = $state<"info" | "network" | "logs">("info");
@@ -47,6 +48,7 @@
   let sessionCheck = $state<SessionCheck>({
     kg: { valid: false, username: "", checking: false },
     luna: { valid: false, checking: false },
+    kwic: { valid: false, checking: false },
   });
   let isValidatingSession = $state(false);
 
@@ -165,6 +167,16 @@
     } catch (e: any) {
       sessionCheck.luna = { valid: false, checking: false };
       addLog("error", `Luna Session check failed: ${e}`);
+    }
+    // KWIC Portal Session
+    sessionCheck.kwic.checking = true;
+    try {
+      const ok = await invoke<boolean>("kwic_check_session");
+      sessionCheck.kwic = { valid: ok, checking: false };
+      addLog(ok ? "info" : "warn", `KWIC Session: ${ok ? "有効" : "無効"}`);
+    } catch (e: any) {
+      sessionCheck.kwic = { valid: false, checking: false };
+      addLog("error", `KWIC Session check failed: ${e}`);
     }
     isValidatingSession = false;
   }
@@ -356,6 +368,13 @@
               <span class="info-val">
                 <span class="dot-status" class:ok={$lunaAuthState.authenticated} class:ng={!$lunaAuthState.authenticated}></span>
                 {$lunaAuthState.authenticated ? "認証済" : "未認証"}
+              </span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">Store KWIC</span>
+              <span class="info-val">
+                <span class="dot-status" class:ok={$kwicAuthState.authenticated} class:ng={!$kwicAuthState.authenticated}></span>
+                {$kwicAuthState.authenticated ? "認証済" : "未認証"}
               </span>
             </div>
           </div>

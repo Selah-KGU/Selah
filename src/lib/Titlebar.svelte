@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { authState, theme, cachedFetch } from "./stores";
+  import { authState, theme, cachedFetch, sessionExpired, reloginInProgress } from "./stores";
   import type { StudentInfo } from "./stores";
-  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow } from "./api";
+  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin } from "./api";
   import Icon from "./Icon.svelte";
   import kgLogoRaw from "../assets/kg-logo.svg?raw";
 
@@ -26,6 +26,17 @@
       } finally {
         profileLoading = false;
       }
+    }
+  }
+
+  let reloginLoading = $state(false);
+
+  async function handleRelogin() {
+    reloginLoading = true;
+    try {
+      await initiateRelogin();
+    } finally {
+      reloginLoading = false;
     }
   }
 
@@ -61,13 +72,33 @@
     <button class="tb-btn" onclick={() => openSettingsWindow()} title="設定" aria-label="設定">
       <Icon name="gear" size={14} />
     </button>
-    {#if $authState.authenticated}
-      <button class="user-badge" onclick={toggleProfile}>
-        <span class="user-name">{$authState.displayName || $authState.username}</span>
-        {#if $authState.faculty}
-          <span class="user-faculty">{$authState.faculty}</span>
-        {/if}
-      </button>
+    {#if $reloginInProgress}
+      <span class="titlebar-status" title="再ログイン中…">
+        <span class="titlebar-status-spinner"></span>
+        <span class="titlebar-status-text">認証中</span>
+      </span>
+    {:else if $authState.authenticated}
+      {#if $sessionExpired}
+        <button class="reauth-badge" onclick={handleRelogin} disabled={reloginLoading} title="セッションが期限切れです。クリックして再認証してください。">
+          {#if reloginLoading}
+            <span class="reauth-spinner"></span>
+          {:else}
+            <Icon name="exclamationmark.triangle" size={13} />
+          {/if}
+          <span class="reauth-text">再認証</span>
+        </button>
+      {:else}
+        <button class="user-badge" onclick={toggleProfile}>
+          <span class="user-name">{$authState.displayName || $authState.username}</span>
+          {#if $authState.faculty}
+            <span class="user-faculty">{$authState.faculty}</span>
+          {/if}
+        </button>
+      {/if}
+    {:else if !$authState.authenticated}
+      <span class="titlebar-status" title="セッション復元中…">
+        <span class="titlebar-status-spinner"></span>
+      </span>
     {/if}
   </div>
 </div>
@@ -197,6 +228,73 @@
 
   .user-badge:hover {
     background: var(--bg-hover);
+  }
+
+  .titlebar-status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    border-radius: 20px;
+  }
+
+  .titlebar-status-spinner {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+
+  .titlebar-status-text {
+    white-space: nowrap;
+  }
+
+  .reauth-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--orange, #ff9500);
+    background: color-mix(in srgb, var(--orange, #ff9500) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--orange, #ff9500) 30%, transparent);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  .reauth-badge:hover {
+    background: color-mix(in srgb, var(--orange, #ff9500) 20%, transparent);
+    border-color: color-mix(in srgb, var(--orange, #ff9500) 50%, transparent);
+  }
+
+  .reauth-badge:disabled {
+    cursor: wait;
+    opacity: 0.7;
+  }
+
+  .reauth-text {
+    white-space: nowrap;
+  }
+
+  .reauth-spinner {
+    width: 13px;
+    height: 13px;
+    border: 1.5px solid color-mix(in srgb, var(--orange, #ff9500) 30%, transparent);
+    border-top-color: var(--orange, #ff9500);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--orange, #ff9500) 20%, transparent); }
+    50% { box-shadow: 0 0 8px 2px color-mix(in srgb, var(--orange, #ff9500) 15%, transparent); }
   }
 
   .user-name {

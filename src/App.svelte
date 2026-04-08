@@ -3,8 +3,8 @@
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
   import DebugPanel from "./lib/DebugPanel.svelte";
-  import { authState, reloginInProgress, debugVisible } from "./lib/stores";
-  import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling } from "./lib/api";
+  import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, debugVisible } from "./lib/stores";
+  import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
   import { listen } from "@tauri-apps/api/event";
   import { get } from "svelte/store";
@@ -13,8 +13,30 @@
   let currentView = $derived($authState.authenticated ? "dashboard" : "login");
   let restoring = $state(true);
   let validating = false;
+  let lastValidateTime = 0;
+  const VALIDATE_COOLDOWN = 60_000; // 60 seconds minimum between validations
   let intervalId: ReturnType<typeof setInterval> | null = null;
   let unlistenDebugToggle: (() => void) | null = null;
+
+  // Backoff: track consecutive sync failures per service to avoid spamming headless WebViews
+  const syncFailures: Record<string, { count: number; backoffUntil: number }> = {
+    luna: { count: 0, backoffUntil: 0 },
+    kwic: { count: 0, backoffUntil: 0 },
+  };
+  function shouldSkipSync(service: string): boolean {
+    const f = syncFailures[service];
+    if (!f || f.count === 0) return false;
+    return Date.now() < f.backoffUntil;
+  }
+  function recordSyncResult(service: string, ok: boolean) {
+    const f = syncFailures[service];
+    if (!f) return;
+    if (ok) { f.count = 0; f.backoffUntil = 0; return; }
+    f.count++;
+    // Exponential backoff: 5min, 10min, 20min, capped at 30min
+    const delay = Math.min(5 * 60_000 * Math.pow(2, f.count - 1), 30 * 60_000);
+    f.backoffUntil = Date.now() + delay;
+  }
 
   onMount(async () => {
     unlistenDebugToggle = await listen("toggle-debug", () => {
@@ -61,13 +83,75 @@
 
   async function doValidate() {
     if (!get(authState).authenticated || validating || get(reloginInProgress)) return;
+    const now = Date.now();
+    if (now - lastValidateTime < VALIDATE_COOLDOWN) return;
 
     validating = true;
+    lastValidateTime = now;
     try {
-      const status = await validateSession();
-      if (!status.valid) {
-        console.log("[Selah] Session expired, triggering recovery...");
+      // Validate all SAML services in parallel
+      const [kgcStatus, lunaValid, kwicValid] = await Promise.all([
+        validateSession().catch(() => ({ valid: false } as { valid: boolean })),
+        get(lunaAuthState).authenticated
+          ? lunaCheckSession().catch(() => false)
+          : Promise.resolve(false),
+        get(kwicAuthState).authenticated
+          ? kwicCheckSession().catch(() => false)
+          : Promise.resolve(false),
+      ]);
+
+      // Track which services need refresh
+      const needsRefresh: string[] = [];
+      if (!kgcStatus.valid) needsRefresh.push("kgc");
+      if (!lunaValid && (get(lunaAuthState).authenticated || !shouldSkipSync("luna"))) needsRefresh.push("luna");
+      if (!kwicValid && (get(kwicAuthState).authenticated || !shouldSkipSync("kwic"))) needsRefresh.push("kwic");
+
+      if (needsRefresh.length === 0) {
+        // All good
+        if (get(sessionExpired)) sessionExpired.set(false);
+        recordSyncResult("luna", true);
+        recordSyncResult("kwic", true);
+      } else if (needsRefresh.length === 3) {
+        // All three expired — Okta is likely dead, need full recovery
+        console.log("[Selah] All services expired, triggering full recovery");
         await triggerRelogin();
+      } else {
+        // Some services expired — targeted refresh with cross-renewal
+        // Even KGC can be refreshed alone; cross-renewal will help
+        if (get(sessionExpired)) sessionExpired.set(false);
+        const refreshTasks = needsRefresh.map(svc => {
+          if (shouldSkipSync(svc)) return Promise.resolve();
+          return syncSession(svc).then(ok => {
+            recordSyncResult(svc, ok);
+            if (ok) serviceRegistry[svc].onRecovered();
+            else serviceRegistry[svc].onReset();
+          }).catch(() => { recordSyncResult(svc, false); });
+        });
+        await Promise.allSettled(refreshTasks);
+        // If KGC was in the list, cross-renewal + onRecovered is async.
+        // Re-validate KGC before deciding to escalate.
+        if (needsRefresh.includes("kgc")) {
+          const kgcNow = await validateSession().catch(() => ({ valid: false } as { valid: boolean }));
+          if (!kgcNow.valid) {
+            console.log("[Selah] KGC targeted refresh failed, escalating to full recovery");
+            await triggerRelogin();
+          } else {
+            setAuthFromSession(kgcNow as any);
+            sessionExpired.set(false);
+          }
+        }
+      }
+
+      // Mail: validate OAuth token if authenticated
+      if (get(mailAuthState).authenticated) {
+        try {
+          const mailStatus = await mailCheckSession();
+          if (!mailStatus.authenticated) {
+            mailAuthState.set({ authenticated: false, email: "", displayName: "" });
+          }
+        } catch {
+          mailAuthState.set({ authenticated: false, email: "", displayName: "" });
+        }
       }
     } catch (e) {
       console.warn("[Selah] Session validation/recovery error:", e);
@@ -77,13 +161,7 @@
   }
 </script>
 
-{#if restoring}
-  <main class="app-main">
-    <div class="restoring">
-      <div class="restoring-spinner"></div>
-    </div>
-  </main>
-{:else if currentView === "login"}
+{#if currentView === "login" && !restoring}
   <main class="app-main">
     <div class="page-transition">
       <Login />
@@ -91,15 +169,6 @@
   </main>
 {:else}
   <Dashboard />
-{/if}
-{#if $reloginInProgress}
-  <div class="relogin-overlay">
-    <div class="relogin-card">
-      <div class="relogin-spinner"></div>
-      <p>セッションが期限切れです</p>
-      <p class="relogin-sub">再ログイン中…</p>
-    </div>
-  </div>
 {/if}
 <DebugPanel />
 
@@ -111,64 +180,5 @@
   .page-transition {
     height: 100%;
     animation: fade-in-scale 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
-  }
-  .restoring {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-  }
-  .restoring-spinner {
-    width: 24px;
-    height: 24px;
-    border: 2.5px solid var(--border-strong);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-  .relogin-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 9000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    animation: fade-in 0.25s ease both;
-  }
-  .relogin-card {
-    text-align: center;
-    padding: 28px 36px;
-    border-radius: 14px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-  }
-  .relogin-card p {
-    margin: 8px 0 0;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-primary);
-  }
-  .relogin-sub {
-    font-size: 12px !important;
-    font-weight: 400 !important;
-    color: var(--text-secondary) !important;
-    opacity: 0.8;
-  }
-  .relogin-spinner {
-    width: 28px;
-    height: 28px;
-    margin: 0 auto 4px;
-    border: 2.5px solid var(--border-strong);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
   }
 </style>

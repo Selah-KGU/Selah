@@ -1,14 +1,43 @@
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State};
+use tauri::{State};
 use std::sync::{atomic::{AtomicU32, Ordering}, LazyLock};
 
-use crate::auth;
+use crate::client;
 use crate::config;
+use crate::cookie_bridge;
+use crate::kwic_client;
 use crate::AppState;
 
-const KWIC_SAML_CALLBACK_HOST: &str = "kwic-saml-callback.localhost";
-
 static KWIC_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Briefly lock KWIC client, check auth and clone http. Releases lock immediately.
+async fn kwic_http(state: &AppState) -> Result<reqwest::Client, String> {
+    let kwic = state.kwic.lock().await;
+    if !kwic.authenticated {
+        return Err(kwic_client::KWIC_AUTH_REQUIRED_MSG.into());
+    }
+    Ok(kwic.http.clone())
+}
+
+/// KWIC GET: fetch a page without holding the lock.
+async fn kwic_get(http: &reqwest::Client, path: &str) -> Result<String, String> {
+    let url = format!("{}{}", config::KWIC_BASE, path);
+    client::fetch_with_redirect(
+        http, &url, config::KWIC_BASE,
+        kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
+    ).await
+}
+
+/// KWIC POST: submit a form without holding the lock.
+async fn kwic_post(http: &reqwest::Client, path: &str, params: &[(&str, &str)]) -> Result<String, String> {
+    let url = format!("{}{}", config::KWIC_BASE, path);
+    client::post_form_with_redirect(
+        http, &url, config::KWIC_BASE,
+        kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
+        params.iter().copied(),
+        &[],
+    ).await
+}
 
 // ============ Cached Selectors ============
 
@@ -26,7 +55,7 @@ sel!(SEL_INFO_A, "a.portal-info-content-li-a");
 sel!(SEL_INFO_DATE, ".portal-subblock-infolist-left-item2 > div");
 sel!(SEL_INFO_TITLE, ".portal-subblock-infolist-left-item2 > span");
 sel!(SEL_INFO_CATEGORY, ".portal-subblock-infolist-right");
-sel!(SEL_INFO_NEW, ".portal-information-new");
+
 sel!(SEL_CSRF, r#"input[name="_csrf"]"#);
 sel!(SEL_BLOCK_TITLE, ".block-title-txt");
 sel!(SEL_CONTENTS_HTML, "#contentsHtml");
@@ -45,7 +74,7 @@ sel!(SEL_SUBPORTAL_CAT, ".subportal-block-list-li-txt-info1");
 sel!(SEL_SUBPORTAL_TITLE_SPAN, ".subportal-block-list-li-txt-info2 span.link-txt");
 sel!(SEL_SUBPORTAL_DATE, ".subportal-block-list-li-txt-info3 span");
 sel!(SEL_SUBPORTAL_DEPT, ".subportal-block-list-li-txt-info4");
-sel!(SEL_SUBPORTAL_NEW, ".portal-information-priority-urgency-color");
+
 
 // ============ Types ============
 
@@ -102,14 +131,30 @@ pub struct KwicPortalItem {
 /// Check KWIC Portal session
 #[tauri::command]
 pub async fn kwic_check_session(state: State<'_, AppState>) -> Result<bool, String> {
-    let kwic = state.kwic.lock().await;
-    if !kwic.authenticated {
+    let (http, authenticated) = {
+        let kwic = state.kwic.lock().await;
+        (kwic.http.clone(), kwic.authenticated)
+    };
+    if !authenticated {
         return Ok(false);
     }
-    // Validate by fetching the home page
-    match kwic.fetch_page("/portal/home").await {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
+    // Validate against server without holding the lock
+    let url = format!("{}/portal/home", crate::config::KWIC_BASE);
+    match crate::client::fetch_with_redirect(
+        &http, &url, crate::config::KWIC_BASE,
+        crate::kwic_client::KWIC_SESSION_EXPIRED_MSG, crate::kwic_client::is_kwic_session_expired,
+    ).await {
+        Ok(_) => {
+            let kwic = state.kwic.lock().await;
+            kwic.save_session();
+            Ok(true)
+        }
+        Err(e) if e == crate::kwic_client::KWIC_SESSION_EXPIRED_MSG => {
+            let mut kwic = state.kwic.lock().await;
+            kwic.authenticated = false;
+            Ok(false)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -123,8 +168,8 @@ pub async fn kwic_fetch_page(
     if !path.starts_with("/portal/") && !path.starts_with("/api/") {
         return Err("許可されていないパスです".into());
     }
-    let kwic = state.kwic.lock().await;
-    let html = kwic.fetch_page(&path).await?;
+    let http = kwic_http(&state).await?;
+    let html = kwic_get(&http, &path).await?;
     // In debug builds, also dump to /tmp for analysis
     #[cfg(debug_assertions)]
     {
@@ -139,8 +184,8 @@ pub async fn kwic_fetch_page(
 pub async fn kwic_fetch_home(
     state: State<'_, AppState>,
 ) -> Result<KwicPortalHome, String> {
-    let kwic = state.kwic.lock().await;
-    let html = kwic.fetch_page("/portal/home").await?;
+    let http = kwic_http(&state).await?;
+    let html = kwic_get(&http, "/portal/home").await?;
 
     #[cfg(debug_assertions)]
     { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-home.html"), &html); }
@@ -161,9 +206,9 @@ pub async fn kwic_fetch_home(
 pub async fn kwic_fetch_notifications(
     state: State<'_, AppState>,
 ) -> Result<Vec<KwicPortalNotification>, String> {
-    let kwic = state.kwic.lock().await;
+    let http = kwic_http(&state).await?;
     // /portal/home/information returns SystemError, so parse notifications from home page
-    let html = kwic.fetch_page("/portal/home").await?;
+    let html = kwic_get(&http, "/portal/home").await?;
 
     #[cfg(debug_assertions)]
     { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-notifications-from-home.html"), &html); }
@@ -199,16 +244,16 @@ pub async fn kwic_fetch_detail(
     person_category_cd: String,
     category_cd: String,
 ) -> Result<KwicNotificationDetail, String> {
-    let kwic = state.kwic.lock().await;
+    let http = kwic_http(&state).await?;
 
     // 1. Get home page to extract CSRF token
-    let home_html = kwic.fetch_page("/portal/home").await?;
+    let home_html = kwic_get(&http, "/portal/home").await?;
     let csrf = extract_csrf_token(&home_html)
         .ok_or_else(|| "CSRFトークンが取得できませんでした".to_string())?;
 
     // 2. POST to portal detail endpoint with all required form fields
     //    (mirrors #PortalinformationDtl form + setDetailPortalInfoParam)
-    let detail_html = kwic.post_form("/portal/home/information/detail", &[
+    let detail_html = kwic_post(&http, "/portal/home/information/detail", &[
         ("_csrf", &csrf),
         ("informationId", &information_id),
         ("informationType", &information_type),
@@ -252,9 +297,9 @@ pub async fn kwic_fetch_subportal(
     if !tag_cd.chars().all(|c| c.is_ascii_digit()) {
         return Err("無効なtagCdです".into());
     }
-    let kwic = state.kwic.lock().await;
+    let http = kwic_http(&state).await?;
     let path = format!("/portal/subportal?tagCd={}", tag_cd);
-    let html = kwic.fetch_page(&path).await?;
+    let html = kwic_get(&http, &path).await?;
 
     #[cfg(debug_assertions)]
     { let _ = std::fs::write(std::env::temp_dir().join(format!("kwic-portal-subportal-{}.html", tag_cd)), &html); }
@@ -385,88 +430,26 @@ pub async fn kwic_open_link(
     Ok(())
 }
 
-/// Open KWIC Portal login window
+/// Open KWIC Portal login window using Cookie Bridge.
+/// Navigates to KWIC's SAML entry — if Okta SSO session is alive,
+/// it auto-authenticates. After SAML completes natively in the webview,
+/// cookies are extracted and injected into KWIC's reqwest cookie jar.
 #[tauri::command]
 pub async fn kwic_open_login(
     app: tauri::AppHandle,
     _state: State<'_, AppState>,
 ) -> Result<(), String> {
-    log::info!("Opening KWIC Portal login webview");
-
-    if let Some(existing) = app.get_webview_window("kwic-login") {
-        let _ = existing.close();
-    }
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<auth::SamlCallbackData>(1);
-
-    // Navigate directly to KWIC Portal's SAML login URL.
-    // The webview shares the WKWebView cookie jar, so if Okta SSO is still alive
-    // it will auto-authenticate. Otherwise the user sees the Okta login form.
-    let saml_url = config::KWIC_SAML_URL;
-    let parsed_url: url::Url = saml_url.parse()
-        .map_err(|e| format!("URL parse error: {}", e))?;
-
-    let _win = tauri::WebviewWindowBuilder::new(
-        &app,
-        "kwic-login",
-        tauri::WebviewUrl::External(parsed_url),
-    )
-    .title("KWIC Portal - サインイン")
-    .inner_size(480.0, 700.0)
-    .resizable(true)
-    .initialization_script(auth::saml_intercept_script(KWIC_SAML_CALLBACK_HOST))
-    .on_navigation(move |url| {
-        if url.host_str() == Some(KWIC_SAML_CALLBACK_HOST) {
-            let pairs: std::collections::HashMap<String, String> =
-                url.query_pairs().into_owned().collect();
-            if let Some(saml_response) = pairs.get("saml_response") {
-                let data = auth::SamlCallbackData {
-                    saml_response: saml_response.clone(),
-                    relay_state: pairs.get("relay_state").cloned().unwrap_or_default(),
-                    acs_url: pairs.get("acs_url").cloned().unwrap_or_default(),
-                };
-                log::info!("Intercepted KWIC Portal SAMLResponse (len={})", data.saml_response.len());
-                let _ = tx.try_send(data);
-            }
-            return false;
-        }
-        true
+    log::info!("Cookie Bridge: opening KWIC Portal login webview");
+    cookie_bridge::spawn_saml_login(&app, cookie_bridge::SamlLoginConfig {
+        window_label: "kwic-login",
+        title: "KWIC Portal - \u{30b5}\u{30a4}\u{30f3}\u{30a4}\u{30f3}",
+        saml_url: config::KWIC_SAML_URL,
+        sp_domain: "kwic.kwansei.ac.jp",
+        base_url: config::KWIC_BASE,
+        success_event: "kwic-login-success",
+        error_event: "kwic-login-error",
+        service: cookie_bridge::ServiceTarget::Kwic,
     })
-    .build()
-    .map_err(|e| format!("KWICログインウィンドウ作成失敗: {}", e))?;
-
-    let app_clone = app.clone();
-    tokio::spawn(async move {
-        match rx.recv().await {
-            Some(data) => {
-                let app_state = app_clone.state::<AppState>();
-                let mut kwic = app_state.kwic.lock().await;
-                match kwic.complete_saml_login(
-                    &data.saml_response,
-                    &data.relay_state,
-                    &data.acs_url,
-                ).await {
-                    Ok(()) => {
-                        log::info!("KWIC Portal login successful");
-                        kwic.save_session();
-                        let _ = app_clone.emit("kwic-login-success", ());
-                    }
-                    Err(e) => {
-                        log::error!("KWIC Portal login failed: {}", e);
-                        let _ = app_clone.emit("kwic-login-error", &e);
-                    }
-                }
-                if let Some(win) = app_clone.get_webview_window("kwic-login") {
-                    let _ = win.close();
-                }
-            }
-            None => {
-                log::info!("KWIC Portal login cancelled");
-            }
-        }
-    });
-
-    Ok(())
 }
 
 // ============ Parsers ============
@@ -611,16 +594,13 @@ fn parse_info_item(li: &scraper::ElementRef) -> Option<(KwicPortalItem, String, 
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
-    // NEW badge
-    let is_new = li.select(&*SEL_INFO_NEW).next().is_some();
-
     Some((KwicPortalItem {
         id: id.clone(),
         title,
         date,
         category,
         url: format!("{}/portal/home/information/detail?informationId={}&directLink=1", config::KWIC_BASE, id),
-        important: is_new,
+        important: false,
         information_type: String::new(),
         person_category_cd: String::new(),
         category_cd: String::new(),
@@ -734,9 +714,10 @@ fn parse_detail_html(html: &str) -> KwicNotificationDetail {
 
     // Strip <script> tags from body for safety
     let body_clean = {
-        use regex::Regex;
-        let re = Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex");
-        re.replace_all(&body_html, "").to_string()
+        static RE_SCRIPT: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("valid regex")
+        });
+        RE_SCRIPT.replace_all(&body_html, "").to_string()
     };
 
     KwicNotificationDetail {
@@ -819,14 +800,12 @@ fn parse_subportal(html: &str) -> KwicSubportalData {
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default();
 
-        let is_new = li.select(&*SEL_SUBPORTAL_NEW).next().is_some();
-
         notifications.push(KwicPortalNotification {
             id,
             title,
             date,
             category: if !dept.is_empty() { dept } else { category },
-            important: is_new,
+            important: false,
             information_type: data2,
             // Subportal notifications only have data1/data2 in onclick
             person_category_cd: String::new(),

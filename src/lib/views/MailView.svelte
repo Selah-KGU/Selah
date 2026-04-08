@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { mailAuthState, cachedFetch, onCacheUpdate, invalidateCache, getCacheTimestamp } from "../stores";
+  import { mailAuthState, cachedFetch, onCacheUpdate, invalidateCache, getCacheTimestamp, unreadMailCount, updateCacheEntry } from "../stores";
   import { mailCheckSession, mailOpenLogin, mailFetchInbox, mailFetchMessage, mailFetchProfile } from "../api";
   import type { MailMessage, MailDetail } from "../api";
   import Icon from "../Icon.svelte";
@@ -101,6 +101,10 @@
     try {
       selectedMessage = await mailFetchMessage(msg.id);
       messages = messages.map(m => m.id === msg.id ? { ...m, isRead: true } : m);
+      // Update cache so sidebar badge and notifications view reflect the change
+      updateCacheEntry<MailMessage[]>("mail_inbox", (msgs) =>
+        msgs.map(m => m.id === msg.id ? { ...m, isRead: true } : m)
+      );
     } catch (e: any) {
       error = typeof e === "string" ? e : e?.message ?? "メール読み込み失敗";
     }
@@ -195,6 +199,7 @@
   }
 
   let unreadCount = $derived(messages.filter(m => !m.isRead).length);
+  $effect(() => { unreadMailCount.set(unreadCount); });
   let agoText = $derived(updatedAgoText());
 </script>
 

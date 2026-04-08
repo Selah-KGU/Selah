@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate } from "../stores";
+  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached } from "../stores";
   import type { TimetableData, TimetableEntry, NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
   import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, aiChat, fetchWeather } from "../api";
   import type { KwicPortalHome, KwicPortalSection, KwicPortalNotification, KwicNotificationDetail, KwicSubportalData, WeatherData } from "../api";
@@ -376,23 +376,65 @@
   // ============ Lifecycle ============
 
   let clockInterval: ReturnType<typeof setInterval>;
-  let hasLoadedOnce = false;
+  let serverDataLoaded = false;
+
+  function tickClock() {
+    const prev = now;
+    now = new Date();
+    if (now.getDate() !== prev.getDate() || greetingSlot(now) !== greetingSlot(prev)) {
+      todayDate = now;
+    }
+  }
+
+  function handleHomeVisibility() {
+    if (document.visibilityState !== "visible") return;
+    // Re-check AI config in case user just configured it in settings
+    if (!aiEnabled) checkAiConfig();
+    // Immediately refresh clock so now/next updates on tab focus
+    tickClock();
+    // Re-fetch timetable if cache is stale
+    if (serverDataLoaded) {
+      cachedFetch<TimetableData>("timetable", fetchTimetable)
+        .then(tt => { if (tt) timetableData = tt; })
+        .catch(() => {});
+      if ($lunaAuthState.authenticated) {
+        cachedFetch<LunaTimetable>("luna_timetable", () => lunaInvoke<LunaTimetable>("luna_fetch_timetable", {}))
+          .then(lt => { if (lt) lunaTimetable = lt; })
+          .catch(() => {});
+      }
+    }
+  }
 
   onMount(async () => {
-    clockInterval = setInterval(() => {
-      const prev = now;
-      now = new Date();
-      // Only reassign todayDate when calendar date or greeting slot changes
-      if (now.getDate() !== prev.getDate() || greetingSlot(now) !== greetingSlot(prev)) {
-        todayDate = now;
-      }
-    }, 30_000);
+    clockInterval = setInterval(tickClock, 15_000);
+    document.addEventListener("visibilitychange", handleHomeVisibility);
+    // Restore cached data immediately so UI is never blank
+    const cachedTT = getCached<TimetableData>("timetable");
+    const cachedLunaTT = getCached<LunaTimetable>("luna_timetable");
+    const cachedTodo = getCached<LunaTodoItem[]>("luna_todo");
+    const cachedKwic = getCached<KwicPortalHome>("kwic_home");
+    const cachedNotifs = getCached<NotificationsData>("notifications");
+    const cachedLunaNotifs = getCached<LunaNotification[]>("luna_updates");
+    if (cachedTT) timetableData = cachedTT;
+    if (cachedLunaTT) lunaTimetable = cachedLunaTT;
+    if (cachedTodo) todoItems = cachedTodo;
+    if (cachedKwic) kwicHome = cachedKwic;
+    if (cachedNotifs) kgcNotifs = cachedNotifs.entries ?? [];
+    if (cachedLunaNotifs) lunaNotifs = cachedLunaNotifs;
+    if (cachedTT || cachedLunaTT || cachedNotifs || cachedKwic) loading = false;
     cachedFetch<WeatherData>("weather", fetchWeather).then(applyWeather).catch(() => {});
-    await loadData();
-    hasLoadedOnce = true;
+    checkAiConfig();
+    if ($authState.authenticated) {
+      await loadData();
+    } else {
+      // Not yet authenticated (e.g. session restoring) — clear loading so
+      // the auth subscriber can trigger loadData() later without being blocked.
+      loading = false;
+    }
   });
   onDestroy(() => {
     clearInterval(clockInterval);
+    document.removeEventListener("visibilitychange", handleHomeVisibility);
     stopSuggestionCycle();
     stopWeatherCycle();
     unsubTimetable();
@@ -415,16 +457,19 @@
   const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => { kwicHome = fresh ?? null; });
   const unsubWeather = onCacheUpdate<WeatherData>("weather", (fresh) => { if (fresh) applyWeather(fresh); });
 
-  // Re-fetch when auth state changes (e.g. after re-login from session expiry)
+  // Re-fetch when auth state changes (e.g. after re-login, or initial session restore)
   const unsubAuth = authState.subscribe((state) => {
-    if (hasLoadedOnce && state.authenticated && (!timetableData?.entries?.length || (!kgcNotifs.length && !lunaNotifs.length))) {
+    if (state.authenticated && !serverDataLoaded) {
       loadData();
+    } else if (!state.authenticated) {
+      // Session lost — next auth will trigger a fresh load
+      serverDataLoaded = false;
     }
   });
 
-  // Re-fetch Luna data when Luna authenticates after initial load
+  // Re-fetch Luna data when Luna authenticates
   const unsubLunaAuth = lunaAuthState.subscribe((state) => {
-    if (hasLoadedOnce && state.authenticated && !todoItems.length && !lunaNotifs.length) {
+    if (state.authenticated && !todoItems.length && !lunaNotifs.length) {
       Promise.allSettled([
         cachedFetch<LunaTodoItem[]>("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo")),
         cachedFetch<LunaNotification[]>("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates")),
@@ -437,9 +482,9 @@
     }
   });
 
-  // Re-fetch KWIC data when KWIC authenticates after initial load
+  // Re-fetch KWIC data when KWIC authenticates
   const unsubKwicAuth = kwicAuthState.subscribe((state) => {
-    if (hasLoadedOnce && state.authenticated && !kwicHome) {
+    if (state.authenticated && !kwicHome) {
       cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome).then(kh => {
         if (kh) kwicHome = kh;
       }).catch(() => {});
@@ -447,6 +492,7 @@
   });
 
   async function loadData() {
+    if (loading) return; // prevent concurrent loads
     loading = true;
     try {
       const [tt, td, nt, ln, lt, kh] = await Promise.allSettled([
@@ -483,10 +529,12 @@
       if (kh.status === "fulfilled" && kh.value) {
         kwicHome = kh.value as KwicPortalHome;
       }
+      // At least one fetch succeeded — mark server data as loaded
+      if (tt.status === "fulfilled" || nt.status === "fulfilled") {
+        serverDataLoaded = true;
+      }
     } catch (err) { console.error("[HomePage] loadData error:", err); }
     loading = false;
-    // Check AI config after data is ready
-    checkAiConfig();
   }
 
   const AI_CACHE_KEY = "ai-notif-cache";
@@ -1133,7 +1181,7 @@ suggestionsのルール：
       <span>スケジュール</span>
       <span class="arrow">›</span>
     </button>
-    {#if loading}
+    {#if loading && !timetableData}
       <div class="scroll-row">
         <div class="card-skel"></div>
         <div class="card-skel"></div>
@@ -1669,18 +1717,6 @@ suggestionsのルール：
     color: var(--text-primary);
     background: var(--bg-card);
     border: 1px solid var(--glass-border);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .hero-card {
-      color: #fff;
-      background: color-mix(in srgb, var(--blue) 12%, var(--bg-card));
-      border-color: color-mix(in srgb, var(--blue) 20%, var(--glass-border));
-    }
-    .hero-card.hero-live {
-      background: color-mix(in srgb, var(--green) 12%, var(--bg-card));
-      border-color: color-mix(in srgb, var(--green) 20%, var(--glass-border));
-    }
   }
 
   :global([data-theme="dark"]) .hero-card {

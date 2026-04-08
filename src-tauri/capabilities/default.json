@@ -26,6 +26,8 @@
     "facility-rsv-ct",
     "settings",
     "ai-result",
+    "mail-login",
+    "gcal-login",
     "ext-*"
   ],
   "permissions": [

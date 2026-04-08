@@ -3,6 +3,7 @@ mod auth;
 mod client;
 pub(crate) mod config;
 mod commands;
+mod cookie_bridge;
 mod kwic_client;
 mod kwic_commands;
 mod luna_client;
@@ -10,6 +11,9 @@ mod luna_commands;
 mod luna_parser;
 mod mail;
 mod mail_commands;
+mod read_state;
+mod google_calendar;
+mod google_commands;
 mod parser;
 mod syllabus;
 mod tray;
@@ -23,6 +27,7 @@ pub struct AppState {
     pub luna: Mutex<luna_client::LunaClient>,
     pub kwic: Mutex<kwic_client::KwicClient>,
     pub mail: Mutex<mail::MailClient>,
+    pub gcal: Mutex<google_calendar::GoogleCalendarClient>,
 }
 
 /// Shared theme state so child webviews can read the current theme.
@@ -30,12 +35,22 @@ pub struct ThemeState(pub std::sync::Mutex<String>);
 
 #[tauri::command]
 fn get_app_theme(state: tauri::State<'_, ThemeState>) -> String {
-    state.0.lock().unwrap().clone()
+    state.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[tauri::command]
 fn set_app_theme(state: tauri::State<'_, ThemeState>, theme: String) {
-    *state.0.lock().unwrap() = theme;
+    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = theme;
+}
+
+#[tauri::command]
+fn mark_notification_read(state: tauri::State<'_, read_state::ReadState>, source: String, id: String) {
+    state.mark_read(&source, &id);
+}
+
+#[tauri::command]
+fn get_read_notifications(state: tauri::State<'_, read_state::ReadState>) -> read_state::ReadIdsResponse {
+    state.get_all_read_ids()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,6 +61,8 @@ pub fn run() {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Debug)
+                    .level_for("selectors", log::LevelFilter::Warn)
+                    .level_for("html5ever", log::LevelFilter::Warn)
                     .targets([
                         tauri_plugin_log::Target::new(
                             tauri_plugin_log::TargetKind::Stderr,
@@ -60,16 +77,22 @@ pub fn run() {
             luna.try_restore_session();
             let mut kwic = kwic_client::KwicClient::new();
             kwic.try_restore_session();
+            let mut kgc = client::KgcClient::new();
+            kgc.try_restore_session();
             let mut mail_client = mail::MailClient::new();
             mail_client.try_restore_token();
+            let mut gcal_client = google_calendar::GoogleCalendarClient::new();
+            gcal_client.try_restore_token();
             app.manage(AppState {
-                client: Mutex::new(client::KgcClient::new()),
+                client: Mutex::new(kgc),
                 luna: Mutex::new(luna),
                 kwic: Mutex::new(kwic),
                 mail: Mutex::new(mail_client),
+                gcal: Mutex::new(gcal_client),
             });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
             app.manage(ThemeState(std::sync::Mutex::new("system".to_string())));
+            app.manage(read_state::ReadState::new());
             let tray_status = std::sync::Arc::new(tray::TrayStatusState::new());
             app.manage(tray_status.clone());
             tray::setup_tray(app.handle())?;
@@ -125,6 +148,7 @@ pub fn run() {
             commands::clear_calendar,
             commands::sync_session,
             commands::get_session_states,
+            commands::get_session_expiry,
             luna_commands::luna_open_detail_window,
             luna_commands::luna_open_login,
             luna_commands::luna_fetch_page,
@@ -165,6 +189,13 @@ pub fn run() {
             mail_commands::mail_fetch_message,
             mail_commands::mail_get_config,
             mail_commands::mail_save_config,
+            google_commands::gcal_check_session,
+            google_commands::gcal_get_config,
+            google_commands::gcal_save_config,
+            google_commands::gcal_open_login,
+            google_commands::gcal_disconnect,
+            google_commands::gcal_sync_timetable,
+            google_commands::gcal_clear_calendar,
             ai::get_ai_config,
             ai::save_ai_config,
             ai::ai_chat,
@@ -178,11 +209,40 @@ pub fn run() {
             tray::set_tray_status_items,
             get_app_theme,
             set_app_theme,
+            mark_notification_read,
+            get_read_notifications,
             webview_toolbar::browser_go_back,
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,
             webview_toolbar::browser_get_url,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Persist all session cookies on exit so they survive restarts.
+                // Use try_lock to avoid deadlock if another task holds the lock.
+                let state = app.state::<AppState>();
+                match state.client.try_lock() {
+                    Ok(c) => c.save_session(),
+                    Err(_) => log::warn!("Exit: KGC mutex held, session not saved"),
+                };
+                match state.luna.try_lock() {
+                    Ok(l) => l.save_session(),
+                    Err(_) => log::warn!("Exit: Luna mutex held, session not saved"),
+                };
+                match state.kwic.try_lock() {
+                    Ok(k) => k.save_session(),
+                    Err(_) => log::warn!("Exit: KWIC mutex held, session not saved"),
+                };
+                match state.mail.try_lock() {
+                    Ok(m) => m.save_token(),
+                    Err(_) => log::warn!("Exit: Mail mutex held, token not saved"),
+                };
+                match state.gcal.try_lock() {
+                    Ok(g) => g.save_token(),
+                    Err(_) => log::warn!("Exit: GCal mutex held, token not saved"),
+                };
+            }
+        });
 }

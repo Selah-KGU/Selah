@@ -4,6 +4,14 @@ const SEEN_KGC_KEY = "selah_seen_kgc_notifs";
 const SEEN_LUNA_KEY = "selah_seen_luna_notifs";
 const SEEN_KWIC_KEY = "selah_seen_kwic_notifs";
 
+// One-time migration: KGC IDs changed from sequential "1","2" to "title|date" format.
+// Clear old seen set to avoid treating all notifications as new repeatedly.
+const KGC_ID_MIGRATED_KEY = "selah_kgc_id_v2";
+if (!localStorage.getItem(KGC_ID_MIGRATED_KEY)) {
+  localStorage.removeItem(SEEN_KGC_KEY);
+  localStorage.setItem(KGC_ID_MIGRATED_KEY, "1");
+}
+
 /** Send a native macOS notification via osascript */
 export async function nativeNotify(title: string, body?: string) {
   await invoke("test_notification", { title, body: body ?? "" });

@@ -16,6 +16,8 @@ pub(crate) fn build_http_client(cookie_store: Arc<reqwest_cookie_store::CookieSt
         .cookie_provider(cookie_store)
         .redirect(Policy::none())
         .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
         .build()
         .expect("failed to build HTTP client")
 }
@@ -29,9 +31,25 @@ pub(crate) fn new_cookie_client() -> (Arc<reqwest_cookie_store::CookieStoreMutex
     (cookie_store, http)
 }
 
+/// Find the soonest-expiring cookie in a cookie store and return seconds until it expires.
+/// Returns None if all cookies are session-only (no explicit expiry).
+pub(crate) fn soonest_cookie_expiry(store: &reqwest_cookie_store::CookieStoreMutex) -> Option<i64> {
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    let mut soonest: Option<i64> = None;
+    for cookie in store.iter_unexpired() {
+        if let cookie_store::CookieExpiration::AtUtc(expiry) = &cookie.expires {
+            // Compute seconds remaining using the time crate re-exported by cookie_store
+            let now = ::time::OffsetDateTime::now_utc();
+            let remaining = (*expiry - now).whole_seconds();
+            soonest = Some(soonest.map_or(remaining, |s: i64| s.min(remaining)));
+        }
+    }
+    soonest
+}
+
 /// Check if an HTML response body indicates the session has expired.
 /// This catches SSO login forms, Shibboleth redirects, and various session timeout pages.
-fn is_session_expired_body(body: &str) -> bool {
+pub(crate) fn is_session_expired_body(body: &str) -> bool {
     // SSO login form redirect
     if body.contains("action=\"UnSSOLoginControl") || body.contains("action=\"/uniasv2/UnSSOLoginControl") {
         return true;
@@ -55,29 +73,32 @@ fn is_session_expired_body(body: &str) -> bool {
     false
 }
 
-const SESSION_EXPIRED_MSG: &str = "セッションが期限切れです。再ログインしてください。";
+pub(crate) const SESSION_EXPIRED_MSG: &str = "セッションが期限切れです。再ログインしてください。";
 
 pub(crate) fn data_dir() -> std::path::PathBuf {
-    let base = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let dir = base.join("com.kgu.selah");
-    let _ = std::fs::create_dir_all(&dir);
-    // Migrate from old paths
-    for old_name in ["com.kwic.app", "com.haru.kwic"] {
-        let old = base.join(old_name);
-        if old.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&old) {
-                for entry in entries.flatten() {
-                    let dest = dir.join(entry.file_name());
-                    if !dest.exists() {
-                        let _ = std::fs::rename(entry.path(), dest);
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let dir = base.join("com.kgu.selah");
+        let _ = std::fs::create_dir_all(&dir);
+        // Migrate from old paths (runs once)
+        for old_name in ["com.kwic.app", "com.haru.kwic"] {
+            let old = base.join(old_name);
+            if old.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&old) {
+                    for entry in entries.flatten() {
+                        let dest = dir.join(entry.file_name());
+                        if !dest.exists() {
+                            let _ = std::fs::rename(entry.path(), dest);
+                        }
                     }
                 }
+                let _ = std::fs::remove_dir(&old);
             }
-            let _ = std::fs::remove_dir(&old);
         }
-    }
-    dir
+        dir
+    }).clone()
 }
 
 /// Save a cookie jar to a JSON file in the data directory.
@@ -107,6 +128,117 @@ pub(crate) fn load_cookie_jar(filename: &str) -> Option<cookie_store::CookieStor
     }
 }
 
+/// Shared redirect-following GET fetch used by all three service clients.
+/// Follows up to 10 redirects, detects SSO redirects and expired-session body patterns.
+pub(crate) async fn fetch_with_redirect(
+    http: &Client,
+    url: &str,
+    base_url: &str,
+    expired_msg: &str,
+    is_body_expired: fn(&str) -> bool,
+) -> Result<String, String> {
+    let mut current_url = url.to_string();
+    for i in 0..10 {
+        let resp = http.get(&current_url).send().await
+            .map_err(|e| format!("リクエスト失敗: {}", e))?;
+        let status = resp.status();
+        if status.is_redirection() {
+            if let Some(loc) = resp.headers().get("location") {
+                let loc_str = loc.to_str().unwrap_or_default();
+                current_url = if loc_str.starts_with('/') {
+                    format!("{}{}", base_url, loc_str)
+                } else {
+                    loc_str.to_string()
+                };
+                log::debug!("redirect #{} -> {}", i + 1, &current_url[..120.min(current_url.len())]);
+                if current_url.contains("sso.kwansei.ac.jp") {
+                    return Err(expired_msg.into());
+                }
+                continue;
+            }
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            log::debug!("HTTP {} body (first 500 chars): {}", status, &body[..body.len().min(500)]);
+            return Err(format!("HTTP {}", status));
+        }
+        let body = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
+        if is_body_expired(&body) {
+            return Err(expired_msg.into());
+        }
+        return Ok(body);
+    }
+    Err("リダイレクトが多すぎます".into())
+}
+
+/// Shared POST-then-follow-redirects used by all three service clients.
+/// Sends a pre-built request, then follows any redirect with `fetch_with_redirect` (GET chain).
+pub(crate) async fn send_and_follow_redirect(
+    http: &Client,
+    request: reqwest::RequestBuilder,
+    base_url: &str,
+    expired_msg: &str,
+    is_body_expired: fn(&str) -> bool,
+) -> Result<String, String> {
+    let resp = request.send().await
+        .map_err(|e| format!("リクエスト失敗: {}", e))?;
+
+    let status = resp.status();
+    if status.is_redirection() {
+        if let Some(loc) = resp.headers().get("location") {
+            let loc_str = loc.to_str().unwrap_or_default();
+            let next_url = if loc_str.starts_with('/') {
+                format!("{}{}", base_url, loc_str)
+            } else {
+                loc_str.to_string()
+            };
+            if next_url.contains("sso.kwansei.ac.jp") {
+                return Err(expired_msg.into());
+            }
+            return fetch_with_redirect(http, &next_url, base_url, expired_msg, is_body_expired).await;
+        }
+    }
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status));
+    }
+    let text = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
+    if is_body_expired(&text) {
+        return Err(expired_msg.into());
+    }
+    Ok(text)
+}
+
+/// Convenience: POST a URL-encoded form and follow redirects.
+pub(crate) async fn post_form_with_redirect<I, K, V>(
+    http: &Client,
+    url: &str,
+    base_url: &str,
+    expired_msg: &str,
+    is_body_expired: fn(&str) -> bool,
+    params: I,
+    extra_headers: &[(&str, &str)],
+) -> Result<String, String>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    let form_data: Vec<(String, String)> = params.into_iter()
+        .map(|(k, v)| (k.as_ref().to_string(), v.as_ref().to_string()))
+        .collect();
+    let mut builder = http.post(url).form(&form_data);
+    for &(k, v) in extra_headers {
+        builder = builder.header(k, v);
+    }
+    send_and_follow_redirect(http, builder, base_url, expired_msg, is_body_expired).await
+}
+
+/// Fetch a KG-Course page using a raw reqwest Client (no auth guard).
+/// Used by headless refresh to verify session without holding the KgcClient mutex.
+pub(crate) async fn fetch_page_with(http: &Client, url: &str) -> Result<String, String> {
+    fetch_with_redirect(http, url, config::KG_COURSE_BASE, SESSION_EXPIRED_MSG, is_session_expired_body).await
+}
+
 /// Main HTTP client for KG-Course (kg-course.kwansei.ac.jp)
 pub struct KgcClient {
     pub http: Client,
@@ -132,8 +264,16 @@ impl KgcClient {
         self.session = None;
         // Delete persisted session files
         let dir = data_dir();
-        let _ = std::fs::remove_file(dir.join(SESSION_FILE));
-        let _ = std::fs::remove_file(dir.join(COOKIES_FILE));
+        if let Err(e) = std::fs::remove_file(dir.join(SESSION_FILE)) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("KGC clear_session: failed to delete session file: {}", e);
+            }
+        }
+        if let Err(e) = std::fs::remove_file(dir.join(COOKIES_FILE)) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("KGC clear_session: failed to delete cookies file: {}", e);
+            }
+        }
         // Recreate client with fresh cookie jar
         let (cookie_store, http) = new_cookie_client();
         self.http = http;
@@ -172,7 +312,10 @@ impl KgcClient {
             .and_then(|s| serde_json::from_str(&s).ok())
         {
             Some(s) => s,
-            None => return false,
+            None => {
+                log::warn!("KGC try_restore_session: failed to read/parse session file");
+                return false;
+            }
         };
 
         // Load cookies
@@ -187,146 +330,16 @@ impl KgcClient {
                 log::info!("Session restored from disk");
                 true
             }
-            None => false,
+            None => {
+                log::warn!("KGC try_restore_session: failed to load cookies from disk");
+                false
+            }
         }
     }
 
-    /// Fetch a page from the KG-Course system (requires authentication)
-    pub async fn fetch_page(&self, path: &str) -> Result<String, String> {
-        if !self.is_authenticated() {
-            return Err("認証されていません".into());
-        }
-
-        use std::io::Write;
-        #[cfg(debug_assertions)]
-        let mut dbg = std::fs::OpenOptions::new().create(true).append(true)
-            .open(std::env::temp_dir().join("kgc-fetch.log")).ok();
-        #[cfg(not(debug_assertions))]
-        let mut dbg: Option<std::fs::File> = None;
-        macro_rules! dbg_log {
-            ($($arg:tt)*) => {
-                if let Some(ref mut f) = dbg { let _ = writeln!(f, $($arg)*); }
-            }
-        }
-
-        let url = format!("{}{}", config::KG_COURSE_BASE, path);
-        let mut current_url = url;
-        dbg_log!("[FETCH] start: {}", current_url);
-        
-        // Follow redirects manually to maintain cookies
-        for i in 0..10 {
-            let resp = self.http.get(&current_url).send().await
-                .map_err(|e| format!("リクエスト失敗: {}", e))?;
-            
-            let status = resp.status();
-            dbg_log!("[FETCH] #{} {} -> {}", i, current_url, status);
-            if status.is_redirection() {
-                if let Some(loc) = resp.headers().get("location") {
-                    let loc_str = loc.to_str().unwrap_or_default();
-                    if loc_str.starts_with('/') {
-                        current_url = format!("{}{}", config::KG_COURSE_BASE, loc_str);
-                    } else {
-                        current_url = loc_str.to_string();
-                    }
-                    dbg_log!("[FETCH] redirect -> {}", current_url);
-                    // If redirected to SSO, session is expired
-                    if current_url.contains("sso.kwansei.ac.jp") {
-                        dbg_log!("[FETCH] SSO redirect detected, session expired");
-                        return Err(SESSION_EXPIRED_MSG.into());
-                    }
-                    continue;
-                }
-            }
-
-            if !status.is_success() {
-                dbg_log!("[FETCH] non-success status: {}", status);
-                return Err(format!("HTTP {}", status));
-            }
-
-            let body = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
-            dbg_log!("[FETCH] body length: {}, has UnSSO: {}", body.len(), body.contains("UnSSOLoginControl"));
-            // Check if response is a SSO login page (form action pointing to UnSSOLoginControl)
-            if is_session_expired_body(&body) {
-                return Err(SESSION_EXPIRED_MSG.into());
-            }
-            return Ok(body);
-        }
-
-        Err("リダイレクトが多すぎます".into())
-    }
-
-    /// POST a form to the KG-Course system (requires authentication)
-    pub async fn post_form(&self, path: &str, params: &[(String, String)]) -> Result<String, String> {
-        if !self.is_authenticated() {
-            return Err("認証されていません".into());
-        }
-
-        let url = format!("{}{}", config::KG_COURSE_BASE, path);
-        let resp = self.http.post(&url)
-            .header("Referer", &format!("{}/uniasv2/ARF010.do", config::KG_COURSE_BASE))
-            .header("Origin", config::KG_COURSE_BASE)
-            .form(params)
-            .send().await
-            .map_err(|e| format!("リクエスト失敗: {}", e))?;
-
-        let status = resp.status();
-        log::debug!("[POST_FORM] {} -> status={}", path, status);
-
-        // Follow redirects manually like fetch_page
-        let mut current_url = String::new();
-        if status.is_redirection() {
-            if let Some(loc) = resp.headers().get("location") {
-                let loc_str = loc.to_str().unwrap_or_default();
-                current_url = if loc_str.starts_with('/') {
-                    format!("{}{}", config::KG_COURSE_BASE, loc_str)
-                } else {
-                    loc_str.to_string()
-                };
-                log::debug!("[POST_FORM] redirect -> {}", current_url);
-                if current_url.contains("sso.kwansei.ac.jp") {
-                    return Err(SESSION_EXPIRED_MSG.into());
-                }
-            }
-        }
-
-        if !current_url.is_empty() {
-            // Follow redirect chain (up to 10)
-            for _ in 0..10 {
-                let resp2 = self.http.get(&current_url).send().await
-                    .map_err(|e| format!("リダイレクト失敗: {}", e))?;
-                let st = resp2.status();
-                if st.is_redirection() {
-                    if let Some(loc) = resp2.headers().get("location") {
-                        let loc_str = loc.to_str().unwrap_or_default();
-                        current_url = if loc_str.starts_with('/') {
-                            format!("{}{}", config::KG_COURSE_BASE, loc_str)
-                        } else {
-                            loc_str.to_string()
-                        };
-                        log::debug!("[POST_FORM] redirect chain -> {}", current_url);
-                        if current_url.contains("sso.kwansei.ac.jp") {
-                            return Err(SESSION_EXPIRED_MSG.into());
-                        }
-                        continue;
-                    }
-                }
-                let body = resp2.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
-                if is_session_expired_body(&body) {
-                    return Err(SESSION_EXPIRED_MSG.into());
-                }
-                return Ok(body);
-            }
-            return Err("リダイレクトが多すぎます".into());
-        }
-
-        if !status.is_success() {
-            return Err(format!("HTTP {}", status));
-        }
-
-        let body = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
-        if is_session_expired_body(&body) {
-            return Err(SESSION_EXPIRED_MSG.into());
-        }
-        Ok(body)
+    /// Return seconds until the soonest-expiring session cookie expires.
+    /// Returns None if there are no time-limited cookies (all SessionEnd).
+    pub fn soonest_cookie_expiry_secs(&self) -> Option<i64> {
+        soonest_cookie_expiry(&self.cookie_store)
     }
 }

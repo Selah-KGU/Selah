@@ -37,7 +37,8 @@
     | "pin"
     | "building.2"
     | "envelope"
-    | "arrow.clockwise";
+    | "arrow.clockwise"
+    | "exclamationmark.triangle";
 </script>
 
 <script lang="ts">
@@ -203,6 +204,10 @@
   {:else if name === "arrow.clockwise"}
     <path d="M21 2v6h-6" />
     <path d="M21 8A9 9 0 1 0 18.36 18.36" />
+  {:else if name === "exclamationmark.triangle"}
+    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+    <line x1="12" y1="9" x2="12" y2="13" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
   {/if}
 </svg>
 

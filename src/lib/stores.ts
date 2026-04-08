@@ -25,6 +25,9 @@ export const authState = writable<AuthState>({
 /** True while an automatic re-login flow is in progress (session expired mid-use) */
 export const reloginInProgress = writable(false);
 
+/** True when session has expired but user hasn't re-authenticated yet (soft expired state) */
+export const sessionExpired = writable(false);
+
 /** Luna LMS authentication state */
 export const lunaAuthState = writable<{ authenticated: boolean }>({
   authenticated: false,
@@ -40,6 +43,18 @@ export const mailAuthState = writable<{ authenticated: boolean; email: string; d
   authenticated: false,
   email: "",
   displayName: "",
+});
+
+/** Google Calendar authentication state */
+export interface GoogleCalState {
+  authenticated: boolean;
+  calendarExists: boolean;
+  syncedEvents: number;
+}
+export const gcalAuthState = writable<GoogleCalState>({
+  authenticated: false,
+  calendarExists: false,
+  syncedEvents: 0,
 });
 
 // ============ Data Types ============
@@ -299,6 +314,8 @@ syllabusSearchState.subscribe((state) => {
 
 export const activeTab = writable<string>("home");
 export const aiRefreshRequested = writable<boolean>(false);
+export const unreadNotifCount = writable<number>(0);
+export const unreadMailCount = writable<number>(0);
 function initTheme(): "system" | "light" | "dark" {
   if (typeof localStorage !== "undefined") {
     const saved = localStorage.getItem("selah-theme");
@@ -350,12 +367,15 @@ const CACHE_TTLS: Record<string, number> = {
   weather: 60 * 60 * 1000,
   // Mail
   mail_inbox: 5 * 60 * 1000,
+  // KWIC
+  kwic_home: 12 * 60 * 60 * 1000,
 };
 
 // Keys eligible for disk persistence (survive app restart, stale-while-revalidate)
 const DISK_CACHE_KEYS = new Set([
   "timetable", "grades", "exams", "registration",
-  "luna_timetable",
+  "luna_timetable", "kwic_home",
+  "notifications", "luna_updates", "luna_todo",
 ]);
 const DISK_PREFIX = "selah_cache_";
 const DISK_CACHE_VERSION = 1;
@@ -478,6 +498,17 @@ export function invalidateCache(key?: string) {
     inflight.clear();
     for (const k of DISK_CACHE_KEYS) localStorage.removeItem(DISK_PREFIX + k);
   }
+}
+
+/** Update a cached entry in-place and notify SWR listeners. */
+export function updateCacheEntry<T>(key: string, updater: (data: T) => T): void {
+  const entry = cache.get(key);
+  if (!entry) return;
+  const updated = updater(entry.data as T);
+  const now = Date.now();
+  cache.set(key, { data: updated, ts: now });
+  if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, updated, now);
+  notifySwr(key, updated);
 }
 
 /**

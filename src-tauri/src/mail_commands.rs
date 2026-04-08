@@ -196,7 +196,9 @@ pub async fn mail_fetch_message(
         return Err(MAIL_AUTH_REQUIRED_MSG.into());
     }
     // Mark as read in background
-    let _ = mail.mark_as_read(&message_id).await;
+    if let Err(e) = mail.mark_as_read(&message_id).await {
+        log::warn!("Failed to mark message {} as read: {}", message_id, e);
+    }
     mail.fetch_message(&message_id).await
 }
 
