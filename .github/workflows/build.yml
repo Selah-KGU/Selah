@@ -33,7 +33,7 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
           # Delete the release (if any) associated with this tag
           RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq '.id' 2>/dev/null || true)
-          if [ -n "$RELEASE_ID" ]; then
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" -eq "$RELEASE_ID" ] 2>/dev/null; then
             echo "Deleting existing release ${TAG} (id=${RELEASE_ID})"
             gh api -X DELETE "repos/${{ github.repository }}/releases/${RELEASE_ID}"
           fi
