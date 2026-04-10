@@ -17,6 +17,7 @@
   let activeWeek = $state<"current" | "next">("current");
   let gcalSyncing = $state(false);
   let gcalError = $state("");
+  let legendHover = $state(false);
 
   // ── Constants ──
   const days: [number, string][] = [[1,"月"],[2,"火"],[3,"水"],[4,"木"],[5,"金"],[6,"土"]];
@@ -506,23 +507,20 @@
 
     <!-- Grid timetable -->
     <div class="grid-outer">
-      <div class="legend-info">
-        <svg class="legend-info-icon" width="14" height="14" viewBox="0 0 16 16" fill="none">
-          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.2"/>
-          <path d="M8 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-          <circle cx="8" cy="5" r="0.8" fill="currentColor"/>
-        </svg>
-        <div class="legend-tooltip">
-          <div class="legend-row"><span class="dot" style="background:var(--accent)"></span><span>通常授業</span></div>
-          <div class="legend-row"><span class="dot" style="background:#ff3b30"></span><span>休講（この週は授業なし）</span></div>
-          <div class="legend-row"><span class="dot" style="background:#34c759"></span><span>補講（追加の授業）</span></div>
-          <div class="legend-row"><span class="dot" style="background:#ff9500"></span><span>教室変更あり</span></div>
-        </div>
-      </div>
       <div class="grid-wrap">
         <div class="timetable">
           <!-- Header row -->
-          <div class="grid-header corner"></div>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="grid-header corner"
+            onmouseenter={() => legendHover = true}
+            onmouseleave={() => legendHover = false}
+          >
+            <svg class="legend-info-icon" width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M8 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              <circle cx="8" cy="5" r="0.8" fill="currentColor"/>
+            </svg>
+          </div>
         {#each days as [, label]}
           <div class="grid-header">{label}</div>
         {/each}
@@ -613,6 +611,14 @@
         {/each}
       </div>
     </div>
+    {#if legendHover}
+      <div class="legend-tooltip" onmouseenter={() => legendHover = true} onmouseleave={() => legendHover = false}>
+        <div class="legend-row"><span class="dot" style="background:var(--accent)"></span><span>通常授業</span></div>
+        <div class="legend-row"><span class="dot" style="background:#ff3b30"></span><span>休講（この週は授業なし）</span></div>
+        <div class="legend-row"><span class="dot" style="background:#34c759"></span><span>補講（追加の授業）</span></div>
+        <div class="legend-row"><span class="dot" style="background:#ff9500"></span><span>教室変更あり</span></div>
+      </div>
+    {/if}
     </div>
 
     <!-- Communities -->
@@ -828,32 +834,27 @@
     text-decoration: underline;
   }
 
-  /* ── Legend (info icon overlaying corner, tooltip escapes grid) ── */
+  /* ── Legend (icon in corner cell, tooltip outside grid-wrap) ── */
   .grid-outer {
     position: relative;
   }
-  .legend-info {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 68px;
-    height: 36px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 10;
+  .corner {
+    background: var(--bg-tertiary);
     cursor: help;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .corner:hover .legend-info-icon {
+    color: var(--text-secondary);
   }
   .legend-info-icon {
     color: var(--text-tertiary);
     transition: color 0.15s ease;
   }
-  .legend-info:hover .legend-info-icon {
-    color: var(--text-secondary);
-  }
   .legend-tooltip {
     position: absolute;
-    top: calc(100% + 4px);
+    top: 38px;
     left: 4px;
     display: flex;
     flex-direction: column;
@@ -866,14 +867,7 @@
     white-space: nowrap;
     font-size: 11px;
     color: var(--text-secondary);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s ease;
     z-index: 30;
-  }
-  .legend-info:hover .legend-tooltip {
-    opacity: 1;
-    pointer-events: auto;
   }
   .legend-row {
     display: flex;
@@ -926,7 +920,6 @@
     color: var(--text-secondary);
     letter-spacing: 0.02em;
   }
-  .corner { background: var(--bg-tertiary); }
   .period-num {
     font-size: 11px;
     color: var(--text-tertiary);
