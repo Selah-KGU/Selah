@@ -3,13 +3,12 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { onCacheUpdate, getCached } from "./stores";
-import type { TimetableData } from "./stores";
-import type { LunaTodoItem } from "./types";
-import { PERIOD_TIMES, DAY_LABELS } from "./types";
+import type { LunaTodoItem, ScheduleResponse, KgcCourseRow } from "./types";
+import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "./types";
 
 // ============ State ============
 
-let timetableData: TimetableData | null = null;
+let timetableData: ScheduleResponse | null = null;
 let todoItems: LunaTodoItem[] = [];
 
 let unsubscribers: (() => void)[] = [];
@@ -17,12 +16,17 @@ let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ============ Core Logic ============
 
-function findNextSchoolDay(entries: { day: string; period: number; course_name: string; is_cancelled: boolean }[], fromDay: number): { dayLabel: string; dayOffset: number; classes: typeof entries } | null {
+/** Convert JS day-of-week (0=Sun..6=Sat) to unified day (1=Mon..7=Sun) */
+function jsToUnifiedDay(jsDow: number): number {
+  return jsDow === 0 ? 7 : jsDow;
+}
+
+function findNextSchoolDay(entries: KgcCourseRow[], fromJsDow: number): { dayLabel: string; dayOffset: number; classes: KgcCourseRow[] } | null {
   for (let offset = 1; offset <= 7; offset++) {
-    const idx = (fromDay + offset) % 7;
-    const dayLabel = DAY_LABELS[idx];
-    const classes = entries.filter(e => e.day === dayLabel && !e.is_cancelled).sort((a, b) => a.period - b.period);
-    if (classes.length > 0) return { dayLabel, dayOffset: offset, classes };
+    const jsDow = (fromJsDow + offset) % 7;
+    const unifiedDay = jsToUnifiedDay(jsDow);
+    const classes = entries.filter(e => e.day === unifiedDay && !e.is_cancelled).sort((a, b) => a.period - b.period);
+    if (classes.length > 0) return { dayLabel: DAY_NUM_LABELS[unifiedDay] ?? DAY_LABELS[jsDow], dayOffset: offset, classes };
   }
   return null;
 }
@@ -30,12 +34,12 @@ function findNextSchoolDay(entries: { day: string; period: number; course_name: 
 function buildStatusItems(): string[] {
   const items: string[] = [];
   const now = new Date();
-  const todayDay = DAY_LABELS[now.getDay()];
+  const todayDay = jsToUnifiedDay(now.getDay());
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
   // 1. Today's classes
-  if (timetableData?.entries.length) {
-    const todayClasses = timetableData.entries
+  if (timetableData?.raw.kgc_entries_current.length) {
+    const todayClasses = timetableData.raw.kgc_entries_current
       .filter(e => e.day === todayDay && !e.is_cancelled)
       .sort((a, b) => a.period - b.period);
 
@@ -48,9 +52,9 @@ function buildStatusItems(): string[] {
       if (nowMin < endMin) {
         const isLive = nowMin >= startMin;
         if (isLive) {
-          items.push(`${entry.period}限 ${entry.course_name} ~${pt.end}`);
+          items.push(`${entry.period}限 ${entry.name} ~${pt.end}`);
         } else {
-          items.push(`次: ${entry.period}限 ${entry.course_name} ${pt.start}~`);
+          items.push(`次: ${entry.period}限 ${entry.name} ${pt.start}~`);
         }
         foundNext = true;
         break;
@@ -67,14 +71,14 @@ function buildStatusItems(): string[] {
 
     // 2. Next school day preview (always show, not just when today has no classes)
     if (!foundNext) {
-      const next = findNextSchoolDay(timetableData.entries, now.getDay());
+      const next = findNextSchoolDay(timetableData.raw.kgc_entries_current, now.getDay());
       if (next) {
         const label = next.dayOffset === 1 ? "明日" : `${next.dayLabel}曜`;
         items.push(`${label} ${next.classes.length}コマ`);
         const first = next.classes[0];
         const pt = PERIOD_TIMES[first.period];
         if (pt) {
-          items.push(`${label}${first.period}限 ${first.course_name} ${pt.start}~`);
+          items.push(`${label}${first.period}限 ${first.name} ${pt.start}~`);
         }
       }
     }
@@ -123,11 +127,11 @@ function scheduleRebuild() {
 
 export function startTrayStatus() {
   // Bootstrap from existing cache (disk or memory)
-  timetableData = getCached<TimetableData>("timetable");
+  timetableData = getCached<ScheduleResponse>("schedule_data");
   todoItems = getCached<LunaTodoItem[]>("luna_todo") ?? [];
 
   unsubscribers.push(
-    onCacheUpdate<TimetableData>("timetable", (data) => { timetableData = data; scheduleRebuild(); }),
+    onCacheUpdate<ScheduleResponse>("schedule_data", (data) => { timetableData = data; scheduleRebuild(); }),
     onCacheUpdate<LunaTodoItem[]>("luna_todo", (data) => { todoItems = data ?? []; scheduleRebuild(); }),
   );
 

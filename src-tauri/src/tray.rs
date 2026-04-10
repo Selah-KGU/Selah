@@ -51,8 +51,11 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .item(&quit_item)
         .build()?;
 
+    let icon = app.default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("app icon".into()))?;
     let _tray = TrayIconBuilder::with_id("main-tray")
-        .icon(app.default_window_icon().expect("app icon is set").clone())
+        .icon(icon)
         .icon_as_template(true)
         .tooltip("Selah")
         .menu(&menu)

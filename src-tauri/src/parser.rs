@@ -1,5 +1,5 @@
 use scraper::{Html, Selector};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::sync::LazyLock;
 
 // ============ Common Selectors ============
@@ -12,7 +12,7 @@ pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> = LazyLock::new(|| Select
 
 // ============ Shared ============
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct StudentInfo {
     pub student_id: String,
     pub name: String,
@@ -277,7 +277,7 @@ pub fn parse_timetable(html: &str) -> TimetableData {
 
 // ============ Grades / Curriculum (ARF140) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CurriculumRow {
     pub category: String,
     pub required_credits: String,
@@ -285,7 +285,7 @@ pub struct CurriculumRow {
     pub earned_credits: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GradesData {
     pub student: StudentInfo,
     pub curriculum: Vec<CurriculumRow>,
@@ -371,7 +371,7 @@ pub fn parse_grades(html: &str) -> GradesData {
 
 // ============ Cancellations (APB020) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CancellationEntry {
     pub date: String,
     pub period: String,
@@ -385,7 +385,7 @@ pub struct CancellationEntry {
     pub comment: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CancellationsData {
     pub student: StudentInfo,
     pub entries: Vec<CancellationEntry>,
@@ -464,7 +464,7 @@ pub fn parse_cancellations(html: &str) -> CancellationsData {
 
 // ============ Makeup Classes (APC020) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MakeupEntry {
     pub date: String,
     pub period: String,
@@ -478,7 +478,7 @@ pub struct MakeupEntry {
     pub comment: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MakeupData {
     pub student: StudentInfo,
     pub entries: Vec<MakeupEntry>,
@@ -550,7 +550,7 @@ pub fn parse_makeup_classes(html: &str) -> MakeupData {
 
 // ============ Room Changes (APA960) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RoomChangeEntry {
     pub date: String,
     pub department: String,
@@ -563,7 +563,7 @@ pub struct RoomChangeEntry {
     pub comment: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RoomChangesData {
     pub student: StudentInfo,
     pub entries: Vec<RoomChangeEntry>,
@@ -634,14 +634,14 @@ pub fn parse_room_changes(html: &str) -> RoomChangesData {
 
 // ============ Course Registration (ARD010) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreditSummary {
     pub semester: String,
     pub enrolled: String,
     pub limit: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RegisteredCourse {
     pub period: String,
     pub day: String,
@@ -654,7 +654,7 @@ pub struct RegisteredCourse {
     pub status: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RegistrationData {
     pub student: StudentInfo,
     pub credit_summary: Vec<CreditSummary>,
@@ -847,7 +847,7 @@ pub fn parse_registration(html: &str) -> RegistrationData {
 
 // ============ Exam Timetable (ARF010PVL01) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExamEntry {
     pub day: String,
     pub period: i32,
@@ -855,7 +855,7 @@ pub struct ExamEntry {
     pub room: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExamTimetableData {
     pub student: StudentInfo,
     pub entries: Vec<ExamEntry>,
@@ -881,7 +881,7 @@ pub fn parse_exam_timetable(html: &str) -> ExamTimetableData {
 
 // ============ Notifications (CPA010/CPA020) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NotificationEntry {
     pub id: String,
     pub title: String,
@@ -889,7 +889,7 @@ pub struct NotificationEntry {
     pub category: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NotificationsData {
     pub entries: Vec<NotificationEntry>,
 }
@@ -976,7 +976,7 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
 
 // ============ Course Detail (ARF020) ============
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CourseDetail {
     pub fields: Vec<(String, String)>,
 }
@@ -1011,4 +1011,242 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
     }
 
     CourseDetail { fields: Vec::new() }
+}
+
+// ============ 授業計画 Structured Parser ============
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SessionPlan {
+    pub session_num: i32,
+    pub th_header: String,
+    pub topic: String,
+    pub delivery_mode: String,
+    pub study_outside: String,
+}
+
+/// Parse structured 授業計画 from a course detail page.
+///
+/// **Data-only**: extracts raw text from each table row, no filtering or keyword detection.
+/// - `th_header`: text from `<th>` cells after the session number marker
+/// - `topic`: text from the first content `<td>`
+/// - `delivery_mode`: middle `<td>` columns joined (e.g. "対面", "オンデマンド")
+/// - `study_outside`: text from the last `<td>` if there are 2+ content tds
+///
+/// All additional `<td>` columns are appended to topic in `[brackets]` so no data is lost.
+pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
+    let doc = Html::parse_document(html);
+    let mut plans = Vec::new();
+
+    let session_re = regex::Regex::new(
+        r"第([\d,～~・-]+)回|Session\s+([\d,～~-]+)"
+    ).unwrap();
+    let num_re = regex::Regex::new(r"\d+").unwrap();
+
+    let candidates = ["table.output", "table.form", "table.tbl", "table"];
+    for selector_str in &candidates {
+        let Ok(table_sel) = Selector::parse(selector_str) else { continue };
+        for table in doc.select(&table_sel) {
+            for tr in table.select(&SEL_TR) {
+                let ths: Vec<_> = tr.select(&SEL_TH).collect();
+                let tds: Vec<_> = tr.select(&SEL_TD).collect();
+
+                let all_cells: Vec<String> = ths.iter().chain(tds.iter())
+                    .map(|el| el.text().collect::<String>())
+                    .collect();
+                let full_text = all_cells.join(" ");
+
+                if let Some(caps) = session_re.captures(&full_text) {
+                    let range_str = caps.get(1).or(caps.get(2)).map(|m| m.as_str()).unwrap_or("");
+                    let session_nums = expand_session_range(range_str, &num_re);
+                    if session_nums.is_empty() { continue; }
+
+                    // ── th_header: everything after the session number marker ──
+                    let th_full: String = ths.iter()
+                        .map(|el| el.text().collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let th_header = {
+                        let last_end = session_re.find_iter(&th_full)
+                            .last()
+                            .map(|m| m.end())
+                            .unwrap_or(0);
+                        if last_end > 0 && last_end <= th_full.len() {
+                            th_full[last_end..].trim().to_string()
+                        } else {
+                            String::new()
+                        }
+                    };
+
+                    // ── All td cells as raw text ──
+                    let td_texts: Vec<String> = tds.iter()
+                        .map(|td| td.text().collect::<String>().trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+
+                    let mut topic = String::new();
+                    let mut study_outside = String::new();
+                    let mut delivery_mode = String::new();
+
+                    if td_texts.len() >= 2 {
+                        topic = td_texts[0].clone();
+                        study_outside = td_texts[td_texts.len() - 1].clone();
+                        // Middle columns → likely delivery mode or short metadata
+                        let mid: Vec<_> = td_texts[1..td_texts.len() - 1].to_vec();
+                        if !mid.is_empty() {
+                            delivery_mode = mid.join(" / ");
+                        }
+                    } else if td_texts.len() == 1 {
+                        topic = td_texts[0].clone();
+                    } else if td_texts.is_empty() && ths.len() > 1 {
+                        // Fallback: use th cells after the first
+                        topic = ths.iter().skip(1)
+                            .map(|el| el.text().collect::<String>().trim().to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                    }
+
+                    for &sn in &session_nums {
+                        plans.push(SessionPlan {
+                            session_num: sn,
+                            th_header: th_header.clone(),
+                            topic: topic.clone(),
+                            delivery_mode: delivery_mode.clone(),
+                            study_outside: study_outside.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        if !plans.is_empty() {
+            break;
+        }
+    }
+
+    plans.sort_by_key(|p| p.session_num);
+    plans.dedup_by_key(|p| p.session_num);
+    plans
+}
+
+/// Expand a session range string like "1-2", "3～14", "1,2,3", "5・6" into individual numbers.
+/// Also handles plain single numbers like "1".
+/// Normalizes fullwidth digits (０-９) to ASCII before parsing.
+fn expand_session_range(range_str: &str, num_re: &regex::Regex) -> Vec<i32> {
+    // Normalize fullwidth digits to ASCII (０→0, １→1, ... ９→9)
+    let normalized: String = range_str.chars().map(|c| {
+        match c {
+            '\u{FF10}'..='\u{FF19}' => char::from(b'0' + (c as u32 - 0xFF10) as u8),
+            _ => c,
+        }
+    }).collect();
+
+    let nums: Vec<i32> = num_re
+        .find_iter(&normalized)
+        .filter_map(|m| m.as_str().parse::<i32>().ok())
+        .filter(|n| (1..=30).contains(n))
+        .collect();
+
+    if nums.is_empty() {
+        return Vec::new();
+    }
+
+    // If exactly 2 numbers and the string contains a range separator, expand
+    if nums.len() == 2 {
+        let has_range_sep = range_str.contains('-')
+            || range_str.contains('～')
+            || range_str.contains('~')
+            || range_str.contains('\u{FF0D}'); // fullwidth hyphen-minus
+        if has_range_sep && nums[0] < nums[1] {
+            return (nums[0]..=nums[1]).filter(|n| *n <= 30).collect();
+        }
+    }
+
+    // Otherwise return all parsed numbers as-is (comma/dot separated list)
+    nums
+}
+
+/// Detect delivery mode from topic text.
+/// Priority: オンデマンド > 同時双方向 > オンライン > 対面
+/// "対面" is checked last because it frequently appears in descriptive text
+/// (e.g. "対面授業12回中3回以内の欠席") even when the session itself is online.
+fn detect_delivery_mode(text: &str) -> String {
+    if text.contains("オンデマンド") {
+        "オンデマンド".to_string()
+    } else if text.contains("同時双方向") {
+        "同時双方向".to_string()
+    } else if text.contains("オンライン") {
+        "オンライン".to_string()
+    } else if text.contains("対面授業") || text.contains("対面") {
+        "対面".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Extract delivery mode from a course detail page by scanning specific field labels only.
+/// Only returns a value when a dedicated field (授業形態, 授業方法, etc.) explicitly states
+/// the mode. Does NOT fall back to scanning the full page text, because pages often
+/// mention "対面" in session plan rows or descriptions even when individual sessions
+/// use a different mode — the per-session delivery_mode in session_plans is authoritative.
+pub fn detect_delivery_mode_from_detail(html: &str) -> String {
+    let doc = Html::parse_document(html);
+
+    let candidates = ["table.output", "table.form", "table.tbl", "table"];
+    for selector_str in &candidates {
+        let Ok(table_sel) = Selector::parse(selector_str) else { continue };
+        for table in doc.select(&table_sel) {
+            for tr in table.select(&SEL_TR) {
+                let ths: Vec<_> = tr.select(&SEL_TH).collect();
+                let tds: Vec<_> = tr.select(&SEL_TD).collect();
+                for (ti, th) in ths.iter().enumerate() {
+                    let label = th.text().collect::<String>();
+                    let label_trimmed = label.trim();
+                    if label_trimmed.contains("授業形態")
+                        || label_trimmed.contains("授業方法")
+                        || label_trimmed.contains("授業の進め方")
+                        || label_trimmed.contains("授業スタイル")
+                    {
+                        if let Some(td) = tds.get(ti) {
+                            let value = td.text().collect::<String>();
+                            let mode = detect_delivery_mode(&value);
+                            if !mode.is_empty() {
+                                return mode;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // No dedicated field found — return empty so session-plan per-session modes are used
+    String::new()
+}
+
+#[cfg(test)]
+mod session_plan_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_from_dump_file() {
+        let path = std::path::Path::new("/tmp/kwic_detail_fail_34001001.html");
+        if !path.exists() {
+            return; // dump file not available
+        }
+        let html = std::fs::read_to_string(path).unwrap();
+        let plans = parse_session_plans(&html);
+        assert_eq!(plans.len(), 15, "Expected 15 session plans, got {}", plans.len());
+        assert_eq!(plans[0].session_num, 1);
+        assert_eq!(plans[14].session_num, 15);
+        assert!(!plans[0].topic.is_empty());
+    }
+
+    #[test]
+    fn test_expand_fullwidth_digits() {
+        let num_re = regex::Regex::new(r"\d+").unwrap();
+        assert_eq!(expand_session_range("１", &num_re), vec![1]);
+        assert_eq!(expand_session_range("１５", &num_re), vec![15]);
+        assert_eq!(expand_session_range("１～１５", &num_re), (1..=15).collect::<Vec<_>>());
+        assert_eq!(expand_session_range("3", &num_re), vec![3]);
+        assert_eq!(expand_session_range("1-3", &num_re), vec![1, 2, 3]);
+    }
 }

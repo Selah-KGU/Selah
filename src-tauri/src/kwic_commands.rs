@@ -4,7 +4,6 @@ use std::sync::{atomic::{AtomicU32, Ordering}, LazyLock};
 
 use crate::client;
 use crate::config;
-use crate::cookie_bridge;
 use crate::kwic_client;
 use crate::AppState;
 
@@ -50,7 +49,6 @@ macro_rules! sel {
 
 sel!(SEL_NOTICE_A, ".portal-notice-li a.portal-notice-li-a");
 sel!(SEL_MAINLINK_A, ".portal-mainlink-li a");
-sel!(SEL_INFO_LI, "li.portal-info-content-li");
 sel!(SEL_INFO_A, "a.portal-info-content-li-a");
 sel!(SEL_INFO_DATE, ".portal-subblock-infolist-left-item2 > div");
 sel!(SEL_INFO_TITLE, ".portal-subblock-infolist-left-item2 > span");
@@ -158,62 +156,52 @@ pub async fn kwic_check_session(state: State<'_, AppState>) -> Result<bool, Stri
     }
 }
 
-/// Fetch a KWIC Portal page (generic — for exploration)
-#[tauri::command]
-pub async fn kwic_fetch_page(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<String, String> {
-    // Only allow paths under the KWIC portal
-    if !path.starts_with("/portal/") && !path.starts_with("/api/") {
-        return Err("許可されていないパスです".into());
-    }
-    let http = kwic_http(&state).await?;
-    let html = kwic_get(&http, &path).await?;
-    // In debug builds, also dump to /tmp for analysis
-    #[cfg(debug_assertions)]
-    {
-        let safe_name = path.replace(['/', '?'], "_");
-        let _ = std::fs::write(std::env::temp_dir().join(format!("kwic-portal{}.html", safe_name)), &html);
-    }
-    Ok(html)
-}
-
 /// Fetch and parse the KWIC Portal home page
 #[tauri::command]
 pub async fn kwic_fetch_home(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
 ) -> Result<KwicPortalHome, String> {
-    let http = kwic_http(&state).await?;
-    let html = kwic_get(&http, "/portal/home").await?;
+    match kwic_http(&state).await {
+        Ok(http) => match kwic_get(&http, "/portal/home").await {
+            Ok(html) => {
+                #[cfg(debug_assertions)]
+                { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-home.html"), &html); }
 
-    #[cfg(debug_assertions)]
-    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-home.html"), &html); }
+                let sections = parse_portal_home(&html);
 
-    let sections = parse_portal_home(&html);
-
-    Ok(KwicPortalHome {
-        sections,
-        #[cfg(debug_assertions)]
-        raw_html_debug: Some(html[..5000.min(html.len())].to_string()),
-        #[cfg(not(debug_assertions))]
-        raw_html_debug: None,
-    })
-}
-
-/// Fetch KWIC Portal notifications/information list
-#[tauri::command]
-pub async fn kwic_fetch_notifications(
-    state: State<'_, AppState>,
-) -> Result<Vec<KwicPortalNotification>, String> {
-    let http = kwic_http(&state).await?;
-    // /portal/home/information returns SystemError, so parse notifications from home page
-    let html = kwic_get(&http, "/portal/home").await?;
-
-    #[cfg(debug_assertions)]
-    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-notifications-from-home.html"), &html); }
-
-    Ok(parse_portal_notifications(&html))
+                let result = KwicPortalHome {
+                    sections,
+                    #[cfg(debug_assertions)]
+                    raw_html_debug: Some(crate::client::safe_truncate(&html, 5000).to_string()),
+                    #[cfg(not(debug_assertions))]
+                    raw_html_debug: None,
+                };
+                if let Ok(json) = serde_json::to_string(&result) {
+                    let _ = db.save_data_cache("kwic_home", &json);
+                }
+                Ok(result)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache("kwic_home") {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("kwic_home: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache("kwic_home") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("kwic_home: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Parsed detail content of a KWIC Portal notification
@@ -239,35 +227,82 @@ pub struct KwicAttachment {
 #[tauri::command]
 pub async fn kwic_fetch_detail(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     information_id: String,
     information_type: String,
     person_category_cd: String,
     category_cd: String,
 ) -> Result<KwicNotificationDetail, String> {
-    let http = kwic_http(&state).await?;
+    let cache_key = format!("kwic_detail:{}", information_id);
+    match kwic_http(&state).await {
+        Ok(http) => {
+            // 1. Get home page to extract CSRF token
+            let home_html = match kwic_get(&http, "/portal/home").await {
+                Ok(h) => h,
+                Err(e) => {
+                    if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("{}: cache fallback ({})", cache_key, e);
+                            return Ok(cached);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
+            let csrf = match extract_csrf_token(&home_html) {
+                Some(token) => token,
+                None => {
+                    if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("{}: cache fallback (CSRF extraction failed)", cache_key);
+                            return Ok(cached);
+                        }
+                    }
+                    return Err("CSRFトークンが取得できませんでした".to_string());
+                }
+            };
 
-    // 1. Get home page to extract CSRF token
-    let home_html = kwic_get(&http, "/portal/home").await?;
-    let csrf = extract_csrf_token(&home_html)
-        .ok_or_else(|| "CSRFトークンが取得できませんでした".to_string())?;
+            // 2. POST to portal detail endpoint
+            match kwic_post(&http, "/portal/home/information/detail", &[
+                ("_csrf", &csrf),
+                ("informationId", &information_id),
+                ("informationType", &information_type),
+                ("personCategoryCd", &person_category_cd),
+                ("categoryCd", &category_cd),
+                ("selectCategoryCd", &category_cd),
+                ("pageViewListNum", "10"),
+            ]).await {
+                Ok(detail_html) => {
+                    #[cfg(debug_assertions)]
+                    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-detail.html"), &detail_html); }
 
-    // 2. POST to portal detail endpoint with all required form fields
-    //    (mirrors #PortalinformationDtl form + setDetailPortalInfoParam)
-    let detail_html = kwic_post(&http, "/portal/home/information/detail", &[
-        ("_csrf", &csrf),
-        ("informationId", &information_id),
-        ("informationType", &information_type),
-        ("personCategoryCd", &person_category_cd),
-        ("categoryCd", &category_cd),
-        ("selectCategoryCd", &category_cd),
-        ("pageViewListNum", "10"),
-    ]).await?;
-
-    #[cfg(debug_assertions)]
-    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-detail.html"), &detail_html); }
-
-    // 3. Parse the detail HTML page
-    Ok(parse_detail_html(&detail_html))
+                    let data = parse_detail_html(&detail_html);
+                    if let Ok(json) = serde_json::to_string(&data) {
+                        let _ = db.save_data_cache(&cache_key, &json);
+                    }
+                    Ok(data)
+                }
+                Err(e) => {
+                    if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("{}: cache fallback ({})", cache_key, e);
+                            return Ok(cached);
+                        }
+                    }
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("{}: cache fallback ({})", cache_key, e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// A link/item from a KWIC Portal subportal page
@@ -292,19 +327,48 @@ pub struct KwicSubportalData {
 #[tauri::command]
 pub async fn kwic_fetch_subportal(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     tag_cd: String,
 ) -> Result<KwicSubportalData, String> {
     if !tag_cd.chars().all(|c| c.is_ascii_digit()) {
-        return Err("無効なtagCdです".into());
+        return Err("\u{7121}\u{52b9}\u{306a}tagCd\u{3067}\u{3059}".into());
     }
-    let http = kwic_http(&state).await?;
-    let path = format!("/portal/subportal?tagCd={}", tag_cd);
-    let html = kwic_get(&http, &path).await?;
+    let cache_key = format!("kwic_subportal:{}", tag_cd);
+    match kwic_http(&state).await {
+        Ok(http) => {
+            let path = format!("/portal/subportal?tagCd={}", tag_cd);
+            match kwic_get(&http, &path).await {
+                Ok(html) => {
+                    #[cfg(debug_assertions)]
+                    { let _ = std::fs::write(std::env::temp_dir().join(format!("kwic-portal-subportal-{}.html", tag_cd)), &html); }
 
-    #[cfg(debug_assertions)]
-    { let _ = std::fs::write(std::env::temp_dir().join(format!("kwic-portal-subportal-{}.html", tag_cd)), &html); }
-
-    Ok(parse_subportal(&html))
+                    let data = parse_subportal(&html);
+                    if let Ok(json) = serde_json::to_string(&data) {
+                        let _ = db.save_data_cache(&cache_key, &json);
+                    }
+                    Ok(data)
+                }
+                Err(e) => {
+                    if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("{}: cache fallback ({})", cache_key, e);
+                            return Ok(cached);
+                        }
+                    }
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("{}: cache fallback ({})", cache_key, e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Open a KWIC Portal notification detail in a native detail window
@@ -428,28 +492,6 @@ pub async fn kwic_open_link(
     }
 
     Ok(())
-}
-
-/// Open KWIC Portal login window using Cookie Bridge.
-/// Navigates to KWIC's SAML entry — if Okta SSO session is alive,
-/// it auto-authenticates. After SAML completes natively in the webview,
-/// cookies are extracted and injected into KWIC's reqwest cookie jar.
-#[tauri::command]
-pub async fn kwic_open_login(
-    app: tauri::AppHandle,
-    _state: State<'_, AppState>,
-) -> Result<(), String> {
-    log::info!("Cookie Bridge: opening KWIC Portal login webview");
-    cookie_bridge::spawn_saml_login(&app, cookie_bridge::SamlLoginConfig {
-        window_label: "kwic-login",
-        title: "KWIC Portal - \u{30b5}\u{30a4}\u{30f3}\u{30a4}\u{30f3}",
-        saml_url: config::KWIC_SAML_URL,
-        sp_domain: "kwic.kwansei.ac.jp",
-        base_url: config::KWIC_BASE,
-        success_event: "kwic-login-success",
-        error_event: "kwic-login-error",
-        service: cookie_bridge::ServiceTarget::Kwic,
-    })
 }
 
 // ============ Parsers ============
@@ -605,33 +647,6 @@ fn parse_info_item(li: &scraper::ElementRef) -> Option<(KwicPortalItem, String, 
         person_category_cd: String::new(),
         category_cd: String::new(),
     }, data2, data3, data4))
-}
-
-/// Parse notifications from the home page HTML
-/// (The standalone /portal/home/information endpoint returns SystemError,
-///  so we parse from the home page instead.)
-fn parse_portal_notifications(html: &str) -> Vec<KwicPortalNotification> {
-    use scraper::Html;
-    let document = Html::parse_document(html);
-    let mut notifications = Vec::new();
-
-    // Parse all notification items across all tabs
-    for li in document.select(&*SEL_INFO_LI) {
-        if let Some((item, data2, data3, data4)) = parse_info_item(&li) {
-            notifications.push(KwicPortalNotification {
-                id: item.id,
-                title: item.title,
-                date: item.date,
-                category: item.category,
-                important: item.important,
-                information_type: data2,
-                person_category_cd: data3,
-                category_cd: data4,
-            });
-        }
-    }
-
-    notifications
 }
 
 /// Extract CSRF token from KWIC Portal HTML

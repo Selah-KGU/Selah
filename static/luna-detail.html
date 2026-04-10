@@ -84,12 +84,35 @@
     color: var(--text-tertiary);
     margin-bottom: 2px;
   }
+  .page-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
   .page-title {
     font-size: 17px;
     font-weight: 700;
-    margin-bottom: 16px;
     line-height: 1.3;
+    flex: 1;
+    min-width: 0;
   }
+  .luna-open-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    border: 0.5px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-top: 1px;
+    transition: background 0.15s;
+  }
+  .luna-open-btn:hover { background: var(--bg-hover); }
   .meta-table {
     background: var(--bg-card);
     border: 0.5px solid var(--border);
@@ -223,9 +246,27 @@
     color: var(--accent);
     cursor: pointer;
     font-family: inherit;
-    transition: background 0.15s;
+    transition: opacity 0.15s, background 0.15s;
   }
   .tool-chip:hover { background: var(--bg-hover); }
+  .tool-chip.zoom {
+    background: #2d8cff;
+    color: #fff;
+    border-color: #2d8cff;
+  }
+  .tool-chip.zoom:hover { opacity: 0.85; background: #2d8cff; }
+  .tool-chip.panopto {
+    background: #00a651;
+    color: #fff;
+    border-color: #00a651;
+  }
+  .tool-chip.panopto:hover { opacity: 0.85; background: #00a651; }
+  .tool-chip.syllabus {
+    background: #1a3a5c;
+    color: #fff;
+    border-color: #1a3a5c;
+  }
+  .tool-chip.syllabus:hover { opacity: 0.85; background: #1a3a5c; }
   .course-section {
     margin-bottom: 16px;
   }
@@ -417,6 +458,10 @@
     padding: 12px 0;
     color: var(--text-tertiary);
     font-size: 12px;
+  }
+  .kg-detail-loading .spinner {
+    margin: 0;
+    flex-shrink: 0;
   }
 </style>
 </head>
@@ -723,7 +768,10 @@
       }
       var html = '';
       // Course header
+      html += '<div class="page-title-row">';
       html += '<div class="page-title">' + escapeHtml(data.course_name || '') + '</div>';
+      html += '<button class="luna-open-btn" data-luna-course-url="https://luna.kwansei.ac.jp/lms/course?idnumber=' + encodeURIComponent(idnumber) + '" title="LUNAで開く"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>';
+      html += '</div>';
       if (data.semester) {
         html += '<div class="course-semester">' + escapeHtml(data.semester) + '</div>';
       }
@@ -738,17 +786,26 @@
       }
       // Online tools + syllabus
       if ((data.online_tools && data.online_tools.length > 0) || data.syllabus_url) {
-        html += '<div class="course-tools">';
-        if (data.online_tools) {
-          for (var t = 0; t < data.online_tools.length; t++) {
-            var tool = data.online_tools[t];
-            html += '<button class="tool-chip" data-lti-path="' + escapeHtml(tool.url) + '">' + escapeHtml(tool.name) + '</button>';
+      html += '<div class="course-tools">';
+      if (data.online_tools) {
+        for (var t = 0; t < data.online_tools.length; t++) {
+          var tool = data.online_tools[t];
+          var chipClass = 'tool-chip';
+          var chipIcon = '';
+          if (tool.url.indexOf('zoom') >= 0) {
+            chipClass += ' zoom';
+            chipIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5a2 2 0 0 0-2 2v7a4 4 0 0 0 4 4h7a2 2 0 0 0 2-2v-2l4.6 3.07A1 1 0 0 0 21 18.2V8.8a1 1 0 0 0-1.4-.87L15 11V9a4 4 0 0 0-4-4H4z"/></svg>';
+          } else if (tool.url.indexOf('panopto') >= 0) {
+            chipClass += ' panopto';
+            chipIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
           }
+          html += '<button class="' + chipClass + '" data-lti-path="' + escapeHtml(tool.url) + '">' + chipIcon + escapeHtml(tool.name) + '</button>';
         }
-        if (data.syllabus_url) {
-          html += '<button class="tool-chip" data-syllabus-url="' + escapeHtml(data.syllabus_url) + '">シラバス</button>';
-        }
-        html += '</div>';
+      }
+      if (data.syllabus_url) {
+        html += '<button class="tool-chip syllabus" data-syllabus-url="' + escapeHtml(data.syllabus_url) + '"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>シラバス</button>';
+      }
+      html += '</div>';
       }
 
       // Announcements
@@ -914,16 +971,24 @@
       var invoke = window.__TAURI__?.core?.invoke;
       if (!invoke) return;
 
-      // LTI tools
+      // LTI tools (Zoom, Panopto, etc.) — open full Luna URL in webview browser
       content.querySelectorAll('[data-lti-path]').forEach(function(btn) {
         btn.addEventListener('click', function() {
-          invoke('luna_launch_lti', { path: btn.getAttribute('data-lti-path') }).catch(console.error);
+          var path = btn.getAttribute('data-lti-path');
+          var fullUrl = 'https://luna.kwansei.ac.jp' + path;
+          invoke('open_external_url', { url: fullUrl }).catch(console.error);
         });
       });
       // Syllabus
       content.querySelectorAll('[data-syllabus-url]').forEach(function(btn) {
         btn.addEventListener('click', function() {
           invoke('open_external_url', { url: btn.getAttribute('data-syllabus-url') }).catch(console.error);
+        });
+      });
+      // Luna course page
+      content.querySelectorAll('[data-luna-course-url]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          invoke('open_external_url', { url: btn.getAttribute('data-luna-course-url') }).catch(console.error);
         });
       });
 

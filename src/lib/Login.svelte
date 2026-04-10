@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { lunaAuthState } from "./stores";
   import { openLoginWindow, setAuthFromSession, startBackgroundPolling } from "./api";
   import { authState } from "./stores";
   import { listen } from "@tauri-apps/api/event";
@@ -15,8 +14,8 @@
       "login-success",
       (event) => {
         setAuthFromSession(event.payload);
-        // Full login always includes Phase 2 (Luna SAML)
-        lunaAuthState.set({ authenticated: true });
+        // Luna auth state is set by the "luna-login-success" event listener in api.ts
+        // after Phase 2 (Luna SAML) actually completes.
         startBackgroundPolling();
       }
     );

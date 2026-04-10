@@ -4,6 +4,7 @@ mod client;
 pub(crate) mod config;
 mod commands;
 mod cookie_bridge;
+mod db;
 mod kwic_client;
 mod kwic_commands;
 mod luna_client;
@@ -16,6 +17,7 @@ mod google_calendar;
 mod google_commands;
 mod parser;
 mod syllabus;
+mod timetable;
 mod tray;
 mod webview_toolbar;
 
@@ -28,6 +30,14 @@ pub struct AppState {
     pub kwic: Mutex<kwic_client::KwicClient>,
     pub mail: Mutex<mail::MailClient>,
     pub gcal: Mutex<google_calendar::GoogleCalendarClient>,
+    /// Serializes KGC HTTP requests to prevent Struts token races.
+    ///
+    /// Struts 1 stores ONE token per HTTP session (server-side). Any KGC page
+    /// load that renders a form calls `saveToken()`, overwriting the previous
+    /// token. When multiple KGC requests execute concurrently (e.g. background
+    /// polling + syllabus enrichment), the token extracted from page A is
+    /// invalidated by page B's load, causing all subsequent form POSTs to fail.
+    pub kgc_gate: Mutex<()>,
 }
 
 /// Shared theme state so child webviews can read the current theme.
@@ -44,13 +54,28 @@ fn set_app_theme(state: tauri::State<'_, ThemeState>, theme: String) {
 }
 
 #[tauri::command]
-fn mark_notification_read(state: tauri::State<'_, read_state::ReadState>, source: String, id: String) {
-    state.mark_read(&source, &id);
+fn mark_notification_read(db: tauri::State<'_, db::Database>, source: String, id: String) {
+    read_state::mark_read(&db, &source, &id);
 }
 
 #[tauri::command]
-fn get_read_notifications(state: tauri::State<'_, read_state::ReadState>) -> read_state::ReadIdsResponse {
-    state.get_all_read_ids()
+fn mark_batch_notification_read(db: tauri::State<'_, db::Database>, source: String, ids: Vec<String>) {
+    read_state::mark_batch_read(&db, &source, ids);
+}
+
+#[tauri::command]
+fn get_read_notifications(db: tauri::State<'_, db::Database>) -> read_state::ReadIdsResponse {
+    read_state::get_all_read_ids(&db)
+}
+
+#[tauri::command]
+fn get_seen_notif_ids(db: tauri::State<'_, db::Database>, source: String) -> Vec<String> {
+    read_state::get_seen_notif_ids(&db, &source)
+}
+
+#[tauri::command]
+fn save_seen_notif_ids(db: tauri::State<'_, db::Database>, source: String, ids: Vec<String>) {
+    read_state::save_seen_notif_ids(&db, &source, ids);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -89,10 +114,19 @@ pub fn run() {
                 kwic: Mutex::new(kwic),
                 mail: Mutex::new(mail_client),
                 gcal: Mutex::new(gcal_client),
+                kgc_gate: Mutex::new(()),
             });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
             app.manage(ThemeState(std::sync::Mutex::new("system".to_string())));
-            app.manage(read_state::ReadState::new());
+
+            // Initialize SQLite database for timetable enrichment
+            let data_dir = dirs::data_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("com.kgu.selah");
+            let database = db::Database::open(&data_dir)
+                .map_err(|e| format!("Failed to open timetable database: {}", e))?;
+            app.manage(database);
+
             let tray_status = std::sync::Arc::new(tray::TrayStatusState::new());
             app.manage(tray_status.clone());
             tray::setup_tray(app.handle())?;
@@ -118,8 +152,6 @@ pub fn run() {
             commands::logout,
             commands::check_session,
             commands::validate_session,
-            commands::fetch_timetable,
-            commands::fetch_timetable_week,
             commands::fetch_grades,
             commands::fetch_cancellations,
             commands::fetch_makeup_classes,
@@ -129,9 +161,14 @@ pub fn run() {
             commands::fetch_notifications,
             commands::fetch_weather,
             commands::fetch_page,
+            timetable::get_schedule_snapshot,
+            timetable::sync_schedule_data,
+            timetable::enrich_schedule,
+            timetable::ai_generate_schedule,
             commands::fetch_course_detail,
             commands::open_detail_window,
             commands::open_external_url,
+            commands::open_in_system_browser,
             commands::open_profile_edit_window,
             commands::open_facility_reservation,
             commands::open_registration_window,
@@ -150,13 +187,8 @@ pub fn run() {
             commands::get_session_states,
             commands::get_session_expiry,
             luna_commands::luna_open_detail_window,
-            luna_commands::luna_open_login,
             luna_commands::luna_fetch_page,
             luna_commands::luna_check_session,
-            luna_commands::luna_fetch_dashboard,
-            luna_commands::luna_fetch_courses,
-            luna_commands::luna_fetch_notifications,
-            luna_commands::luna_fetch_timetable,
             luna_commands::luna_fetch_todo,
             luna_commands::luna_fetch_updates,
             luna_commands::luna_fetch_course_content,
@@ -173,14 +205,11 @@ pub fn run() {
             luna_commands::luna_reply_discussion,
             luna_commands::luna_fetch_thread_posts,
             kwic_commands::kwic_check_session,
-            kwic_commands::kwic_fetch_page,
             kwic_commands::kwic_fetch_home,
-            kwic_commands::kwic_fetch_notifications,
             kwic_commands::kwic_fetch_detail,
             kwic_commands::kwic_fetch_subportal,
             kwic_commands::kwic_open_detail_window,
             kwic_commands::kwic_open_link,
-            kwic_commands::kwic_open_login,
             mail_commands::mail_check_session,
             mail_commands::mail_open_login,
             mail_commands::mail_logout,
@@ -189,6 +218,8 @@ pub fn run() {
             mail_commands::mail_fetch_message,
             mail_commands::mail_get_config,
             mail_commands::mail_save_config,
+            mail_commands::mail_fetch_attachments,
+            mail_commands::mail_download_attachment,
             google_commands::gcal_check_session,
             google_commands::gcal_get_config,
             google_commands::gcal_save_config,
@@ -210,7 +241,10 @@ pub fn run() {
             get_app_theme,
             set_app_theme,
             mark_notification_read,
+            mark_batch_notification_read,
             get_read_notifications,
+            get_seen_notif_ids,
+            save_seen_notif_ids,
             webview_toolbar::browser_go_back,
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,

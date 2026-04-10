@@ -2,7 +2,6 @@ use tauri::State;
 use crate::AppState;
 use crate::config;
 use crate::client;
-use crate::cookie_bridge;
 use crate::luna_client;
 use crate::luna_parser;
 use std::process::Command;
@@ -279,29 +278,6 @@ pub async fn luna_reveal_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Open Luna login window using Cookie Bridge.
-/// Navigates to Luna's SAML entry — if Okta SSO session is still alive
-/// (from KG-Course login), it auto-authenticates. Otherwise shows Okta login form.
-/// After SAML completes natively in the webview, cookies are extracted and injected
-/// into Luna's reqwest cookie jar.
-#[tauri::command]
-pub async fn luna_open_login(
-    app: tauri::AppHandle,
-    _state: State<'_, AppState>,
-) -> Result<(), String> {
-    log::info!("Cookie Bridge: opening Luna login webview");
-    cookie_bridge::spawn_saml_login(&app, cookie_bridge::SamlLoginConfig {
-        window_label: "luna-login",
-        title: "Luna - \u{30b5}\u{30a4}\u{30f3}\u{30a4}\u{30f3}",
-        saml_url: config::LUNA_SAML_URL,
-        sp_domain: "luna.kwansei.ac.jp",
-        base_url: config::LUNA_BASE,
-        success_event: "luna-login-success",
-        error_event: "luna-login-error",
-        service: cookie_bridge::ServiceTarget::Luna,
-    })
-}
-
 /// Fetch a Luna page (generic)
 #[tauri::command]
 pub async fn luna_fetch_page(
@@ -352,71 +328,78 @@ pub async fn luna_check_session(
     }
 }
 
-/// Fetch Luna top/dashboard page
-#[tauri::command]
-pub async fn luna_fetch_dashboard(
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let http = luna_http(&state).await?;
-    luna_get(&http, "/top").await
-}
-
-/// Fetch Luna course list
-#[tauri::command]
-pub async fn luna_fetch_courses(
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let http = luna_http(&state).await?;
-    luna_get(&http, "/course").await
-}
-
-/// Fetch Luna notifications/announcements
-#[tauri::command]
-pub async fn luna_fetch_notifications(
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let http = luna_http(&state).await?;
-    luna_get(&http, "/notification").await
-}
-
-/// Fetch parsed timetable
-#[tauri::command]
-pub async fn luna_fetch_timetable(
-    state: State<'_, AppState>,
-    year: Option<String>,
-    term: Option<String>,
-) -> Result<luna_parser::LunaTimetable, String> {
-    let http = luna_http(&state).await?;
-    if let (Some(y), Some(t)) = (&year, &term) {
-        if !is_safe_param(y) || !is_safe_param(t) {
-            return Err("無効なパラメータです".into());
-        }
-        let path = format!("/lms/timetable?risyunen={}&kikanCd={}", y, t);
-        let html = luna_get(&http, &path).await?;
-        return Ok(luna_parser::parse_luna_timetable(&html));
-    }
-    let html = luna_get(&http, "/lms/timetable").await?;
-    Ok(luna_parser::parse_luna_timetable(&html))
-}
-
 /// Fetch parsed TODO list
 #[tauri::command]
 pub async fn luna_fetch_todo(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
 ) -> Result<Vec<luna_parser::LunaTodoItem>, String> {
-    let http = luna_http(&state).await?;
-    let html = luna_get(&http, "/lms/todo").await?;
-    Ok(luna_parser::parse_luna_todo(&html))
+    match luna_http(&state).await {
+        Ok(http) => match luna_get(&http, "/lms/todo").await {
+            Ok(html) => {
+                let data = luna_parser::parse_luna_todo(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache("luna_todo", &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache("luna_todo") {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("luna_todo: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache("luna_todo") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_todo: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Fetch parsed notifications
 #[tauri::command]
 pub async fn luna_fetch_updates(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
 ) -> Result<Vec<luna_parser::LunaNotification>, String> {
-    let http = luna_http(&state).await?;
-    let html = luna_get(&http, "/updateinfo").await?;
-    Ok(luna_parser::parse_luna_notifications(&html))
+    match luna_http(&state).await {
+        Ok(http) => match luna_get(&http, "/updateinfo").await {
+            Ok(html) => {
+                let data = luna_parser::parse_luna_notifications(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache("luna_updates", &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache("luna_updates") {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("luna_updates: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache("luna_updates") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_updates: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Fetch course content page
@@ -437,67 +420,146 @@ pub async fn luna_fetch_course_content(
 #[tauri::command]
 pub async fn luna_fetch_detail(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     path: String,
 ) -> Result<luna_parser::LunaDetailPage, String> {
     // Reject absolute URLs and enforce known Luna path prefixes
     if path.starts_with("http") || !path.starts_with('/') {
         return Err("許可されていないパスです".into());
     }
-    let http = luna_http(&state).await?;
-    let html = luna_get(&http, &path).await?;
-    // Debug: dump to /tmp for inspection
-    #[cfg(debug_assertions)]
-    {
-        let filename = path.replace(['/', '?', '&'], "_");
-        let dump_path = std::env::temp_dir().join(format!("luna_detail{}.html", filename));
-        let _ = std::fs::write(&dump_path, &html);
-        log::info!("Luna detail HTML dumped to {} ({} bytes)", dump_path.display(), html.len());
+    let cache_key = format!("luna_detail:{}", path);
+    match luna_http(&state).await {
+        Ok(http) => match luna_get(&http, &path).await {
+            Ok(html) => {
+                #[cfg(debug_assertions)]
+                {
+                    let filename = path.replace(['/', '?', '&'], "_");
+                    let dump_path = std::env::temp_dir().join(format!("luna_detail{}.html", filename));
+                    let _ = std::fs::write(&dump_path, &html);
+                    log::info!("Luna detail HTML dumped to {} ({} bytes)", dump_path.display(), html.len());
+                }
+                let data = luna_parser::parse_luna_detail_page(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache(&cache_key, &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("luna_detail: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_detail: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
     }
-    Ok(luna_parser::parse_luna_detail_page(&html))
 }
 
 /// Fetch announcement detail from Luna course page
 #[tauri::command]
 pub async fn luna_fetch_announcement_detail(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     idnumber: String,
     info_id: String,
 ) -> Result<luna_parser::LunaDetailPage, String> {
     if !is_safe_param(&idnumber) || !is_safe_param(&info_id) {
         return Err("無効なパラメータです".into());
     }
-    let http = luna_http(&state).await?;
+    let cache_key = format!("luna_announce:{}:{}", idnumber, info_id);
     let path = format!(
         "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
         idnumber, info_id
     );
-    let html = luna_get(&http, &path).await?;
-    #[cfg(debug_assertions)]
-    {
-        let dump_path = std::env::temp_dir().join(format!("luna_announcement_{}_{}.html", idnumber, info_id));
-        let _ = std::fs::write(&dump_path, &html);
-        log::info!("Luna announcement detail dumped ({} bytes)", html.len());
+    match luna_http(&state).await {
+        Ok(http) => match luna_get(&http, &path).await {
+            Ok(html) => {
+                #[cfg(debug_assertions)]
+                {
+                    let dump_path = std::env::temp_dir().join(format!("luna_announcement_{}_{}.html", idnumber, info_id));
+                    let _ = std::fs::write(&dump_path, &html);
+                    log::info!("Luna announcement detail dumped ({} bytes)", html.len());
+                }
+                let data = luna_parser::parse_luna_announcement_detail(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache(&cache_key, &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("luna_announce: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_announce: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
     }
-    Ok(luna_parser::parse_luna_announcement_detail(&html))
 }
 
 /// Fetch and parse course top page (/lms/course?idnumber=XXX)
 #[tauri::command]
 pub async fn luna_fetch_course_detail(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     idnumber: String,
 ) -> Result<luna_parser::LunaCourseContents, String> {
     if !is_safe_param(&idnumber) {
         return Err("無効なパラメータです".into());
     }
-    let http = luna_http(&state).await?;
+    let cache_key = format!("luna_course:{}", idnumber);
+    let http = match luna_http(&state).await {
+        Ok(h) => h,
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_course: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            return Err(e);
+        }
+    };
 
     let course_path = format!("/lms/course?idnumber={}", idnumber);
     let contents_path = format!("/lms/contents?idnumber={}", idnumber);
 
     // Fetch course top page — Luna sometimes returns an incomplete/redirect page
     // on the very first access after session restore, so we retry once if menus are empty.
-    let course_html = luna_get(&http, &course_path).await?;
+    let course_html = match luna_get(&http, &course_path).await {
+        Ok(html) => html,
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_course: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            return Err(e);
+        }
+    };
     let mut result = luna_parser::parse_luna_course_contents(&course_html, &idnumber);
 
     if result.menus.is_empty() {
@@ -529,7 +591,18 @@ pub async fn luna_fetch_course_detail(
     }
 
     // Fetch contents top page (actual content items)
-    let contents_html = luna_get(&http, &contents_path).await?;
+    let contents_html = match luna_get(&http, &contents_path).await {
+        Ok(html) => html,
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_course: cache fallback (contents fetch: {})", e);
+                    return Ok(cached);
+                }
+            }
+            return Err(e);
+        }
+    };
 
     #[cfg(debug_assertions)]
     {
@@ -543,6 +616,11 @@ pub async fn luna_fetch_course_detail(
     result.reports = reports;
     result.examinations = examinations;
     result.discussions = discussions;
+
+    // Cache the complete result
+    if let Ok(json) = serde_json::to_string(&result) {
+        let _ = db.save_data_cache(&cache_key, &json);
+    }
 
     Ok(result)
 }
@@ -632,7 +710,7 @@ pub async fn luna_download_material(
         .map_err(|e| format!("ファイル準備失敗: {}", e))?;
     let file_id = file_id.trim().to_string();
 
-    log::info!("Material tempfile returned fileId (len={}): '{}'", file_id.len(), &file_id[..file_id.len().min(500)]);
+    log::info!("Material tempfile returned fileId (len={}): '{}'", file_id.len(), crate::client::safe_truncate(&file_id, 500));
 
     // If tempfile returns HTML instead of a path, something went wrong
     if file_id.contains('<') || file_id.is_empty() {
@@ -694,7 +772,7 @@ pub async fn luna_download_material(
     if bytes.len() < 1000 {
         if let Ok(text) = std::str::from_utf8(&bytes) {
             if text.contains("<!DOCTYPE") || text.contains("<html") {
-                log::error!("Download returned HTML instead of file: {}", &text[..text.len().min(500)]);
+                log::error!("Download returned HTML instead of file: {}", crate::client::safe_truncate(text, 500));
                 return Err("サーバーがファイルではなくエラーページを返しました".into());
             }
         }
@@ -741,7 +819,7 @@ pub async fn luna_submit_report(
     let csrf = extract_input_value(&page_html, "_csrf")
         .ok_or("_csrf トークンが見つかりません")?;
 
-    log::info!("Report tokens: _cid={}..., _csrf={}...", &cid[..8.min(cid.len())], &csrf[..8.min(csrf.len())]);
+    log::info!("Report tokens: _cid={}..., _csrf={}...", crate::client::safe_truncate(&cid, 8), crate::client::safe_truncate(&csrf, 8));
 
     // Step 2: Upload file via multipart POST
     let upload_form = reqwest::multipart::Form::new()
@@ -759,7 +837,7 @@ pub async fn luna_submit_report(
     let upload_resp = luna_post_multipart(&http, "/lms/course/report/upload", upload_form).await?;
 
     let upload_json: serde_json::Value = serde_json::from_str(&upload_resp)
-        .map_err(|e| format!("アップロード応答の解析失敗: {} — body: {}", e, &upload_resp[..200.min(upload_resp.len())]))?;
+        .map_err(|e| format!("アップロード応答の解析失敗: {} — body: {}", e, crate::client::safe_truncate(&upload_resp, 200)))?;
 
     if upload_json.get("success").and_then(|v| v.as_bool()) != Some(true) {
         return Err(format!("アップロード失敗: {}", upload_resp));
@@ -794,21 +872,49 @@ pub async fn luna_submit_report(
 #[tauri::command]
 pub async fn luna_fetch_discussion_detail(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
     if url.starts_with("http") || !url.starts_with('/') {
         return Err("許可されていないパスです".into());
     }
-    let http = luna_http(&state).await?;
-    let html = luna_get(&http, &url).await?;
-    #[cfg(debug_assertions)]
-    {
-        let dump_path = std::env::temp_dir().join(format!("luna_discussion_{}.html",
-            url.replace(['/', '?', '&'], "_")));
-        let _ = std::fs::write(&dump_path, &html);
-        log::info!("Discussion HTML dumped ({} bytes)", html.len());
+    let cache_key = format!("luna_disc:{}", url);
+    match luna_http(&state).await {
+        Ok(http) => match luna_get(&http, &url).await {
+            Ok(html) => {
+                #[cfg(debug_assertions)]
+                {
+                    let dump_path = std::env::temp_dir().join(format!("luna_discussion_{}.html",
+                        url.replace(['/', '?', '&'], "_")));
+                    let _ = std::fs::write(&dump_path, &html);
+                    log::info!("Discussion HTML dumped ({} bytes)", html.len());
+                }
+                let data = luna_parser::parse_luna_discussion_thread(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache(&cache_key, &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("{}: cache fallback ({})", cache_key, e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("{}: cache fallback ({})", cache_key, e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
     }
-    Ok(luna_parser::parse_luna_discussion_thread(&html))
 }
 
 /// Post a new thread to a Luna discussion forum
@@ -874,7 +980,7 @@ pub async fn luna_post_discussion(
     let resp = luna_post(&http, "/lms/course/forums/setthread", &post_params).await?;
 
     if resp.contains("error") && resp.contains("\"success\":false") {
-        return Err(format!("投稿失敗: {}", &resp[..200.min(resp.len())]));
+        return Err(format!("投稿失敗: {}", crate::client::safe_truncate(&resp, 200)));
     }
 
     log::info!("New thread submitted successfully");
@@ -948,7 +1054,7 @@ pub async fn luna_reply_discussion(
     let resp = luna_post_multipart(&http, "/lms/course/forums/thread", form).await?;
 
     if resp.contains("error") && resp.contains("\"success\":false") {
-        return Err(format!("投稿失敗: {}", &resp[..200.min(resp.len())]));
+        return Err(format!("投稿失敗: {}", crate::client::safe_truncate(&resp, 200)));
     }
 
     log::info!("Reply submitted successfully");
@@ -960,22 +1066,48 @@ pub async fn luna_reply_discussion(
 #[tauri::command]
 pub async fn luna_fetch_thread_posts(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
     if url.starts_with("http") || !url.starts_with('/') {
         return Err("許可されていないパスです".into());
     }
-    let http = luna_http(&state).await?;
-    let html = luna_get(&http, &url).await?;
-
-    #[cfg(debug_assertions)]
-    {
-        let dump_path = std::env::temp_dir().join(format!("luna_thread_{}.html",
-            url.replace(['/', '?', '&'], "_")));
-        let _ = std::fs::write(&dump_path, &html);
+    let cache_key = format!("luna_thread:{}", url);
+    match luna_http(&state).await {
+        Ok(http) => match luna_get(&http, &url).await {
+            Ok(html) => {
+                #[cfg(debug_assertions)]
+                {
+                    let dump_path = std::env::temp_dir().join(format!("luna_thread_{}.html",
+                        url.replace(['/', '?', '&'], "_")));
+                    let _ = std::fs::write(&dump_path, &html);
+                }
+                let data = luna_parser::parse_luna_thread_detail(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache(&cache_key, &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("{}: cache fallback ({})", cache_key, e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("{}: cache fallback ({})", cache_key, e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
     }
-
-    Ok(luna_parser::parse_luna_thread_detail(&html))
 }
 
 fn extract_url_param(url: &str, key: &str) -> Option<String> {
@@ -1006,8 +1138,8 @@ fn extract_input_value(html: &str, name: &str) -> Option<String> {
     // Fallback: regex-like search for name="xxx" ... value="yyy"
     let pattern = format!("name=\"{}\"", name);
     let pos = html.find(&pattern)?;
-    let region_start = pos.saturating_sub(200);
-    let region_end = (pos + pattern.len() + 200).min(html.len());
+    let region_start = crate::client::floor_char_boundary(html, pos.saturating_sub(200));
+    let region_end = crate::client::ceil_char_boundary(html, (pos + pattern.len() + 200).min(html.len()));
     let region = &html[region_start..region_end];
     let val_marker = "value=\"";
     let val_pos = region.find(val_marker)?;

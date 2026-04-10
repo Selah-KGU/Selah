@@ -20,22 +20,14 @@ export interface LunaNotification {
   idnumber: string;
 }
 
-export interface LunaCourse {
-  idnumber: string;
-  name: string;
-  teacher: string;
-  period: number;
-  day: number;
-}
-
-export interface LunaCommunity {
+interface LunaCommunity {
   idnumber: string;
   name: string;
 }
 
 // ============ Period Times ============
 
-export interface PeriodTime {
+interface PeriodTime {
   start: string;
   end: string;
   startH: number;
@@ -53,3 +45,118 @@ export const PERIOD_TIMES: Record<number, PeriodTime> = {
 };
 
 export const DAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
+// Day number (1-6) to label
+export const DAY_NUM_LABELS: Record<number, string> = {
+  1: "月", 2: "火", 3: "水", 4: "木", 5: "金", 6: "土",
+};
+
+// ============ Common Types ============
+
+interface SelectOption {
+  value: string;
+  label: string;
+  selected: boolean;
+}
+
+// ============ Schedule (AI-driven timetable) ============
+
+interface LunaCountsData {
+  announcements: number;
+  new_announcements: number;
+  reports: number;
+  exams: number;
+  discussions: number;
+}
+
+interface SessionPlanData {
+  session_num: number;
+  topic: string;
+  delivery_mode: string;
+  study_outside: string;
+}
+
+export interface KgcCourseRow {
+  id: number;
+  kgc_code: string;
+  name: string;
+  day: number;
+  period: number;
+  room: string;
+  detail_path: string;
+  is_cancelled: boolean;
+  is_makeup: boolean;
+  is_room_changed: boolean;
+  week_label: string;
+}
+
+export interface LunaCourseRow {
+  id: number;
+  luna_id: string;
+  name: string;
+  teacher: string;
+  day: number;
+  period: number;
+}
+
+export interface AiScheduleItem {
+  day: number;
+  period: number;
+  course_name: string;
+  delivery_mode: string;
+  room: string;
+  teacher: string;
+  session_topic: string;
+  is_cancelled: boolean;
+  notifications: string[];
+  assignments: string[];
+  exams: string[];
+}
+
+export interface AiScheduleResult {
+  current_week_label: string;
+  next_week_label: string;
+  current_week: AiScheduleItem[];
+  next_week: AiScheduleItem[];
+  weekly_summary: string;
+  cross_week_insights: string;
+}
+
+export interface ScheduleRawData {
+  kgc_entries_current: KgcCourseRow[];
+  kgc_entries_next: KgcCourseRow[];
+  luna_courses: LunaCourseRow[];
+  session_plans: [string, SessionPlanData[]][];
+  luna_counts: [string, LunaCountsData][];
+  luna_activities: LunaActivityItem[];
+  kgc_course_details: KgcCourseDetailItem[];
+  current_week_label: string;
+  next_week_label: string;
+  luna_communities: LunaCommunity[];
+}
+
+export interface LunaActivityItem {
+  luna_id: string;
+  activity_type: string;
+  title: string;
+  period: string;
+  status: string;
+}
+
+export interface KgcCourseDetailItem {
+  kgc_code: string;
+  fields: [string, string][];
+  delivery_mode: string;
+}
+
+export interface ScheduleResponse {
+  raw: ScheduleRawData;
+  ai_result: AiScheduleResult | null;
+  ai_stale: boolean;
+  snapshot_updated_at: number;
+  luna_communities: LunaCommunity[];
+  luna_year_options: SelectOption[];
+  luna_term_options: SelectOption[];
+  luna_year: string;
+  luna_term: string;
+}

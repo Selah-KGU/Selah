@@ -5,6 +5,37 @@ use std::sync::Arc;
 use crate::auth::AuthSession;
 use crate::config;
 
+/// Safe byte-limited preview of a string for log / error messages.
+/// Adjusts the boundary to avoid splitting a multi-byte UTF-8 character.
+pub(crate) fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Find the nearest valid char boundary at or before `byte_pos`.
+pub(crate) fn floor_char_boundary(s: &str, byte_pos: usize) -> usize {
+    let mut pos = byte_pos.min(s.len());
+    while pos > 0 && !s.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    pos
+}
+
+/// Find the nearest valid char boundary at or after `byte_pos`.
+pub(crate) fn ceil_char_boundary(s: &str, byte_pos: usize) -> usize {
+    let mut pos = byte_pos.min(s.len());
+    while pos < s.len() && !s.is_char_boundary(pos) {
+        pos += 1;
+    }
+    pos
+}
+
 const SESSION_FILE: &str = "session.json";
 const COOKIES_FILE: &str = "cookies.json";
 
@@ -69,6 +100,29 @@ pub(crate) fn is_session_expired_body(body: &str) -> bool {
     // Generic login form detection — page has a password input likely means SSO redirect
     if body.contains("type=\"password\"") && body.contains("login") && !body.contains("uniasv2") {
         return true;
+    }
+    // KG-Course returns 200 with empty hidden inputs when server-side session is stale
+    // (cookie accepted but user data missing). The student ID field exists but is blank.
+    // Student IDs always start with a letter (e.g. "B..." or "D..."), so an empty
+    // value=\"\" next to lblScrgNo/hdnScrgNo is a reliable stale-session indicator.
+    if body.contains("lblScrgNo") || body.contains("hdnScrgNo") {
+        // Look for the pattern: name="lblScrgNo" ... value=""
+        // These hidden inputs exist on all KGC pages with the student header.
+        if let Some(pos) = body.find("lblScrgNo").or_else(|| body.find("hdnScrgNo")) {
+            // Check the value attribute in the surrounding area (within 200 chars)
+            let mut region_end = (pos + 200).min(body.len());
+            while region_end < body.len() && !body.is_char_boundary(region_end) {
+                region_end += 1;
+            }
+            let region = &body[pos..region_end];
+            if let Some(vpos) = region.find("value=\"") {
+                let after_value = &region[vpos + 7..];
+                if after_value.starts_with('"') {
+                    // value="" — empty student ID, session is stale
+                    return true;
+                }
+            }
+        }
     }
     false
 }
@@ -150,7 +204,7 @@ pub(crate) async fn fetch_with_redirect(
                 } else {
                     loc_str.to_string()
                 };
-                log::debug!("redirect #{} -> {}", i + 1, &current_url[..120.min(current_url.len())]);
+                log::debug!("redirect #{} -> {}", i + 1, safe_truncate(&current_url, 120));
                 if current_url.contains("sso.kwansei.ac.jp") {
                     return Err(expired_msg.into());
                 }
@@ -159,7 +213,8 @@ pub(crate) async fn fetch_with_redirect(
         }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            log::debug!("HTTP {} body (first 500 chars): {}", status, &body[..body.len().min(500)]);
+            let preview: String = body.chars().take(500).collect();
+            log::debug!("HTTP {} body (first 500 chars): {}", status, preview);
             return Err(format!("HTTP {}", status));
         }
         let body = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
@@ -184,6 +239,8 @@ pub(crate) async fn send_and_follow_redirect(
         .map_err(|e| format!("リクエスト失敗: {}", e))?;
 
     let status = resp.status();
+    let resp_url = resp.url().to_string();
+    log::debug!("send_and_follow_redirect: status={}, url={}", status, safe_truncate(&resp_url, 120));
     if status.is_redirection() {
         if let Some(loc) = resp.headers().get("location") {
             let loc_str = loc.to_str().unwrap_or_default();

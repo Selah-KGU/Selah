@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use crate::mail::{MailMessage, MailDetail, MailProfile, MailConfig};
+use crate::mail::{MailMessage, MailDetail, MailProfile, MailConfig, MailAttachment};
 use crate::AppState;
 
 const MAIL_AUTH_REQUIRED_MSG: &str = "メールにログインしてください";
@@ -163,43 +163,121 @@ pub async fn mail_logout(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Fetch user's mail profile
 #[tauri::command]
-pub async fn mail_fetch_profile(state: State<'_, AppState>) -> Result<MailProfile, String> {
+pub async fn mail_fetch_profile(
+    state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<MailProfile, String> {
     let mut mail = state.mail.lock().await;
     if !mail.is_authenticated() {
+        if let Ok(Some((json, _))) = db.get_data_cache("mail_profile") {
+            if let Ok(cached) = serde_json::from_str(&json) {
+                log::info!("mail_profile: cache fallback (not authenticated)");
+                return Ok(cached);
+            }
+        }
         return Err(MAIL_AUTH_REQUIRED_MSG.into());
     }
-    mail.fetch_profile().await
+    match mail.fetch_profile().await {
+        Ok(data) => {
+            if let Ok(json) = serde_json::to_string(&data) {
+                let _ = db.save_data_cache("mail_profile", &json);
+            }
+            Ok(data)
+        }
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache("mail_profile") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("mail_profile: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Fetch inbox messages
 #[tauri::command]
 pub async fn mail_fetch_inbox(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     top: Option<u32>,
     skip: Option<u32>,
 ) -> Result<Vec<MailMessage>, String> {
     let mut mail = state.mail.lock().await;
     if !mail.is_authenticated() {
+        // Try cache fallback
+        if let Ok(Some((json, _))) = db.get_data_cache("mail_inbox") {
+            if let Ok(cached) = serde_json::from_str(&json) {
+                log::info!("mail_inbox: cache fallback (not authenticated)");
+                return Ok(cached);
+            }
+        }
         return Err(MAIL_AUTH_REQUIRED_MSG.into());
     }
-    mail.fetch_inbox(top.unwrap_or(20), skip.unwrap_or(0)).await
+    match mail.fetch_inbox(top.unwrap_or(20), skip.unwrap_or(0)).await {
+        Ok(data) => {
+            // Only cache the first page (skip=0) to avoid stale pagination
+            if skip.unwrap_or(0) == 0 {
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache("mail_inbox", &json);
+                }
+            }
+            Ok(data)
+        }
+        Err(e) => {
+            if skip.unwrap_or(0) == 0 {
+                if let Ok(Some((json, _))) = db.get_data_cache("mail_inbox") {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("mail_inbox: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Fetch a single message detail
 #[tauri::command]
 pub async fn mail_fetch_message(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
     message_id: String,
 ) -> Result<MailDetail, String> {
+    let cache_key = format!("mail_msg:{}", message_id);
     let mut mail = state.mail.lock().await;
     if !mail.is_authenticated() {
+        if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+            if let Ok(cached) = serde_json::from_str(&json) {
+                log::info!("{}: cache fallback (not authenticated)", cache_key);
+                return Ok(cached);
+            }
+        }
         return Err(MAIL_AUTH_REQUIRED_MSG.into());
     }
     // Mark as read in background
     if let Err(e) = mail.mark_as_read(&message_id).await {
         log::warn!("Failed to mark message {} as read: {}", message_id, e);
     }
-    mail.fetch_message(&message_id).await
+    match mail.fetch_message(&message_id).await {
+        Ok(data) => {
+            if let Ok(json) = serde_json::to_string(&data) {
+                let _ = db.save_data_cache(&cache_key, &json);
+            }
+            Ok(data)
+        }
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("{}: cache fallback ({})", cache_key, e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Get mail config
@@ -227,4 +305,32 @@ pub async fn mail_save_config(
     crate::mail::save_config(&config)?;
     log::info!("Mail config saved (client_id: {})", if new_id == crate::mail::DEFAULT_CLIENT_ID_STR { "default" } else { &new_id });
     Ok(())
+}
+
+/// Fetch attachment metadata list for a message
+#[tauri::command]
+pub async fn mail_fetch_attachments(
+    state: State<'_, AppState>,
+    message_id: String,
+) -> Result<Vec<MailAttachment>, String> {
+    let mut mail = state.mail.lock().await;
+    if !mail.is_authenticated() {
+        return Err("メールにログインしてください".into());
+    }
+    mail.fetch_attachments(&message_id).await
+}
+
+/// Download a single attachment to the Downloads folder and open it
+#[tauri::command]
+pub async fn mail_download_attachment(
+    state: State<'_, AppState>,
+    message_id: String,
+    attachment_id: String,
+    file_name: String,
+) -> Result<String, String> {
+    let mut mail = state.mail.lock().await;
+    if !mail.is_authenticated() {
+        return Err("メールにログインしてください".into());
+    }
+    mail.download_attachment(&message_id, &attachment_id, &file_name).await
 }

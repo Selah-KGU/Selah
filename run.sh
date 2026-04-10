@@ -37,7 +37,9 @@ do_clean() {
 
 do_dev() {
   do_kill
-  echo "🚀 Starting dev server..."
+  echo "-- Building fresh before dev..."
+  cd src-tauri && cargo build 2>&1 | tail -5 && cd ..
+  echo "-- Starting dev server..."
   npm run tauri dev
 }
 

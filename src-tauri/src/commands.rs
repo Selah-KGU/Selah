@@ -27,13 +27,13 @@ async fn kgc_http(state: &AppState) -> Result<reqwest::Client, String> {
 }
 
 /// KGC GET: fetch a page without holding the lock.
-async fn kgc_get(http: &reqwest::Client, path: &str) -> Result<String, String> {
+pub(crate) async fn kgc_get(http: &reqwest::Client, path: &str) -> Result<String, String> {
     let url = format!("{}{}", config::KG_COURSE_BASE, path);
     client::fetch_page_with(http, &url).await
 }
 
 /// KGC POST: submit a form without holding the lock.
-async fn kgc_post(http: &reqwest::Client, path: &str, params: &[(String, String)]) -> Result<String, String> {
+pub(crate) async fn kgc_post(http: &reqwest::Client, path: &str, params: &[(String, String)]) -> Result<String, String> {
     let url = format!("{}{}", config::KG_COURSE_BASE, path);
     client::post_form_with_redirect(
         http, &url, config::KG_COURSE_BASE,
@@ -46,37 +46,68 @@ async fn kgc_post(http: &reqwest::Client, path: &str, params: &[(String, String)
     ).await
 }
 
-/// Helper: lock client briefly to check auth + clone http, then fetch + parse outside the lock.
-macro_rules! kgc_fetch {
-    ($state:expr, $path:expr, $parser:expr) => {{
-        let (http, is_auth) = {
-            let client = $state.client.lock().await;
-            (client.http.clone(), client.is_authenticated())
-        };
-        if !is_auth {
-            return Err(AUTH_REQUIRED_MSG.into());
+/// KGC fetch with gate + auth check, returning raw HTML (no early-return on error).
+async fn kgc_try_fetch(state: &AppState, path: &str) -> Result<String, String> {
+    let _kgc_gate = state.kgc_gate.lock().await;
+    let (http, is_auth) = {
+        let client = state.client.lock().await;
+        (client.http.clone(), client.is_authenticated())
+    };
+    if !is_auth {
+        return Err(AUTH_REQUIRED_MSG.into());
+    }
+    let url = format!("{}{}", config::KG_COURSE_BASE, path);
+    client::fetch_with_redirect(
+        &http, &url, config::KG_COURSE_BASE,
+        client::SESSION_EXPIRED_MSG, client::is_session_expired_body,
+    ).await
+}
+
+/// Fetch from KGC with DB cache fallback.
+/// On success: parse, save to cache, return.
+/// On failure: try returning cached data; if no cache, propagate error.
+macro_rules! kgc_fetch_cached {
+    ($state:expr, $db:expr, $cache_key:expr, $path:expr, $parser:expr) => {{
+        match kgc_try_fetch(&$state, $path).await {
+            Ok(html) => {
+                let data = $parser(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = $db.save_data_cache($cache_key, &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = $db.get_data_cache($cache_key) {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("{}: cache fallback ({})", $cache_key, e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
         }
-        let url = format!("{}{}", config::KG_COURSE_BASE, $path);
-        let html = client::fetch_with_redirect(
-            &http, &url, config::KG_COURSE_BASE, client::SESSION_EXPIRED_MSG, client::is_session_expired_body,
-        ).await?;
-        Ok($parser(&html))
     }};
-    ($state:expr, $path:expr, $parser:expr, $dump:expr) => {{
-        let (http, is_auth) = {
-            let client = $state.client.lock().await;
-            (client.http.clone(), client.is_authenticated())
-        };
-        if !is_auth {
-            return Err(AUTH_REQUIRED_MSG.into());
+    ($state:expr, $db:expr, $cache_key:expr, $path:expr, $parser:expr, $dump:expr) => {{
+        match kgc_try_fetch(&$state, $path).await {
+            Ok(html) => {
+                #[cfg(debug_assertions)]
+                { let _ = std::fs::write(std::env::temp_dir().join($dump), &html); }
+                let data = $parser(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = $db.save_data_cache($cache_key, &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = $db.get_data_cache($cache_key) {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("{}: cache fallback ({})", $cache_key, e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
         }
-        let url = format!("{}{}", config::KG_COURSE_BASE, $path);
-        let html = client::fetch_with_redirect(
-            &http, &url, config::KG_COURSE_BASE, client::SESSION_EXPIRED_MSG, client::is_session_expired_body,
-        ).await?;
-        #[cfg(debug_assertions)]
-        { let _ = std::fs::write(std::env::temp_dir().join($dump), &html); }
-        Ok($parser(&html))
     }};
 }
 
@@ -385,37 +416,66 @@ pub async fn logout(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
 pub async fn check_session(
     state: State<'_, AppState>,
 ) -> Result<SessionStatus, String> {
+    log::info!("check_session: called");
+    let _kgc_gate = state.kgc_gate.lock().await;
     // Single lock: try restore if needed, then clone snapshot
     let (http, session_snapshot) = {
         let mut client = state.client.lock().await;
         if client.session.is_none() && client.try_restore_session() {
-            log::info!("Restored session from disk, will validate...");
+            log::info!("check_session: restored session from disk, will validate...");
         }
+        let has_session = client.session.is_some();
+        log::info!("check_session: has_session={}", has_session);
         (client.http.clone(), client.session.clone())
     };
 
     let session = match session_snapshot {
-        Some(s) => s,
-        None => return Ok(SessionStatus {
-            valid: false,
-            username: String::new(),
-            display_name: String::new(),
-            student_id: String::new(),
-            faculty: String::new(),
-            department: String::new(),
-        }),
+        Some(s) => {
+            log::info!("check_session: validating user={} sid={}", s.username, s.student_id);
+            s
+        }
+        None => {
+            log::info!("check_session: no session found, returning invalid");
+            return Ok(SessionStatus {
+                valid: false,
+                username: String::new(),
+                display_name: String::new(),
+                student_id: String::new(),
+                faculty: String::new(),
+                department: String::new(),
+            });
+        }
     };
 
     // Validate session against the server without holding the lock
     let verify_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
+    log::info!("check_session: fetching verify page...");
     match client::fetch_page_with(&http, &verify_url).await {
         Ok(html) => {
+            // Parse the page to verify it actually contains user data.
+            // When the server-side session is stale, KG-Course returns a 200
+            // page with empty hidden inputs instead of an SSO redirect.
+            let info = parser::parse_student_info(&html);
+            if info.student_id.is_empty() && info.name.is_empty() {
+                log::warn!("check_session: server returned empty page (stale session), disk user={} sid={}", session.username, session.student_id);
+                let mut client = state.client.lock().await;
+                client.clear_session();
+                // Return the disk-saved user info so frontend can show cached data
+                return Ok(SessionStatus {
+                    valid: false,
+                    username: session.username,
+                    display_name: session.display_name,
+                    student_id: session.student_id,
+                    faculty: session.faculty,
+                    department: session.department,
+                });
+            }
+
             // Update user info if needed, then always persist cookies
             // (server may have rotated session cookies during validation)
             let needs_update = session.student_id.is_empty() || session.display_name == "\u{30e6}\u{30fc}\u{30b6}\u{30fc}";
             let mut client = state.client.lock().await;
             if needs_update {
-                let info = parser::parse_student_info(&html);
                 log::info!("Reparsed student info: id={}, name={}, faculty={}, dept={}", info.student_id, info.name, info.faculty, info.department);
                 if let Some(s) = &mut client.session {
                     if !info.student_id.is_empty() {
@@ -456,27 +516,23 @@ pub async fn check_session(
         }
         Err(e) => {
             if e == client::SESSION_EXPIRED_MSG {
-                log::info!("Session expired (server confirmed): {}", e);
+                log::info!("check_session: session expired (server confirmed), disk user={} sid={}", session.username, session.student_id);
                 let mut client = state.client.lock().await;
                 client.clear_session();
             } else {
-                log::warn!("Session validation failed (transient?): {} -- keeping disk state", e);
+                log::warn!("check_session: validation failed (transient?): {} -- keeping disk state, user={}", e, session.username);
             }
+            // Return disk-saved user info so frontend can display cached data
             Ok(SessionStatus {
                 valid: false,
-                username: String::new(),
-                display_name: String::new(),
-                student_id: String::new(),
-                faculty: String::new(),
-                department: String::new(),
+                username: session.username,
+                display_name: session.display_name,
+                student_id: session.student_id,
+                faculty: session.faculty,
+                department: session.department,
             })
         }
     }
-}
-
-#[tauri::command]
-pub async fn fetch_timetable(state: State<'_, AppState>) -> Result<parser::TimetableData, String> {
-    kgc_fetch!(state, "/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", parser::parse_timetable)
 }
 
 /// Validate the session by actually hitting the server.
@@ -503,7 +559,23 @@ pub async fn validate_session(state: State<'_, AppState>) -> Result<SessionStatu
     // Actually try to fetch a page to check if server session is still valid
     let verify_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
     match client::fetch_page_with(&http, &verify_url).await {
-        Ok(_) => {
+        Ok(html) => {
+            // Verify the page actually contains user data.
+            // When the server-side session is stale, KG-Course returns a 200
+            // page with empty hidden inputs instead of an SSO redirect.
+            let info = parser::parse_student_info(&html);
+            if info.student_id.is_empty() && info.name.is_empty() {
+                log::warn!("validate_session: server returned empty page (stale session)");
+                let snap = session_snapshot.as_ref();
+                return Ok(SessionStatus {
+                    valid: false,
+                    username: snap.map_or(String::new(), |s| s.username.clone()),
+                    display_name: snap.map_or(String::new(), |s| s.display_name.clone()),
+                    student_id: snap.map_or(String::new(), |s| s.student_id.clone()),
+                    faculty: snap.map_or(String::new(), |s| s.faculty.clone()),
+                    department: snap.map_or(String::new(), |s| s.department.clone()),
+                });
+            }
             // Persist cookies — the server may have rotated/renewed session cookies
             let client = state.client.lock().await;
             client.save_session();
@@ -522,107 +594,61 @@ pub async fn validate_session(state: State<'_, AppState>) -> Result<SessionStatu
             log::info!("Session validation failed: {}", e);
             // Don't clear session here — let open_login_window handle cleanup
             // so concurrent API calls can still detect session expiry properly
+            let snap = session_snapshot.as_ref();
             Ok(SessionStatus {
                 valid: false,
-                username: String::new(),
-                display_name: String::new(),
-                student_id: String::new(),
-                faculty: String::new(),
-                department: String::new(),
+                username: snap.map_or(String::new(), |s| s.username.clone()),
+                display_name: snap.map_or(String::new(), |s| s.display_name.clone()),
+                student_id: snap.map_or(String::new(), |s| s.student_id.clone()),
+                faculty: snap.map_or(String::new(), |s| s.faculty.clone()),
+                department: snap.map_or(String::new(), |s| s.department.clone()),
             })
         }
     }
 }
 
-/// Navigate timetable to previous/next week.
-/// direction: "prev" or "next"
 #[tauri::command]
-pub async fn fetch_timetable_week(state: State<'_, AppState>, direction: String) -> Result<parser::TimetableData, String> {
-    let (http, is_auth) = {
-        let client = state.client.lock().await;
-        (client.http.clone(), client.is_authenticated())
-    };
-    if !is_auth {
-        return Err(AUTH_REQUIRED_MSG.into());
-    }
-
-    // First, do a fresh GET to ARF010 to get a valid Struts token
-    let fresh_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
-    let fresh_html = client::fetch_page_with(&http, &fresh_url).await?;
-    let fresh_data = parser::parse_timetable(&fresh_html);
-
-    // Use the fresh token and form fields from the server
-    let mut params: Vec<(String, String)> = fresh_data.form_fields.into_iter().collect();
-
-    // Add the navigation button parameter (simulates image submit)
-    match direction.as_str() {
-        "prev" => {
-            params.push(("EPrevious.x".into(), "1".into()));
-            params.push(("EPrevious.y".into(), "1".into()));
-        }
-        "next" => {
-            params.push(("ENext.x".into(), "1".into()));
-            params.push(("ENext.y".into(), "1".into()));
-        }
-        _ => return Err("Invalid direction".into()),
-    }
-
-    let post_url = format!("{}/uniasv2/ARF010PCT01EventAction.do", config::KG_COURSE_BASE);
-    let html = client::post_form_with_redirect(
-        &http, &post_url, config::KG_COURSE_BASE,
-        client::SESSION_EXPIRED_MSG, client::is_session_expired_body,
-        params.iter().map(|(k, v)| (k.as_str(), v.as_str())),
-        &[
-            ("Referer", &format!("{}/uniasv2/ARF010.do", config::KG_COURSE_BASE)),
-            ("Origin", config::KG_COURSE_BASE),
-        ],
-    ).await?;
-    #[cfg(debug_assertions)]
-    { let _ = std::fs::write(std::env::temp_dir().join("kgc-week-response.html"), &html); }
-    Ok(parser::parse_timetable(&html))
+pub async fn fetch_grades(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::GradesData, String> {
+    kgc_fetch_cached!(state, db, "grades", "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "kgc-grades.html")
 }
 
 #[tauri::command]
-pub async fn fetch_grades(state: State<'_, AppState>) -> Result<parser::GradesData, String> {
-    kgc_fetch!(state, "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "kgc-grades.html")
+pub async fn fetch_cancellations(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::CancellationsData, String> {
+    kgc_fetch_cached!(state, db, "cancellations", "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "kgc-cancellations.html")
 }
 
 #[tauri::command]
-pub async fn fetch_cancellations(state: State<'_, AppState>) -> Result<parser::CancellationsData, String> {
-    kgc_fetch!(state, "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "kgc-cancellations.html")
+pub async fn fetch_makeup_classes(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::MakeupData, String> {
+    kgc_fetch_cached!(state, db, "makeup_classes", "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "kgc-makeup.html")
 }
 
 #[tauri::command]
-pub async fn fetch_makeup_classes(state: State<'_, AppState>) -> Result<parser::MakeupData, String> {
-    kgc_fetch!(state, "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "kgc-makeup.html")
+pub async fn fetch_room_changes(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::RoomChangesData, String> {
+    kgc_fetch_cached!(state, db, "room_changes", "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "kgc-roomchanges.html")
 }
 
 #[tauri::command]
-pub async fn fetch_room_changes(state: State<'_, AppState>) -> Result<parser::RoomChangesData, String> {
-    kgc_fetch!(state, "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "kgc-roomchanges.html")
+pub async fn fetch_registration(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::RegistrationData, String> {
+    kgc_fetch_cached!(state, db, "registration", "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "kgc-registration.html")
 }
 
 #[tauri::command]
-pub async fn fetch_registration(state: State<'_, AppState>) -> Result<parser::RegistrationData, String> {
-    kgc_fetch!(state, "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "kgc-registration.html")
-}
-
-#[tauri::command]
-pub async fn fetch_exam_timetable(state: State<'_, AppState>) -> Result<parser::ExamTimetableData, String> {
-    kgc_fetch!(state, "/uniasv2/ARF010PVL01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0102019", parser::parse_exam_timetable)
+pub async fn fetch_exam_timetable(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::ExamTimetableData, String> {
+    kgc_fetch_cached!(state, db, "exam_timetable", "/uniasv2/ARF010PVL01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0102019", parser::parse_exam_timetable)
 }
 
 #[tauri::command]
 pub async fn fetch_notifications(
     state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
 ) -> Result<parser::NotificationsData, String> {
-    kgc_fetch!(state, "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
+    kgc_fetch_cached!(state, db, "kgc_notifications", "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
 }
 
 /// 関西学院大学 period → (start_hour, start_min, end_hour, end_min)
 /// 6限以降は通常使わないため None を返す（カレンダーに同期しない）
 fn period_to_time(period: i32) -> Option<(u32, u32, u32, u32)> {
-    if period >= 1 && period <= 5 {
+    if (1..=5).contains(&period) {
         Some(config::PERIOD_TIMES[(period - 1) as usize])
     } else {
         None // 6限以降は同期しない
@@ -646,11 +672,12 @@ fn parse_week_start(week_label: &str) -> Result<(i32, u32, u32), String> {
 }
 
 /// Calculate actual date by adding day_offset to a base date
-fn add_days(year: i32, month: u32, day: u32, offset: i32) -> (i32, u32, u32) {
+fn add_days(year: i32, month: u32, day: u32, offset: i32) -> Result<(i32, u32, u32), String> {
     use chrono::{Datelike, NaiveDate};
-    let date = NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
+    let date = NaiveDate::from_ymd_opt(year, month, day)
+        .ok_or_else(|| format!("無効な日付: {}/{}/{}", year, month, day))?
         + chrono::Duration::days(offset as i64);
-    (date.year(), date.month(), date.day())
+    Ok((date.year(), date.month(), date.day()))
 }
 
 /// Run a JXA script via osascript on a blocking thread.
@@ -716,7 +743,7 @@ pub async fn sync_calendar(
         if entry.is_cancelled { continue; }
         let Some((sh, sm, eh, em)) = period_to_time(entry.period) else { continue; };
         let offset = day_offset(&entry.day);
-        let (y, m, d) = add_days(base_year, base_month, base_day, offset);
+        let (y, m, d) = add_days(base_year, base_month, base_day, offset)?;
         let title = escape_js_string(&entry.course_name);
         let location = escape_js_string(&entry.room);
         events_js.push_str(&format!(
@@ -728,6 +755,7 @@ pub async fn sync_calendar(
         ));
     }
 
+    let end_sat = add_days(base_year, base_month, base_day, 5)?;
     let script = format!(
         r#"
 var Calendar = Application("Calendar");
@@ -773,18 +801,9 @@ function addEvent(cal, title, location, startDate, endDate) {{
 cal.events().length;
 "#,
         wy = base_year, wmi = base_month - 1, wd = base_day,
-        wey = {
-            let (end_y, _, _) = add_days(base_year, base_month, base_day, 5);
-            end_y
-        },
-        wemi = {
-            let (_, end_m, _) = add_days(base_year, base_month, base_day, 5);
-            end_m - 1
-        },
-        wed = {
-            let (_, _, end_d) = add_days(base_year, base_month, base_day, 5);
-            end_d
-        }
+        wey = end_sat.0,
+        wemi = end_sat.1 - 1,
+        wed = end_sat.2
     );
 
     let count = run_jxa(script).await
@@ -875,18 +894,35 @@ pub async fn fetch_page(state: State<'_, AppState>, path: String) -> Result<Stri
     if !path.starts_with("/uniasv2/") {
         return Err("許可されていないパスです".into());
     }
+    let _kgc_gate = state.kgc_gate.lock().await;
     let http = kgc_http(&state).await?;
     kgc_get(&http, &path).await
 }
 
 #[tauri::command]
-pub async fn fetch_course_detail(state: State<'_, AppState>, path: String) -> Result<parser::CourseDetail, String> {
+pub async fn fetch_course_detail(state: State<'_, AppState>, db: State<'_, crate::db::Database>, path: String) -> Result<parser::CourseDetail, String> {
     if !path.starts_with("/uniasv2/") {
         return Err("許可されていないパスです".into());
     }
-    let http = kgc_http(&state).await?;
-    let html = kgc_get(&http, &path).await?;
-    Ok(parser::parse_course_detail(&html))
+    let cache_key = format!("course_detail:{}", path);
+    match kgc_try_fetch(&state, &path).await {
+        Ok(html) => {
+            let data = parser::parse_course_detail(&html);
+            if let Ok(json) = serde_json::to_string(&data) {
+                let _ = db.save_data_cache(&cache_key, &json);
+            }
+            Ok(data)
+        }
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("course_detail: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -951,6 +987,22 @@ pub async fn open_external_url(
         &[],
     )?;
 
+    Ok(())
+}
+
+/// Open a URL in the system default browser (Safari, Chrome, etc.)
+#[tauri::command]
+pub async fn open_in_system_browser(url: String) -> Result<(), String> {
+    let parsed: url::Url = url.parse()
+        .map_err(|e| format!("URL parse error: {}", e))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("Unsupported URL scheme: {}", scheme));
+    }
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
     Ok(())
 }
 
@@ -1032,19 +1084,35 @@ pub async fn open_registration_window(
 }
 
 #[tauri::command]
-pub async fn fetch_student_profile(state: State<'_, AppState>) -> Result<parser::StudentInfo, String> {
+pub async fn fetch_student_profile(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::StudentInfo, String> {
     let (http, is_auth) = {
         let client = state.client.lock().await;
         (client.http.clone(), client.is_authenticated())
     };
     if !is_auth {
+        // Try cache fallback
+        if let Ok(Some((json, _))) = db.get_data_cache("student_profile") {
+            if let Ok(cached) = serde_json::from_str(&json) {
+                log::info!("student_profile: cache fallback (not authenticated)");
+                return Ok(cached);
+            }
+        }
         return Err(AUTH_REQUIRED_MSG.into());
     }
     // Fetch timetable page for basic info (name, id, faculty, department)
     let url1 = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
     let mut info = match client::fetch_page_with(&http, &url1).await {
         Ok(html) => parser::parse_student_info(&html),
-        Err(e) => return Err(e),
+        Err(e) => {
+            // Try cache fallback on network error
+            if let Ok(Some((json, _))) = db.get_data_cache("student_profile") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("student_profile: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            return Err(e);
+        }
     };
     // Fetch student info page for extra fields (student_type, status, etc.)
     let url2 = format!("{}/uniasv2/GGA110.do?REQ_PRFR_MNU_ID=MNUIDSTD0104011", config::KG_COURSE_BASE);
@@ -1061,6 +1129,10 @@ pub async fn fetch_student_profile(state: State<'_, AppState>) -> Result<parser:
         if !extra.class.is_empty() { info.class = extra.class; }
         if !extra.major.is_empty() { info.major = extra.major; }
         if !extra.address.is_empty() { info.address = extra.address; }
+    }
+    // Cache the result
+    if let Ok(json) = serde_json::to_string(&info) {
+        let _ = db.save_data_cache("student_profile", &json);
     }
     Ok(info)
 }
@@ -1175,6 +1247,7 @@ pub async fn search_syllabus(
     params: crate::syllabus::SyllabusSearchParams,
     kgc_state: State<'_, AppState>,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
+    let _kgc_gate = kgc_state.kgc_gate.lock().await;
     let http = kgc_http(kgc_state.inner()).await?;
 
     let search_html = kgc_get(&http,
@@ -1271,6 +1344,7 @@ pub async fn search_syllabus(
 pub async fn fetch_syllabus_favorites(
     kgc_state: State<'_, AppState>,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
+    let _kgc_gate = kgc_state.kgc_gate.lock().await;
     let http = kgc_http(kgc_state.inner()).await?;
 
     let main_terms = ["02", "03", "01"];
@@ -1325,7 +1399,7 @@ pub async fn fetch_syllabus_favorites(
 }
 
 /// Search for a specific class_code across terms, returning the results HTML page.
-async fn find_syllabus_results_by_class_code(
+pub(crate) async fn find_syllabus_results_by_class_code(
     http: &reqwest::Client,
     class_code: &str,
 ) -> Result<String, String> {
@@ -1381,6 +1455,7 @@ pub async fn toggle_syllabus_bookmark(
     kgc_state: State<'_, AppState>,
     class_code: String,
 ) -> Result<bool, String> {
+    let _kgc_gate = kgc_state.kgc_gate.lock().await;
     let http = kgc_http(kgc_state.inner()).await?;
 
     let html = find_syllabus_results_by_class_code(&http, &class_code).await?;
@@ -1395,12 +1470,13 @@ pub async fn toggle_syllabus_bookmark(
     // Extract ALL form fields from results page (same approach as pagination fix)
     let mut form_params = extract_all_form_inputs(&html);
 
-    // Remove action buttons
+    // Remove action buttons and search-dispatch flag
     form_params.retain(|(k, _)| {
         !k.starts_with("ESearch") && !k.starts_with("ENarrowSearch")
         && !k.starts_with("EBack") && !k.starts_with("ENext")
         && !k.starts_with("EPrev") && !k.starts_with("ERefer")
         && !k.starts_with("ERegister") && !k.starts_with("EPageSet")
+        && k != "hdnEsearch"
     });
 
     // Set the target register index and add ERegister action
@@ -1427,6 +1503,7 @@ pub async fn open_syllabus_detail(
     class_code: String,
     course_name: String,
 ) -> Result<(), String> {
+    let _kgc_gate = kgc_state.kgc_gate.lock().await;
     let http = kgc_http(kgc_state.inner()).await?;
 
     // Search by class_code across terms to find the course
@@ -1443,12 +1520,26 @@ pub async fn open_syllabus_detail(
     // Extract ALL form fields from results page (same approach as pagination/bookmark fix)
     let mut form_params = extract_all_form_inputs(&html);
 
-    // Remove action buttons
+    // Deduplicate Struts tokens (multiple forms on page) — keep only the LAST one
+    let token_key = "org.apache.struts.taglib.html.TOKEN";
+    let token_count = form_params.iter().filter(|(k, _)| k == token_key).count();
+    if token_count > 1 {
+        let last_token = form_params.iter().rev()
+            .find(|(k, _)| k == token_key).map(|(_, v)| v.clone());
+        form_params.retain(|(k, _)| k != token_key);
+        if let Some(tok) = last_token {
+            form_params.insert(0, (token_key.into(), tok));
+        }
+        log::warn!("open_syllabus_detail: deduped Struts tokens: {} -> 1", token_count);
+    }
+
+    // Remove action buttons and search-dispatch flag
     form_params.retain(|(k, _)| {
         !k.starts_with("ESearch") && !k.starts_with("ENarrowSearch")
         && !k.starts_with("EBack") && !k.starts_with("ENext")
         && !k.starts_with("EPrev") && !k.starts_with("ERefer")
         && !k.starts_with("ERegister") && !k.starts_with("EPageSet")
+        && k != "hdnEsearch"
     });
 
     // Set the target refer index and add ERefer action
@@ -1515,7 +1606,7 @@ pub async fn get_syllabus_detail(
 static STRUTS_TOKEN_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#).expect("valid regex"));
 static STRUTS_TOKEN_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="([^"]+)"[^>]*name="org\.apache\.struts\.taglib\.html\.TOKEN""#).expect("valid regex"));
 
-fn extract_struts_token(html: &str) -> Result<String, String> {
+pub(crate) fn extract_struts_token(html: &str) -> Result<String, String> {
     STRUTS_TOKEN_RE1.captures(html)
         .or_else(|| STRUTS_TOKEN_RE2.captures(html))
         .and_then(|c| c.get(1))
@@ -1526,7 +1617,7 @@ fn extract_struts_token(html: &str) -> Result<String, String> {
 static YEAR_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="txtLsnOpcFcy"[^>]*value="(\d{4})""#).expect("valid regex"));
 static YEAR_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="(\d{4})"[^>]*name="txtLsnOpcFcy""#).expect("valid regex"));
 
-fn extract_year_from_search_page(html: &str) -> Option<String> {
+pub(crate) fn extract_year_from_search_page(html: &str) -> Option<String> {
     YEAR_RE1.captures(html)
         .or_else(|| YEAR_RE2.captures(html))
         .and_then(|c| c.get(1))
@@ -1535,14 +1626,31 @@ fn extract_year_from_search_page(html: &str) -> Option<String> {
 
 /// Extract ALL form inputs from the results page HTML for pagination replay.
 /// Collects hidden inputs, text inputs, and selected option values from the main form.
-fn extract_all_form_inputs(html: &str) -> Vec<(String, String)> {
+pub(crate) fn extract_all_form_inputs(html: &str) -> Vec<(String, String)> {
+    extract_form_inputs_impl(html, "form")
+}
+
+/// Extract inputs only from the form with the given name attribute.
+/// Falls back to all forms if the named form is not found.
+pub(crate) fn extract_named_form_inputs(html: &str, form_name: &str) -> Vec<(String, String)> {
+    let selector = format!("form[name=\"{}\"]", form_name);
+    let params = extract_form_inputs_impl(html, &selector);
+    if params.is_empty() {
+        log::warn!("extract_named_form_inputs: form '{}' not found, falling back to all forms", form_name);
+        extract_form_inputs_impl(html, "form")
+    } else {
+        params
+    }
+}
+
+fn extract_form_inputs_impl(html: &str, form_selector: &str) -> Vec<(String, String)> {
     use scraper::{Html, Selector};
 
     let document = Html::parse_document(html);
     let mut params: Vec<(String, String)> = Vec::new();
 
     // Collect all <input> elements (hidden, text, etc.)
-    let input_sel = Selector::parse("form input").expect("valid selector");
+    let input_sel = Selector::parse(&format!("{} input", form_selector)).expect("valid selector");
     for el in document.select(&input_sel) {
         let name = match el.value().attr("name") {
             Some(n) if !n.is_empty() => n.to_string(),
@@ -1563,7 +1671,7 @@ fn extract_all_form_inputs(html: &str) -> Vec<(String, String)> {
     }
 
     // Collect <select> elements with their selected <option> value
-    let select_sel = Selector::parse("form select").expect("valid selector");
+    let select_sel = Selector::parse(&format!("{} select", form_selector)).expect("valid selector");
     let option_sel = Selector::parse("option[selected]").expect("valid selector");
     for sel_el in document.select(&select_sel) {
         let name = match sel_el.value().attr("name") {
@@ -1617,11 +1725,12 @@ pub async fn get_session_expiry(state: State<'_, AppState>) -> Result<Option<i64
 /// Uses the Cookie Bridge approach: navigate to the SP's login entry, let the
 /// webview's persisted Okta cookies auto-authenticate, then extract session cookies.
 /// Returns true on success, false when Okta has also expired.
-pub async fn headless_kgc_refresh(
+async fn headless_kgc_refresh(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<bool, String> {
     log::info!("headless_kgc_refresh: starting (Cookie Bridge)");
+    let _kgc_gate = state.kgc_gate.lock().await;
 
     let entry_url = format!("{}/uniasv2/UnSSOLoginControl2", config::KG_COURSE_BASE);
     let win = match cookie_bridge::headless_saml_window(
@@ -1641,6 +1750,13 @@ pub async fn headless_kgc_refresh(
     match crate::client::fetch_page_with(&http, &verify_url).await {
         Ok(html) => {
             let info = parser::parse_student_info(&html);
+            // Empty student info means the page came back without real data
+            // (server-side session stale despite cookie accepted)
+            if info.student_id.is_empty() && info.name.is_empty() {
+                log::warn!("headless_kgc_refresh: page returned empty student info (stale session)");
+                let _ = win.close();
+                return Ok(false);
+            }
             let mut client = state.client.lock().await;
             client.session = Some(auth::AuthSession {
                 username: info.student_id.clone(),
@@ -1665,7 +1781,7 @@ pub async fn headless_kgc_refresh(
 }
 
 /// Attempt a silent (headless) Luna session refresh via an invisible WebView.
-pub async fn headless_luna_refresh(
+async fn headless_luna_refresh(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<bool, String> {
@@ -1707,7 +1823,7 @@ pub async fn headless_luna_refresh(
 }
 
 /// Attempt a silent (headless) KWIC Portal session refresh via an invisible WebView.
-pub async fn headless_kwic_refresh(
+async fn headless_kwic_refresh(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<bool, String> {

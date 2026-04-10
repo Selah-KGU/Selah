@@ -91,6 +91,16 @@ pub struct EmailAddress {
     pub address: Option<String>,
 }
 
+/// A mail attachment entry (metadata only, no content bytes)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailAttachment {
+    pub id: String,
+    pub name: Option<String>,
+    pub content_type: Option<String>,
+    pub size: Option<i64>,
+}
+
 /// Full mail body for detail view
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,9 +127,6 @@ pub struct MailBody {
 #[derive(Debug, Deserialize)]
 struct GraphListResponse<T> {
     pub value: Vec<T>,
-    #[serde(rename = "@odata.nextLink")]
-    #[allow(dead_code)]
-    pub next_link: Option<String>,
 }
 
 /// User profile from Graph API
@@ -145,6 +152,14 @@ pub struct MailClient {
 fn validate_message_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=.".contains(c)) {
         return Err("無効なメッセージIDです".into());
+    }
+    Ok(())
+}
+
+/// Validate a Graph API attachment ID.
+fn validate_attachment_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 600 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=.+/".contains(c)) {
+        return Err("無効な添付ファイルIDです".into());
     }
     Ok(())
 }
@@ -389,5 +404,113 @@ impl MailClient {
             return Err(format!("既読設定失敗: HTTP {}", status));
         }
         Ok(())
+    }
+
+    /// GET request to Graph API returning raw bytes (for attachment downloads)
+    async fn graph_get_bytes(&mut self, url: &str) -> Result<Vec<u8>, String> {
+        let access_token = self.ensure_token().await?;
+        let resp = self.http
+            .get(url)
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            self.refresh_token().await?;
+            let new_token = self.token.as_ref().ok_or("token lost after refresh")?.access_token.clone();
+            let resp2 = self.http
+                .get(url)
+                .bearer_auth(&new_token)
+                .send()
+                .await
+                .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
+            if !resp2.status().is_success() {
+                self.clear_token();
+                return Err("メールセッションが期限切れです。再ログインしてください。".into());
+            }
+            return resp2.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("レスポンス読み込み失敗: {}", e));
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("Graph APIエラー ({}): {}", status, body));
+        }
+        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("レスポンス読み込み失敗: {}", e))
+    }
+
+    /// Fetch attachment metadata for a message (no content bytes)
+    pub async fn fetch_attachments(&mut self, message_id: &str) -> Result<Vec<MailAttachment>, String> {
+        validate_message_id(message_id)?;
+        let url = format!(
+            "{}/me/messages/{}/attachments?$select=id,name,contentType,size",
+            config::GRAPH_BASE, message_id,
+        );
+        let body = self.graph_get(&url).await?;
+        let resp: GraphListResponse<MailAttachment> = serde_json::from_value(body)
+            .map_err(|e| format!("添付ファイル解析失敗: {}", e))?;
+        Ok(resp.value)
+    }
+
+    /// Download a single attachment and save it to the Downloads folder.
+    /// Returns the saved file path as a string.
+    pub async fn download_attachment(
+        &mut self,
+        message_id: &str,
+        attachment_id: &str,
+        file_name: &str,
+    ) -> Result<String, String> {
+        validate_message_id(message_id)?;
+        validate_attachment_id(attachment_id)?;
+
+        // Sanitize file name: keep only the basename, replace dangerous chars
+        let safe_name: String = std::path::Path::new(file_name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || ".-_ ()[]".contains(c) { c } else { '_' })
+            .collect();
+        let safe_name = if safe_name.is_empty() { "attachment".to_string() } else { safe_name };
+
+        let url = format!(
+            "{}/me/messages/{}/attachments/{}/$value",
+            config::GRAPH_BASE,
+            message_id,
+            urlencoding::encode(attachment_id),
+        );
+        let data = self.graph_get_bytes(&url).await?;
+
+        let downloads_dir = dirs::download_dir()
+            .or_else(|| dirs::home_dir())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // Avoid overwriting: append a counter if file exists
+        let mut dest = downloads_dir.join(&safe_name);
+        if dest.exists() {
+            let stem = std::path::Path::new(&safe_name)
+                .file_stem().and_then(|s| s.to_str()).unwrap_or("attachment");
+            let ext = std::path::Path::new(&safe_name)
+                .extension().and_then(|s| s.to_str()).unwrap_or("");
+            let mut i = 1u32;
+            loop {
+                let candidate = if ext.is_empty() {
+                    format!("{} ({})", stem, i)
+                } else {
+                    format!("{} ({}).{}", stem, i, ext)
+                };
+                dest = downloads_dir.join(&candidate);
+                if !dest.exists() { break; }
+                i += 1;
+            }
+        }
+
+        std::fs::write(&dest, &data)
+            .map_err(|e| format!("ファイル保存失敗: {}", e))?;
+
+        let path_str = dest.to_string_lossy().to_string();
+        // Open with OS default app
+        let _ = std::process::Command::new("open").arg(&dest).spawn();
+        log::info!("Attachment saved to: {}", path_str);
+        Ok(path_str)
     }
 }

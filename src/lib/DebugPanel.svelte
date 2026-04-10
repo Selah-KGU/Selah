@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { authState, lunaAuthState, kwicAuthState, debugVisible } from "./stores";
   import Icon from "./Icon.svelte";
-  import { fetchPage, checkSession, triggerRelogin } from "./api";
+  import { fetchPage, triggerRelogin } from "./api";
   import { nativeNotify } from "./notify";
 
   interface DebugInfo {

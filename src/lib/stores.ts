@@ -1,6 +1,7 @@
 import { writable } from "svelte/store";
+import { invoke } from "@tauri-apps/api/core";
 
-export interface AuthState {
+interface AuthState {
   authenticated: boolean;
   username: string;
   displayName: string;
@@ -46,7 +47,7 @@ export const mailAuthState = writable<{ authenticated: boolean; email: string; d
 });
 
 /** Google Calendar authentication state */
-export interface GoogleCalState {
+interface GoogleCalState {
   authenticated: boolean;
   calendarExists: boolean;
   syncedEvents: number;
@@ -73,27 +74,7 @@ export interface StudentInfo {
   address: string;
 }
 
-export interface TimetableEntry {
-  day: string;
-  period: number;
-  course_name: string;
-  room: string;
-  course_code: string;
-  is_cancelled: boolean;
-  is_makeup: boolean;
-  is_room_changed: boolean;
-  detail_path: string;
-}
-
-export interface TimetableData {
-  student: StudentInfo;
-  entries: TimetableEntry[];
-  week_label: string;
-  struts_token: string;
-  form_fields: Record<string, string>;
-}
-
-export interface CurriculumRow {
+interface CurriculumRow {
   category: string;
   required_credits: string;
   enrolled_credits: string;
@@ -105,7 +86,7 @@ export interface GradesData {
   curriculum: CurriculumRow[];
 }
 
-export interface CancellationEntry {
+interface CancellationEntry {
   date: string;
   period: string;
   campus: string;
@@ -123,7 +104,7 @@ export interface CancellationsData {
   entries: CancellationEntry[];
 }
 
-export interface MakeupEntry {
+interface MakeupEntry {
   date: string;
   period: string;
   campus: string;
@@ -141,7 +122,7 @@ export interface MakeupData {
   entries: MakeupEntry[];
 }
 
-export interface RoomChangeEntry {
+interface RoomChangeEntry {
   date: string;
   department: string;
   course_code: string;
@@ -158,13 +139,13 @@ export interface RoomChangesData {
   entries: RoomChangeEntry[];
 }
 
-export interface CreditSummary {
+interface CreditSummary {
   semester: string;
   enrolled: string;
   limit: string;
 }
 
-export interface RegisteredCourse {
+interface RegisteredCourse {
   period: string;
   day: string;
   semester: string;
@@ -203,10 +184,6 @@ export interface NotificationEntry {
 
 export interface NotificationsData {
   entries: NotificationEntry[];
-}
-
-export interface CourseDetail {
-  fields: [string, string][];
 }
 
 // ============ Syllabus Types ============
@@ -249,7 +226,7 @@ export interface SyllabusSearchResult {
 // ============ Syllabus Search Cache ============
 // Persists search form state and results across tab switches
 
-export interface SyllabusSearchState {
+interface SyllabusSearchState {
   params: SyllabusSearchParams;
   result: SyllabusSearchResult | null;
   favorites: SyllabusSearchResult | null;
@@ -316,15 +293,18 @@ export const activeTab = writable<string>("home");
 export const aiRefreshRequested = writable<boolean>(false);
 export const unreadNotifCount = writable<number>(0);
 export const unreadMailCount = writable<number>(0);
+
+// Shared read-state for notifications (single source of truth)
+export interface ReadIdsData { kgc: string[]; luna: string[]; kwic: string[] }
+export const readIdsStore = writable<ReadIdsData>({ kgc: [], luna: [], kwic: [] });
+
 function initTheme(): "system" | "light" | "dark" {
   if (typeof localStorage !== "undefined") {
     const saved = localStorage.getItem("selah-theme");
     if (saved === "light" || saved === "dark") {
       document.documentElement.setAttribute("data-theme", saved);
       // Sync initial theme to Rust so child webviews can read it
-      import("@tauri-apps/api/core").then(({ invoke }) => {
-        invoke("set_app_theme", { theme: saved });
-      }).catch(() => {});
+      invoke("set_app_theme", { theme: saved }).catch(() => {});
       return saved;
     }
   }
@@ -349,7 +329,7 @@ const inflight = new Map<string, Promise<any>>();
 const DEFAULT_TTL = 5 * 60 * 1000; // 5 minutes
 const CACHE_TTLS: Record<string, number> = {
   // KG-Course
-  timetable: 30 * 60 * 1000,
+  schedule_data: 30 * 60 * 1000,
   grades: 30 * 60 * 1000,
   exams: 30 * 60 * 1000,
   registration: 30 * 60 * 1000,
@@ -360,7 +340,6 @@ const CACHE_TTLS: Record<string, number> = {
   profile: 60 * 60 * 1000,
   favorites: 10 * 60 * 1000,
   // Luna
-  luna_timetable: 30 * 60 * 1000,
   luna_todo: 5 * 60 * 1000,
   luna_updates: 5 * 60 * 1000,
   // Weather
@@ -372,9 +351,9 @@ const CACHE_TTLS: Record<string, number> = {
 };
 
 // Keys eligible for disk persistence (survive app restart, stale-while-revalidate)
+// Only first-screen data needs synchronous localStorage; others rely on SQLite fallback.
 const DISK_CACHE_KEYS = new Set([
-  "timetable", "grades", "exams", "registration",
-  "luna_timetable", "kwic_home",
+  "schedule_data", "kwic_home",
   "notifications", "luna_updates", "luna_todo",
 ]);
 const DISK_PREFIX = "selah_cache_";
@@ -407,7 +386,13 @@ const swrListeners = new Map<string, Set<(data: any) => void>>();
 export function onCacheUpdate<T>(key: string, cb: (data: T) => void): () => void {
   if (!swrListeners.has(key)) swrListeners.set(key, new Set());
   swrListeners.get(key)!.add(cb as (data: any) => void);
-  return () => { swrListeners.get(key)?.delete(cb as (data: any) => void); };
+  return () => {
+    const set = swrListeners.get(key);
+    if (set) {
+      set.delete(cb as (data: any) => void);
+      if (set.size === 0) swrListeners.delete(key);
+    }
+  };
 }
 
 function notifySwr(key: string, data: any) {
@@ -442,6 +427,14 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
       cache.set(key, disk);
       // Background refresh (fire-and-forget, errors are swallowed)
       const bg = fetcher().then((data) => {
+        // Guard: don't overwrite good cache with empty schedule data
+        if (key === "schedule_data") {
+          const sr = data as any;
+          if (sr && sr.raw && Array.isArray(sr.raw.kgc_entries_current) && sr.raw.kgc_entries_current.length === 0 && !sr.raw.current_week_label) {
+            console.warn(`[Selah] SWR: "${key}" returned empty data, keeping stale cache`);
+            return disk.data as T;
+          }
+        }
         const now = Date.now();
         cache.set(key, { data, ts: now });
         saveDiskCache(key, data, now);
@@ -532,7 +525,7 @@ export function refreshCache<T>(key: string, fetcher: () => Promise<T>): void {
 // ============ Faculty Filter ============
 
 /** Check if a department string is related to the user's faculty */
-export function isRelatedDept(dept: string, faculty: string): boolean {
+function isRelatedDept(dept: string, faculty: string): boolean {
   if (!faculty) return false;
   return dept.includes(faculty) || faculty.includes(dept);
 }

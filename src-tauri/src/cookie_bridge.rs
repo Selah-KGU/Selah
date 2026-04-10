@@ -10,11 +10,11 @@ use std::ptr::NonNull;
 use objc2::MainThreadMarker;
 use objc2_foundation::{NSArray, NSHTTPCookie};
 use objc2_web_kit::WKWebsiteDataStore;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 /// Plain cookie data extracted from the webview (Send + Sync safe).
 #[derive(Debug, Clone)]
-pub struct CookieData {
+struct CookieData {
     pub name: String,
     pub value: String,
     pub domain: String,
@@ -28,7 +28,7 @@ pub struct CookieData {
 
 /// Extract all cookies from the default WKWebsiteDataStore.
 /// Dispatches to the main thread since WKWebKit APIs are main-thread-only.
-pub async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<CookieData>, String> {
+async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<CookieData>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Vec<CookieData>>();
     let tx = std::sync::Mutex::new(Some(tx));
 
@@ -72,7 +72,7 @@ pub async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<CookieDat
 }
 
 /// Extract cookies matching a specific domain from the webview.
-pub async fn extract_cookies_for_domain(
+async fn extract_cookies_for_domain(
     app: &tauri::AppHandle,
     domain: &str,
 ) -> Result<Vec<CookieData>, String> {
@@ -90,7 +90,7 @@ pub async fn extract_cookies_for_domain(
 }
 
 /// Inject extracted cookies into a reqwest cookie store.
-pub fn inject_cookies(
+fn inject_cookies(
     store: &reqwest_cookie_store::CookieStoreMutex,
     cookies: &[CookieData],
     base_url: &str,
@@ -188,6 +188,15 @@ pub async fn extract_and_inject(
 /// the Okta session has expired (timeout), or `Err` on build failure.
 ///
 /// This is the shared core of all headless refresh flows.
+/// Okta/SSO domains — if the headless WebView lands here, the session is expired
+/// and we can abort immediately instead of waiting for the full timeout.
+const OKTA_HOSTS: &[&str] = &["sso.kwansei.ac.jp", "idp.kwansei.ac.jp", "sts.kwansei.ac.jp"];
+
+fn is_okta_login_page(url: &url::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    OKTA_HOSTS.iter().any(|h| host == *h)
+}
+
 pub async fn headless_saml_window(
     app: &tauri::AppHandle,
     window_label: &str,
@@ -199,7 +208,9 @@ pub async fn headless_saml_window(
         let _ = w.close();
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+    // Channel sends `true` = SAML complete (SP page loaded),
+    //                `false` = Okta login page detected (session expired).
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<bool>(1);
 
     let parsed_url: url::Url = saml_url
         .parse()
@@ -222,16 +233,24 @@ pub async fn headless_saml_window(
         let url = payload.url();
         if is_post_saml_sp_url(url, &sp_domain_owned) {
             log::info!("{}: page loaded on SP domain", label_for_log);
-            let _ = tx.try_send(());
+            let _ = tx.try_send(true);
+        } else if is_okta_login_page(url) {
+            log::info!("{}: Okta login page detected - session expired", label_for_log);
+            let _ = tx.try_send(false);
         }
     })
     .build()
     .map_err(|e| format!("Failed to build headless window '{}': {}", window_label, e))?;
 
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx.recv()).await {
-        Ok(Some(())) => {
+        Ok(Some(true)) => {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             Ok(Some(win))
+        }
+        Ok(Some(false)) => {
+            // Okta login page detected — session is expired, abort immediately
+            let _ = win.close();
+            Ok(None)
         }
         Ok(None) => {
             log::info!("{}: window closed without completing", window_label);
@@ -245,129 +264,4 @@ pub async fn headless_saml_window(
     }
 }
 
-/// Parameters for a visible SAML login window
-pub struct SamlLoginConfig {
-    pub window_label: &'static str,
-    pub title: &'static str,
-    pub saml_url: &'static str,
-    pub sp_domain: &'static str,
-    pub base_url: &'static str,
-    pub success_event: &'static str,
-    pub error_event: &'static str,
-    pub service: ServiceTarget,
-}
 
-/// Which service to update after SAML login completes
-pub enum ServiceTarget {
-    Luna,
-    Kwic,
-}
-
-/// Open a visible SAML login window and spawn a background task that:
-/// 1. Waits for SAML to complete (SP page loads)
-/// 2. Extracts and injects cookies
-/// 3. Updates the target service's authenticated state
-/// 4. Emits events and closes the window
-///
-/// This is the shared core of `luna_open_login` and `kwic_open_login`.
-pub fn spawn_saml_login(
-    app: &tauri::AppHandle,
-    cfg: SamlLoginConfig,
-) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window(cfg.window_label) {
-        let _ = existing.close();
-    }
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
-
-    let parsed_url: url::Url = cfg.saml_url
-        .parse()
-        .map_err(|e| format!("URL parse error: {}", e))?;
-
-    let sp_domain_owned = cfg.sp_domain.to_string();
-    let label_owned = cfg.window_label.to_string();
-    let _win = tauri::WebviewWindowBuilder::new(
-        app,
-        cfg.window_label,
-        tauri::WebviewUrl::External(parsed_url),
-    )
-    .title(cfg.title)
-    .inner_size(480.0, 700.0)
-    .resizable(true)
-    .on_navigation(|_| true)
-    .on_page_load(move |_win, payload| {
-        use tauri::webview::PageLoadEvent;
-        if !matches!(payload.event(), PageLoadEvent::Finished) {
-            return;
-        }
-        let url = payload.url();
-        if is_post_saml_sp_url(url, &sp_domain_owned) {
-            log::info!("Cookie Bridge: {} SAML complete", label_owned);
-            let _ = tx.try_send(());
-        }
-    })
-    .build()
-    .map_err(|e| format!("ログインウィンドウ作成失敗: {}", e))?;
-
-    let app_clone = app.clone();
-    let window_label = cfg.window_label;
-    let sp_domain = cfg.sp_domain;
-    let base_url = cfg.base_url;
-    let success_event = cfg.success_event;
-    let error_event = cfg.error_event;
-    let service = cfg.service;
-
-    tokio::spawn(async move {
-        match tokio::time::timeout(std::time::Duration::from_secs(120), rx.recv()).await {
-            Ok(Some(())) => {
-                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-
-                let app_state = app_clone.state::<crate::AppState>();
-                let cookie_store = match &service {
-                    ServiceTarget::Luna => app_state.luna.lock().await.cookie_store.clone(),
-                    ServiceTarget::Kwic => app_state.kwic.lock().await.cookie_store.clone(),
-                };
-                let result = extract_and_inject(
-                    &app_clone, sp_domain, &cookie_store, base_url,
-                ).await;
-                match result {
-                    Ok(()) => {
-                        match &service {
-                            ServiceTarget::Luna => {
-                                let mut luna = app_state.luna.lock().await;
-                                luna.authenticated = true;
-                                luna.save_session();
-                            }
-                            ServiceTarget::Kwic => {
-                                let mut kwic = app_state.kwic.lock().await;
-                                kwic.authenticated = true;
-                                kwic.save_session();
-                            }
-                        }
-                        log::info!("Cookie Bridge: {} login successful", window_label);
-                        let _ = app_clone.emit(success_event, ());
-                    }
-                    Err(e) => {
-                        log::error!("Cookie Bridge: {} cookie extraction failed: {}", window_label, e);
-                        let _ = app_clone.emit(error_event, &e);
-                    }
-                }
-                if let Some(win) = app_clone.get_webview_window(window_label) {
-                    let _ = win.close();
-                }
-            }
-            Ok(None) => {
-                log::info!("{} login cancelled", window_label);
-            }
-            Err(_) => {
-                log::warn!("{} login timed out (120s)", window_label);
-                let _ = app_clone.emit(error_event, format!("{} login timed out", window_label));
-                if let Some(win) = app_clone.get_webview_window(window_label) {
-                    let _ = win.close();
-                }
-            }
-        }
-    });
-
-    Ok(())
-}

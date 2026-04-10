@@ -1,6 +1,6 @@
 {
   "name": "selah",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "description": "Selah - 新月の下で、知性を繋ぐ。すべての関学生に。",
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "keywords": [],
-  "author": "haru",
+  "author": "mirai_mamori",
   "license": "MIT",
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.0.0",

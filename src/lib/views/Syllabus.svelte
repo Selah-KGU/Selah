@@ -580,8 +580,8 @@
 
   h2 {
     font-size: 20px;
-    font-weight: 700;
-    margin: 0 0 16px;
+    font-weight: 600;
+    margin: 0 0 12px;
     color: var(--text-primary);
   }
 

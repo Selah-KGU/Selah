@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox, markNotificationRead, getReadNotifications } from "../api";
-  import type { MailMessage, ReadIdsResponse } from "../api";
-  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, unreadNotifCount, unreadMailCount } from "../stores";
-  import type { NotificationsData } from "../stores";
+  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox, markNotificationRead, markBatchNotificationRead, getReadNotifications } from "../api";
+  import type { MailMessage } from "../api";
+  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, unreadNotifCount, unreadMailCount, readIdsStore } from "../stores";
+  import type { NotificationsData, ReadIdsData } from "../stores";
   import type { KwicPortalHome } from "../api";
   import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "../notify";
   import ViewLoader from "../ViewLoader.svelte";
@@ -41,11 +41,10 @@
   let lunaNotifications = $state<LunaNotification[]>([]);
   let kwicHome = $state<KwicPortalHome | null>(null);
   let mailMessages = $state<MailMessage[]>([]);
-  let readIds = $state<ReadIdsResponse>({ kgc: [], luna: [], kwic: [] });
   let readSets = $derived({
-    kgc: new Set(readIds.kgc),
-    luna: new Set(readIds.luna),
-    kwic: new Set(readIds.kwic),
+    kgc: new Set($readIdsStore.kgc),
+    luna: new Set($readIdsStore.luna),
+    kwic: new Set($readIdsStore.kwic),
   });
 
   function notifKey(title: string, date: string): string {
@@ -108,7 +107,7 @@
         getReadNotifications(),
       ]);
       if (readResult.status === "fulfilled" && readResult.value) {
-        readIds = readResult.value as ReadIdsResponse;
+        readIdsStore.set(readResult.value as ReadIdsData);
       }
       if (kgc.status === "fulfilled" && kgc.value) {
         kgcData = kgc.value as NotificationsData;
@@ -249,16 +248,37 @@
 
   let currentItems = $derived(groupedByTab.get(selectedTab) ?? []);
 
+  async function markAllRead() {
+    const items = currentItems.filter(n => n.source !== "mail" && !isNotifRead(n));
+    if (items.length === 0) return;
+    // Group by source
+    const bySource = new Map<string, string[]>();
+    for (const n of items) {
+      const key = n.id || notifKey(n.title, n.date);
+      const list = bySource.get(n.source) ?? [];
+      list.push(key);
+      bySource.set(n.source, list);
+    }
+    // Persist + optimistic update
+    for (const [source, ids] of bySource) {
+      markBatchNotificationRead(source, ids).catch(console.error);
+      readIdsStore.update(store => ({
+        ...store,
+        [source]: [...store[source as keyof ReadIdsData], ...ids],
+      }));
+    }
+  }
+
   async function openNotif(n: UnifiedNotif) {
     // Mark as read locally
     if (n.source !== "mail") {
       const key = n.id || notifKey(n.title, n.date);
       markNotificationRead(n.source, key).catch(console.error);
       // Optimistic update
-      readIds = {
-        ...readIds,
-        [n.source]: [...readIds[n.source as keyof ReadIdsResponse], key],
-      };
+      readIdsStore.update(ids => ({
+        ...ids,
+        [n.source]: [...ids[n.source as keyof ReadIdsData], key],
+      }));
     }
 
     if (n.source === "mail") {
@@ -282,7 +302,12 @@
 </script>
 
 <div class="view">
-  <h2>お知らせ</h2>
+  <div class="title-row">
+    <h2>お知らせ</h2>
+    <button class="mark-all-btn" onclick={markAllRead} disabled={currentItems.filter(n => n.source !== "mail" && !isNotifRead(n)).length === 0}>
+      この分類を既読
+    </button>
+  </div>
 
   <div class="segmented-control" role="tablist">
     {#each TAB_ORDER as tab}
@@ -369,12 +394,32 @@
     font-weight: 600;
     text-align: center;
   }
-  .state-msg {
-    text-align: center;
-    color: var(--text-tertiary);
-    font-size: 13px;
-    padding: 40px 0;
+  .title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 12px;
   }
+  .title-row h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .mark-all-btn {
+    border: 0.5px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s, color 0.15s, opacity 0.15s;
+  }
+  .mark-all-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .mark-all-btn:disabled { opacity: 0.45; cursor: default; }
 
   /* KGC Notifications */
   .notif-list {

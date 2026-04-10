@@ -87,9 +87,14 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    margin-bottom: 4px;
+    margin-bottom: 12px;
   }
-  .title-row h2 { margin: 0; }
+  .title-row h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
   .open-btn {
     flex-shrink: 0;
     padding: 6px 16px;

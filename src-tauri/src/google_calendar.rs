@@ -295,7 +295,9 @@ impl GoogleCalendarClient {
         if needs_refresh {
             self.refresh_token().await?;
         }
-        Ok(self.token.as_ref().unwrap().access_token.clone())
+        Ok(self.token.as_ref()
+            .ok_or("token lost after refresh")?
+            .access_token.clone())
     }
 
     /// Find or create the "Selah 時間割" calendar
@@ -400,7 +402,7 @@ impl GoogleCalendarClient {
         for (key, entry) in &desired {
             let date_str = &key[..10];
             let times = crate::config::PERIOD_TIMES;
-            let idx = (entry.period - 1).max(0).min(6) as usize;
+            let idx = (entry.period - 1).clamp(0, 6) as usize;
             let (sh, sm, eh, em) = times[idx];
             let start_dt = format!("{}T{:02}:{:02}:00", date_str, sh, sm);
             let end_dt = format!("{}T{:02}:{:02}:00", date_str, eh, em);
@@ -423,11 +425,9 @@ impl GoogleCalendarClient {
                         }
                     }
                 }
-            } else {
-                if let Ok(id) = self.create_event(&cal_id, &event_body).await {
-                    self.sync_state.event_map.insert(key.clone(), id);
-                    created += 1;
-                }
+            } else if let Ok(id) = self.create_event(&cal_id, &event_body).await {
+                self.sync_state.event_map.insert(key.clone(), id);
+                created += 1;
             }
         }
 

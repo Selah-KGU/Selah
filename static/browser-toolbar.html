@@ -193,11 +193,20 @@
   document.getElementById('external').onclick = async () => {
     try {
       const url = await invoke('browser_get_url', { target });
-      if (url && url !== 'about:blank') await invoke('open_external_url', { url });
+      if (url && url !== 'about:blank') await invoke('open_in_system_browser', { url });
     } catch(e) {}
   };
 
-  urlBar.onclick = () => {
+  // Window dragging — maximize draggable area (buttons excluded, url-bar included)
+  const { getCurrentWindow } = window.__TAURI__.window;
+  const appWindow = getCurrentWindow();
+  document.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.btn')) return;
+    if (e.button === 0) appWindow.startDragging();
+  });
+
+  // URL bar: copy on click
+  urlBar.addEventListener('click', () => {
     if (!currentUrl) return;
     navigator.clipboard.writeText(currentUrl).then(() => {
       const orig = urlBar.textContent;
@@ -208,7 +217,7 @@
         urlBar.classList.remove('copied');
       }, 1200);
     }).catch(() => {});
-  };
+  });
 })();
 </script>
 </body>

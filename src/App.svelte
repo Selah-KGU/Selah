@@ -10,7 +10,11 @@
   import { get } from "svelte/store";
   import { onMount, onDestroy } from "svelte";
 
-  let currentView = $derived($authState.authenticated ? "dashboard" : "login");
+  // Persistent latch: once the user has EVER logged in, always show Dashboard
+  // (with cached data + re-auth badge). Only cleared by explicit logout.
+  // The flag is SET in setAuthFromSession() (api.ts) and CLEARED in logout().
+  let everLoggedIn = $state(!!localStorage.getItem("selah-ever-auth"));
+  let currentView = $derived(($authState.authenticated || $sessionExpired || everLoggedIn) ? "dashboard" : "login");
   let restoring = $state(true);
   let validating = false;
   let lastValidateTime = 0;
@@ -46,12 +50,26 @@
     try {
       // Restore all service sessions (KGC + Luna + future)
       const session = await restoreAllSessions();
+      console.log("[Selah] App.onMount: restoreAllSessions returned", session ? "non-null" : "null",
+        "authState.authenticated =", get(authState).authenticated,
+        "sessionExpired =", get(sessionExpired),
+        "everLoggedIn =", everLoggedIn);
       if (session) {
+        startBackgroundPolling();
+      } else if (everLoggedIn) {
+        // Had a previous session (from a past app run) but recovery failed.
+        // Set sessionExpired so the re-auth badge shows, and start polling
+        // so cached/SWR data is served.
+        sessionExpired.set(true);
         startBackgroundPolling();
       }
       startTrayStatus();
     } catch (e) {
       console.warn("Session restore failed:", e);
+      if (everLoggedIn) {
+        sessionExpired.set(true);
+        startBackgroundPolling();
+      }
     } finally {
       restoring = false;
     }
@@ -82,7 +100,8 @@
   }
 
   async function doValidate() {
-    if (!get(authState).authenticated || validating || get(reloginInProgress)) return;
+    // Allow validation when session is expired (need to attempt recovery)
+    if ((!get(authState).authenticated && !get(sessionExpired)) || validating || get(reloginInProgress)) return;
     const now = Date.now();
     if (now - lastValidateTime < VALIDATE_COOLDOWN) return;
 
@@ -100,37 +119,37 @@
           : Promise.resolve(false),
       ]);
 
-      // Track which services need refresh
+      // Track which services need refresh (only if they WERE authenticated)
       const needsRefresh: string[] = [];
       if (!kgcStatus.valid) needsRefresh.push("kgc");
-      if (!lunaValid && (get(lunaAuthState).authenticated || !shouldSkipSync("luna"))) needsRefresh.push("luna");
-      if (!kwicValid && (get(kwicAuthState).authenticated || !shouldSkipSync("kwic"))) needsRefresh.push("kwic");
+      if (!lunaValid && get(lunaAuthState).authenticated && !shouldSkipSync("luna")) needsRefresh.push("luna");
+      if (!kwicValid && get(kwicAuthState).authenticated && !shouldSkipSync("kwic")) needsRefresh.push("kwic");
 
       if (needsRefresh.length === 0) {
         // All good
         if (get(sessionExpired)) sessionExpired.set(false);
-        recordSyncResult("luna", true);
-        recordSyncResult("kwic", true);
+        if (lunaValid) recordSyncResult("luna", true);
+        if (kwicValid) recordSyncResult("kwic", true);
       } else if (needsRefresh.length === 3) {
         // All three expired — Okta is likely dead, need full recovery
         console.log("[Selah] All services expired, triggering full recovery");
         await triggerRelogin();
       } else {
         // Some services expired — targeted refresh with cross-renewal
-        // Even KGC can be refreshed alone; cross-renewal will help
-        if (get(sessionExpired)) sessionExpired.set(false);
+        // Don't clear sessionExpired yet — only clear on confirmed KGC recovery
         const refreshTasks = needsRefresh.map(svc => {
           if (shouldSkipSync(svc)) return Promise.resolve();
           return syncSession(svc).then(ok => {
             recordSyncResult(svc, ok);
             if (ok) serviceRegistry[svc].onRecovered();
-            else serviceRegistry[svc].onReset();
+            // Don't reset KGC here — let triggerRelogin handle it
+            // (premature reset drops user to Login screen before badge can show)
+            else if (svc !== "kgc") serviceRegistry[svc].onReset();
           }).catch(() => { recordSyncResult(svc, false); });
         });
         await Promise.allSettled(refreshTasks);
-        // If KGC was in the list, cross-renewal + onRecovered is async.
-        // Re-validate KGC before deciding to escalate.
         if (needsRefresh.includes("kgc")) {
+          // Re-validate KGC before deciding to escalate
           const kgcNow = await validateSession().catch(() => ({ valid: false } as { valid: boolean }));
           if (!kgcNow.valid) {
             console.log("[Selah] KGC targeted refresh failed, escalating to full recovery");
@@ -139,6 +158,9 @@
             setAuthFromSession(kgcNow as any);
             sessionExpired.set(false);
           }
+        } else {
+          // KGC is fine — safe to clear expired state
+          if (get(sessionExpired)) sessionExpired.set(false);
         }
       }
 

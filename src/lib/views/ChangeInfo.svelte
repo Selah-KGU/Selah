@@ -165,6 +165,9 @@
 </div>
 
 <style>
+  .view h2 {
+    margin-bottom: 12px;
+  }
   .segmented-control {
     display: flex;
     background: var(--bg-tertiary);

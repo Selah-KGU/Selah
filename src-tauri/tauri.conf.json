@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Selah",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "identifier": "com.kgu.selah",
   "build": {
     "frontendDist": "../dist",

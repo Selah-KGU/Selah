@@ -370,6 +370,23 @@
         </div>
       </div>
     </div>
+    <div class="card-label">学期設定</div>
+    <div class="card">
+      <div class="row">
+        <span class="row-label">春学期開始日</span>
+        <div class="row-input">
+          <input type="date" id="springStart">
+          <div class="hint">春学期の最初の授業週の月曜日（例: 2026-04-06）。授業計画に日付がない場合の回数推定に使用。</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">秋学期開始日</span>
+        <div class="row-input">
+          <input type="date" id="fallStart">
+          <div class="hint">秋学期の最初の授業週の月曜日（例: 2026-09-21）。</div>
+        </div>
+      </div>
+    </div>
   </div>
   <div class="panel" id="panel-session">
     <div class="hero-card">
@@ -634,9 +651,9 @@
   function escapeHtml(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
   function showStatus(msg,type){var safe=escapeHtml(msg);if(type==="loading"){$status.innerHTML='<div class="status loading"><span class="spinner"></span>'+safe+"</div>"}else{$status.innerHTML='<div class="status '+type+'">'+safe+"</div>"}if(type!=="loading")setTimeout(function(){$status.innerHTML=""},4000)}
 
-  async function loadSettings(){try{var c=await invoke("get_ai_config");$provider.value=c.provider||"openai";$apiKey.value=c.api_key||"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||4096;$maxTokensVal.textContent=c.max_tokens||4096;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
+  async function loadSettings(){try{var c=await invoke("get_ai_config");$provider.value=c.provider||"openai";$apiKey.value=c.api_key||"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||4096;$maxTokensVal.textContent=c.max_tokens||4096;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"";document.getElementById("fallStart").value=c.fall_start||"";onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
 
-  function getConfig(){return{provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value}}
+  function getConfig(){return{provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value,spring_start:document.getElementById("springStart").value,fall_start:document.getElementById("fallStart").value}}
 
   async function saveSettings(){var btn=document.getElementById("saveBtn");try{btn.disabled=true;if(activePanel==="ai"){await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="mail"){await invoke("mail_save_config",{config:{client_id:$mailClientId.value.trim()}});checkMailSession()}else if(activePanel==="calendar"){await invoke("gcal_save_config",{config:{client_id:$gcalClientId.value.trim(),client_secret:$gcalClientSecret.value.trim()}})}showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{btn.disabled=false}}
 

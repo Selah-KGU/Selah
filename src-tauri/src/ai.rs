@@ -23,6 +23,8 @@ pub struct AiConfig {
     pub max_tokens: u32,
     pub temperature: f32,
     pub reply_language: String,
+    pub spring_start: String,  // e.g. "2026-04-06" — first Monday of spring semester
+    pub fall_start: String,    // e.g. "2026-09-21" — first Monday of fall semester
 }
 
 // Custom Debug — mask API key in log output
@@ -36,6 +38,8 @@ impl std::fmt::Debug for AiConfig {
             .field("max_tokens", &self.max_tokens)
             .field("temperature", &self.temperature)
             .field("reply_language", &self.reply_language)
+            .field("spring_start", &self.spring_start)
+            .field("fall_start", &self.fall_start)
             .finish()
     }
 }
@@ -50,6 +54,8 @@ impl Default for AiConfig {
             max_tokens: 4096,
             temperature: 0.7,
             reply_language: "ja".into(),
+            spring_start: String::new(),
+            fall_start: String::new(),
         }
     }
 }
@@ -150,7 +156,12 @@ fn config_path() -> PathBuf {
     new
 }
 
-pub fn load_config() -> AiConfig {
+/// Public accessor for other modules (e.g. timetable AI schedule).
+pub fn load_ai_config() -> AiConfig {
+    load_config()
+}
+
+fn load_config() -> AiConfig {
     let path = config_path();
     if path.exists() {
         if let Ok(data) = std::fs::read_to_string(&path) {
@@ -162,7 +173,7 @@ pub fn load_config() -> AiConfig {
     AiConfig::default()
 }
 
-pub fn save_config(config: &AiConfig) -> Result<(), String> {
+fn save_config(config: &AiConfig) -> Result<(), String> {
     let path = config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
@@ -182,7 +193,15 @@ pub fn save_config(config: &AiConfig) -> Result<(), String> {
 
 // ============ API call logic ============
 
-pub async fn chat_completion(
+/// Public accessor for other modules (e.g. timetable AI schedule).
+pub async fn chat_completion_public(
+    config: &AiConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<String, String> {
+    chat_completion(config, messages).await
+}
+
+async fn chat_completion(
     config: &AiConfig,
     messages: Vec<ChatMessage>,
 ) -> Result<String, String> {

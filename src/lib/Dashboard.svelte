@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { invoke } from "@tauri-apps/api/core";
-  import { activeTab, aiRefreshRequested, unreadNotifCount, unreadMailCount, onCacheUpdate, getCached } from "./stores";
-  import type { NotificationsData } from "./stores";
+  import { activeTab, aiRefreshRequested, unreadNotifCount, unreadMailCount, readIdsStore, onCacheUpdate, getCached } from "./stores";
+  import type { NotificationsData, ReadIdsData } from "./stores";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./Icon.svelte";
   import Titlebar from "./Titlebar.svelte";
@@ -16,7 +15,8 @@
   import ChangeInfo from "./views/ChangeInfo.svelte";
   import HomePage from "./views/HomePage.svelte";
   import MailView from "./views/MailView.svelte";
-  import type { MailMessage, KwicPortalHome, ReadIdsResponse } from "./api";
+  import IctTools from "./views/IctTools.svelte";
+  import type { MailMessage, KwicPortalHome } from "./api";
   import { getReadNotifications } from "./api";
   import type { LunaNotification } from "./types";
 
@@ -31,14 +31,14 @@
   const tabs: Tab[] = [
     { id: "home", label: "ホーム", icon: "square.grid.2x2" },
     { id: "mail", label: "メール", icon: "envelope" },
+    { id: "ict-tools", label: "ツール", icon: "gear" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },
     { id: "registration", label: "履修登録", icon: "list.clipboard" },
     { id: "syllabus", label: "シラバス検索", icon: "book" },
-    { id: "notifications", label: "お知らせ", icon: "bell", section: "お知らせ" },
+    { id: "notifications", label: "お知らせ", icon: "bell", section: "インフォ" },
     { id: "changes", label: "変更情報", icon: "arrow.triangle.swap" },
-    { id: "facility", label: "施設予約", icon: "building.2", section: "ツール", external: () => invoke("open_facility_reservation") },
   ];
 
   // Track which tabs have been visited (lazy mount: create once, then keep alive)
@@ -59,9 +59,8 @@
   let unlistenRefresh: (() => void) | null = null;
 
   // --- Notification badge: compute from cache (works before NotificationsUnified is visited) ---
-  let readIds: ReadIdsResponse = { kgc: [], luna: [], kwic: [] };
   function isReadById(source: string, id: string): boolean {
-    const ids = readIds[source as keyof ReadIdsResponse];
+    const ids = $readIdsStore[source as keyof ReadIdsData];
     return ids ? ids.includes(id) : false;
   }
 
@@ -80,7 +79,7 @@
     }
     if (kwicHome) {
       for (const sec of kwicHome.sections) {
-        if (sec.title === "メインリンク" || sec.title === "注目コンテンツ") continue;
+        if (sec.title === "メインリンク" || sec.title === "注目コンテンツ" || sec.title === "授業のお知らせ") continue;
         for (const item of sec.items) {
           const key = item.id || `${item.title.trim().replace(/\s+/g, "")}|${item.date}`;
           if (!isReadById("kwic", key)) count++;
@@ -93,6 +92,8 @@
   const unsubNotif = onCacheUpdate<NotificationsData>("notifications", () => recalcNotifBadge());
   const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", () => recalcNotifBadge());
   const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", () => recalcNotifBadge());
+  // Recalc when read IDs change (e.g. user marks notification read in NotificationsUnified)
+  $effect(() => { $readIdsStore; recalcNotifBadge(); });
 
   // Keep mail unread count updated from cache (works even before MailView is visited)
   const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (msgs) => {
@@ -104,8 +105,7 @@
     const cached = getCached<MailMessage[]>("mail_inbox");
     if (cached) unreadMailCount.set(cached.filter(m => !m.isRead).length);
     // Load read IDs then compute initial notification badge
-    getReadNotifications().then(ids => { readIds = ids; recalcNotifBadge(); }).catch(() => {});
-    recalcNotifBadge(); // also compute immediately with empty readIds (all unread)
+    getReadNotifications().then(ids => { readIdsStore.set(ids); }).catch(() => {}).finally(() => recalcNotifBadge());
   }
   onMount(async () => {
     unlistenRefresh = await listen('ai-refresh-request', () => {
@@ -182,6 +182,11 @@
       {#if visited.has("changes")}
         <div class="view-panel" class:active={$activeTab === "changes"}>
           <ChangeInfo />
+        </div>
+      {/if}
+      {#if visited.has("ict-tools")}
+        <div class="view-panel" class:active={$activeTab === "ict-tools"}>
+          <IctTools />
         </div>
       {/if}
     </div>

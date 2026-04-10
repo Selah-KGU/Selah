@@ -2,8 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { mailAuthState, cachedFetch, onCacheUpdate, invalidateCache, getCacheTimestamp, unreadMailCount, updateCacheEntry } from "../stores";
-  import { mailCheckSession, mailOpenLogin, mailFetchInbox, mailFetchMessage, mailFetchProfile } from "../api";
-  import type { MailMessage, MailDetail } from "../api";
+  import { mailCheckSession, mailOpenLogin, mailFetchInbox, mailFetchMessage, mailFetchProfile, mailFetchAttachments, mailDownloadAttachment } from "../api";
+  import type { MailMessage, MailDetail, MailAttachment } from "../api";
   import Icon from "../Icon.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import DOMPurify from "dompurify";
@@ -18,11 +18,17 @@
   let page = $state(0);
   const PAGE_SIZE = 20;
 
+  // Attachment state
+  let attachments = $state<MailAttachment[]>([]);
+  let attachmentsLoading = $state(false);
+  let downloadingIds = $state<Set<string>>(new Set());
+  let downloadErrors = $state<Record<string, string>>({});
+
   let unlistenLogin: (() => void) | null = null;
 
   // SWR: pick up background poll refreshes
   const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (fresh) => {
-    if (fresh && !selectedMessage) {
+    if (fresh && !selectedMessage && page === 0) {
       messages = fresh;
       lastFetchTs = getCacheTimestamp("mail_inbox");
     }
@@ -98,6 +104,8 @@
 
   async function openMessage(msg: MailMessage) {
     loadingDetail = true;
+    attachments = [];
+    downloadErrors = {};
     try {
       selectedMessage = await mailFetchMessage(msg.id);
       messages = messages.map(m => m.id === msg.id ? { ...m, isRead: true } : m);
@@ -105,14 +113,48 @@
       updateCacheEntry<MailMessage[]>("mail_inbox", (msgs) =>
         msgs.map(m => m.id === msg.id ? { ...m, isRead: true } : m)
       );
+      // Fetch attachments in background if any
+      if (selectedMessage.hasAttachments) {
+        attachmentsLoading = true;
+        mailFetchAttachments(msg.id).then(list => {
+          attachments = list;
+        }).catch(() => {
+          attachments = [];
+        }).finally(() => {
+          attachmentsLoading = false;
+        });
+      }
     } catch (e: any) {
       error = typeof e === "string" ? e : e?.message ?? "メール読み込み失敗";
     }
     loadingDetail = false;
   }
 
+  async function downloadAttachment(attachment: MailAttachment) {
+    if (!selectedMessage || downloadingIds.has(attachment.id)) return;
+    downloadingIds = new Set([...downloadingIds, attachment.id]);
+    delete downloadErrors[attachment.id];
+    downloadErrors = { ...downloadErrors };
+    try {
+      await mailDownloadAttachment(selectedMessage.id, attachment.id, attachment.name ?? "attachment");
+    } catch (e: any) {
+      downloadErrors = { ...downloadErrors, [attachment.id]: typeof e === "string" ? e : e?.message ?? "ダウンロード失敗" };
+    } finally {
+      downloadingIds = new Set([...downloadingIds].filter(id => id !== attachment.id));
+    }
+  }
+
+  function formatFileSize(bytes: number | null): string {
+    if (bytes == null) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   function closeDetail() {
     selectedMessage = null;
+    attachments = [];
+    downloadErrors = {};
   }
 
   function formatDate(iso: string | null): string {
@@ -306,6 +348,49 @@
               <p class="empty-body">本文はありません</p>
             {/if}
           </div>
+          {#if selectedMessage.hasAttachments}
+            <div class="attachments-section">
+              <div class="attachments-label">
+                <Icon name="paperclip" size={12} />
+                <span>添付ファイル</span>
+              </div>
+              {#if attachmentsLoading}
+                <div class="attachments-loading">
+                  <div class="skel-att"></div>
+                  <div class="skel-att"></div>
+                </div>
+              {:else}
+                <div class="attachments-list">
+                  {#each attachments as att (att.id)}
+                    <button
+                      class="attachment-item"
+                      class:downloading={downloadingIds.has(att.id)}
+                      onclick={() => downloadAttachment(att)}
+                      disabled={downloadingIds.has(att.id)}
+                    >
+                      <span class="att-icon">
+                        <Icon name="paperclip" size={13} />
+                      </span>
+                      <span class="att-name">{att.name ?? "ファイル"}</span>
+                      <span class="att-size">{formatFileSize(att.size)}</span>
+                      {#if downloadingIds.has(att.id)}
+                        <span class="att-spinner"></span>
+                      {:else}
+                        <span class="att-download-icon">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 3v13M6 11l6 6 6-6"/><line x1="4" y1="20" x2="20" y2="20"/>
+                          </svg>
+                        </span>
+                      {/if}
+                    </button>
+                    {#if downloadErrors[att.id]}
+                      <p class="att-error">{downloadErrors[att.id]}</p>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
         {/if}
       </div>
     {:else}
@@ -378,7 +463,7 @@
   .login-icon-wrap { margin-bottom: 4px; }
 
   .login-prompt h2 {
-    font-size: 17px;
+    font-size: 20px;
     font-weight: 600;
     color: var(--text-primary);
     margin: 0;
@@ -467,10 +552,10 @@
 
   .mail-header h2 {
     font-size: 20px;
-    font-weight: 700;
+    font-weight: 600;
     margin: 0;
     color: var(--text-primary);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
   }
 
   .unread-badge {
@@ -787,5 +872,109 @@
   .empty-body {
     color: var(--text-tertiary);
     font-style: italic;
+  }
+
+  /* ---- Attachments ---- */
+  .attachments-section {
+    border-top: 1px solid var(--border);
+    padding: 12px 16px 16px;
+  }
+
+  .attachments-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+  }
+
+  .attachments-loading {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .skel-att {
+    height: 34px;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    animation: skel-pulse 1.4s ease-in-out infinite;
+  }
+
+  .attachments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .attachment-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s;
+    color: var(--text-primary);
+  }
+
+  .attachment-item:hover:not(:disabled) {
+    background: var(--bg-tertiary, var(--bg-secondary));
+  }
+
+  .attachment-item:disabled {
+    opacity: 0.7;
+    cursor: default;
+  }
+
+  .att-icon {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+    display: flex;
+  }
+
+  .att-name {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .att-size {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  .att-download-icon {
+    flex-shrink: 0;
+    color: var(--accent);
+    display: flex;
+    opacity: 0.8;
+  }
+
+  .att-spinner {
+    flex-shrink: 0;
+    width: 13px;
+    height: 13px;
+    border: 1.5px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  .att-error {
+    font-size: 11px;
+    color: var(--color-danger, #e53e3e);
+    margin: 2px 0 4px 10px;
   }
 </style>

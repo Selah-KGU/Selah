@@ -1,37 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 
-const SEEN_KGC_KEY = "selah_seen_kgc_notifs";
-const SEEN_LUNA_KEY = "selah_seen_luna_notifs";
-const SEEN_KWIC_KEY = "selah_seen_kwic_notifs";
-
-// One-time migration: KGC IDs changed from sequential "1","2" to "title|date" format.
-// Clear old seen set to avoid treating all notifications as new repeatedly.
-const KGC_ID_MIGRATED_KEY = "selah_kgc_id_v2";
-if (!localStorage.getItem(KGC_ID_MIGRATED_KEY)) {
-  localStorage.removeItem(SEEN_KGC_KEY);
-  localStorage.setItem(KGC_ID_MIGRATED_KEY, "1");
-}
-
 /** Send a native macOS notification via osascript */
 export async function nativeNotify(title: string, body?: string) {
   await invoke("test_notification", { title, body: body ?? "" });
 }
 
-function getSeenIds(key: string): Set<string> {
+async function getSeenIds(source: string): Promise<Set<string>> {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
-    return new Set(JSON.parse(raw));
+    const ids: string[] = await invoke("get_seen_notif_ids", { source });
+    return new Set(ids);
   } catch {
     return new Set();
   }
 }
 
-function saveSeenIds(key: string, ids: Set<string>) {
+async function saveSeenIds(source: string, ids: Set<string>) {
   try {
-    // Keep only last 500 IDs to avoid unbounded growth
     const arr = [...ids].slice(-500);
-    localStorage.setItem(key, JSON.stringify(arr));
+    await invoke("save_seen_notif_ids", { source, ids: arr });
   } catch { /* ignore */ }
 }
 
@@ -67,13 +53,13 @@ export interface LunaNotif {
 /** Check KG-Course notifications for new items and send native notifications */
 export async function notifyNewKgc(entries: KgcNotif[]) {
   if (!entries.length) return;
-  const seen = getSeenIds(SEEN_KGC_KEY);
+  const seen = await getSeenIds("kgc");
   const newEntries = entries.filter((e) => !seen.has(e.id));
   if (!newEntries.length) {
     // First run: mark all as seen without notifying
     if (seen.size === 0) {
       for (const e of entries) seen.add(e.id);
-      saveSeenIds(SEEN_KGC_KEY, seen);
+      await saveSeenIds("kgc", seen);
     }
     return;
   }
@@ -85,23 +71,23 @@ export async function notifyNewKgc(entries: KgcNotif[]) {
     nativeNotify(
       e.category ? `[${e.category}] ${e.title}` : e.title,
       e.date,
-    );
+    ).catch(console.warn);
     seen.add(e.id);
   }
-  saveSeenIds(SEEN_KGC_KEY, seen);
+  await saveSeenIds("kgc", seen);
 }
 
 /** Check Luna notifications for new items and send native notifications */
 export async function notifyNewLuna(items: LunaNotif[]) {
   if (!items.length) return;
-  const seen = getSeenIds(SEEN_LUNA_KEY);
+  const seen = await getSeenIds("luna");
   // Luna notifications don't have a unique ID, use composite key
   const makeKey = (n: LunaNotif) => `${n.date}|${n.course_info}|${n.content}`;
   const newItems = items.filter((n) => !seen.has(makeKey(n)));
   if (!newItems.length) {
     if (seen.size === 0) {
       for (const n of items) seen.add(makeKey(n));
-      saveSeenIds(SEEN_LUNA_KEY, seen);
+      await saveSeenIds("luna", seen);
     }
     return;
   }
@@ -113,10 +99,10 @@ export async function notifyNewLuna(items: LunaNotif[]) {
     nativeNotify(
       n.module ? `[${n.module}] ${n.content}` : n.content,
       `${n.course_info} — ${n.date}`,
-    );
+    ).catch(console.warn);
     seen.add(makeKey(n));
   }
-  saveSeenIds(SEEN_LUNA_KEY, seen);
+  await saveSeenIds("luna", seen);
 }
 
 export interface KwicNotif {
@@ -130,12 +116,12 @@ export interface KwicNotif {
 /** Check KWIC Portal notifications for new items and send native notifications */
 export async function notifyNewKwic(items: KwicNotif[]) {
   if (!items.length) return;
-  const seen = getSeenIds(SEEN_KWIC_KEY);
+  const seen = await getSeenIds("kwic");
   const newItems = items.filter((n) => n.id && !seen.has(n.id));
   if (!newItems.length) {
     if (seen.size === 0) {
       for (const n of items) if (n.id) seen.add(n.id);
-      saveSeenIds(SEEN_KWIC_KEY, seen);
+      await saveSeenIds("kwic", seen);
     }
     return;
   }
@@ -147,30 +133,28 @@ export async function notifyNewKwic(items: KwicNotif[]) {
     nativeNotify(
       n.category ? `[${n.category}] ${n.title}` : n.title,
       n.date,
-    );
+    ).catch(console.warn);
     seen.add(n.id);
   }
-  saveSeenIds(SEEN_KWIC_KEY, seen);
+  await saveSeenIds("kwic", seen);
 }
 
-export interface MailNotif {
+interface MailNotif {
   id: string;
   subject: string | null;
   from: { emailAddress: { name: string | null; address: string | null } } | null;
   isRead: boolean | null;
 }
 
-const SEEN_MAIL_KEY = "selah_seen_mail_notifs";
-
 /** Check mail inbox for new unread items and send native notifications */
 export async function notifyNewMail(items: MailNotif[]) {
   if (!items.length) return;
-  const seen = getSeenIds(SEEN_MAIL_KEY);
+  const seen = await getSeenIds("mail");
   const newItems = items.filter((n) => n.id && !seen.has(n.id) && !n.isRead);
   if (!newItems.length) {
     if (seen.size === 0) {
       for (const n of items) if (n.id) seen.add(n.id);
-      saveSeenIds(SEEN_MAIL_KEY, seen);
+      await saveSeenIds("mail", seen);
     }
     return;
   }
@@ -184,8 +168,8 @@ export async function notifyNewMail(items: MailNotif[]) {
     nativeNotify(
       sender ? `${sender}` : "新着メール",
       subj,
-    );
+    ).catch(console.warn);
     seen.add(n.id);
   }
-  saveSeenIds(SEEN_MAIL_KEY, seen);
+  await saveSeenIds("mail", seen);
 }

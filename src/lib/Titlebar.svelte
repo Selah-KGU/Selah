@@ -2,6 +2,8 @@
   import { authState, theme, cachedFetch, sessionExpired, reloginInProgress } from "./stores";
   import type { StudentInfo } from "./stores";
   import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin } from "./api";
+  import { emit } from "@tauri-apps/api/event";
+  import { invoke } from "@tauri-apps/api/core";
   import Icon from "./Icon.svelte";
   import kgLogoRaw from "../assets/kg-logo.svg?raw";
 
@@ -40,9 +42,7 @@
     }
   }
 
-  async function toggleTheme() {
-    const { emit } = await import("@tauri-apps/api/event");
-    const { invoke } = await import("@tauri-apps/api/core");
+  function toggleTheme() {
     theme.update((t) => {
       const effective = t === "system"
         ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
@@ -51,7 +51,7 @@
       document.documentElement.setAttribute("data-theme", next);
       localStorage.setItem("selah-theme", next);
       emit("theme-changed", next);
-      invoke("set_app_theme", { theme: next });
+      invoke("set_app_theme", { theme: next }).catch(console.error);
       return next;
     });
   }
@@ -77,25 +77,23 @@
         <span class="titlebar-status-spinner"></span>
         <span class="titlebar-status-text">認証中</span>
       </span>
+    {:else if $sessionExpired}
+      <button class="reauth-badge" onclick={handleRelogin} disabled={reloginLoading} title="セッションが期限切れです。クリックして再認証してください。">
+        {#if reloginLoading}
+          <span class="reauth-spinner"></span>
+        {:else}
+          <Icon name="exclamationmark.triangle" size={13} />
+        {/if}
+        <span class="reauth-text">再認証</span>
+      </button>
     {:else if $authState.authenticated}
-      {#if $sessionExpired}
-        <button class="reauth-badge" onclick={handleRelogin} disabled={reloginLoading} title="セッションが期限切れです。クリックして再認証してください。">
-          {#if reloginLoading}
-            <span class="reauth-spinner"></span>
-          {:else}
-            <Icon name="exclamationmark.triangle" size={13} />
-          {/if}
-          <span class="reauth-text">再認証</span>
-        </button>
-      {:else}
-        <button class="user-badge" onclick={toggleProfile}>
-          <span class="user-name">{$authState.displayName || $authState.username}</span>
-          {#if $authState.faculty}
-            <span class="user-faculty">{$authState.faculty}</span>
-          {/if}
-        </button>
-      {/if}
-    {:else if !$authState.authenticated}
+      <button class="user-badge" onclick={toggleProfile}>
+        <span class="user-name">{$authState.displayName || $authState.username}</span>
+        {#if $authState.faculty}
+          <span class="user-faculty">{$authState.faculty}</span>
+        {/if}
+      </button>
+    {:else}
       <span class="titlebar-status" title="セッション復元中…">
         <span class="titlebar-status-spinner"></span>
       </span>
@@ -324,11 +322,6 @@
     background: var(--bg-hover);
   }
 
-  .tb-btn.active {
-    color: var(--accent);
-    background: var(--accent-light);
-  }
-
 
 
   /* Profile popover */
@@ -364,11 +357,6 @@
     margin-bottom: 14px;
     padding-bottom: 12px;
     border-bottom: 1px solid var(--border);
-  }
-
-  .profile-avatar {
-    color: var(--accent);
-    flex-shrink: 0;
   }
 
   .profile-name {

@@ -109,7 +109,12 @@
     justify-content: space-between;
     margin-bottom: 12px;
   }
-  .title-row h2 { margin: 0; }
+  .title-row h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
   .title-controls { display: flex; align-items: center; gap: 8px; }
   .pending-badge {
     font-size: 11px;

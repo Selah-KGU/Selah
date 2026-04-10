@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached } from "../stores";
-  import type { TimetableData, TimetableEntry, NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
-  import { fetchTimetable, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, aiChat, fetchWeather } from "../api";
-  import type { KwicPortalHome, KwicPortalSection, KwicPortalNotification, KwicNotificationDetail, KwicSubportalData, WeatherData } from "../api";
-  import type { LunaTodoItem, LunaNotification, LunaCourse } from "../types";
-  import { PERIOD_TIMES, DAY_LABELS } from "../types";
+  import type { NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
+  import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, aiChat, fetchWeather } from "../api";
+  import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
+  import type { LunaTodoItem, LunaNotification, ScheduleResponse, KgcCourseRow, LunaCourseRow } from "../types";
+  import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
   import { invoke } from "@tauri-apps/api/core";
 
   // ============ Types ============
@@ -36,15 +36,37 @@
     sources: UnifiedNotif[];
   }
 
-  interface LunaTimetable {
-    courses: LunaCourse[];
-  }
-
   // ============ State ============
 
-  let timetableData = $state<TimetableData | null>(null);
-  let lunaTimetable = $state<LunaTimetable | null>(null);
+  // Local merged type to mimic old UnifiedEntry shape
+  interface HomeEntry {
+    name: string;
+    day: number;
+    period: number;
+    room: string;
+    detail_path: string;
+    is_cancelled: boolean;
+    luna_id: string;
+    teacher: string;
+  }
+
+  let timetableData = $state<ScheduleResponse | null>(null);
   let todoItems = $state<LunaTodoItem[]>([]);
+
+  // Merge KGC+Luna into flat entry list for homepage widgets
+  let homeEntries = $derived.by((): HomeEntry[] => {
+    if (!timetableData) return [];
+    const kgc = timetableData.raw.kgc_entries_current;
+    const luna = timetableData.raw.luna_courses;
+    return kgc.map(k => {
+      const l = luna.find(lc => lc.day === k.day && lc.period === k.period);
+      return {
+        name: k.name, day: k.day, period: k.period, room: k.room,
+        detail_path: k.detail_path, is_cancelled: k.is_cancelled,
+        luna_id: l?.luna_id ?? "", teacher: l?.teacher ?? "",
+      };
+    });
+  });
   let kgcNotifs = $state<NotificationEntry[]>([]);
   let lunaNotifs = $state<LunaNotification[]>([]);
   let kwicHome = $state<KwicPortalHome | null>(null);
@@ -52,6 +74,7 @@
   // Day-level date: only reassigned when the calendar date or greeting-slot changes
   let todayDate = $state(new Date());
   let loading = $state(true);
+  let loadInProgress = false;
 
   function greetingSlot(d: Date) {
     const h = d.getHours();
@@ -91,13 +114,9 @@
     subportalLoading = false;
   }
 
-  /** Open merged subportal (fetches multiple tagCds, merges links+notifications) */
-  let showIctFacility = $state(false);
-
   function closeSubportal() {
     subportalData = null;
     subportalError = "";
-    showIctFacility = false;
   }
 
   // ============ Derived ============
@@ -160,6 +179,7 @@
   function applyWeather(data: WeatherData) {
     weather = data;
     tomorrowWeather = data.tomorrow;
+    stopWeatherCycle();
     if (tomorrowWeather) startWeatherCycle();
   }
 
@@ -199,13 +219,14 @@
     const m = todayDate.getMonth() + 1;
     const d = todayDate.getDate();
     const dayStr = DAY_LABELS[todayDate.getDay()];
-    return `${m}月${d}日（${dayStr}）`;
+    return `${m} 月 ${d} 日（${dayStr}）`;
   });
 
   let todaySummary = $derived.by(() => {
-    if (!timetableData?.entries.length) return null;
-    const todayDay = DAY_LABELS[now.getDay()];
-    const classes = timetableData.entries.filter(e => e.day === todayDay && !e.is_cancelled);
+    if (!homeEntries.length) return null;
+    const jsDow = now.getDay();
+    const todayDay = jsDow === 0 ? 7 : jsDow;
+    const classes = homeEntries.filter(e => e.day === todayDay && !e.is_cancelled);
     if (!classes.length) return "今日は授業がありません";
     const nowMin = now.getHours() * 60 + now.getMinutes();
     const remaining = classes.filter(e => {
@@ -217,13 +238,14 @@
   });
 
   let heroClasses = $derived.by(() => {
-    if (!timetableData?.entries.length) return [];
-    const todayDay = DAY_LABELS[now.getDay()];
+    if (!homeEntries.length) return [];
+    const jsDow = now.getDay();
+    const todayDay = jsDow === 0 ? 7 : jsDow;
     const nowMin = now.getHours() * 60 + now.getMinutes();
-    const todayClasses = timetableData.entries
+    const todayClasses = homeEntries
       .filter(e => e.day === todayDay && !e.is_cancelled)
       .sort((a, b) => a.period - b.period);
-    const result: { entry: TimetableEntry; time: typeof PERIOD_TIMES[number]; live: boolean }[] = [];
+    const result: { entry: HomeEntry; time: typeof PERIOD_TIMES[number]; live: boolean }[] = [];
     for (const entry of todayClasses) {
       const pt = PERIOD_TIMES[entry.period];
       if (!pt) continue;
@@ -238,28 +260,28 @@
   });
 
   let upcomingDays = $derived.by(() => {
-    if (!timetableData?.entries.length) {
+    if (!homeEntries.length) {
       return [];
     }
     const todayDow = todayDate.getDay(); // 0=Sun..6=Sat
     const nowMin = now.getHours() * 60 + now.getMinutes();
 
-    // Build map: day name → non-cancelled entries
-    const dayMap = new Map<string, TimetableEntry[]>();
-    for (const e of timetableData.entries) {
+    // Build map: unified day number (1=Mon..6=Sat) -> non-cancelled entries
+    const dayMap = new Map<number, HomeEntry[]>();
+    for (const e of homeEntries) {
       if (e.is_cancelled) continue;
       const arr = dayMap.get(e.day) ?? [];
       arr.push(e);
       dayMap.set(e.day, arr);
     }
 
-    const result: { label: string; relLabel: string; entries: TimetableEntry[] }[] = [];
+    const result: { label: string; relLabel: string; entries: HomeEntry[] }[] = [];
 
     // Scan up to 14 days ahead, find first 2 days that have classes
     for (let offset = 0; offset < 14 && result.length < 2; offset++) {
-      const dow = (todayDow + offset) % 7;
-      const dayStr = DAY_LABELS[dow];
-      const dayEntries = dayMap.get(dayStr);
+      const jsDow = (todayDow + offset) % 7;
+      const unifiedDay = jsDow === 0 ? 7 : jsDow; // 1=Mon..7=Sun
+      const dayEntries = dayMap.get(unifiedDay);
       if (!dayEntries?.length) continue;
 
       // If today: skip if all classes already ended
@@ -271,6 +293,7 @@
         if (nowMin >= lastEnd) continue;
       }
 
+      const dayStr = DAY_LABELS[jsDow];
       const sorted = [...dayEntries].sort((a, b) => a.period - b.period);
       const d = new Date(now);
       d.setDate(d.getDate() + offset);
@@ -283,14 +306,15 @@
   });
 
   let urgentTodos = $derived.by(() => {
-    const limit = new Date(todayDate);
+    const startOfToday = new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate());
+    const limit = new Date(startOfToday);
     limit.setDate(limit.getDate() + 5);
     return todoItems
       .filter(t => {
         if (t.status.includes("提出済")) return false;
         if (!t.deadline) return false;
         const d = new Date(t.deadline.replace(/\//g, "-"));
-        return d >= todayDate && d <= limit;
+        return d >= startOfToday && d <= limit;
       })
       .sort((a, b) => {
         const da = new Date(a.deadline.replace(/\//g, "-")).getTime();
@@ -303,8 +327,8 @@
     const merged: UnifiedNotif[] = [];
     const seen = new Set<string>();
     const addUniq = (n: UnifiedNotif) => {
-      // Deduplicate by normalized title + date
-      const key = `${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
+      // Deduplicate by source + normalized title + date
+      const key = `${n.source}|${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
       if (seen.has(key)) return;
       seen.add(key);
       merged.push(n);
@@ -394,14 +418,9 @@
     tickClock();
     // Re-fetch timetable if cache is stale
     if (serverDataLoaded) {
-      cachedFetch<TimetableData>("timetable", fetchTimetable)
+      cachedFetch<ScheduleResponse>("schedule_data", getScheduleSnapshot)
         .then(tt => { if (tt) timetableData = tt; })
         .catch(() => {});
-      if ($lunaAuthState.authenticated) {
-        cachedFetch<LunaTimetable>("luna_timetable", () => lunaInvoke<LunaTimetable>("luna_fetch_timetable", {}))
-          .then(lt => { if (lt) lunaTimetable = lt; })
-          .catch(() => {});
-      }
     }
   }
 
@@ -409,19 +428,17 @@
     clockInterval = setInterval(tickClock, 15_000);
     document.addEventListener("visibilitychange", handleHomeVisibility);
     // Restore cached data immediately so UI is never blank
-    const cachedTT = getCached<TimetableData>("timetable");
-    const cachedLunaTT = getCached<LunaTimetable>("luna_timetable");
+    const cachedTT = getCached<ScheduleResponse>("schedule_data");
     const cachedTodo = getCached<LunaTodoItem[]>("luna_todo");
     const cachedKwic = getCached<KwicPortalHome>("kwic_home");
     const cachedNotifs = getCached<NotificationsData>("notifications");
     const cachedLunaNotifs = getCached<LunaNotification[]>("luna_updates");
     if (cachedTT) timetableData = cachedTT;
-    if (cachedLunaTT) lunaTimetable = cachedLunaTT;
     if (cachedTodo) todoItems = cachedTodo;
     if (cachedKwic) kwicHome = cachedKwic;
     if (cachedNotifs) kgcNotifs = cachedNotifs.entries ?? [];
     if (cachedLunaNotifs) lunaNotifs = cachedLunaNotifs;
-    if (cachedTT || cachedLunaTT || cachedNotifs || cachedKwic) loading = false;
+    if (cachedTT || cachedNotifs || cachedKwic) loading = false;
     cachedFetch<WeatherData>("weather", fetchWeather).then(applyWeather).catch(() => {});
     checkAiConfig();
     if ($authState.authenticated) {
@@ -438,7 +455,6 @@
     stopSuggestionCycle();
     stopWeatherCycle();
     unsubTimetable();
-    unsubLunaTimetable();
     unsubTodo();
     unsubKgcNotifs();
     unsubLunaNotifs();
@@ -449,8 +465,7 @@
     unsubKwicAuth();
   });
 
-  const unsubTimetable = onCacheUpdate<TimetableData>("timetable", (fresh) => { timetableData = fresh; });
-  const unsubLunaTimetable = onCacheUpdate<LunaTimetable>("luna_timetable", (fresh) => { lunaTimetable = fresh; });
+  const unsubTimetable = onCacheUpdate<ScheduleResponse>("schedule_data", (fresh) => { timetableData = fresh; });
   const unsubTodo = onCacheUpdate<LunaTodoItem[]>("luna_todo", (fresh) => { todoItems = fresh; });
   const unsubKgcNotifs = onCacheUpdate<NotificationsData>("notifications", (fresh) => { kgcNotifs = fresh?.entries ?? []; });
   const unsubLunaNotifs = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => { lunaNotifs = fresh ?? []; });
@@ -473,12 +488,10 @@
       Promise.allSettled([
         cachedFetch<LunaTodoItem[]>("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo")),
         cachedFetch<LunaNotification[]>("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates")),
-        cachedFetch<LunaTimetable>("luna_timetable", () => lunaInvoke<LunaTimetable>("luna_fetch_timetable", {})),
-      ]).then(([td, ln, lt]) => {
+      ]).then(([td, ln]) => {
         if (td.status === "fulfilled" && td.value) todoItems = td.value;
         if (ln.status === "fulfilled" && ln.value) lunaNotifs = ln.value as LunaNotification[];
-        if (lt.status === "fulfilled" && lt.value) lunaTimetable = lt.value as LunaTimetable;
-      });
+      }).catch(() => {});
     }
   });
 
@@ -492,11 +505,12 @@
   });
 
   async function loadData() {
-    if (loading) return; // prevent concurrent loads
+    if (loadInProgress) return; // prevent concurrent loads
+    loadInProgress = true;
     loading = true;
     try {
-      const [tt, td, nt, ln, lt, kh] = await Promise.allSettled([
-        cachedFetch<TimetableData>("timetable", fetchTimetable),
+      const [tt, td, nt, ln, kh] = await Promise.allSettled([
+        cachedFetch<ScheduleResponse>("schedule_data", getScheduleSnapshot),
         $lunaAuthState.authenticated
           ? cachedFetch<LunaTodoItem[]>("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"))
           : Promise.resolve([]),
@@ -504,17 +518,12 @@
         $lunaAuthState.authenticated
           ? cachedFetch<LunaNotification[]>("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"))
           : Promise.resolve([]),
-        $lunaAuthState.authenticated
-          ? cachedFetch<LunaTimetable>("luna_timetable", () => lunaInvoke<LunaTimetable>("luna_fetch_timetable", {}))
-          : Promise.resolve(null),
         $kwicAuthState.authenticated
           ? cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome)
           : Promise.resolve(null),
       ]);
       if (tt.status === "fulfilled" && tt.value) {
         timetableData = tt.value;
-      } else {
-        // timetable load failed
       }
       if (td.status === "fulfilled" && td.value) todoItems = td.value;
       if (nt.status === "fulfilled" && nt.value) {
@@ -522,9 +531,6 @@
       }
       if (ln.status === "fulfilled" && ln.value) {
         lunaNotifs = (ln.value as LunaNotification[]) ?? [];
-      }
-      if (lt.status === "fulfilled" && lt.value) {
-        lunaTimetable = lt.value as LunaTimetable;
       }
       if (kh.status === "fulfilled" && kh.value) {
         kwicHome = kh.value as KwicPortalHome;
@@ -535,6 +541,7 @@
       }
     } catch (err) { console.error("[HomePage] loadData error:", err); }
     loading = false;
+    loadInProgress = false;
   }
 
   const AI_CACHE_KEY = "ai-notif-cache";
@@ -684,37 +691,26 @@
         .join("\n");
 
       // Build student context with campus mapping
-      const studentInfo = timetableData?.student;
       let studentCtx = `学生ID: ${$authState.studentId}`;
-      if (studentInfo) {
-        studentCtx += `\n氏名: ${studentInfo.name}`;
-        if (studentInfo.faculty) studentCtx += `\n学部: ${studentInfo.faculty}`;
-        if (studentInfo.department) studentCtx += `\n学科: ${studentInfo.department}`;
-        if (studentInfo.major) studentCtx += `\n専攻: ${studentInfo.major}`;
-        if (studentInfo.student_type) studentCtx += `\n学生種別: ${studentInfo.student_type}`;
-        // Campus mapping based on faculty
-        const faculty = studentInfo.faculty;
+      if ($authState.displayName) studentCtx += `\n氏名: ${$authState.displayName}`;
+      if ($authState.faculty) {
+        studentCtx += `\n学部: ${$authState.faculty}`;
         const kscFaculties = ["総合政策学部", "理学部", "工学部", "生命環境学部", "建築学部"];
-        const campus = kscFaculties.some(f => faculty.includes(f))
+        const campus = kscFaculties.some(f => $authState.faculty.includes(f))
           ? "神戸三田キャンパス（KSC）"
           : "西宮上ケ原キャンパス（NUC）";
         studentCtx += `\n所属キャンパス: ${campus}`;
       }
+      if ($authState.department) studentCtx += `\n学科: ${$authState.department}`;
 
       // Build timetable context
       let timetableCtx = "";
-      if (timetableData?.entries?.length) {
-        const courses = timetableData.entries
+      if (homeEntries.length) {
+        const courses = homeEntries
           .filter(e => !e.is_cancelled)
-          .map(e => `${e.day}${e.period}限: ${e.course_name}${e.room ? ` (${e.room})` : ""}`)
+          .map(e => `${DAY_NUM_LABELS[e.day] ?? ""}${e.period}限: ${e.name}${e.teacher ? ` (${e.teacher})` : ""}${e.room ? ` [${e.room}]` : ""}`)
           .join("\n");
         timetableCtx = `\n\n履修科目:\n${courses}`;
-      }
-      if (lunaTimetable?.courses?.length) {
-        const lunaCourses = lunaTimetable.courses
-          .map(c => `${DAY_LABELS[c.day]}${c.period}限: ${c.name} (${c.teacher})`)
-          .join("\n");
-        if (!timetableCtx) timetableCtx = `\n\n履修科目 (Luna):\n${lunaCourses}`;
       }
 
       // Build todo context
@@ -891,28 +887,26 @@ suggestionsのルール：
     activeTab.set(tab);
   }
 
-  async function openDetail(entry: TimetableEntry) {
-    // Prefer Luna if authenticated and course matches
-    if ($lunaAuthState.authenticated && lunaTimetable?.courses) {
-      const dayIdx = DAY_LABELS.indexOf(entry.day);
-      const lunaMatch = lunaTimetable.courses.find(c => c.day === dayIdx && c.period === entry.period);
-      if (lunaMatch) {
-        try {
-          await invoke("luna_open_detail_window", {
-            path: "", title: lunaMatch.name, mode: "course", idnumber: lunaMatch.idnumber,
-            kgcPath: entry.detail_path || null,
-          });
-          return;
-        } catch (e) {
-          console.error("Failed to open Luna detail:", e);
-        }
+  async function openDetail(entry: HomeEntry) {
+    // Prefer Luna if authenticated and course has luna_id
+    if ($lunaAuthState.authenticated && entry.luna_id) {
+      try {
+        await invoke("luna_open_detail_window", {
+          path: "", title: entry.name, mode: "course", idnumber: entry.luna_id,
+          kgcPath: entry.detail_path || null,
+        });
+        return;
+      } catch (e) {
+        console.error("Failed to open Luna detail:", e);
       }
     }
     // Fallback to KG-Course
-    try {
-      await invoke("open_detail_window", { path: entry.detail_path, courseName: entry.course_name });
-    } catch (e) {
-      console.error("Failed to open detail:", e);
+    if (entry.detail_path) {
+      try {
+        await invoke("open_detail_window", { path: entry.detail_path, courseName: entry.name });
+      } catch (e) {
+        console.error("Failed to open detail:", e);
+      }
     }
   }
 
@@ -992,7 +986,7 @@ suggestionsのルール：
       {#each heroClasses as nc}
         <button class="hero-card" class:hero-live={nc.live} onclick={() => openDetail(nc.entry)}>
           <span class="hero-tag">{nc.live ? "NOW" : "NEXT"}</span>
-          <span class="hero-course">{nc.entry.course_name}</span>
+          <span class="hero-course">{nc.entry.name}</span>
           <span class="hero-meta">{nc.entry.room ? `${nc.entry.room} · ` : ""}{nc.time.start}–{nc.time.end}</span>
         </button>
       {/each}
@@ -1016,7 +1010,7 @@ suggestionsのルール：
       {#if aiNotifLoading}
         <div class="ai-loading-box">
           <div class="ai-loading-header">
-            <span class="ai-badge">AI</span>
+            <span class="ai-badge"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><defs><linearGradient id="ai-grad-load" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#af52de"/><stop offset="100%" stop-color="#007aff"/></linearGradient></defs><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="url(#ai-grad-load)" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="url(#ai-grad-load)" stroke-linejoin="round" stroke-width="1"/></svg></span>
             <span class="ai-loading-text">分析中</span>
             <span class="ai-loading-dots"><span></span><span></span><span></span></span>
           </div>
@@ -1050,7 +1044,7 @@ suggestionsのルール：
       {:else if aiNotifResult}
         <div class="ai-notif-box">
           <div class="ai-notif-meta">
-            <span class="ai-badge">AI</span>
+            <span class="ai-badge"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><defs><linearGradient id="ai-grad-result" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#af52de"/><stop offset="100%" stop-color="#007aff"/></linearGradient></defs><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="url(#ai-grad-result)" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="url(#ai-grad-result)" stroke-linejoin="round" stroke-width="1"/></svg></span>
             {#if aiNotifResult.suggestions.length > 0}
               <span class="ai-suggestions-row">
                 {#each aiNotifResult.suggestions as s, i}
@@ -1130,30 +1124,11 @@ suggestionsのルール：
           {/if}
         {/if}
       </section>
-    {:else if showIctFacility}
-      <!-- ICT・施設利用 choice -->
-      <section class="section">
-        <button class="section-head" onclick={closeSubportal}>
-          <span class="back-arrow">‹</span>
-          <span>ICT・施設利用</span>
-        </button>
-        <div class="kwic-link-list">
-          <button class="kwic-sub-link" onclick={() => kwicOpenLink("https://kwic.kwansei.ac.jp/portal/subportal?tagCd=6", "ICT活用・サポート")}>
-            <span class="kwic-sub-link-title">ICT活用・サポート</span>
-          </button>
-          <button class="kwic-sub-link" onclick={() => kwicOpenLink("https://kwic.kwansei.ac.jp/portal/subportal?tagCd=9", "各種施設利用・イベント")}>
-            <span class="kwic-sub-link-title">各種施設利用・イベント</span>
-          </button>
-        </div>
-      </section>
     {:else}
       {@const mainLinks = kwicHome.sections.find(s => s.title === "メインリンク")}
       {#if mainLinks && mainLinks.items.length > 0}
         {@const ICT_TAG = "tagCd=6"}
-        {@const FACILITY_TAG = "tagCd=9"}
-        {@const filteredItems = mainLinks.items.filter(i => !i.url.includes(ICT_TAG) && !i.url.includes(FACILITY_TAG))}
-        {@const hasIct = mainLinks.items.some(i => i.url.includes(ICT_TAG))}
-        {@const hasFacility = mainLinks.items.some(i => i.url.includes(FACILITY_TAG))}
+        {@const filteredItems = mainLinks.items.filter(i => !i.url.includes(ICT_TAG))}
         <section class="section">
           <div class="section-head-static">
             <span>ポータルリンク</span>
@@ -1164,11 +1139,6 @@ suggestionsのルール：
                 <span class="kwic-link-title">{item.title}</span>
               </button>
             {/each}
-            {#if hasIct || hasFacility}
-              <button class="kwic-link-card" onclick={() => showIctFacility = true}>
-                <span class="kwic-link-title">ICT・施設利用</span>
-              </button>
-            {/if}
           </div>
         </section>
       {/if}
@@ -1199,7 +1169,7 @@ suggestionsのルール：
                 <button class="tile-entry" onclick={() => openDetail(entry)}>
                   <span class="tile-period">{entry.period}限</span>
                   <div class="tile-info">
-                    <span class="tile-main">{entry.course_name}</span>
+                    <span class="tile-main">{entry.name}</span>
                     {#if entry.room}<span class="tile-sub">{entry.room}</span>{/if}
                   </div>
                   <span class="tile-chevron">›</span>
@@ -1329,12 +1299,6 @@ suggestionsのルール：
   }
 
   /* ===== Notifications ===== */
-  .notif-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
   .notif-cards {
     display: flex;
     flex-direction: column;
@@ -1523,14 +1487,9 @@ suggestionsのルール：
 
   .ai-badge {
     flex-shrink: 0;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 6px;
-    background: linear-gradient(135deg, rgba(175, 82, 222, 0.85), rgba(0, 122, 255, 0.85));
-    color: rgb(255, 255, 255);
-    line-height: 1.5;
-    letter-spacing: 0px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .ai-suggestions-row {
@@ -1840,12 +1799,6 @@ suggestionsのルール：
     margin-left: auto;
   }
 
-  .tile-row {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-  }
-
   .tile-period {
     flex-shrink: 0;
     font-size: 13px;
@@ -1989,17 +1942,6 @@ suggestionsのルール：
     color: var(--text-primary);
   }
 
-  .kwic-badge {
-    font-size: 9px;
-    font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: #7c3aed;
-    color: #fff;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-  }
-
   .kwic-link-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -2072,49 +2014,9 @@ suggestionsのルール：
     transform: scale(1.01);
     box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   }
-  .kwic-sub-link-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    flex-shrink: 0;
-    object-fit: contain;
-  }
   .kwic-sub-link-title {
     font-size: 13px;
     font-weight: 500;
     color: var(--accent);
-  }
-
-  .kwic-sub-notifs {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-top: 8px;
-  }
-  .kwic-sub-notifs-label {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text-secondary);
-  }
-  .kwic-sub-notif {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 6px 0;
-    border-bottom: 1px solid var(--glass-border);
-  }
-  .kwic-sub-notif-date {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-  .kwic-sub-notif-title {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 </style>

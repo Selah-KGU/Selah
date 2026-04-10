@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
-  TimetableData,
   GradesData,
   CancellationsData,
   MakeupData,
@@ -12,51 +11,53 @@ import type {
   StudentInfo,
   SyllabusSearchParams,
   SyllabusSearchResult,
-  CourseDetail,
   AiConfig,
   AiChatMessage,
 } from "./stores";
+import type { ScheduleResponse, AiScheduleResult } from "./types";
 import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache } from "./stores";
+import type { ReadIdsData } from "./stores";
 import { get } from "svelte/store";
 
-// Global listeners — store unlisteners for cleanup
-const _unlisteners: Array<Promise<() => void>> = [];
-
-_unlisteners.push(listen("luna-login-success", () => {
+// Global listeners — app-lifetime, no cleanup needed
+listen("luna-login-success", () => {
   lunaAuthState.set({ authenticated: true });
-}));
+});
 
-_unlisteners.push(listen("kwic-login-success", () => {
+listen("kwic-login-success", () => {
   kwicAuthState.set({ authenticated: true });
-}));
+});
 
 // Handle login phase 2/3 failures — undo premature auth state
-_unlisteners.push(listen("luna-login-error", () => {
+listen("luna-login-error", () => {
   lunaAuthState.set({ authenticated: false });
-}));
+});
 
-_unlisteners.push(listen("kwic-login-error", () => {
+listen("kwic-login-error", () => {
   kwicAuthState.set({ authenticated: false });
-}));
+});
 
-_unlisteners.push(listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
+listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
   mailAuthState.set({
     authenticated: true,
     email: event.payload.email,
     displayName: event.payload.displayName,
   });
-}));
+});
 
-_unlisteners.push(listen("gcal-login-success", () => {
+listen("gcal-login-success", () => {
   gcalAuthState.update(s => ({ ...s, authenticated: true }));
-}));
+});
 
-export async function cleanupApiListeners() {
-  for (const p of _unlisteners) { (await p)(); }
-  _unlisteners.length = 0;
-}
+listen("gcal-login-error", () => {
+  gcalAuthState.update(s => ({ ...s, authenticated: false }));
+});
 
-export interface SessionStatus {
+listen("mail-login-error", () => {
+  mailAuthState.set({ authenticated: false, email: "", displayName: "" });
+});
+
+interface SessionStatus {
   valid: boolean;
   username: string;
   display_name: string;
@@ -132,6 +133,13 @@ export const serviceRegistry: Record<string, ServiceConfig> = {
     ],
     onRecovered: () => refreshKgcAuthState().catch(() => {}),
     onReset: () => {
+      // Don't wipe authState entirely — if sessionExpired is set, the user
+      // should see the Dashboard with cached data, not the Login page.
+      // Only wipe auth on explicit logout (which calls logout() directly).
+      if (get(sessionExpired)) {
+        console.log("[Selah] kgc.onReset: sessionExpired=true, keeping authState for cached view");
+        return;
+      }
       authState.set({
         authenticated: false, username: "", displayName: "",
         studentId: "", faculty: "", department: "",
@@ -171,6 +179,8 @@ function isTransientError(msg: string): boolean {
   return TRANSIENT_PATTERNS.some(p => lower.includes(p.toLowerCase()));
 }
 
+const EVER_AUTH_KEY = "selah-ever-auth";
+
 export function setAuthFromSession(session: { username: string; display_name?: string; student_id?: string; faculty?: string; department?: string }) {
   authState.set({
     authenticated: true,
@@ -182,6 +192,9 @@ export function setAuthFromSession(session: { username: string; display_name?: s
     loading: false,
     error: "",
   });
+  // Persist the "ever logged in" flag so the app never shows Login after a restart
+  // when cached data is available. Only cleared by explicit logout().
+  try { localStorage.setItem(EVER_AUTH_KEY, "1"); } catch {}
 }
 
 /** Re-fetch KG-Course user info and update authState store */
@@ -192,14 +205,14 @@ async function refreshKgcAuthState(): Promise<boolean> {
   return true;
 }
 
-export interface SessionStates {
+interface SessionStates {
   kgc: boolean;
   luna: boolean;
   kwic: boolean;
   [key: string]: boolean;
 }
 
-export async function getSessionStates(): Promise<SessionStates> {
+async function getSessionStates(): Promise<SessionStates> {
   return invoke<SessionStates>("get_session_states");
 }
 
@@ -450,60 +463,104 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
  * Returns KGC session status, or null if KGC session is invalid.
  */
 export async function restoreAllSessions(): Promise<SessionStatus | null> {
-  let status = await checkSession();
+  const [initialStatus, states] = await Promise.all([
+    checkSession(),
+    getSessionStates().catch(() => ({ kgc: false, luna: false, kwic: false })),
+  ]);
+  let status = initialStatus;
+  console.log("[Selah] restoreAllSessions: initial check_session =", JSON.stringify(status));
+  console.log("[Selah] restoreAllSessions: session states =", JSON.stringify(states));
 
-  // Server-side Shibboleth may have expired while cookies were on disk.
-  // Try headless refresh via Okta SSO (WebView cookies may still be valid).
-  if (!status.valid) {
-    console.log("[Selah] Disk session expired, attempting headless KGC refresh...");
-    try {
-      const ok = await syncSession("kgc");
-      if (ok) {
-        status = await checkSession();
-        console.log("[Selah] Headless KGC refresh succeeded");
-      }
-    } catch (e) {
-      console.warn("[Selah] Headless KGC refresh failed:", e);
-    }
-  }
-
-  // Even if KGC failed, try secondary services — they may have longer-lived cookies.
-  // If any secondary sync succeeds, cross-renewal will automatically try KGC again.
-  const states = await getSessionStates().catch(() => ({ kgc: false, luna: false, kwic: false }));
+  // If any service has expired disk cookies, refresh all in parallel.
+  // This avoids sequential 20s timeouts when Okta is expired.
+  const needsKgcSync = !status.valid;
   const secondaryTasks = [
-    { key: "luna", hasSession: states.luna, validate: () => lunaCheckSession(), config: serviceRegistry.luna },
-    { key: "kwic", hasSession: states.kwic, validate: () => kwicCheckSession(), config: serviceRegistry.kwic },
+    { key: "luna" as const, hasSession: states.luna, validate: () => lunaCheckSession(), config: serviceRegistry.luna },
+    { key: "kwic" as const, hasSession: states.kwic, validate: () => kwicCheckSession(), config: serviceRegistry.kwic },
   ];
-  await Promise.allSettled(secondaryTasks.map(async ({ key, hasSession, validate, config }) => {
-    try {
-      if (hasSession) {
-        const valid = await validate();
-        if (valid) {
-          config.onRecovered();
-          return;
-        }
-        console.log(`[Selah] ${key} disk cookies expired, trying headless sync...`);
-      }
-      const ok = await syncSession(key);
-      if (ok) config.onRecovered();
-      else config.onReset();
-    } catch (e) {
-      console.warn(`[Selah] Startup ${key} restore failed:`, e);
-      config.onReset();
+
+  // Validate secondary services that have disk cookies (fast, no WebView)
+  const secondaryValid: Record<string, boolean> = {};
+  await Promise.allSettled(secondaryTasks.map(async ({ key, hasSession, validate }) => {
+    if (hasSession) {
+      secondaryValid[key] = await validate().catch(() => false);
     }
   }));
 
-  // If KGC was not valid initially, cross-renewal from Luna/KWIC may have saved it.
-  // Re-check KGC after secondary services had their chance.
-  if (!status.valid) {
-    console.log("[Selah] Re-checking KGC after secondary service cross-renewal...");
-    status = await checkSession().catch(() => status);
-    if (status.valid) {
-      console.log("[Selah] KGC recovered via cross-renewal");
+  // Collect services that need headless sync
+  const syncNeeded: string[] = [];
+  if (needsKgcSync) syncNeeded.push("kgc");
+  for (const { key, hasSession } of secondaryTasks) {
+    if (hasSession && !secondaryValid[key]) syncNeeded.push(key);
+  }
+
+  if (syncNeeded.length > 0) {
+    console.log(`[Selah] Disk sessions expired, syncing in parallel: ${syncNeeded.join(", ")}`);
+    // Run all headless syncs in parallel — shares Okta SSO, so if one fails they all will
+    const results = await Promise.allSettled(syncNeeded.map(svc => syncSession(svc)));
+    for (let i = 0; i < syncNeeded.length; i++) {
+      const svc = syncNeeded[i];
+      const res = results[i];
+      const ok = res.status === "fulfilled" && res.value;
+      if (svc === "kgc") {
+        if (ok) {
+          const fresh = await checkSession().catch(() => null);
+          if (fresh?.valid) status = fresh;
+          console.log("[Selah] Headless KGC refresh succeeded");
+        }
+      } else {
+        const config = serviceRegistry[svc];
+        if (ok) config.onRecovered();
+        else config.onReset();
+      }
+    }
+  } else {
+    // All disk cookies were valid — mark secondary services
+    for (const { key, config } of secondaryTasks) {
+      if (secondaryValid[key]) config.onRecovered();
     }
   }
 
-  if (!status.valid) return null;
+  // If KGC was not valid initially, cross-renewal from Luna/KWIC may have saved it.
+  if (!status.valid) {
+    console.log("[Selah] Re-checking KGC after parallel sync...");
+    const recheck = await checkSession().catch(() => null);
+    if (recheck?.valid) {
+      status = recheck;
+      console.log("[Selah] KGC recovered via cross-renewal");
+    }
+    // Keep original status (with disk user info) if re-check also failed
+  }
+
+  if (!status.valid) {
+    console.log("[Selah] restoreAllSessions: KGC invalid after all recovery attempts. status =", JSON.stringify(status), "states.kgc =", states.kgc);
+    // KGC session is dead, but if we have disk-saved user info, show cached
+    // data with a re-auth prompt instead of dumping user to the login page.
+    if (status.username || status.display_name || status.student_id || states.kgc) {
+      if (status.username || status.display_name) {
+        setAuthFromSession(status);
+      } else {
+        // Edge case: disk session existed (states.kgc) but user info fields were empty.
+        // Set minimal auth so the dashboard with cached data is shown.
+        authState.set({
+          authenticated: true,
+          username: "",
+          displayName: "\u30e6\u30fc\u30b6\u30fc",
+          studentId: "",
+          faculty: "",
+          department: "",
+          loading: false,
+          error: "",
+        });
+        try { localStorage.setItem(EVER_AUTH_KEY, "1"); } catch {}
+      }
+      sessionExpired.set(true);
+      console.log("[Selah] restoreAllSessions: showing cached Dashboard with re-auth badge");
+      return status; // non-null: App.svelte will show Dashboard
+    }
+    console.log("[Selah] restoreAllSessions: no disk session, returning null -> Login page");
+    return null;
+  }
   setAuthFromSession(status);
 
   // Restore mail session (OAuth token from disk)
@@ -532,7 +589,7 @@ export async function lunaInvoke<T>(
 }
 
 /** Convenience wrapper for KWIC Portal invoke calls with session guard */
-export async function kwicInvoke<T>(
+async function kwicInvoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
@@ -552,12 +609,12 @@ export interface KwicPortalNotification {
   category_cd: string;
 }
 
-export interface KwicPortalSection {
+interface KwicPortalSection {
   title: string;
   items: KwicPortalItem[];
 }
 
-export interface KwicPortalItem {
+interface KwicPortalItem {
   id: string;
   title: string;
   date: string;
@@ -574,7 +631,7 @@ export interface KwicPortalHome {
   raw_html_debug?: string;
 }
 
-export interface KwicNotificationDetail {
+interface KwicNotificationDetail {
   title: string;
   date: string;
   sender: string;
@@ -582,7 +639,7 @@ export interface KwicNotificationDetail {
   attachments: { name: string; url: string }[];
 }
 
-export interface KwicSubportalLink {
+interface KwicSubportalLink {
   title: string;
   url: string;
   icon_url: string;
@@ -607,10 +664,6 @@ export async function kwicFetchHome(): Promise<KwicPortalHome> {
   return kwicInvoke<KwicPortalHome>("kwic_fetch_home");
 }
 
-export async function kwicFetchNotifications(): Promise<KwicPortalNotification[]> {
-  return kwicInvoke<KwicPortalNotification[]>("kwic_fetch_notifications");
-}
-
 // ============ Weather (Open-Meteo, no auth) ============
 
 export interface WeatherData {
@@ -623,10 +676,6 @@ export interface WeatherData {
 
 export async function fetchWeather(): Promise<WeatherData> {
   return invoke<WeatherData>("fetch_weather");
-}
-
-export async function kwicFetchPage(path: string): Promise<string> {
-  return kwicInvoke<string>("kwic_fetch_page", { path });
 }
 
 export async function kwicFetchDetail(n: KwicPortalNotification): Promise<KwicNotificationDetail> {
@@ -656,16 +705,19 @@ export async function kwicOpenDetail(item: { id: string; title: string; informat
   });
 }
 
-export async function kwicOpenLogin(): Promise<void> {
-  return invoke<void>("kwic_open_login");
-}
-
 // ---------- Microsoft 365 Mail API ----------
 
-export interface MailSessionStatus {
+interface MailSessionStatus {
   authenticated: boolean;
   email: string;
   display_name: string;
+}
+
+export interface MailAttachment {
+  id: string;
+  name: string | null;
+  contentType: string | null;
+  size: number | null;
 }
 
 export interface MailMessage {
@@ -690,7 +742,7 @@ export interface MailDetail {
   ccRecipients: { emailAddress: { name: string | null; address: string | null } }[] | null;
 }
 
-export interface MailProfile {
+interface MailProfile {
   displayName: string | null;
   mail: string | null;
   userPrincipalName: string | null;
@@ -702,10 +754,6 @@ export async function mailCheckSession(): Promise<MailSessionStatus> {
 
 export async function mailOpenLogin(): Promise<void> {
   return invoke<void>("mail_open_login");
-}
-
-export async function mailLogout(): Promise<void> {
-  return invoke<void>("mail_logout");
 }
 
 export async function mailFetchProfile(): Promise<MailProfile> {
@@ -720,37 +768,38 @@ export async function mailFetchMessage(messageId: string): Promise<MailDetail> {
   return withSessionGuard(() => invoke<MailDetail>("mail_fetch_message", { messageId }));
 }
 
-// ============ Read State ============
-
-export interface ReadIdsResponse {
-  kgc: string[];
-  luna: string[];
-  kwic: string[];
+export async function mailFetchAttachments(messageId: string): Promise<MailAttachment[]> {
+  return withSessionGuard(() => invoke<MailAttachment[]>("mail_fetch_attachments", { messageId }));
 }
+
+export async function mailDownloadAttachment(messageId: string, attachmentId: string, fileName: string): Promise<string> {
+  return withSessionGuard(() => invoke<string>("mail_download_attachment", { messageId, attachmentId, fileName }));
+}
+
+// ============ Read State ============
 
 export async function markNotificationRead(source: string, id: string): Promise<void> {
   return invoke<void>("mark_notification_read", { source, id });
 }
 
-export async function getReadNotifications(): Promise<ReadIdsResponse> {
-  return invoke<ReadIdsResponse>("get_read_notifications");
+export async function markBatchNotificationRead(source: string, ids: string[]): Promise<void> {
+  return invoke<void>("mark_batch_notification_read", { source, ids });
+}
+
+export async function getReadNotifications(): Promise<ReadIdsData> {
+  return invoke<ReadIdsData>("get_read_notifications");
 }
 
 // ============ Google Calendar ============
 
-export interface GcalStatus {
+interface GcalStatus {
   authenticated: boolean;
   calendar_exists: boolean;
   synced_events: number;
   calendar_id: string;
 }
 
-export interface GcalConfig {
-  client_id: string;
-  client_secret: string;
-}
-
-export interface GcalSyncEntry {
+interface GcalSyncEntry {
   day: string;
   period: number;
   course_name: string;
@@ -762,12 +811,8 @@ export async function gcalCheckSession(): Promise<GcalStatus> {
   return invoke<GcalStatus>("gcal_check_session");
 }
 
-export async function gcalGetConfig(): Promise<GcalConfig> {
-  return invoke<GcalConfig>("gcal_get_config");
-}
-
-export async function gcalSaveConfig(config: GcalConfig): Promise<void> {
-  return invoke<void>("gcal_save_config", { config });
+export async function gcalSyncTimetable(entries: GcalSyncEntry[], weekLabel: string): Promise<string> {
+  return invoke<string>("gcal_sync_timetable", { entries, weekLabel });
 }
 
 export async function gcalOpenLogin(): Promise<void> {
@@ -776,14 +821,6 @@ export async function gcalOpenLogin(): Promise<void> {
 
 export async function gcalDisconnect(): Promise<void> {
   return invoke<void>("gcal_disconnect");
-}
-
-export async function gcalSyncTimetable(entries: GcalSyncEntry[], weekLabel: string): Promise<string> {
-  return invoke<string>("gcal_sync_timetable", { entries, weekLabel });
-}
-
-export async function gcalClearCalendar(deleteCalendar: boolean): Promise<string> {
-  return invoke<string>("gcal_clear_calendar", { deleteCalendar });
 }
 
 // ---------- Public API ----------
@@ -795,13 +832,15 @@ export async function openLoginWindow(): Promise<void> {
 export async function logout(): Promise<void> {
   stopBackgroundPolling();
   await invoke("logout");
-  // Reset all services and clear cache
-  for (const svc of Object.values(serviceRegistry)) svc.onReset();
+  // Clear sessionExpired FIRST so kgc.onReset actually wipes authState
   sessionExpired.set(false);
+  for (const svc of Object.values(serviceRegistry)) svc.onReset();
   invalidateCache();
+  // Clear the persistent "ever logged in" flag so Login page shows
+  try { localStorage.removeItem(EVER_AUTH_KEY); } catch {}
 }
 
-export async function checkSession(): Promise<SessionStatus> {
+async function checkSession(): Promise<SessionStatus> {
   return await invoke<SessionStatus>("check_session");
 }
 
@@ -809,16 +848,30 @@ export async function validateSession(): Promise<SessionStatus> {
   return await invoke<SessionStatus>("validate_session");
 }
 
-export async function fetchTimetable(): Promise<TimetableData> {
-  return withSessionGuard(() => invoke<TimetableData>("fetch_timetable"));
+// ── AI-driven schedule (DB-backed, KGC+Luna raw + AI analysis) ──
+
+export async function getScheduleSnapshot(): Promise<ScheduleResponse> {
+  return invoke<ScheduleResponse>("get_schedule_snapshot");
 }
 
-export async function fetchTimetableWeek(direction: "prev" | "next"): Promise<TimetableData> {
-  return withSessionGuard(() => invoke<TimetableData>("fetch_timetable_week", { direction }));
+export async function syncScheduleData(): Promise<ScheduleResponse> {
+  return withSessionGuard(() => invoke<ScheduleResponse>("sync_schedule_data"));
 }
 
-export async function fetchCourseDetail(path: string): Promise<CourseDetail> {
-  return withSessionGuard(() => invoke<CourseDetail>("fetch_course_detail", { path }));
+export async function enrichSchedule(): Promise<void> {
+  return invoke<void>("enrich_schedule");
+}
+
+export async function aiGenerateSchedule(
+  currentWeekLabel: string,
+  nextWeekLabel: string,
+  force: boolean = false,
+): Promise<AiScheduleResult> {
+  return invoke<AiScheduleResult>("ai_generate_schedule", {
+    currentWeekLabel,
+    nextWeekLabel,
+    force,
+  });
 }
 
 export async function fetchGrades(): Promise<GradesData> {
@@ -857,14 +910,6 @@ export async function fetchStudentProfile(): Promise<StudentInfo> {
   return withSessionGuard(() => invoke<StudentInfo>("fetch_student_profile"));
 }
 
-export async function debugInfo(): Promise<any> {
-  return await invoke("debug_info");
-}
-
-export async function debugPing(target: string): Promise<any> {
-  return await invoke("debug_ping", { target });
-}
-
 export async function searchSyllabus(params: SyllabusSearchParams): Promise<SyllabusSearchResult> {
   return withSessionGuard(() => invoke<SyllabusSearchResult>("search_syllabus", { params }));
 }
@@ -887,16 +932,8 @@ export async function getAiConfig(): Promise<AiConfig> {
   return invoke<AiConfig>("get_ai_config");
 }
 
-export async function saveAiConfig(config: AiConfig): Promise<void> {
-  return invoke<void>("save_ai_config", { config });
-}
-
 export async function aiChat(messages: AiChatMessage[]): Promise<string> {
   return invoke<string>("ai_chat", { messages });
-}
-
-export async function aiTestConnection(): Promise<string> {
-  return invoke<string>("ai_test_connection");
 }
 
 export async function openSettingsWindow(): Promise<void> {
@@ -909,8 +946,8 @@ export async function openProfileEditWindow(): Promise<void> {
 
 // ============ Background Polling ============
 // Two tiers:
-//   - Volatile (5 min): notifications, todo, change info
-//   - Stable (12 hours): timetable, grades, exams, registration, luna_timetable
+//   - Volatile (5 min): notifications, todo, change info, weather
+//   - Stable (12 hours): schedule_data, grades, exams, registration
 
 const POLL_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const STABLE_POLL_INTERVAL = 12 * 60 * 60 * 1000; // 12 hours
@@ -929,13 +966,9 @@ interface PollTarget {
 function getVolatileTargets(): PollTarget[] {
   return [
     { key: "notifications", fetcher: fetchNotifications },
-    { key: "cancellations", fetcher: fetchCancellations },
-    { key: "makeup", fetcher: fetchMakeupClasses },
-    { key: "rooms", fetcher: fetchRoomChanges },
     { key: "luna_todo", fetcher: () => lunaInvoke<any>("luna_fetch_todo"), guard: () => get(lunaAuthState).authenticated },
     { key: "luna_updates", fetcher: () => lunaInvoke<any>("luna_fetch_updates"), guard: () => get(lunaAuthState).authenticated },
-    { key: "kwic_notifications", fetcher: kwicFetchNotifications, guard: () => get(kwicAuthState).authenticated },
-    { key: "timetable", fetcher: fetchTimetable },
+    { key: "kwic_home", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
     { key: "weather", fetcher: fetchWeather },
     { key: "mail_inbox", fetcher: () => mailFetchInbox(20, 0), guard: () => get(mailAuthState).authenticated },
   ];
@@ -946,13 +979,16 @@ function getStableTargets(): PollTarget[] {
     { key: "grades", fetcher: fetchGrades },
     { key: "exams", fetcher: fetchExamTimetable },
     { key: "registration", fetcher: fetchRegistration },
-    { key: "luna_timetable", fetcher: () => lunaInvoke<any>("luna_fetch_timetable", {}), guard: () => get(lunaAuthState).authenticated },
-    { key: "kwic_home", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
+    { key: "cancellations", fetcher: fetchCancellations },
+    { key: "makeup", fetcher: fetchMakeupClasses },
+    { key: "rooms", fetcher: fetchRoomChanges },
+    { key: "student_profile", fetcher: fetchStudentProfile },
+    { key: "mail_profile", fetcher: mailFetchProfile, guard: () => get(mailAuthState).authenticated },
   ];
 }
 
 function doPoll() {
-  if (!get(authState).authenticated || get(reloginInProgress)) return;
+  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
   for (const t of getVolatileTargets()) {
     if (t.guard && !t.guard()) continue;
     refreshCache(t.key, t.fetcher);
@@ -960,7 +996,7 @@ function doPoll() {
 }
 
 function doStablePoll() {
-  if (!get(authState).authenticated || get(reloginInProgress)) return;
+  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
   for (const t of getStableTargets()) {
     if (t.guard && !t.guard()) continue;
     refreshCache(t.key, t.fetcher);
@@ -969,12 +1005,12 @@ function doStablePoll() {
 
 const PREEMPTIVE_RENEWAL_THRESHOLD = 300; // 5 minutes in seconds
 
-export async function getSessionExpiry(): Promise<number | null> {
+async function getSessionExpiry(): Promise<number | null> {
   return invoke<number | null>("get_session_expiry");
 }
 
 async function checkPreemptiveRenewal() {
-  if (!get(authState).authenticated || get(reloginInProgress)) return;
+  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
   try {
     const secs = await getSessionExpiry();
     if (secs !== null && secs <= PREEMPTIVE_RENEWAL_THRESHOLD) {
@@ -993,7 +1029,8 @@ export function startBackgroundPolling() {
   pollTimer = setInterval(() => {
     if (document.visibilityState === "visible") doPoll();
   }, POLL_INTERVAL);
-  // Stable data: refresh every 12 hours
+  // Stable data: initial fetch after views mount, then refresh every 12 hours
+  setTimeout(doStablePoll, 15_000);
   stablePollTimer = setInterval(() => {
     doStablePoll();
   }, STABLE_POLL_INTERVAL);

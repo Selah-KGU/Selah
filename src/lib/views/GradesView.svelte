@@ -41,3 +41,9 @@
     {/if}
   </ViewLoader>
 </div>
+
+<style>
+  .view h2 {
+    margin-bottom: 12px;
+  }
+</style>
