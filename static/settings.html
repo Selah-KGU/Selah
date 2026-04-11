@@ -899,14 +899,14 @@
   var $calSyncIntervalSel = document.getElementById('calSyncInterval');
 
   function loadSysCalConfig() {
-    var enabled = localStorage.getItem('selah-syscal-enabled') !== 'false';
+    var enabled = localStorage.getItem('selah-syscal-enabled') === 'true';
     $sysCalEnabledSel.value = enabled ? 'true' : 'false';
     var autoSync = localStorage.getItem('selah-auto-sync') === 'true';
     $sysCalAutoSyncSel.value = autoSync ? 'true' : 'false';
     var interval = localStorage.getItem('selah-cal-sync-interval') || '12';
     $calSyncIntervalSel.value = interval;
     updateSysCalRows();
-    checkSysCalStatus();
+    if (enabled) { checkSysCalStatus(); }
   }
 
   function onCalSyncIntervalChange() {

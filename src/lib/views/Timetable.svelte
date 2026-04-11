@@ -22,7 +22,7 @@
   let examEntries = $state<ExamEntry[]>([]);
   let favoriteEntries = $state<SyllabusEntry[]>([]);
   let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") !== "0");
-  let syscalEnabled = $state(localStorage.getItem("selah-syscal-enabled") !== "false");
+  let syscalEnabled = $state(localStorage.getItem("selah-syscal-enabled") === "true");
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let calSyncTimer: ReturnType<typeof setInterval> | undefined;
@@ -292,7 +292,7 @@
 
     // System Calendar.app auto-sync (respect enabled setting)
     try {
-      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
+      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") === "true";
       const autoSync = localStorage.getItem("selah-auto-sync");
       if (syscalEnabled && autoSync === "true" && calEntries.length > 0) {
         await syncCalendar(calEntries, weekLabel);
@@ -394,7 +394,7 @@
         : (scheduleData.raw.next_week_label || "");
 
       // Apple Calendar.app sync (respect enabled setting)
-      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
+      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") === "true";
       if (syscalEnabled) {
         try {
           if (entries.length > 0) {

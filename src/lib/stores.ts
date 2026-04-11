@@ -408,6 +408,13 @@ const DISK_CACHE_KEYS = new Set([
   "schedule_data", "kwic_home",
   "notifications", "luna_updates", "luna_todo",
 ]);
+
+// Keys eligible for SQLite DB persistence (async SWR).
+// The Rust backend already saves these on successful fetch via kgc_fetch_cached!,
+// so we only need to *read* from DB on cold start — no frontend writes needed.
+const DB_CACHE_KEYS = new Set([
+  "grades", "registration",
+]);
 const DISK_PREFIX = "selah_cache_";
 const DISK_CACHE_VERSION = 1;
 const DISK_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
@@ -469,8 +476,18 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
     return Promise.resolve(entry.data as T);
   }
   // Dedup: if the same key is already being fetched, share the promise
+  // but if it resolves with no data (background refresh failed), do our own fetch
   const pending = inflight.get(key);
-  if (pending) return pending as Promise<T>;
+  if (pending) return (pending as Promise<T>).then((data) => {
+    if (data != null) return data;
+    // Background refresh failed and returned undefined — fall through to fresh fetch
+    return fetcher().then((freshData) => {
+      const now = Date.now();
+      cache.set(key, { data: freshData, ts: now });
+      if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, freshData, now);
+      return freshData;
+    });
+  });
 
   // Stale-while-revalidate: if disk cache exists, return stale data immediately
   if (DISK_CACHE_KEYS.has(key) && !entry) {
@@ -500,6 +517,41 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
       inflight.set(key, bg);
       return Promise.resolve(disk.data as T);
     }
+  }
+
+  // SQLite SWR: async DB read → return stale, revalidate in background
+  if (DB_CACHE_KEYS.has(key) && !entry) {
+    const dbPromise = invoke<string | null>("get_data_cache", { key }).then((json) => {
+      if (!json) return null;
+      try { return JSON.parse(json) as T; } catch { return null; }
+    }).catch(() => null);
+
+    return dbPromise.then((dbData) => {
+      if (dbData != null) {
+        const now = Date.now();
+        cache.set(key, { data: dbData, ts: now });
+        // Background refresh (Rust saves to DB on success automatically)
+        const bg = fetcher().then((freshData) => {
+          const ts = Date.now();
+          cache.set(key, { data: freshData, ts });
+          notifySwr(key, freshData);
+          return freshData;
+        }).catch((err) => {
+          console.warn(`[Selah] DB-SWR background refresh failed for "${key}":`, err);
+          return dbData;
+        }).finally(() => inflight.delete(key));
+        inflight.set(key, bg);
+        return dbData;
+      }
+      // No DB cache — fall through to normal fetch
+      const p = fetcher().then((data) => {
+        const ts = Date.now();
+        cache.set(key, { data, ts });
+        return data;
+      }).finally(() => inflight.delete(key));
+      inflight.set(key, p);
+      return p;
+    });
   }
 
   const p = fetcher().then((data) => {
@@ -568,8 +620,10 @@ export function refreshCache<T>(key: string, fetcher: () => Promise<T>): void {
     cache.set(key, { data, ts: now });
     if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, now);
     notifySwr(key, data);
+    return data;
   }).catch((err) => {
     console.warn(`[Selah] Background refresh failed for "${key}":`, err);
+    return undefined as unknown as T;
   }).finally(() => { inflight.delete(key); });
   inflight.set(key, p);
 }
