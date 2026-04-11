@@ -20,6 +20,7 @@
   let favLoading = $state(false);
   let favError = $state("");
   let togglingSet = $state(new Set<string>());
+  let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") !== "0");
 
   // Form state - restore from cache
   const currentYear = new Date().getFullYear().toString();
@@ -534,6 +535,10 @@
         {:else if favorites && favorites.entries.length > 0}
           <div class="result-info fav-header">
             <span>{favorites.entries.length}件のお気に入り</span>
+            <label class="fav-timetable-toggle" title="時間割にお気に入り科目を表示">
+              <input type="checkbox" bind:checked={showFavInTimetable} onchange={() => { localStorage.setItem("selah-fav-in-timetable", showFavInTimetable ? "1" : "0"); window.dispatchEvent(new CustomEvent("selah-fav-toggle", { detail: showFavInTimetable })); }} />
+              <span class="toggle-label">時間割に表示</span>
+            </label>
             <button class="btn-refresh" onclick={() => loadFavorites()} title="更新">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M13.65 2.35A7.96 7.96 0 0 0 8 0C3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 8 14 6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/>
@@ -786,6 +791,22 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .fav-timetable-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+    user-select: none;
+  }
+  .fav-timetable-toggle input {
+    accent-color: var(--accent);
+  }
+  .toggle-label {
+    white-space: nowrap;
   }
 
   .btn-refresh {

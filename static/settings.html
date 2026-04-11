@@ -370,23 +370,6 @@
         </div>
       </div>
     </div>
-    <div class="card-label">学期設定</div>
-    <div class="card">
-      <div class="row">
-        <span class="row-label">春学期開始日</span>
-        <div class="row-input">
-          <input type="date" id="springStart">
-          <div class="hint">春学期の最初の授業週の月曜日（例: 2026-04-06）。授業計画に日付がない場合の回数推定に使用。</div>
-        </div>
-      </div>
-      <div class="row">
-        <span class="row-label">秋学期開始日</span>
-        <div class="row-input">
-          <input type="date" id="fallStart">
-          <div class="hint">秋学期の最初の授業週の月曜日（例: 2026-09-21）。</div>
-        </div>
-      </div>
-    </div>
   </div>
   <div class="panel" id="panel-session">
     <div class="hero-card">
@@ -480,87 +463,130 @@
       </div>
       <div class="hero-text">
         <h2 class="panel-title">カレンダー設定</h2>
-        <p class="panel-desc">時間割をシステムカレンダー (Calendar.app) や Google Calendar に同期する設定を管理します。</p>
+        <p class="panel-desc">学期期間の設定と、時間割の Apple Calendar / Google Calendar への自動同期を管理します。</p>
       </div>
     </div>
 
-    <div class="card-label">システムカレンダー (Calendar.app)</div>
+    <div class="card-label">学期設定</div>
     <div class="card">
       <div class="row">
-        <span class="row-label">状態</span>
+        <span class="row-label">春学期開始日</span>
         <div class="row-input">
-          <div class="session-indicator" id="syscal-status">未確認</div>
+          <input type="date" id="springStart">
+          <div class="hint">春学期の最初の授業週の月曜日</div>
         </div>
       </div>
       <div class="row">
-        <span class="row-label">自動同期</span>
+        <span class="row-label">秋学期開始日</span>
+        <div class="row-input">
+          <input type="date" id="fallStart">
+          <div class="hint">秋学期の最初の授業週の月曜日</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-label" style="margin-top:16px;">同期先</div>
+    <div class="card">
+      <div class="row">
+        <span class="row-label">Apple Calendar</span>
+        <div class="row-input">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <select id="sysCalEnabled" onchange="onSysCalEnabledChange()" style="flex:1;">
+              <option value="true">有効</option>
+              <option value="false">無効</option>
+            </select>
+            <div class="session-indicator" id="syscal-status" style="white-space:nowrap;">未確認</div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">Google Calendar</span>
+        <div class="row-input">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="session-indicator" id="gcal-session-status" style="white-space:nowrap;">未確認</div>
+            <button class="btn-test" id="gcalLoginBtn" onclick="gcalLogin()" style="margin:0;">認証</button>
+            <button class="btn-test" id="gcalLogoutBtn" onclick="gcalLogout()" style="margin:0;background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">解除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-label" style="margin-top:16px;">自動同期</div>
+    <div class="card">
+      <div class="row" id="sysCalAutoSyncRow">
+        <span class="row-label">Apple Calendar</span>
         <div class="row-input">
           <select id="sysCalAutoSync" onchange="onSysCalAutoSyncChange()">
             <option value="false">オフ</option>
-            <option value="true">オン (時間割表示時に自動同期)</option>
+            <option value="true">オン</option>
           </select>
-          <div class="hint">有効にすると、時間割を表示するたびに自動的にシステムカレンダーに同期します。</div>
         </div>
       </div>
-    </div>
-    <div style="display:flex;gap:6px;margin-top:4px;align-items:center;">
-      <button class="btn-test" id="syscalClearBtn" onclick="syscalClear()">全イベントを削除</button>
-      <button class="btn-test" id="syscalDeleteBtn" onclick="syscalDelete()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">カレンダーごと削除</button>
-      <span id="syscalStatus" class="hint" style="margin-left:4px;"></span>
+      <div class="row">
+        <span class="row-label">Google Calendar</span>
+        <div class="row-input">
+          <select id="gcalAutoSync" onchange="onGcalAutoSyncChange()">
+            <option value="false">オフ</option>
+            <option value="true">オン</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">同期間隔</span>
+        <div class="row-input">
+          <select id="calSyncInterval" onchange="onCalSyncIntervalChange()">
+            <option value="6">6時間</option>
+            <option value="12">12時間</option>
+            <option value="24">24時間</option>
+            <option value="48">48時間</option>
+            <option value="72">72時間</option>
+          </select>
+        </div>
+      </div>
+      <div class="hint" style="padding:6px 14px 8px;">オンにすると、指定間隔で自動的にスケジュールを取得しカレンダーへ同期します。</div>
     </div>
 
-    <div class="card-label" style="margin-top:20px;">Google Calendar</div>
+    <div class="card-label" style="margin-top:16px;">データ管理</div>
+    <div class="card" style="padding:10px 14px;">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <button class="btn-test" id="syscalClearBtn" onclick="syscalClear()">Apple: イベント削除</button>
+        <button class="btn-test" id="syscalDeleteBtn" onclick="syscalDelete()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">Apple: カレンダー削除</button>
+        <span id="syscalStatus" class="hint" style="margin-left:2px;"></span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+        <button class="btn-test" id="gcalClearBtn" onclick="gcalClear()">Google: イベント削除</button>
+        <button class="btn-test" id="gcalDeleteCalBtn" onclick="gcalDeleteCal()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">Google: カレンダー削除</button>
+        <span id="gcalStatus" class="hint" style="margin-left:2px;"></span>
+      </div>
+    </div>
+
+    <div class="card-label" style="margin-top:16px;">Google Calendar API 設定</div>
     <div class="card">
       <div class="row">
         <span class="row-label">クライアント ID</span>
         <div class="row-input">
           <input type="text" id="gcalClientId" placeholder="xxxxx.apps.googleusercontent.com" spellcheck="false" style="font-family:monospace;font-size:11px;">
-          <div class="hint">Google Cloud Console で作成した OAuth 2.0 クライアント ID を入力してください。</div>
         </div>
       </div>
       <div class="row">
-        <span class="row-label">クライアント シークレット</span>
+        <span class="row-label">シークレット</span>
         <div class="row-input">
-          <input type="password" id="gcalClientSecret" placeholder="GOCSPX-xxxxx" spellcheck="false" style="font-family:monospace;font-size:11px;">
-          <div class="hint">「ウェブ アプリケーション」タイプの場合に必要です。「デスクトップ アプリ」タイプの場合は空欄で構いません。</div>
-        </div>
-      </div>
-      <div class="row">
-        <span class="row-label">アカウント</span>
-        <div class="row-input">
-          <div class="session-indicator" id="gcal-session-status">未確認</div>
-        </div>
-      </div>
-      <div class="row">
-        <span class="row-label">自動同期</span>
-        <div class="row-input">
-          <select id="gcalAutoSync" onchange="onGcalAutoSyncChange()">
-            <option value="false">オフ</option>
-            <option value="true">オン (時間割表示時に自動同期)</option>
-          </select>
-          <div class="hint">有効にすると、時間割を表示するたびに自動的に Google Calendar に同期します。</div>
+          <input type="password" id="gcalClientSecret" placeholder="GOCSPX-xxxxx (Desktop App は空欄可)" spellcheck="false" style="font-family:monospace;font-size:11px;">
         </div>
       </div>
     </div>
-    <div style="display:flex;gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap;">
-      <button class="btn-test" id="gcalLoginBtn" onclick="gcalLogin()">Google 認証</button>
-      <button class="btn-test" id="gcalClearBtn" onclick="gcalClear()">全イベントを削除</button>
-      <button class="btn-test" id="gcalDeleteCalBtn" onclick="gcalDeleteCal()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">カレンダーごと削除</button>
-      <button class="btn-test" id="gcalLogoutBtn" onclick="gcalLogout()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">連携解除</button>
-      <span id="gcalStatus" class="hint" style="margin-left:4px;"></span>
-    </div>
-    <div class="card-label" style="margin-top:20px;">Google Cloud Console での設定手順</div>
-    <div class="card" style="padding:12px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
-      <ol style="margin:0;padding-left:18px;">
-        <li><a href="https://console.cloud.google.com" style="color:var(--blue);" onclick="event.preventDefault()">console.cloud.google.com</a> で新しいプロジェクトを作成</li>
-        <li>「API とサービス」 → 「ライブラリ」 → <strong>Google Calendar API</strong> を有効化</li>
-        <li>「API とサービス」 → 「認証情報」 → 「認証情報を作成」 → 「OAuth クライアント ID」</li>
-        <li>アプリケーションの種類: 「ウェブ アプリケーション」を選択</li>
-        <li>「承認済みのリダイレクト URI」に <code>http://127.0.0.1</code> を追加</li>
-        <li>作成されたクライアント ID とクライアント シークレットをコピーして上の入力欄に貼り付け</li>
-        <li>「OAuth 同意画面」でテストユーザーに自分のメールアドレスを追加</li>
-      </ol>
-    </div>
+    <details style="margin-top:8px;">
+      <summary style="font-size:11px;color:var(--text-secondary);cursor:pointer;padding:4px 2px;">Google Cloud Console での設定手順</summary>
+      <div class="card" style="margin-top:6px;padding:10px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+        <ol style="margin:0;padding-left:18px;">
+          <li><a href="https://console.cloud.google.com" style="color:var(--blue);" onclick="event.preventDefault()">console.cloud.google.com</a> で新しいプロジェクトを作成</li>
+          <li>「API とサービス」 → 「ライブラリ」 → <strong>Google Calendar API</strong> を有効化</li>
+          <li>「認証情報を作成」 → 「OAuth クライアント ID」 → 「ウェブ アプリケーション」</li>
+          <li>リダイレクト URI に <code>http://127.0.0.1</code> を追加</li>
+          <li>「OAuth 同意画面」でテストユーザーに自分のメールアドレスを追加</li>
+        </ol>
+      </div>
+    </details>
   </div>
   <div class="panel" id="panel-notification">
     <div class="hero-card">
@@ -651,11 +677,11 @@
   function escapeHtml(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
   function showStatus(msg,type){var safe=escapeHtml(msg);if(type==="loading"){$status.innerHTML='<div class="status loading"><span class="spinner"></span>'+safe+"</div>"}else{$status.innerHTML='<div class="status '+type+'">'+safe+"</div>"}if(type!=="loading")setTimeout(function(){$status.innerHTML=""},4000)}
 
-  async function loadSettings(){try{var c=await invoke("get_ai_config");$provider.value=c.provider||"openai";$apiKey.value=c.api_key||"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||4096;$maxTokensVal.textContent=c.max_tokens||4096;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"";document.getElementById("fallStart").value=c.fall_start||"";onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
+  async function loadSettings(){try{var c=await invoke("get_ai_config");$provider.value=c.provider||"openai";$apiKey.value=c.api_key||"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||4096;$maxTokensVal.textContent=c.max_tokens||4096;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"2026-04-03";document.getElementById("fallStart").value=c.fall_start||"2026-09-21";onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
 
   function getConfig(){return{provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value,spring_start:document.getElementById("springStart").value,fall_start:document.getElementById("fallStart").value}}
 
-  async function saveSettings(){var btn=document.getElementById("saveBtn");try{btn.disabled=true;if(activePanel==="ai"){await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="mail"){await invoke("mail_save_config",{config:{client_id:$mailClientId.value.trim()}});checkMailSession()}else if(activePanel==="calendar"){await invoke("gcal_save_config",{config:{client_id:$gcalClientId.value.trim(),client_secret:$gcalClientSecret.value.trim()}})}showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{btn.disabled=false}}
+  async function saveSettings(){var btn=document.getElementById("saveBtn");try{btn.disabled=true;if(activePanel==="ai"){await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="mail"){await invoke("mail_save_config",{config:{client_id:$mailClientId.value.trim()}});checkMailSession()}else if(activePanel==="calendar"){await invoke("gcal_save_config",{config:{client_id:$gcalClientId.value.trim(),client_secret:$gcalClientSecret.value.trim()}});await invoke("save_ai_config",{config:getConfig()})}showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{btn.disabled=false}}
 
   async function testConnection(){var btn=document.getElementById("testBtn");btn.disabled=true;showStatus("接続をテスト中...","loading");try{await invoke("save_ai_config",{config:getConfig()});var r=await invoke("ai_test_connection");showStatus("接続成功: "+r.substring(0,80),"success")}catch(e){showStatus("接続失敗: "+e,"error")}finally{btn.disabled=false}}
 
@@ -869,11 +895,37 @@
 
   // ---- System Calendar (Calendar.app) ----
   var $sysCalAutoSyncSel = document.getElementById('sysCalAutoSync');
+  var $sysCalEnabledSel = document.getElementById('sysCalEnabled');
+  var $calSyncIntervalSel = document.getElementById('calSyncInterval');
 
   function loadSysCalConfig() {
+    var enabled = localStorage.getItem('selah-syscal-enabled') !== 'false';
+    $sysCalEnabledSel.value = enabled ? 'true' : 'false';
     var autoSync = localStorage.getItem('selah-auto-sync') === 'true';
     $sysCalAutoSyncSel.value = autoSync ? 'true' : 'false';
+    var interval = localStorage.getItem('selah-cal-sync-interval') || '12';
+    $calSyncIntervalSel.value = interval;
+    updateSysCalRows();
     checkSysCalStatus();
+  }
+
+  function onCalSyncIntervalChange() {
+    localStorage.setItem('selah-cal-sync-interval', $calSyncIntervalSel.value);
+  }
+
+  function onSysCalEnabledChange() {
+    localStorage.setItem('selah-syscal-enabled', $sysCalEnabledSel.value);
+    updateSysCalRows();
+  }
+
+  function updateSysCalRows() {
+    var enabled = $sysCalEnabledSel.value === 'true';
+    var row = document.getElementById('sysCalAutoSyncRow');
+    if (row) { row.style.opacity = enabled ? '1' : '0.4'; row.style.pointerEvents = enabled ? 'auto' : 'none'; }
+    var clearBtn = document.getElementById('syscalClearBtn');
+    var delBtn = document.getElementById('syscalDeleteBtn');
+    if (clearBtn) { clearBtn.style.opacity = enabled ? '1' : '0.4'; clearBtn.style.pointerEvents = enabled ? 'auto' : 'none'; }
+    if (delBtn) { delBtn.style.opacity = enabled ? '1' : '0.4'; delBtn.style.pointerEvents = enabled ? 'auto' : 'none'; }
   }
 
   function onSysCalAutoSyncChange() {
@@ -947,6 +999,16 @@
     var autoSync = localStorage.getItem('selah-gcal-auto-sync') === 'true';
     $gcalAutoSyncSel.value = autoSync ? 'true' : 'false';
     checkGcalSession();
+    // Auto-save config on input change
+    var saveTimer = null;
+    function autoSaveGcalConfig() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(function() {
+        invoke('gcal_save_config', { config: { client_id: $gcalClientId.value.trim(), client_secret: $gcalClientSecret.value.trim() } }).catch(function(){});
+      }, 800);
+    }
+    $gcalClientId.addEventListener('input', autoSaveGcalConfig);
+    $gcalClientSecret.addEventListener('input', autoSaveGcalConfig);
   }
 
   function onGcalAutoSyncChange() {

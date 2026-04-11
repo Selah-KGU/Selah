@@ -766,10 +766,12 @@ var calName = "Selah 時間割";
 var cal = null;
 var calendars = Calendar.calendars();
 for (var i = 0; i < calendars.length; i++) {{
-  if (calendars[i].name() === calName) {{
-    cal = calendars[i];
-    break;
-  }}
+  try {{
+    if (calendars[i].name() === calName) {{
+      cal = calendars[i];
+      break;
+    }}
+  }} catch(e) {{}}
 }}
 if (!cal) {{
   cal = Calendar.Calendar({{ name: calName }});
@@ -779,13 +781,17 @@ if (!cal) {{
 // Delete events within this week's range only
 var weekStart = new Date({wy},{wmi},{wd},0,0,0);
 var weekEnd = new Date({wey},{wemi},{wed},23,59,59);
-var events = cal.events();
-for (var i = events.length - 1; i >= 0; i--) {{
-  var sd = events[i].startDate();
-  if (sd >= weekStart && sd <= weekEnd) {{
-    Calendar.delete(events[i]);
+try {{
+  var events = cal.events();
+  for (var i = events.length - 1; i >= 0; i--) {{
+    try {{
+      var sd = events[i].startDate();
+      if (sd >= weekStart && sd <= weekEnd) {{
+        Calendar.delete(events[i]);
+      }}
+    }} catch(e) {{}}
   }}
-}}
+}} catch(e) {{}}
 
 function addEvent(cal, title, location, startDate, endDate) {{
   var e = Calendar.Event({{
@@ -819,17 +825,23 @@ pub async fn get_calendar_info() -> Result<serde_json::Value, String> {
 var Calendar = Application("Calendar");
 var calName = "Selah 時間割";
 var cal = null;
-var calendars = Calendar.calendars();
-for (var i = 0; i < calendars.length; i++) {
-  if (calendars[i].name() === calName) {
-    cal = calendars[i];
-    break;
+try {
+  var calendars = Calendar.calendars();
+  for (var i = 0; i < calendars.length; i++) {
+    try {
+      if (calendars[i].name() === calName) {
+        cal = calendars[i];
+        break;
+      }
+    } catch(e) {}
   }
-}
+} catch(e) {}
 if (!cal) {
   JSON.stringify({ exists: false, count: 0 });
 } else {
-  JSON.stringify({ exists: true, count: cal.events().length });
+  var c = 0;
+  try { c = cal.events().length; } catch(e) {}
+  JSON.stringify({ exists: true, count: c });
 }
 "#;
     match run_jxa(script.to_string()).await {
@@ -845,34 +857,46 @@ pub async fn clear_calendar(delete_calendar: bool) -> Result<String, String> {
         r#"
 var Calendar = Application("Calendar");
 var calName = "Selah 時間割";
-var calendars = Calendar.calendars();
-for (var i = 0; i < calendars.length; i++) {
-  if (calendars[i].name() === calName) {
-    Calendar.delete(calendars[i]);
-    break;
+var found = false;
+try {
+  var calendars = Calendar.calendars();
+  for (var i = 0; i < calendars.length; i++) {
+    try {
+      if (calendars[i].name() === calName) {
+        found = true;
+        Calendar.delete(calendars[i]);
+        break;
+      }
+    } catch(e) {}
   }
-}
-"deleted";
+} catch(e) {}
+found ? "deleted" : "not_found";
 "#.to_string()
     } else {
         r#"
 var Calendar = Application("Calendar");
 var calName = "Selah 時間割";
 var cal = null;
-var calendars = Calendar.calendars();
-for (var i = 0; i < calendars.length; i++) {
-  if (calendars[i].name() === calName) {
-    cal = calendars[i];
-    break;
+try {
+  var calendars = Calendar.calendars();
+  for (var i = 0; i < calendars.length; i++) {
+    try {
+      if (calendars[i].name() === calName) {
+        cal = calendars[i];
+        break;
+      }
+    } catch(e) {}
   }
-}
+} catch(e) {}
 var count = 0;
 if (cal) {
-  var events = cal.events();
-  count = events.length;
-  for (var i = events.length - 1; i >= 0; i--) {
-    Calendar.delete(events[i]);
-  }
+  try {
+    var events = cal.events();
+    count = events.length;
+    for (var i = events.length - 1; i >= 0; i--) {
+      try { Calendar.delete(events[i]); } catch(e) {}
+    }
+  } catch(e) {}
 }
 count + "";
 "#.to_string()
@@ -882,7 +906,11 @@ count + "";
         .map_err(|e| format!("カレンダー操作失敗: {}", e))?;
 
     if delete_calendar {
-        Ok("カレンダーを削除しました".into())
+        if result.contains("not_found") {
+            Ok("カレンダーが見つかりません".into())
+        } else {
+            Ok("カレンダーを削除しました".into())
+        }
     } else {
         Ok(format!("{}件のイベントを削除しました", result))
     }
@@ -1343,9 +1371,22 @@ pub async fn search_syllabus(
 #[tauri::command]
 pub async fn fetch_syllabus_favorites(
     kgc_state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
     let _kgc_gate = kgc_state.kgc_gate.lock().await;
-    let http = kgc_http(kgc_state.inner()).await?;
+    let http = match kgc_http(kgc_state.inner()).await {
+        Ok(h) => h,
+        Err(e) => {
+            // Network/session error → fall back to cache
+            if let Ok(Some((json, _))) = db.get_data_cache("syllabus_favorites") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("syllabus_favorites: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            return Err(e);
+        }
+    };
 
     let main_terms = ["02", "03", "01"];
     let sub_terms = ["04", "05", "06", "07"];
@@ -1390,12 +1431,19 @@ pub async fn fetch_syllabus_favorites(
         }
     }
 
-    Ok(crate::syllabus::SyllabusSearchResult {
+    let result = crate::syllabus::SyllabusSearchResult {
         entries: all_entries,
         total_count: 0,
         current_page: 1,
         total_pages: 1,
-    })
+    };
+
+    // Cache to DB
+    if let Ok(json) = serde_json::to_string(&result) {
+        let _ = db.save_data_cache("syllabus_favorites", &json);
+    }
+
+    Ok(result)
 }
 
 /// Search for a specific class_code across terms, returning the results HTML page.

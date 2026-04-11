@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, gcalDisconnect } from "../api";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, gcalDisconnect, syncCalendar, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail } from "../api";
   import { lunaAuthState, gcalAuthState } from "../stores";
+  import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
 
@@ -18,6 +19,13 @@
   let gcalSyncing = $state(false);
   let gcalError = $state("");
   let legendHover = $state(false);
+  let examEntries = $state<ExamEntry[]>([]);
+  let favoriteEntries = $state<SyllabusEntry[]>([]);
+  let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") !== "0");
+  let syscalEnabled = $state(localStorage.getItem("selah-syscal-enabled") !== "false");
+  let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let calSyncTimer: ReturnType<typeof setInterval> | undefined;
 
   // ── Constants ──
   const days: [number, string][] = [[1,"月"],[2,"火"],[3,"水"],[4,"木"],[5,"金"],[6,"土"]];
@@ -77,13 +85,47 @@
 
   let weekLabel = $derived(shortWeekLabel(weekLabelRaw));
 
-  let hasEntries = $derived(kgcEntries.length > 0 || (scheduleData?.raw.luna_courses.length ?? 0) > 0);
+  // ── Day labels for i32↔String conversion ──
+  const dayLabels = ["月", "火", "水", "木", "金", "土"];
+
+  // ── Parse syllabus day_period like "月1", "月 1", "月1/木3", "月１" into [{day,period}] ──
+  function parseDayPeriod(dp: string): { day: number; period: number }[] {
+    const results: { day: number; period: number }[] = [];
+    const parts = dp.split(/[\/,・]+/);
+    for (const part of parts) {
+      for (let i = 0; i < dayLabels.length; i++) {
+        if (part.includes(dayLabels[i])) {
+          const afterDay = part.slice(part.indexOf(dayLabels[i]) + 1).trim();
+          const periodMatch = afterDay.match(/[1-6１-６]/);
+          if (periodMatch) {
+            const p = parseInt(periodMatch[0].replace(/[１２３４５６]/, c =>
+              String("１２３４５６".indexOf(c) + 1)
+            ), 10);
+            if (p >= 1 && p <= 6) results.push({ day: i + 1, period: p });
+          }
+          break;
+        }
+      }
+    }
+    return results;
+  }
+
+  // Parsed favorite slots (reactive, rebuilt when favoriteEntries changes)
+  let favSlots = $derived(
+    showFavInTimetable
+      ? favoriteEntries.flatMap(f => parseDayPeriod(f.day_period).map(slot => ({ ...slot, entry: f })))
+      : []
+  );
+
+  let hasEntries = $derived(kgcEntries.length > 0 || (scheduleData?.raw.luna_courses.length ?? 0) > 0 || favSlots.length > 0);
 
   // ── Cell data ──
   interface CellData {
     kgc?: KgcCourseRow;
     luna?: LunaCourseRow;
     ai?: AiScheduleItem;
+    exam?: ExamEntry;
+    favorite?: SyllabusEntry;
     empty: boolean;
   }
 
@@ -94,17 +136,21 @@
       ? (activeWeek === "current" ? aiResult.current_week : aiResult.next_week)
       : [];
     const ai = aiItems.find(i => i.day === day && i.period === period);
-    return { kgc, luna, ai, empty: !kgc && !luna && !ai };
+    const dayStr = dayLabels[day - 1];
+    const exam = examEntries.find(e => e.day === dayStr && e.period === period);
+    const fav = favSlots.find(f => f.day === day && f.period === period);
+    return { kgc, luna, ai, exam, favorite: fav?.entry, empty: !kgc && !luna && !ai && !fav };
   }
 
   function cellName(c: CellData): string {
-    return c.ai?.course_name || c.luna?.name || c.kgc?.name || "";
+    return c.ai?.course_name || c.luna?.name || c.kgc?.name || c.favorite?.course_title || "";
   }
 
   function cellDotColor(c: CellData): string {
     if (c.kgc?.is_cancelled || c.ai?.is_cancelled) return "#ff3b30";
     if (c.kgc?.is_makeup) return "#34c759";
     if (c.kgc?.is_room_changed) return "#ff9500";
+    if (c.favorite && !c.kgc && !c.luna && !c.ai) return "#ffcc00";
     return "var(--accent)";
   }
 
@@ -133,6 +179,53 @@
     }).catch(console.error);
   }
 
+  // ── Toast helper ──
+  function showToast(message: string, type: "success" | "error" | "info" = "success") {
+    if (toastTimer) clearTimeout(toastTimer);
+    toast = { message, type };
+    toastTimer = setTimeout(() => { toast = null; }, 3000);
+  }
+
+  // ── Load exam + favorites (DB cache first, then network fallback) ──
+  async function loadCachedExtras() {
+    console.log("[Timetable] loadCachedExtras: start");
+
+    // Exam
+    try {
+      const examJson = await getDataCache("exam_timetable");
+      console.log("[Timetable] exam cache:", examJson ? `${examJson.length} chars` : "null");
+      if (examJson) {
+        const data: ExamTimetableData = JSON.parse(examJson);
+        examEntries = data.entries || [];
+      } else {
+        const data = await fetchExamTimetable();
+        examEntries = data.entries || [];
+      }
+      console.log("[Timetable] exam entries:", examEntries.length);
+    } catch (e) {
+      console.warn("[Timetable] exam load failed:", e);
+    }
+
+    // Favorites
+    try {
+      const favJson = await getDataCache("syllabus_favorites");
+      console.log("[Timetable] favorites cache:", favJson ? `${favJson.length} chars` : "null");
+      if (favJson) {
+        const data: SyllabusSearchResult = JSON.parse(favJson);
+        favoriteEntries = data.entries || [];
+      } else {
+        console.log("[Timetable] no favorites cache, fetching...");
+        const data = await fetchSyllabusFavorites();
+        favoriteEntries = data.entries || [];
+      }
+      console.log("[Timetable] favorites loaded:", favoriteEntries.length, favoriteEntries.map(f => ({ title: f.course_title, dp: f.day_period })));
+    } catch (e) {
+      console.warn("[Timetable] favorites load failed:", e);
+    }
+
+    console.log("[Timetable] favSlots parsed:", favSlots.length, favSlots.map(s => `${dayLabels[s.day-1]}${s.period}:${s.entry.course_title}`));
+  }
+
   // ── Data loading (DB snapshot only — no network) ──
   async function loadData() {
     try {
@@ -152,6 +245,76 @@
     } finally {
       loading = false;
     }
+    // Load exam + favorites from DB cache (non-blocking)
+    loadCachedExtras();
+  }
+
+  // ── Simple hash for change detection ──
+  function computeScheduleHash(entries: KgcCourseRow[]): string {
+    const key = entries.map(e => `${e.kgc_code}:${e.day}:${e.period}:${e.is_cancelled}:${e.is_makeup}:${e.room}`).sort().join("|");
+    let h = 0;
+    for (let i = 0; i < key.length; i++) {
+      h = ((h << 5) - h + key.charCodeAt(i)) | 0;
+    }
+    return String(h);
+  }
+
+  // ── Build CalendarSyncEntry[] from kgc entries ──
+  function buildCalendarEntries(entries: KgcCourseRow[]): { day: string; period: number; course_name: string; room: string; is_cancelled: boolean }[] {
+    return entries.map(e => ({
+      day: dayLabels[e.day - 1] || String(e.day),
+      period: e.period,
+      course_name: e.name,
+      room: e.room || "",
+      is_cancelled: e.is_cancelled,
+    }));
+  }
+
+  // ── Auto-sync to calendars if data changed ──
+  async function autoSyncCalendars(entries: KgcCourseRow[], weekLabel: string) {
+    const newHash = computeScheduleHash(entries);
+    const hashKey = `schedule_hash_${activeWeek}`;
+    let changed = true;
+    try {
+      const oldHash = await getDataCache(hashKey);
+      if (oldHash === newHash) changed = false;
+    } catch {}
+
+    // Always persist latest hash
+    try { await saveDataCache(hashKey, newHash); } catch {}
+
+    if (!changed) {
+      console.log("[Timetable] schedule unchanged, skipping auto-sync");
+      return;
+    }
+
+    const calEntries = buildCalendarEntries(entries);
+
+    // System Calendar.app auto-sync (respect enabled setting)
+    try {
+      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
+      const autoSync = localStorage.getItem("selah-auto-sync");
+      if (syscalEnabled && autoSync === "true" && calEntries.length > 0) {
+        await syncCalendar(calEntries, weekLabel);
+        showToast("カレンダーに同期しました");
+      }
+    } catch (e: any) {
+      console.error("[Timetable] Calendar.app auto-sync failed:", e);
+    }
+
+    // Google Calendar auto-sync
+    try {
+      const gcalAutoSync = localStorage.getItem("selah-gcal-auto-sync");
+      if (gcalAutoSync === "true" && calEntries.length > 0) {
+        const status = await gcalCheckSession();
+        if (status.authenticated) {
+          await gcalSyncTimetable(calEntries, weekLabel);
+          showToast("Google カレンダーに同期しました");
+        }
+      }
+    } catch (e: any) {
+      console.error("[Timetable] Google Calendar auto-sync failed:", e);
+    }
   }
 
   // ── Sync: serial fetch KGC → Luna → enrichment → persist ──
@@ -168,8 +331,19 @@
       });
       scheduleData = data;
       if (data.ai_result) aiResult = data.ai_result;
+      showToast("時間割を更新しました");
+
+      // Reload cached extras (exam might have updated)
+      loadCachedExtras();
+
+      // Auto-sync calendars (hash-based, non-blocking)
+      const entries = activeWeek === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
+      const label = activeWeek === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
+      autoSyncCalendars(entries, label);
+      localStorage.setItem("selah-cal-last-sync", String(Date.now()));
     } catch (e: any) {
       error = e?.message || String(e);
+      showToast(error, "error");
     } finally {
       syncing = false;
     }
@@ -214,36 +388,47 @@
     gcalSyncing = true;
     gcalError = "";
     try {
-      // Check auth first
-      const status = await gcalCheckSession();
-      if (!status.authenticated) {
-        // Trigger login flow
-        await gcalOpenLogin();
-        gcalSyncing = false;
-        return;
-      }
-      // Build entries from current active week
-      const entries = kgcEntries.map(e => ({
-        day: String(e.day),
-        period: e.period,
-        course_name: e.name,
-        room: e.room || "",
-        is_cancelled: e.is_cancelled,
-      }));
+      const entries = buildCalendarEntries(kgcEntries);
       const label = activeWeek === "current"
         ? (scheduleData.raw.current_week_label || "")
         : (scheduleData.raw.next_week_label || "");
-      await gcalSyncTimetable(entries, label);
-      // Refresh gcal state
-      const freshStatus = await gcalCheckSession();
-      gcalAuthState.update(s => ({
-        ...s,
-        authenticated: freshStatus.authenticated,
-        calendarExists: freshStatus.calendar_exists,
-        syncedEvents: freshStatus.synced_events,
-      }));
+
+      // Apple Calendar.app sync (respect enabled setting)
+      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
+      if (syscalEnabled) {
+        try {
+          if (entries.length > 0) {
+            await syncCalendar(entries, label);
+          }
+        } catch (e: any) {
+          console.error("[Timetable] Calendar.app sync failed:", e);
+        }
+      }
+
+      // Google Calendar sync
+      try {
+        const status = await gcalCheckSession();
+        if (!status.authenticated) {
+          await gcalOpenLogin();
+          gcalSyncing = false;
+          return;
+        }
+        await gcalSyncTimetable(entries, label);
+        const freshStatus = await gcalCheckSession();
+        gcalAuthState.update(s => ({
+          ...s,
+          authenticated: freshStatus.authenticated,
+          calendarExists: freshStatus.calendar_exists,
+          syncedEvents: freshStatus.synced_events,
+        }));
+      } catch (e: any) {
+        console.error("[Timetable] Google Calendar sync failed:", e);
+      }
+
+      showToast("カレンダーに同期しました");
     } catch (e: any) {
       gcalError = e?.message || String(e);
+      showToast("カレンダー同期に失敗", "error");
     } finally {
       gcalSyncing = false;
     }
@@ -368,10 +553,72 @@
     }
   }
 
+  // ── Timer-based calendar auto-sync ──
+  const CAL_SYNC_CHECK_INTERVAL = 10 * 60 * 1000; // check every 10 minutes
+  const CAL_SYNC_DEFAULT_HOURS = 12;
+  const CAL_SYNC_MIN_HOURS = 6;
+  const CAL_SYNC_MAX_HOURS = 72;
+
+  function getCalSyncIntervalMs(): number {
+    const raw = parseInt(localStorage.getItem("selah-cal-sync-interval") || "", 10);
+    const hours = (Number.isFinite(raw) && raw >= CAL_SYNC_MIN_HOURS && raw <= CAL_SYNC_MAX_HOURS)
+      ? raw : CAL_SYNC_DEFAULT_HOURS;
+    return hours * 3600 * 1000;
+  }
+
+  async function timerCalendarSync() {
+    // Check if any auto-sync is enabled
+    const sysEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
+    const sysAuto = localStorage.getItem("selah-auto-sync") === "true";
+    const gcalAuto = localStorage.getItem("selah-gcal-auto-sync") === "true";
+    if (!(sysEnabled && sysAuto) && !gcalAuto) return;
+
+    // Check interval
+    const lastSync = parseInt(localStorage.getItem("selah-cal-last-sync") || "0", 10);
+    const now = Date.now();
+    if (now - lastSync < getCalSyncIntervalMs()) return;
+
+    console.log("[Timetable] timer-based calendar sync triggered");
+
+    // Fetch fresh schedule data
+    try {
+      const data = await syncScheduleData();
+      scheduleData = data;
+      if (data.ai_result) aiResult = data.ai_result;
+
+      // Sync both weeks
+      for (const week of ["current", "next"] as const) {
+        const entries = week === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
+        const label = week === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
+        if (entries.length > 0) {
+          await autoSyncCalendars(entries, label);
+        }
+      }
+
+      localStorage.setItem("selah-cal-last-sync", String(now));
+      console.log("[Timetable] timer-based calendar sync completed");
+    } catch (e) {
+      console.error("[Timetable] timer-based calendar sync failed:", e);
+    }
+  }
+
+  function startCalSyncTimer() {
+    // Run once on mount after a short delay, then periodically
+    setTimeout(() => timerCalendarSync(), 5000);
+    calSyncTimer = setInterval(() => timerCalendarSync(), CAL_SYNC_CHECK_INTERVAL);
+  }
+
+  function stopCalSyncTimer() {
+    if (calSyncTimer) { clearInterval(calSyncTimer); calSyncTimer = undefined; }
+  }
+
   onMount(() => {
     loadData();
     startTipCycle();
+    startCalSyncTimer();
     window.addEventListener("keydown", handleKeydown);
+    window.addEventListener("selah-fav-toggle", handleFavToggle as EventListener);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     // Check gcal session in background
     gcalCheckSession().then(status => {
       gcalAuthState.update(s => ({
@@ -383,9 +630,22 @@
     }).catch(() => {});
   });
 
+  function handleFavToggle(e: CustomEvent<boolean>) {
+    showFavInTimetable = e.detail;
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState === "visible") {
+      syscalEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
+    }
+  }
+
   onDestroy(() => {
     stopTipCycle();
+    stopCalSyncTimer();
     window.removeEventListener("keydown", handleKeydown);
+    window.removeEventListener("selah-fav-toggle", handleFavToggle as EventListener);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
   });
 </script>
 
@@ -448,17 +708,26 @@
             {/if}
             <span class="action-label">更新</span>
           </button>
-          <button class="action-btn" onclick={handleGcalSync} disabled={gcalSyncing}>
+          <button class="action-btn" onclick={handleGcalSync} disabled={gcalSyncing} title={syscalEnabled && $gcalAuthState.authenticated ? "Apple / Google カレンダーに同期" : syscalEnabled ? "Apple カレンダーに同期" : "Google カレンダーに同期"}>
             {#if gcalSyncing}
               <span class="mini-spinner"></span>
             {:else}
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <rect x="2" y="2" width="12" height="12" rx="2.5" stroke="currentColor" stroke-width="1.2"/>
-                <path d="M2 5.5h12" stroke="currentColor" stroke-width="1.2"/>
-                <path d="M5.5 2v3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-                <path d="M10.5 2v3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-                <circle cx="8" cy="10" r="1.5" stroke="currentColor" stroke-width="1"/>
-              </svg>
+              <span class="cal-logos">
+                {#if syscalEnabled}
+                <svg width="13" height="13" viewBox="0 0 814 1000" fill="currentColor">
+                  <path d="M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 202.2-.6 3.2-20.7 71.9-68.7 141.9-42.8 61.6-87.5 123.1-155.5 123.1s-85.5-39.5-164-39.5c-76.5 0-103.7 40.8-165.9 40.8s-105.6-57.8-155.5-127.4c-58.6-81.6-106.3-207.3-106.3-327.1 0-192.8 125.3-295.1 248.8-295.1 65.6 0 120.2 43.1 161.4 43.1 39.3 0 100.6-45.7 174.5-45.7 28.2 0 129.6 2.6 196.2 99.2z"/>
+                  <path d="M554.1 159.4c31.5-37.7 53.8-90.1 53.8-142.6 0-7.3-.7-14.4-1.9-20.5-51.2 1.9-111.7 34.1-148.4 76.5-28.2 31.5-55.8 83.8-55.8 137.1 0 8 1.3 16 1.9 18.5 3.2.6 8.6 1.3 14 1.3 46.3-.1 103.7-30.7 136.4-70.3z"/>
+                </svg>
+                {/if}
+                {#if $gcalAuthState.authenticated}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                {/if}
+              </span>
             {/if}
             <span class="action-label">同期</span>
           </button>
@@ -537,6 +806,24 @@
             {@const cell = getCell(dayNum, period)}
             {#if cell.empty}
               <div class="cell"></div>
+            {:else if cell.favorite && !cell.kgc && !cell.luna && !cell.ai}
+              <!-- Favorite-only cell -->
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="cell course-cell entry-favorite"
+                onclick={() => openSyllabusDetail(cell.favorite!.class_code, cell.favorite!.course_title)}
+              >
+                <span class="cell-dot" style="background:#ffcc00"></span>
+                <div class="cell-frame cell-info-in">
+                  <span class="cell-name"><span class="fav-star">★</span>{cell.favorite.course_title}</span>
+                  <div class="cell-detail">
+                    {#if cell.favorite.instructor}<div class="cell-info-line">{cell.favorite.instructor}</div>{/if}
+                    {#if cell.favorite.campus}<div class="cell-info-line">{cell.favorite.campus}</div>{/if}
+                  </div>
+                  {#if cell.exam}<div class="cell-tags"><span class="cell-tag cell-tag-exam">試験</span></div>{/if}
+                </div>
+              </div>
             {:else}
               {@const frames = cellFrames(cell)}
               {@const isCancelled = !!(cell.kgc?.is_cancelled || cell.ai?.is_cancelled)}
@@ -562,13 +849,14 @@
                   {#if frameIdx === 0}
                     <!-- Screen 1: Title + pills + info -->
                     <span class="cell-name" class:struck={isCancelled}>
-                      {cellName(cell)}
+                      {#if cell.favorite}<span class="fav-star">★</span>{/if}{cellName(cell)}
                     </span>
-                    {#if isCancelled || isMakeup || isChanged || frame.hasNotify || frame.hasExam || frame.hasAssign}
+                    {#if isCancelled || isMakeup || isChanged || cell.exam || frame.hasNotify || frame.hasExam || frame.hasAssign}
                       <div class="cell-tags">
                         {#if isCancelled}<span class="cell-tag cell-tag-cancel">休講</span>{/if}
                         {#if isMakeup}<span class="cell-tag cell-tag-makeup">補講</span>{/if}
                         {#if isChanged}<span class="cell-tag cell-tag-change">変更</span>{/if}
+                        {#if cell.exam}<span class="cell-tag cell-tag-exam">試験</span>{/if}
                         {#if frame.hasNotify}<span class="alert-pill alert-pill-notify">通知 {frame.notifyCount}</span>{/if}
                         {#if frame.hasExam}<span class="alert-pill alert-pill-exam">試験 {frame.examCount}</span>{/if}
                         {#if frame.hasAssign}<span class="alert-pill alert-pill-assign">課題 {frame.assignCount}</span>{/if}
@@ -636,6 +924,14 @@
     {/if}
   </ViewLoader>
 </div>
+
+<!-- Toast notification (outside .view to avoid overflow clipping) -->
+{#if toast}
+  <div class="toast toast-{toast.type}">
+    <span>{toast.message}</span>
+    <button class="toast-close" onclick={() => toast = null}>&times;</button>
+  </div>
+{/if}
 
 <style>
   /* ── Header (two-line layout like HomePage) ── */
@@ -794,6 +1090,11 @@
   }
   .action-btn-ai {
     color: rgba(175, 82, 222, 0.85);
+  }
+  .cal-logos {
+    display: flex;
+    align-items: center;
+    gap: 3px;
   }
   .action-btn-ai:hover:not(:disabled) {
     background: linear-gradient(135deg, rgba(175, 82, 222, 0.08), rgba(0, 122, 255, 0.08));
@@ -1013,6 +1314,18 @@
   .cell-tag-cancel { background: rgba(255, 59, 48, 0.12); color: #ff3b30; }
   .cell-tag-makeup { background: rgba(52, 199, 89, 0.12); color: #28a745; }
   .cell-tag-change { background: rgba(255, 149, 0, 0.12); color: #cc7700; }
+  .cell-tag-exam { background: rgba(175, 82, 222, 0.12); color: #af52de; }
+  .entry-favorite {
+    background: #fffbeb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .entry-favorite {
+      background: rgba(255, 204, 0, 0.12);
+    }
+  }
+  :global([data-theme="dark"]) .entry-favorite {
+    background: rgba(255, 204, 0, 0.12);
+  }
 
   /* Full-cell cycling frame */
   .cell-frame {
@@ -1177,4 +1490,57 @@
     box-shadow: var(--shadow-sm);
   }
   .comm-chip:hover { background: var(--bg-hover); box-shadow: var(--shadow-md); }
+
+  /* ── Favorite star ── */
+  .fav-star {
+    color: #ffcc00;
+    font-size: 10px;
+    margin-right: 2px;
+  }
+
+  /* ── Toast notification ── */
+  .toast {
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 8px 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 9999;
+    animation: toast-slide-up 0.3s ease;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    backdrop-filter: blur(12px);
+  }
+  .toast-success {
+    background: rgba(52, 199, 89, 0.9);
+    color: #fff;
+  }
+  .toast-error {
+    background: rgba(255, 59, 48, 0.9);
+    color: #fff;
+  }
+  .toast-info {
+    background: rgba(0, 122, 255, 0.9);
+    color: #fff;
+  }
+  .toast-close {
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    opacity: 0.7;
+  }
+  .toast-close:hover { opacity: 1; }
+  @keyframes toast-slide-up {
+    from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+    to { transform: translateX(-50%) translateY(0); opacity: 1; }
+  }
 </style>

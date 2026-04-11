@@ -823,6 +823,30 @@ export async function gcalDisconnect(): Promise<void> {
   return invoke<void>("gcal_disconnect");
 }
 
+export async function gcalGetConfig(): Promise<{ client_id: string; client_secret: string }> {
+  return invoke("gcal_get_config");
+}
+
+export async function gcalSaveConfig(clientId: string, clientSecret: string): Promise<void> {
+  return invoke("gcal_save_config", { clientId, clientSecret });
+}
+
+export async function gcalClearCalendar(): Promise<void> {
+  return invoke("gcal_clear_calendar");
+}
+
+export async function syncCalendar(entries: GcalSyncEntry[], weekLabel: string): Promise<string> {
+  return invoke<string>("sync_calendar", { entries, weekLabel });
+}
+
+export async function getDataCache(key: string): Promise<string | null> {
+  return invoke<string | null>("get_data_cache", { key });
+}
+
+export async function saveDataCache(key: string, json: string): Promise<void> {
+  return invoke("save_data_cache", { key, json });
+}
+
 // ---------- Public API ----------
 
 export async function openLoginWindow(): Promise<void> {

@@ -7,6 +7,7 @@
     title: string;
     url?: string;
     host: string;
+    systemBrowser?: boolean;
   }
 
   const tools: IctTool[] = [
@@ -32,6 +33,7 @@
       title: "Slack",
       url: "https://kwansei.enterprise.slack.com",
       host: "kwansei.enterprise.slack.com",
+      systemBrowser: true,
     },
     {
       id: "onedrive",
@@ -66,6 +68,10 @@
         return;
       }
       if (!tool.url) return;
+      if (tool.systemBrowser) {
+        await invoke("open_in_system_browser", { url: tool.url });
+        return;
+      }
       await kwicOpenLink(tool.url, tool.title);
     } catch (e) {
       console.error("Failed to open tool:", e);

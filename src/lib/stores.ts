@@ -74,11 +74,14 @@ export interface StudentInfo {
   address: string;
 }
 
-interface CurriculumRow {
+export interface CurriculumRow {
   category: string;
+  level: number;
   required_credits: string;
+  enrolled_acquired_credits: string;
   enrolled_credits: string;
   earned_credits: string;
+  is_deficit: boolean;
 }
 
 export interface GradesData {

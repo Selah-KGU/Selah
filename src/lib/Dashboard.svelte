@@ -31,7 +31,7 @@
   const tabs: Tab[] = [
     { id: "home", label: "ホーム", icon: "square.grid.2x2" },
     { id: "mail", label: "メール", icon: "envelope" },
-    { id: "ict-tools", label: "ツール", icon: "gear" },
+    { id: "ict-tools", label: "ツール", icon: "wrench" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },

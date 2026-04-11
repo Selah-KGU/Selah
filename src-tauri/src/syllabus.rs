@@ -43,7 +43,7 @@ pub struct SyllabusEntry {
     pub register_index: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SyllabusSearchResult {
     pub entries: Vec<SyllabusEntry>,
     pub total_count: usize,

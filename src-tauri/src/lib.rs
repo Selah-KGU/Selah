@@ -78,6 +78,16 @@ fn save_seen_notif_ids(db: tauri::State<'_, db::Database>, source: String, ids: 
     read_state::save_seen_notif_ids(&db, &source, ids);
 }
 
+#[tauri::command]
+fn get_data_cache(db: tauri::State<'_, db::Database>, key: String) -> Option<String> {
+    db.get_data_cache(&key).ok().flatten().map(|(json, _)| json)
+}
+
+#[tauri::command]
+fn save_data_cache(db: tauri::State<'_, db::Database>, key: String, json: String) -> Result<(), String> {
+    db.save_data_cache(&key, &json)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -245,6 +255,8 @@ pub fn run() {
             get_read_notifications,
             get_seen_notif_ids,
             save_seen_notif_ids,
+            get_data_cache,
+            save_data_cache,
             webview_toolbar::browser_go_back,
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,
