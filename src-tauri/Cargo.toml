@@ -1,6 +1,6 @@
 [package]
 name = "selah-app"
-version = "0.3.1"
+version = "0.4.0"
 description = "Selah - 新月の下で、知性を繋ぐ。すべての関学生に。"
 authors = ["haru"]
 license = "MIT"
@@ -41,3 +41,9 @@ block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", features = ["NSHTTPCookie", "NSArray", "NSString"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebsiteDataStore", "WKHTTPCookieStore", "block2"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+tauri-plugin-opener = "2.5.3"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

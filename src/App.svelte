@@ -192,7 +192,9 @@
 {:else}
   <Dashboard />
 {/if}
-<DebugPanel />
+{#if import.meta.env.DEV}
+  <DebugPanel />
+{/if}
 
 <style>
   .app-main {

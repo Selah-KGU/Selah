@@ -69,8 +69,11 @@ pub fn load_config() -> GoogleCalConfig {
 pub fn save_config(config: &GoogleCalConfig) -> Result<(), String> {
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("設定の保存に失敗: {}", e))?;
-    std::fs::write(config_path(), &data)
+    let path = config_path();
+    std::fs::write(&path, &data)
         .map_err(|e| format!("設定ファイルの書き込みに失敗: {}", e))?;
+    #[cfg(unix)]
+    { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
     Ok(())
 }
 
@@ -168,7 +171,10 @@ impl GoogleCalendarClient {
     pub fn save_token(&self) {
         if let Some(ref token) = self.token {
             if let Ok(json) = serde_json::to_string_pretty(token) {
-                let _ = std::fs::write(token_path(), json);
+                let path = token_path();
+                let _ = std::fs::write(&path, json);
+                #[cfg(unix)]
+                { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
             }
         }
     }

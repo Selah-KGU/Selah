@@ -34,9 +34,9 @@ pub async fn gcal_open_login(
     log::info!("Opening Google Calendar login via system browser");
 
     // Bind a local TCP listener on a random available port
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("ローカルサーバー起動失敗: {}", e))?;
-    let port = listener.local_addr()
+    let port = std_listener.local_addr()
         .map_err(|e| format!("ポート取得失敗: {}", e))?.port();
 
     let auth_url = {
@@ -44,30 +44,33 @@ pub async fn gcal_open_login(
         gcal.auth_url(port)?
     };
 
-    // Open system browser
-    std::process::Command::new("open")
-        .arg(&auth_url)
-        .spawn()
+    // Open system browser via sandbox-safe opener plugin
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(&auth_url, None::<&str>)
         .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
 
     let app_clone = app.clone();
     tokio::spawn(async move {
-        // Accept one connection with a timeout
-        listener.set_nonblocking(true)
+        // Convert to async listener (no polling loop, proper event-driven accept)
+        std_listener.set_nonblocking(true)
             .unwrap_or_else(|e| log::warn!("set_nonblocking failed: {}", e));
+        let listener = match tokio::net::TcpListener::from_std(std_listener) {
+            Ok(l) => l,
+            Err(e) => {
+                log::error!("Failed to create async TCP listener: {}", e);
+                return;
+            }
+        };
 
         let code = tokio::time::timeout(std::time::Duration::from_secs(300), async {
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        return parse_oauth_callback(stream);
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                    Err(e) => {
-                        return Err((format!("接続受信失敗: {}", e), None));
-                    }
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let std_stream = stream.into_std()
+                        .map_err(|e| (format!("stream変換失敗: {}", e), None::<std::net::TcpStream>))?;
+                    parse_oauth_callback(std_stream)
+                }
+                Err(e) => {
+                    Err((format!("接続受信失敗: {}", e), None))
                 }
             }
         }).await;

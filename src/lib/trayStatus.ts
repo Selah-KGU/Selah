@@ -161,8 +161,8 @@ export function startTrayStatus() {
     onCacheUpdate<LunaTodoItem[]>("luna_todo", (data) => { todoItems = data ?? []; scheduleRebuild(); }),
   );
 
-  // Also rebuild periodically (every 60s) to update time-sensitive items like "current class"
-  const interval = setInterval(() => scheduleRebuild(), 60_000);
+  // Rebuild periodically (every 90s) to update time-sensitive items like "current class"
+  const interval = setInterval(() => scheduleRebuild(), 90_000);
   unsubscribers.push(() => clearInterval(interval));
 
   // Initial build from whatever is already cached

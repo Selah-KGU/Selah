@@ -11,8 +11,10 @@
     <script>
       // Pre-boot log collector — stores logs before Svelte loads, consumed by DebugPanel
       (function() {
+        var MAX_LOGS = 50;
         var logs = window.__SELAH_PREBOOT_LOGS__ = [];
         function addLog(type, msg) {
+          if (logs.length >= MAX_LOGS) logs.shift();
           logs.push({ type: type, message: msg, time: new Date().toLocaleTimeString('ja-JP') });
         }
         window.addEventListener('error', function(e) {

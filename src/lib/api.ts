@@ -963,6 +963,7 @@ const STABLE_POLL_INTERVAL = 12 * 60 * 60 * 1000; // 12 hours
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let stablePollTimer: ReturnType<typeof setInterval> | null = null;
 let initialPollTimeout: ReturnType<typeof setTimeout> | null = null;
+let stablePollInitTimeout: ReturnType<typeof setTimeout> | null = null;
 let preemptiveRenewalTimer: ReturnType<typeof setInterval> | null = null;
 
 interface PollTarget {
@@ -1039,7 +1040,7 @@ export function startBackgroundPolling() {
     if (document.visibilityState === "visible") doPoll();
   }, POLL_INTERVAL);
   // Stable data: initial fetch after views mount, then refresh every 12 hours
-  setTimeout(doStablePoll, 15_000);
+  stablePollInitTimeout = setTimeout(doStablePoll, 15_000);
   stablePollTimer = setInterval(() => {
     doStablePoll();
   }, STABLE_POLL_INTERVAL);
@@ -1051,6 +1052,7 @@ export function startBackgroundPolling() {
 
 export function stopBackgroundPolling() {
   if (initialPollTimeout) { clearTimeout(initialPollTimeout); initialPollTimeout = null; }
+  if (stablePollInitTimeout) { clearTimeout(stablePollInitTimeout); stablePollInitTimeout = null; }
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (stablePollTimer) { clearInterval(stablePollTimer); stablePollTimer = null; }
   if (preemptiveRenewalTimer) { clearInterval(preemptiveRenewalTimer); preemptiveRenewalTimer = null; }

@@ -424,18 +424,27 @@ pub async fn test_notification(app: tauri::AppHandle, title: String, body: Strin
 
 /// Send a native notification.
 /// Primary: tauri_plugin_notification (uses the app icon).
-/// Fallback: osascript (works in dev mode without a .app bundle).
+/// Fallback (dev only): osascript (works without a .app bundle).
 pub fn send_native_notification(app: &tauri::AppHandle, title: &str, body: &str) -> Result<String, String> {
     use tauri_plugin_notification::NotificationExt;
     match app.notification().builder().title(title).body(body).show() {
         Ok(_) => Ok("Notification sent".to_string()),
         Err(e) => {
-            log::warn!("tauri notification failed ({}), falling back to osascript", e);
-            send_osascript_notification(title, body)
+            log::warn!("tauri notification failed ({})", e);
+            #[cfg(debug_assertions)]
+            {
+                log::info!("falling back to osascript (dev mode)");
+                send_osascript_notification(title, body)
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                Err(format!("Notification unavailable: {}", e))
+            }
         }
     }
 }
 
+#[cfg(debug_assertions)]
 fn send_osascript_notification(title: &str, body: &str) -> Result<String, String> {
     let script = format!(
         "display notification {} with title {}",
@@ -458,6 +467,7 @@ fn send_osascript_notification(title: &str, body: &str) -> Result<String, String
         })
 }
 
+#[cfg(debug_assertions)]
 fn osascript_quote(s: &str) -> String {
     // AppleScript quoted string: wrap in double quotes, escape backslash and double quote
     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");

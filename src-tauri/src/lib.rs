@@ -93,9 +93,10 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.handle().plugin(tauri_plugin_notification::init())?;
+            app.handle().plugin(tauri_plugin_opener::init())?;
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Debug)
+                    .level(if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Info })
                     .level_for("selectors", log::LevelFilter::Warn)
                     .level_for("html5ever", log::LevelFilter::Warn)
                     .targets([

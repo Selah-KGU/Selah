@@ -214,12 +214,16 @@
           html += '</div>';
         }
 
-        // Body HTML (sanitized on backend + CSP blocks inline scripts, strip dangerous tags as defense-in-depth)
+        // Body HTML — defense-in-depth sanitization (CSP also blocks inline scripts)
         if (detail.body_html) {
           const sanitized = detail.body_html
             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
             .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '')
-            .replace(/\son\w+\s*=/gi, ' data-removed=');
+            .replace(/<object[^>]*>[\s\S]*?<\/object>/gi, '')
+            .replace(/<embed[^>]*>/gi, '')
+            .replace(/<link[^>]*>/gi, '')
+            .replace(/\son\w+\s*=/gi, ' data-removed=')
+            .replace(/javascript\s*:/gi, 'blocked:');
           html += '<div class=\"body-content\">' + sanitized + '</div>';
         } else {
           html += '<div class="error">本文が取得できませんでした</div>';

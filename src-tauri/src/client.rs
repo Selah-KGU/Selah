@@ -161,8 +161,12 @@ pub(crate) fn save_cookie_jar(store: &reqwest_cookie_store::CookieStoreMutex, fi
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
     let mut buf = Vec::new();
     if cookie_store::serde::json::save(&store, &mut buf).is_ok() {
-        if let Err(e) = std::fs::write(dir.join(filename), &buf) {
+        let path = dir.join(filename);
+        if let Err(e) = std::fs::write(&path, &buf) {
             log::warn!("Failed to save cookies ({}): {}", filename, e);
+        } else {
+            #[cfg(unix)]
+            { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
         }
     }
 }
@@ -344,8 +348,12 @@ impl KgcClient {
         // Save AuthSession
         if let Some(session) = &self.session {
             if let Ok(json) = serde_json::to_string_pretty(session) {
-                if let Err(e) = std::fs::write(dir.join(SESSION_FILE), json) {
+                let path = dir.join(SESSION_FILE);
+                if let Err(e) = std::fs::write(&path, json) {
                     log::warn!("Failed to save session: {}", e);
+                } else {
+                    #[cfg(unix)]
+                    { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
                 }
             }
         }

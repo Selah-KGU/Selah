@@ -368,13 +368,14 @@
   let aiSuggestionIndex = $state(0);
   let aiSuggestionFade = $state(true);
   let suggestionInterval: ReturnType<typeof setInterval> | undefined;
+  let suggestionTimeout: ReturnType<typeof setTimeout> | undefined;
 
   function startSuggestionCycle() {
     stopSuggestionCycle();
     if (!aiNotifResult?.suggestions?.length) return;
     suggestionInterval = setInterval(() => {
       aiSuggestionFade = false;
-      setTimeout(() => {
+      suggestionTimeout = setTimeout(() => {
         aiSuggestionIndex = (aiSuggestionIndex + 1) % (aiNotifResult?.suggestions?.length || 1);
         aiSuggestionFade = true;
       }, 400);
@@ -382,6 +383,10 @@
   }
 
   function stopSuggestionCycle() {
+    if (suggestionTimeout) {
+      clearTimeout(suggestionTimeout);
+      suggestionTimeout = undefined;
+    }
     if (suggestionInterval) {
       clearInterval(suggestionInterval);
       suggestionInterval = undefined;
@@ -411,11 +416,19 @@
   }
 
   function handleHomeVisibility() {
-    if (document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") {
+      // Pause short-interval timers when hidden to save CPU/battery
+      stopWeatherCycle();
+      stopSuggestionCycle();
+      return;
+    }
     // Re-check AI config in case user just configured it in settings
     if (!aiEnabled) checkAiConfig();
     // Immediately refresh clock so now/next updates on tab focus
     tickClock();
+    // Resume visual cycling
+    startWeatherCycle();
+    startSuggestionCycle();
     // Re-fetch timetable if cache is stale
     if (serverDataLoaded) {
       cachedFetch<ScheduleResponse>("schedule_data", getScheduleSnapshot)

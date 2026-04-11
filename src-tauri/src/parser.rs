@@ -9,6 +9,9 @@ pub(crate) static SEL_TD: LazyLock<Selector> = LazyLock::new(|| Selector::parse(
 pub(crate) static SEL_TH: LazyLock<Selector> = LazyLock::new(|| Selector::parse("th").expect("valid selector"));
 pub(crate) static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).expect("valid selector"));
 pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output").expect("valid selector"));
+static SEL_TABLE_OUTPUT_SEISEKIT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output_seisekiT").expect("valid selector"));
+static SESSION_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"第([\d,～~・-]+)回|Session\s+([\d,～~-]+)").unwrap());
+static NUM_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\d+").unwrap());
 
 // ============ Shared ============
 
@@ -302,12 +305,10 @@ pub fn parse_grades(html: &str) -> GradesData {
     // Strategy: extract data from hidden inputs in output_seisekiT tables
     // Each row has: hdnLv (level), lblRqgpNm (name), lblRqgpLlCrnum (required),
     // lblRqgpAcqTacCrnum (enrolled+acquired), lblRqgpTacCrnum (enrolled), lblRqgpAcqCrnum (acquired)
-    let input_sel = scraper::Selector::parse("input[type='hidden']").unwrap();
-
     // Collect all hidden inputs and group by index
     let mut rows_map: std::collections::BTreeMap<usize, std::collections::HashMap<String, String>> = std::collections::BTreeMap::new();
 
-    for input in doc.select(&input_sel) {
+    for input in doc.select(&SEL_HIDDEN_INPUT) {
         let name = input.value().attr("name").unwrap_or("");
         let value = input.value().attr("value").unwrap_or("").trim().to_string();
 
@@ -332,14 +333,11 @@ pub fn parse_grades(html: &str) -> GradesData {
 
     // Also check for deficit: red background on td cells
     // We look at each output_seisekiT table's tr for style containing #FF0000
-    let table_sel = scraper::Selector::parse("table.output_seisekiT").unwrap();
-    let tr_sel = scraper::Selector::parse("tr").unwrap();
-    let td_sel = scraper::Selector::parse("td").unwrap();
     let mut deficit_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-    for (table_idx, table) in doc.select(&table_sel).enumerate() {
-        for tr in table.select(&tr_sel) {
-            for td in tr.select(&td_sel) {
+    for (table_idx, table) in doc.select(&SEL_TABLE_OUTPUT_SEISEKIT).enumerate() {
+        for tr in table.select(&SEL_TR) {
+            for td in tr.select(&SEL_TD) {
                 if let Some(style) = td.value().attr("style") {
                     if style.contains("#FF0000") {
                         deficit_indices.insert(table_idx);
@@ -766,10 +764,9 @@ pub fn parse_registration(html: &str) -> RegistrationData {
 
     // Language options from hidden inputs
     let mut language_options = Vec::new();
-    let all_hidden = Selector::parse(r#"input[type="hidden"]"#).expect("valid selector");
     let mut opt_names: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
     let mut opt_values: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
-    for el in doc.select(&all_hidden) {
+    for el in doc.select(&SEL_HIDDEN_INPUT) {
         let name = el.value().attr("name").unwrap_or("");
         let value = el.value().attr("value").unwrap_or("").trim().to_string();
         if name.contains("lblTacOptAstNm") {
@@ -1172,11 +1169,6 @@ pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
     let doc = Html::parse_document(html);
     let mut plans = Vec::new();
 
-    let session_re = regex::Regex::new(
-        r"第([\d,～~・-]+)回|Session\s+([\d,～~-]+)"
-    ).unwrap();
-    let num_re = regex::Regex::new(r"\d+").unwrap();
-
     let candidates = ["table.output", "table.form", "table.tbl", "table"];
     for selector_str in &candidates {
         let Ok(table_sel) = Selector::parse(selector_str) else { continue };
@@ -1190,9 +1182,9 @@ pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
                     .collect();
                 let full_text = all_cells.join(" ");
 
-                if let Some(caps) = session_re.captures(&full_text) {
+                if let Some(caps) = SESSION_RE.captures(&full_text) {
                     let range_str = caps.get(1).or(caps.get(2)).map(|m| m.as_str()).unwrap_or("");
-                    let session_nums = expand_session_range(range_str, &num_re);
+                    let session_nums = expand_session_range(range_str, &NUM_RE);
                     if session_nums.is_empty() { continue; }
 
                     // ── th_header: everything after the session number marker ──
@@ -1201,7 +1193,7 @@ pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
                         .collect::<Vec<_>>()
                         .join(" ");
                     let th_header = {
-                        let last_end = session_re.find_iter(&th_full)
+                        let last_end = SESSION_RE.find_iter(&th_full)
                             .last()
                             .map(|m| m.end())
                             .unwrap_or(0);

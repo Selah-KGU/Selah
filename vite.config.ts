@@ -12,6 +12,9 @@ export default defineConfig({
     },
   },
   publicDir: "static",
+  esbuild: {
+    drop: process.env.TAURI_DEBUG ? [] : ["console", "debugger"],
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,

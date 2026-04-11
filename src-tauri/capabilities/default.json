@@ -40,6 +40,7 @@
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",
     "notification:allow-notify",
-    "notification:allow-show"
+    "notification:allow-show",
+    "opener:default"
   ]
 }

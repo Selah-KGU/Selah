@@ -1,10 +1,9 @@
-use tauri::State;
+use tauri::{State, Manager};
 use crate::AppState;
 use crate::config;
 use crate::client;
 use crate::luna_client;
 use crate::luna_parser;
-use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -178,6 +177,11 @@ pub async fn luna_open_detail_window(
     info_id: Option<String>,
     kgc_path: Option<String>,
 ) -> Result<(), String> {
+    let existing = app.webview_windows().keys()
+        .filter(|k| k.starts_with("luna-detail-")).count();
+    if existing >= 10 {
+        return Err("開いているウィンドウが多すぎます。いくつか閉じてください。".into());
+    }
     let id = LUNA_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("luna-detail-{}", id);
 
@@ -260,7 +264,7 @@ pub async fn luna_launch_lti(app: tauri::AppHandle, state: State<'_, AppState>, 
 
 /// Reveal a file in Finder (restricted to app download directory)
 #[tauri::command]
-pub async fn luna_reveal_file(path: String) -> Result<(), String> {
+pub async fn luna_reveal_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     // Restrict to files under the user's Downloads or app data directory
     let p = std::path::Path::new(&path);
     let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
@@ -270,10 +274,8 @@ pub async fn luna_reveal_file(path: String) -> Result<(), String> {
     if !canonical.starts_with(&allowed) {
         return Err("ダウンロードフォルダ外のファイルは表示できません".into());
     }
-    Command::new("open")
-        .arg("-R")
-        .arg(&path)
-        .spawn()
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().reveal_item_in_dir(&canonical)
         .map_err(|e| format!("ファイルを表示できませんでした: {}", e))?;
     Ok(())
 }

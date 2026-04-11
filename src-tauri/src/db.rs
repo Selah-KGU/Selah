@@ -160,6 +160,9 @@ impl Database {
         std::fs::create_dir_all(data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
         let db_path = data_dir.join("courses.db");
         let conn = Connection::open(&db_path).map_err(|e| format!("Failed to open DB: {}", e))?;
+        // WAL mode: allows concurrent reads while writing, reduces lock contention
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+            .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
         let db = Self { conn: Mutex::new(conn) };
         db.init_tables()?;
         Ok(db)
@@ -174,7 +177,7 @@ impl Database {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap_or(0);
 
-        const CURRENT_VERSION: i32 = 5;
+        const CURRENT_VERSION: i32 = 6;
         if user_version != CURRENT_VERSION {
             conn.execute_batch("
                 DROP TABLE IF EXISTS session_plans;
@@ -274,6 +277,16 @@ impl Database {
                 updated_at      INTEGER NOT NULL DEFAULT 0
             );
         ").map_err(|e| format!("DB init: {}", e))?;
+
+        // Indexes for frequent queries
+        conn.execute_batch("
+            CREATE INDEX IF NOT EXISTS idx_kgc_week ON kgc_courses(week_label);
+            CREATE INDEX IF NOT EXISTS idx_kgc_code ON kgc_courses(kgc_code);
+            CREATE INDEX IF NOT EXISTS idx_luna_id ON luna_courses(luna_id);
+            CREATE INDEX IF NOT EXISTS idx_sp_kgc_code ON session_plans(kgc_code);
+            CREATE INDEX IF NOT EXISTS idx_la_luna_id ON luna_activities(luna_id);
+        ").map_err(|e| format!("DB index: {}", e))?;
+
         // Drop old merged tables if they exist (migration from old schema)
         let _ = conn.execute_batch("
             DROP TABLE IF EXISTS courses;

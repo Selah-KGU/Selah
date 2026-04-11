@@ -212,7 +212,7 @@
   let tickInterval: ReturnType<typeof setInterval> | null = null;
 
   function startTick() {
-    if (!tickInterval) tickInterval = setInterval(() => { nowTick = Date.now(); }, 30_000);
+    if (!tickInterval) tickInterval = setInterval(() => { nowTick = Date.now(); }, 60_000);
   }
   function stopTick() {
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }

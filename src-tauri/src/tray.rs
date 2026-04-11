@@ -365,7 +365,26 @@ pub fn start_tray_cycle(app: &AppHandle, state: Arc<TrayStatusState>) {
             };
             let (ref items, ref mut idx) = *guard;
             if items.is_empty() {
+                // Clear tray title when no items
+                if !last_text.is_empty() {
+                    last_text.clear();
+                    drop(guard);
+                    if let Some(tray) = app.tray_by_id("main-tray") {
+                        let _ = tray.set_title(None::<&str>);
+                    }
+                }
+                continue;
+            }
+            // Single item: set once, skip cycling
+            if items.len() == 1 {
+                let text = format!(" {}", items[0]);
                 drop(guard);
+                if text != last_text {
+                    last_text = text.clone();
+                    if let Some(tray) = app.tray_by_id("main-tray") {
+                        let _ = tray.set_title(Some(&text));
+                    }
+                }
                 continue;
             }
             *idx %= items.len();
@@ -389,9 +408,7 @@ pub fn set_tray_status_items(
     items: Vec<String>,
 ) -> Result<(), String> {
     let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
-    if !items.is_empty() {
-        guard.0 = items;
-        guard.1 = 0;
-    }
+    guard.0 = items;
+    guard.1 = 0;
     Ok(())
 }

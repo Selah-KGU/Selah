@@ -166,7 +166,7 @@ pub async fn open_login_window(
             return;
         }
         let url = payload.url();
-        let expected_host = sp_host_for_load.lock().unwrap().clone();
+        let expected_host = sp_host_for_load.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if cookie_bridge::is_post_saml_sp_url(url, &expected_host) {
             log::info!(
                 "Cookie Bridge: page loaded on SP domain: {}{}",
@@ -261,7 +261,7 @@ pub async fn open_login_window(
 
         if let Some(win) = app_clone.get_webview_window("login") {
             {
-                let mut host = current_sp_host.lock().unwrap();
+                let mut host = current_sp_host.lock().unwrap_or_else(|e| e.into_inner());
                 *host = "luna.kwansei.ac.jp".to_string();
             }
             // Drain any stale page-load signals buffered from Phase 1.
@@ -328,7 +328,7 @@ pub async fn open_login_window(
 
         if let Some(win) = app_clone.get_webview_window("login") {
             {
-                let mut host = current_sp_host.lock().unwrap();
+                let mut host = current_sp_host.lock().unwrap_or_else(|e| e.into_inner());
                 *host = "kwic.kwansei.ac.jp".to_string();
             }
             // Drain stale signals from Phase 2
@@ -645,20 +645,23 @@ pub async fn fetch_notifications(
     kgc_fetch_cached!(state, db, "notifications", "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
 }
 
-/// 関西学院大学 period → (start_hour, start_min, end_hour, end_min)
-/// 6限以降は通常使わないため None を返す（カレンダーに同期しない）
+// ── Calendar.app JXA sync helpers (dev-only) ──
+
+#[cfg(debug_assertions)]
 fn period_to_time(period: i32) -> Option<(u32, u32, u32, u32)> {
     if (1..=5).contains(&period) {
         Some(config::PERIOD_TIMES[(period - 1) as usize])
     } else {
-        None // 6限以降は同期しない
+        None
     }
 }
 
+#[cfg(debug_assertions)]
 static WEEK_MONDAY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})\(月\)").expect("valid regex"));
+#[cfg(debug_assertions)]
 static WEEK_DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})/(\d{2})/(\d{2})").expect("valid regex"));
 
-/// Parse week_label like "2026/03/30(月)～2026/04/05(日)" to get Monday's date
+#[cfg(debug_assertions)]
 fn parse_week_start(week_label: &str) -> Result<(i32, u32, u32), String> {
     let caps = WEEK_MONDAY_RE.captures(week_label)
         .or_else(|| WEEK_DATE_RE.captures(week_label));
@@ -671,7 +674,7 @@ fn parse_week_start(week_label: &str) -> Result<(i32, u32, u32), String> {
     Err(format!("週ラベルを解析できません: {}", week_label))
 }
 
-/// Calculate actual date by adding day_offset to a base date
+#[cfg(debug_assertions)]
 fn add_days(year: i32, month: u32, day: u32, offset: i32) -> Result<(i32, u32, u32), String> {
     use chrono::{Datelike, NaiveDate};
     let date = NaiveDate::from_ymd_opt(year, month, day)
@@ -680,7 +683,8 @@ fn add_days(year: i32, month: u32, day: u32, offset: i32) -> Result<(i32, u32, u
     Ok((date.year(), date.month(), date.day()))
 }
 
-/// Run a JXA script via osascript on a blocking thread.
+/// Only available in dev builds (App Store forbids apple-events entitlement).
+#[cfg(debug_assertions)]
 async fn run_jxa(script: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let output = std::process::Command::new("osascript")
@@ -699,6 +703,7 @@ async fn run_jxa(script: String) -> Result<String, String> {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct CalendarSyncEntry {
     pub day: String,
     pub period: i32,
@@ -707,7 +712,7 @@ pub struct CalendarSyncEntry {
     pub is_cancelled: bool,
 }
 
-/// Escape a string for embedding in a JavaScript double-quoted string literal
+#[cfg(debug_assertions)]
 fn escape_js_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
@@ -717,20 +722,26 @@ fn escape_js_string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\'' => out.push_str("\\'"),
-            '`' => out.push('`'), // not special in double quotes, but be safe
+            '`' => out.push('`'),
             _ => out.push(c),
         }
     }
     out
 }
 
-/// Sync timetable entries to macOS Calendar.app
-/// Creates a "Selah 時間割" calendar, clears its events, then adds current entries.
+/// Sync timetable entries to macOS Calendar.app (dev-only; release returns error).
 #[tauri::command]
 pub async fn sync_calendar(
     entries: Vec<CalendarSyncEntry>,
     week_label: String,
 ) -> Result<String, String> {
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (&entries, &week_label);
+        return Err("Calendar.app 連携は開発ビルドのみ対応です。Google カレンダーをご利用ください。".into());
+    }
+    #[cfg(debug_assertions)]
+    {
     let (base_year, base_month, base_day) = parse_week_start(&week_label)?;
 
     let day_offset = |d: &str| -> i32 {
@@ -816,11 +827,16 @@ cal.events().length;
         .map_err(|e| format!("カレンダー同期失敗: {}", e))?;
     log::info!("Calendar sync: {} events added", count);
     Ok(format!("{}件のイベントを同期しました", count))
+    }
 }
 
 /// Get info about the KG-Course calendar (exists, event count)
 #[tauri::command]
 pub async fn get_calendar_info() -> Result<serde_json::Value, String> {
+    #[cfg(not(debug_assertions))]
+    { return Ok(serde_json::json!({ "exists": false, "count": 0 })); }
+    #[cfg(debug_assertions)]
+    {
     let script = r#"
 var Calendar = Application("Calendar");
 var calName = "Selah 時間割";
@@ -848,11 +864,19 @@ if (!cal) {
         Ok(stdout) => serde_json::from_str(&stdout).map_err(|e| format!("JSON parse error: {}", e)),
         Err(_) => Ok(serde_json::json!({ "exists": false, "count": 0 })),
     }
+    }
 }
 
 /// Clear all events from the KG-Course calendar, or delete the calendar entirely
 #[tauri::command]
 pub async fn clear_calendar(delete_calendar: bool) -> Result<String, String> {
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = delete_calendar;
+        return Err("Calendar.app 連携は開発ビルドのみ対応です".into());
+    }
+    #[cfg(debug_assertions)]
+    {
     let script = if delete_calendar {
         r#"
 var Calendar = Application("Calendar");
@@ -914,6 +938,7 @@ count + "";
     } else {
         Ok(format!("{}件のイベントを削除しました", result))
     }
+    }
 }
 
 #[tauri::command]
@@ -961,6 +986,13 @@ pub async fn open_detail_window(
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    // Cap concurrent detail windows to prevent resource exhaustion
+    let existing = app.webview_windows().keys()
+        .filter(|k| k.starts_with("detail-")).count();
+    if existing >= 10 {
+        return Err("開いているウィンドウが多すぎます。いくつか閉じてください。".into());
+    }
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("detail-{}", id);
@@ -1020,16 +1052,15 @@ pub async fn open_external_url(
 
 /// Open a URL in the system default browser (Safari, Chrome, etc.)
 #[tauri::command]
-pub async fn open_in_system_browser(url: String) -> Result<(), String> {
+pub async fn open_in_system_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let parsed: url::Url = url.parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(format!("Unsupported URL scheme: {}", scheme));
     }
-    std::process::Command::new("open")
-        .arg(&url)
-        .spawn()
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(&url, None::<&str>)
         .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
     Ok(())
 }

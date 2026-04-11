@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::{State};
+use tauri::{State, Manager};
 use std::sync::{atomic::{AtomicU32, Ordering}, LazyLock};
 
 use crate::client;
@@ -381,6 +381,11 @@ pub async fn kwic_open_detail_window(
     person_category_cd: String,
     category_cd: String,
 ) -> Result<(), String> {
+    let existing = app.webview_windows().keys()
+        .filter(|k| k.starts_with("kwic-detail-")).count();
+    if existing >= 10 {
+        return Err("開いているウィンドウが多すぎます。いくつか閉じてください。".into());
+    }
     let id = KWIC_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("kwic-detail-{}", id);
 

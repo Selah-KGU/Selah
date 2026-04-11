@@ -190,6 +190,9 @@ impl MailClient {
             if let Ok(json) = serde_json::to_string_pretty(token) {
                 if let Err(e) = std::fs::write(&path, json) {
                     log::warn!("Failed to save mail token: {}", e);
+                } else {
+                    #[cfg(unix)]
+                    { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
                 }
             }
         }
@@ -508,8 +511,6 @@ impl MailClient {
             .map_err(|e| format!("ファイル保存失敗: {}", e))?;
 
         let path_str = dest.to_string_lossy().to_string();
-        // Open with OS default app
-        let _ = std::process::Command::new("open").arg(&dest).spawn();
         log::info!("Attachment saved to: {}", path_str);
         Ok(path_str)
     }

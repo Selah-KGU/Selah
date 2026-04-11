@@ -26,6 +26,7 @@
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let calSyncTimer: ReturnType<typeof setInterval> | undefined;
+  let calSyncInitTimeout: ReturnType<typeof setTimeout> | undefined;
 
   // ── Constants ──
   const days: [number, string][] = [[1,"月"],[2,"火"],[3,"水"],[4,"木"],[5,"金"],[6,"土"]];
@@ -512,6 +513,7 @@
   let tipIndex = $state(0);
   let tipFade = $state(true);
   let tipInterval: ReturnType<typeof setInterval> | undefined;
+  let tipTimeout: ReturnType<typeof setTimeout> | undefined;
 
   let tipSources = $derived.by(() => {
     if (hasAi && aiResult) {
@@ -532,7 +534,7 @@
     stopTipCycle();
     tipInterval = setInterval(() => {
       tipFade = false;
-      setTimeout(() => {
+      tipTimeout = setTimeout(() => {
         tipIndex = (tipIndex + 1) % tipSources.length;
         tipFade = true;
       }, 400);
@@ -540,6 +542,10 @@
   }
 
   function stopTipCycle() {
+    if (tipTimeout) {
+      clearTimeout(tipTimeout);
+      tipTimeout = undefined;
+    }
     if (tipInterval) {
       clearInterval(tipInterval);
       tipInterval = undefined;
@@ -604,11 +610,12 @@
 
   function startCalSyncTimer() {
     // Run once on mount after a short delay, then periodically
-    setTimeout(() => timerCalendarSync(), 5000);
+    calSyncInitTimeout = setTimeout(() => timerCalendarSync(), 5000);
     calSyncTimer = setInterval(() => timerCalendarSync(), CAL_SYNC_CHECK_INTERVAL);
   }
 
   function stopCalSyncTimer() {
+    if (calSyncInitTimeout) { clearTimeout(calSyncInitTimeout); calSyncInitTimeout = undefined; }
     if (calSyncTimer) { clearInterval(calSyncTimer); calSyncTimer = undefined; }
   }
 
@@ -643,6 +650,7 @@
   onDestroy(() => {
     stopTipCycle();
     stopCalSyncTimer();
+    if (toastTimer) clearTimeout(toastTimer);
     window.removeEventListener("keydown", handleKeydown);
     window.removeEventListener("selah-fav-toggle", handleFavToggle as EventListener);
     document.removeEventListener("visibilitychange", handleVisibilityChange);
