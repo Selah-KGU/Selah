@@ -1,4 +1,4 @@
-import { writable } from "svelte/store";
+import { writable, get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 
 interface AuthState {
@@ -148,11 +148,17 @@ interface CreditSummary {
   limit: string;
 }
 
+interface LanguageOption {
+  name: string;
+  value: string;
+}
+
 interface RegisteredCourse {
   period: string;
   day: string;
   semester: string;
   course_name: string;
+  course_code: string;
   instructor: string;
   campus: string;
   credits: string;
@@ -164,6 +170,9 @@ export interface RegistrationData {
   student: StudentInfo;
   credit_summary: CreditSummary[];
   courses: RegisteredCourse[];
+  year_semester: string;
+  last_applied: string;
+  language_options: LanguageOption[];
 }
 
 export interface ExamEntry {
@@ -297,9 +306,49 @@ export const aiRefreshRequested = writable<boolean>(false);
 export const unreadNotifCount = writable<number>(0);
 export const unreadMailCount = writable<number>(0);
 
-// Shared read-state for notifications (single source of truth)
+// ============ Read State (DB is source of truth) ============
 export interface ReadIdsData { kgc: string[]; luna: string[]; kwic: string[] }
 export const readIdsStore = writable<ReadIdsData>({ kgc: [], luna: [], kwic: [] });
+
+/** Canonical key for dedup: normalized title + date */
+export function notifKey(title: string, date: string): string {
+  return `${title.trim().replace(/\s+/g, "")}|${date}`;
+}
+
+/** Load read IDs from DB into the store. Call once on app init. */
+export async function loadReadIds(): Promise<void> {
+  const data = await invoke<ReadIdsData>("get_read_notifications");
+  readIdsStore.set(data);
+}
+
+/** Mark a single notification as read. DB-first, then update store. */
+export async function markRead(source: string, id: string): Promise<void> {
+  await invoke<void>("mark_notification_read", { source, id });
+  readIdsStore.update(store => {
+    const key = source as keyof ReadIdsData;
+    if (store[key].includes(id)) return store;
+    return { ...store, [source]: [...store[key], id] };
+  });
+}
+
+/** Mark multiple notifications as read. DB-first, then update store. */
+export async function markBatchRead(source: string, ids: string[]): Promise<void> {
+  await invoke<void>("mark_batch_notification_read", { source, ids });
+  readIdsStore.update(store => {
+    const key = source as keyof ReadIdsData;
+    const existing = new Set(store[key]);
+    const fresh = ids.filter(id => !existing.has(id));
+    if (fresh.length === 0) return store;
+    return { ...store, [source]: [...store[key], ...fresh] };
+  });
+}
+
+/** Check if a notification is read (non-reactive, for imperative code). */
+export function isReadId(source: string, id: string): boolean {
+  const data = get(readIdsStore);
+  const ids = data[source as keyof ReadIdsData];
+  return ids ? ids.includes(id) : false;
+}
 
 function initTheme(): "system" | "light" | "dark" {
   if (typeof localStorage !== "undefined") {

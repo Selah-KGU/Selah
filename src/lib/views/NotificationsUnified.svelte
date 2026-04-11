@@ -1,11 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox, markNotificationRead, markBatchNotificationRead, getReadNotifications } from "../api";
+  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox } from "../api";
   import type { MailMessage } from "../api";
-  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, unreadNotifCount, unreadMailCount, readIdsStore } from "../stores";
-  import type { NotificationsData, ReadIdsData } from "../stores";
+  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead } from "../stores";
+  import type { NotificationsData } from "../stores";
   import type { KwicPortalHome } from "../api";
-  import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "../notify";
   import ViewLoader from "../ViewLoader.svelte";
   import type { LunaNotification } from "../types";
 
@@ -47,10 +46,6 @@
     kwic: new Set($readIdsStore.kwic),
   });
 
-  function notifKey(title: string, date: string): string {
-    return `${title.trim().replace(/\s+/g, "")}|${date}`;
-  }
-
   function isNotifRead(n: { source: string; id: string; title: string; date: string }): boolean {
     if (n.source === "mail") return false; // mail has its own read state
     const key = n.id || notifKey(n.title, n.date);
@@ -60,40 +55,27 @@
 
   // KWIC detail view state (removed - now opens in window)
 
-  /** Extract all KWIC notification items and push native notifications for new ones */
-  function notifyKwicItems(home: KwicPortalHome) {
-    const items = home.sections
-      .filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ")
-      .flatMap(s => s.items.map(i => ({
-        id: i.id, title: i.title, date: i.date,
-        category: i.category || s.title, important: i.important,
-      })));
-    if (items.length) notifyNewKwic(items);
-  }
+  /** Extract all KWIC notification items for native push (handled by Dashboard now) */
 
   // SWR: update UI when background polling brings fresh data
   const unsubKgc = onCacheUpdate<NotificationsData>("notifications", (fresh) => {
     kgcData = fresh;
-    if (fresh?.entries) notifyNewKgc(fresh.entries);
   });
   const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => {
     lunaNotifications = fresh ?? [];
-    notifyNewLuna(lunaNotifications);
   });
   const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => {
     kwicHome = fresh ?? null;
-    if (fresh) notifyKwicItems(fresh);
   });
   const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (fresh) => {
     mailMessages = fresh ?? [];
-    notifyNewMail(mailMessages);
   });
   onDestroy(() => { unsubKgc(); unsubLuna(); unsubKwicHome(); unsubMail(); });
 
   onMount(async () => {
     loading = true;
     try {
-      const [kgc, luna, kwic, mail, readResult] = await Promise.allSettled([
+      const [kgc, luna, kwic, mail] = await Promise.allSettled([
         cachedFetch("notifications", fetchNotifications),
         $lunaAuthState.authenticated
           ? cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"))
@@ -104,26 +86,18 @@
         $mailAuthState.authenticated
           ? cachedFetch<MailMessage[]>("mail_inbox", () => mailFetchInbox(20, 0))
           : Promise.resolve([]),
-        getReadNotifications(),
       ]);
-      if (readResult.status === "fulfilled" && readResult.value) {
-        readIdsStore.set(readResult.value as ReadIdsData);
-      }
       if (kgc.status === "fulfilled" && kgc.value) {
         kgcData = kgc.value as NotificationsData;
-        if (kgcData?.entries) notifyNewKgc(kgcData.entries);
       }
       if (luna.status === "fulfilled" && luna.value) {
         lunaNotifications = luna.value as LunaNotification[];
-        notifyNewLuna(lunaNotifications);
       }
       if (kwic.status === "fulfilled" && kwic.value) {
         kwicHome = kwic.value as KwicPortalHome;
-        notifyKwicItems(kwicHome);
       }
       if (mail.status === "fulfilled" && mail.value) {
         mailMessages = mail.value as MailMessage[];
-        notifyNewMail(mailMessages);
       }
     } catch (e: any) {
       error = e?.message || String(e);
@@ -137,7 +111,7 @@
     const items: UnifiedNotif[] = [];
     const seen = new Set<string>();
     const addUniq = (n: UnifiedNotif) => {
-      const key = `${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
+      const key = `${n.source}:${n.id}:${n.title}:${n.date}:${n.category}`;
       if (seen.has(key)) return;
       seen.add(key);
       items.push(n);
@@ -230,22 +204,6 @@
     return counts;
   });
 
-  // Sync unread totals to stores (must be in $effect, not $derived)
-  $effect(() => {
-    let totalNotif = 0;
-    let totalMail = 0;
-    for (const tab of TAB_ORDER) {
-      const items = groupedByTab.get(tab) ?? [];
-      for (const n of items) {
-        if (isNotifRead(n)) continue;
-        if (n.source === "mail") totalMail++;
-        else totalNotif++;
-      }
-    }
-    unreadNotifCount.set(totalNotif);
-    unreadMailCount.set(totalMail);
-  });
-
   let currentItems = $derived(groupedByTab.get(selectedTab) ?? []);
 
   async function markAllRead() {
@@ -259,26 +217,17 @@
       list.push(key);
       bySource.set(n.source, list);
     }
-    // Persist + optimistic update
+    // DB-first: await each write, store auto-updates on success
     for (const [source, ids] of bySource) {
-      markBatchNotificationRead(source, ids).catch(console.error);
-      readIdsStore.update(store => ({
-        ...store,
-        [source]: [...store[source as keyof ReadIdsData], ...ids],
-      }));
+      await markBatchRead(source, ids).catch(console.error);
     }
   }
 
   async function openNotif(n: UnifiedNotif) {
-    // Mark as read locally
+    // Mark as read (DB-first)
     if (n.source !== "mail") {
       const key = n.id || notifKey(n.title, n.date);
-      markNotificationRead(n.source, key).catch(console.error);
-      // Optimistic update
-      readIdsStore.update(ids => ({
-        ...ids,
-        [n.source]: [...ids[n.source as keyof ReadIdsData], key],
-      }));
+      markRead(n.source, key).catch(console.error);
     }
 
     if (n.source === "mail") {

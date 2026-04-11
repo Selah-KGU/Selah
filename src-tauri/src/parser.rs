@@ -698,11 +698,18 @@ pub struct CreditSummary {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LanguageOption {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RegisteredCourse {
     pub period: String,
     pub day: String,
     pub semester: String,
     pub course_name: String,
+    pub course_code: String,
     pub instructor: String,
     pub campus: String,
     pub credits: String,
@@ -715,11 +722,73 @@ pub struct RegistrationData {
     pub student: StudentInfo,
     pub credit_summary: Vec<CreditSummary>,
     pub courses: Vec<RegisteredCourse>,
+    pub year_semester: String,
+    pub last_applied: String,
+    pub language_options: Vec<LanguageOption>,
 }
 
 pub fn parse_registration(html: &str) -> RegistrationData {
     let doc = Html::parse_document(html);
     let student = parse_student_info(html);
+
+    // Year / semester label
+    let year = hidden_input(&doc, "hdnTcapFcy");
+    let term = hidden_input(&doc, "hdnTcapDtm");
+    let term_label = match term.as_str() {
+        "1" => "春学期",
+        "2" => "秋学期",
+        _ => "",
+    };
+    let year_semester = if !year.is_empty() && !term_label.is_empty() {
+        format!("{}年度 {}", year, term_label)
+    } else {
+        String::new()
+    };
+
+    // Last applied datetime
+    let full_text = doc.root_element().text().collect::<String>();
+    let marker = "前回申請日時：";
+    let last_applied = if let Some(pos) = full_text.find(marker) {
+        let after = &full_text[pos + marker.len()..];
+        let trimmed = after.trim();
+        // Take date + time (e.g. "2026/04/11 09:13:48")
+        let mut parts = trimmed.splitn(3, char::is_whitespace);
+        let date_part = parts.next().unwrap_or("");
+        let time_part = parts.next().unwrap_or("");
+        if date_part.contains('/') {
+            format!("{} {}", date_part, time_part).trim().to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Language options from hidden inputs
+    let mut language_options = Vec::new();
+    let all_hidden = Selector::parse(r#"input[type="hidden"]"#).expect("valid selector");
+    let mut opt_names: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+    let mut opt_values: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+    for el in doc.select(&all_hidden) {
+        let name = el.value().attr("name").unwrap_or("");
+        let value = el.value().attr("value").unwrap_or("").trim().to_string();
+        if name.contains("lblTacOptAstNm") {
+            if let Some(idx) = name.split('[').nth(1).and_then(|s| s.split(']').next()).and_then(|s| s.parse::<usize>().ok()) {
+                opt_names.insert(idx, value);
+            }
+        } else if name.contains("lblTacOptValNm") {
+            if let Some(idx) = name.split('[').nth(1).and_then(|s| s.split(']').next()).and_then(|s| s.parse::<usize>().ok()) {
+                opt_values.insert(idx, value);
+            }
+        }
+    }
+    for (idx, oname) in &opt_names {
+        if let Some(oval) = opt_values.get(idx) {
+            if !oname.is_empty() && !oval.is_empty() {
+                language_options.push(LanguageOption { name: oname.clone(), value: oval.clone() });
+            }
+        }
+    }
 
     // Credit summary from hidden inputs
     let credit_summary = vec![
@@ -877,12 +946,19 @@ pub fn parse_registration(html: &str) -> RegistrationData {
 
                 let day = days.get(i % days.len()).unwrap_or(&"").to_string();
 
+                // Extract course code from ARF020 link (LSN_CD=XXXXX)
+                let course_code = cell_html.split("LSN_CD=").nth(1)
+                    .and_then(|s| s.split('&').next())
+                    .unwrap_or("")
+                    .to_string();
+
                 if !course_name.is_empty() {
                     courses.push(RegisteredCourse {
                         period: current_period.clone(),
                         day,
                         semester,
                         course_name,
+                        course_code,
                         instructor,
                         campus,
                         credits,
@@ -898,6 +974,9 @@ pub fn parse_registration(html: &str) -> RegistrationData {
         student,
         credit_summary,
         courses,
+        year_semester,
+        last_applied,
+        language_options,
     }
 }
 

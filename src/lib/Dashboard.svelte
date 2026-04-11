@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { activeTab, aiRefreshRequested, unreadNotifCount, unreadMailCount, readIdsStore, onCacheUpdate, getCached } from "./stores";
-  import type { NotificationsData, ReadIdsData } from "./stores";
+  import { activeTab, aiRefreshRequested, unreadNotifCount, unreadMailCount, readIdsStore, onCacheUpdate, getCached, loadReadIds, isReadId, notifKey } from "./stores";
+  import type { NotificationsData } from "./stores";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./Icon.svelte";
   import Titlebar from "./Titlebar.svelte";
@@ -17,8 +17,8 @@
   import MailView from "./views/MailView.svelte";
   import IctTools from "./views/IctTools.svelte";
   import type { MailMessage, KwicPortalHome } from "./api";
-  import { getReadNotifications } from "./api";
   import type { LunaNotification } from "./types";
+  import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "./notify";
 
   interface Tab {
     id: string;
@@ -29,9 +29,9 @@
   }
 
   const tabs: Tab[] = [
-    { id: "home", label: "ホーム", icon: "square.grid.2x2" },
+    { id: "home", label: "ホーム", icon: "house" },
     { id: "mail", label: "メール", icon: "envelope" },
-    { id: "ict-tools", label: "ツール", icon: "wrench" },
+    { id: "ict-tools", label: "ツール", icon: "square.grid.2x2" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },
@@ -59,10 +59,6 @@
   let unlistenRefresh: (() => void) | null = null;
 
   // --- Notification badge: compute from cache (works before NotificationsUnified is visited) ---
-  function isReadById(source: string, id: string): boolean {
-    const ids = $readIdsStore[source as keyof ReadIdsData];
-    return ids ? ids.includes(id) : false;
-  }
 
   function recalcNotifBadge() {
     const kgcItems = getCached<NotificationsData>("notifications")?.entries ?? [];
@@ -70,42 +66,62 @@
     const kwicHome = getCached<KwicPortalHome>("kwic_home");
     let count = 0;
     for (const n of kgcItems) {
-      const key = n.id || `${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
-      if (!isReadById("kgc", key)) count++;
+      const readKey = n.id || notifKey(n.title, n.date);
+      if (!isReadId("kgc", readKey)) count++;
     }
     for (const n of lunaItems) {
-      const key = (n.url || n.idnumber || "") || `${n.content.trim().replace(/\s+/g, "")}|${n.date}`;
-      if (!isReadById("luna", key)) count++;
+      const readKey = (n.url || n.idnumber || "") || notifKey(n.content, n.date);
+      if (!isReadId("luna", readKey)) count++;
     }
     if (kwicHome) {
       for (const sec of kwicHome.sections) {
         if (sec.title === "メインリンク" || sec.title === "注目コンテンツ" || sec.title === "授業のお知らせ") continue;
         for (const item of sec.items) {
-          const key = item.id || `${item.title.trim().replace(/\s+/g, "")}|${item.date}`;
-          if (!isReadById("kwic", key)) count++;
+          const readKey = item.id || notifKey(item.title, item.date);
+          if (!isReadId("kwic", readKey)) count++;
         }
       }
     }
     unreadNotifCount.set(count);
   }
 
-  const unsubNotif = onCacheUpdate<NotificationsData>("notifications", () => recalcNotifBadge());
-  const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", () => recalcNotifBadge());
-  const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", () => recalcNotifBadge());
+  const unsubNotif = onCacheUpdate<NotificationsData>("notifications", (fresh) => {
+    recalcNotifBadge();
+    if (fresh?.entries) notifyNewKgc(fresh.entries);
+  });
+  const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => {
+    recalcNotifBadge();
+    if (fresh) notifyNewLuna(fresh);
+  });
+  const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => {
+    recalcNotifBadge();
+    if (fresh) {
+      const items = fresh.sections
+        .filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ")
+        .flatMap(s => s.items.map(i => ({
+          id: i.id, title: i.title, date: i.date,
+          category: i.category || s.title, important: i.important,
+        })));
+      if (items.length) notifyNewKwic(items);
+    }
+  });
   // Recalc when read IDs change (e.g. user marks notification read in NotificationsUnified)
   $effect(() => { $readIdsStore; recalcNotifBadge(); });
 
   // Keep mail unread count updated from cache (works even before MailView is visited)
   const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (msgs) => {
-    if (msgs) unreadMailCount.set(msgs.filter(m => !m.isRead).length);
+    if (msgs) {
+      unreadMailCount.set(msgs.filter(m => !m.isRead).length);
+      notifyNewMail(msgs);
+    }
   });
 
   // Initialize from cache on first render
   {
     const cached = getCached<MailMessage[]>("mail_inbox");
     if (cached) unreadMailCount.set(cached.filter(m => !m.isRead).length);
-    // Load read IDs then compute initial notification badge
-    getReadNotifications().then(ids => { readIdsStore.set(ids); }).catch(() => {}).finally(() => recalcNotifBadge());
+    // Load read IDs from DB then compute initial notification badge
+    loadReadIds().catch(() => {}).finally(() => recalcNotifBadge());
   }
   onMount(async () => {
     unlistenRefresh = await listen('ai-refresh-request', () => {

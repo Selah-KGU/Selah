@@ -417,16 +417,39 @@ pub async fn request_ai_refresh(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn test_notification(app: tauri::AppHandle, title: String, body: String) -> Result<String, String> {
+pub async fn test_notification(title: String, body: String) -> Result<String, String> {
     log::info!("test_notification called: title={}, body={}", title, body);
-    use tauri_plugin_notification::NotificationExt;
-    app.notification()
-        .builder()
-        .title(&title)
-        .body(&body)
-        .show()
-        .map_err(|e| format!("通知送信失敗: {}", e))?;
-    Ok("Notification sent".to_string())
+    send_native_notification(&title, &body)
+}
+
+/// Send a native macOS notification via osascript.
+/// Works in both dev mode (bare binary) and production (.app bundle).
+pub fn send_native_notification(title: &str, body: &str) -> Result<String, String> {
+    let script = format!(
+        "display notification {} with title {}",
+        osascript_quote(body),
+        osascript_quote(title),
+    );
+    std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| format!("osascript failed: {}", e))
+        .and_then(|out| {
+            if out.status.success() {
+                Ok("Notification sent".to_string())
+            } else {
+                Err(format!(
+                    "osascript error: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ))
+            }
+        })
+}
+
+fn osascript_quote(s: &str) -> String {
+    // AppleScript quoted string: wrap in double quotes, escape backslash and double quote
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{}\"", escaped)
 }
 
 #[tauri::command]

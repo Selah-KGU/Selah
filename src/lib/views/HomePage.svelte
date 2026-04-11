@@ -1010,7 +1010,7 @@ suggestionsのルール：
       {#if aiNotifLoading}
         <div class="ai-loading-box">
           <div class="ai-loading-header">
-            <span class="ai-badge"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><defs><linearGradient id="ai-grad-load" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#af52de"/><stop offset="100%" stop-color="#007aff"/></linearGradient></defs><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="url(#ai-grad-load)" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="url(#ai-grad-load)" stroke-linejoin="round" stroke-width="1"/></svg></span>
+            <span class="ai-badge"><svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="#fff" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="#fff" stroke-linejoin="round" stroke-width="1"/></svg><span class="ai-badge-text">AI 要約</span></span>
             <span class="ai-loading-text">分析中</span>
             <span class="ai-loading-dots"><span></span><span></span><span></span></span>
           </div>
@@ -1044,7 +1044,7 @@ suggestionsのルール：
       {:else if aiNotifResult}
         <div class="ai-notif-box">
           <div class="ai-notif-meta">
-            <span class="ai-badge"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><defs><linearGradient id="ai-grad-result" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#af52de"/><stop offset="100%" stop-color="#007aff"/></linearGradient></defs><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="url(#ai-grad-result)" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="url(#ai-grad-result)" stroke-linejoin="round" stroke-width="1"/></svg></span>
+            <span class="ai-badge"><svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="#fff" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="#fff" stroke-linejoin="round" stroke-width="1"/></svg><span class="ai-badge-text">AI 要約</span></span>
             {#if aiNotifResult.suggestions.length > 0}
               <span class="ai-suggestions-row">
                 {#each aiNotifResult.suggestions as s, i}
@@ -1490,6 +1490,17 @@ suggestionsのルール：
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 5px;
+    background: linear-gradient(135deg, #c480e8, #6bacf0);
+    border-radius: 50px;
+    padding: 3px 7px 3px 5px;
+  }
+  .ai-badge-text {
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.5px;
+    line-height: 12px;
   }
 
   .ai-suggestions-row {

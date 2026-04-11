@@ -16,7 +16,6 @@ import type {
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult } from "./types";
 import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache } from "./stores";
-import type { ReadIdsData } from "./stores";
 import { get } from "svelte/store";
 
 // Global listeners — app-lifetime, no cleanup needed
@@ -774,20 +773,6 @@ export async function mailFetchAttachments(messageId: string): Promise<MailAttac
 
 export async function mailDownloadAttachment(messageId: string, attachmentId: string, fileName: string): Promise<string> {
   return withSessionGuard(() => invoke<string>("mail_download_attachment", { messageId, attachmentId, fileName }));
-}
-
-// ============ Read State ============
-
-export async function markNotificationRead(source: string, id: string): Promise<void> {
-  return invoke<void>("mark_notification_read", { source, id });
-}
-
-export async function markBatchNotificationRead(source: string, ids: string[]): Promise<void> {
-  return invoke<void>("mark_batch_notification_read", { source, ids });
-}
-
-export async function getReadNotifications(): Promise<ReadIdsData> {
-  return invoke<ReadIdsData>("get_read_notifications");
 }
 
 // ============ Google Calendar ============

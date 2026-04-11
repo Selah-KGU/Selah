@@ -15,6 +15,7 @@
     | "checkmark.circle"
     | "paperclip"
     | "video"
+    | "house"
     | "square.grid.2x2"
     | "gear"
     | "wrench"
@@ -99,6 +100,9 @@
   {:else if name === "video"}
     <rect x="2" y="5" width="14" height="14" rx="2" />
     <path d="M22 7l-6 4 6 4V7z" fill="currentColor" />
+  {:else if name === "house"}
+    <path d="M3 10.5L12 3l9 7.5" />
+    <path d="M5 10v9a1 1 0 0 0 1 1h4v-5h4v5h4a1 1 0 0 0 1-1v-9" />
   {:else if name === "square.grid.2x2"}
     <rect x="3" y="3" width="8" height="8" rx="1.5" />
     <rect x="13" y="3" width="8" height="8" rx="1.5" />
