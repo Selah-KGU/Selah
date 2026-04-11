@@ -28,6 +28,7 @@
     "ai-result",
     "mail-login",
     "gcal-login",
+    "tray-popup",
     "ext-*"
   ],
   "permissions": [

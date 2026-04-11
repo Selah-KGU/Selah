@@ -619,12 +619,12 @@ pub async fn fetch_cancellations(state: State<'_, AppState>, db: State<'_, crate
 
 #[tauri::command]
 pub async fn fetch_makeup_classes(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::MakeupData, String> {
-    kgc_fetch_cached!(state, db, "makeup_classes", "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "kgc-makeup.html")
+    kgc_fetch_cached!(state, db, "makeup", "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "kgc-makeup.html")
 }
 
 #[tauri::command]
 pub async fn fetch_room_changes(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::RoomChangesData, String> {
-    kgc_fetch_cached!(state, db, "room_changes", "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "kgc-roomchanges.html")
+    kgc_fetch_cached!(state, db, "rooms", "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "kgc-roomchanges.html")
 }
 
 #[tauri::command]
@@ -642,7 +642,7 @@ pub async fn fetch_notifications(
     state: State<'_, AppState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<parser::NotificationsData, String> {
-    kgc_fetch_cached!(state, db, "kgc_notifications", "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
+    kgc_fetch_cached!(state, db, "notifications", "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
 }
 
 /// 関西学院大学 period → (start_hour, start_min, end_hour, end_min)

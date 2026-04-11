@@ -76,7 +76,7 @@
     </button>
   </div>
 
-  <ViewLoader {loading} {error}>
+  <ViewLoader {loading} {error} empty={!data && !loading} emptyMessage="履修情報がありません">
     {#if data}
       <StudentBar student={data.student} />
 

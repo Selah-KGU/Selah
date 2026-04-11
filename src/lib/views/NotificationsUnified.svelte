@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox } from "../api";
   import type { MailMessage } from "../api";
-  import { cachedFetch, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead } from "../stores";
+  import { cachedFetch, getCached, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead } from "../stores";
   import type { NotificationsData } from "../stores";
   import type { KwicPortalHome } from "../api";
   import ViewLoader from "../ViewLoader.svelte";
@@ -73,7 +73,17 @@
   onDestroy(() => { unsubKgc(); unsubLuna(); unsubKwicHome(); unsubMail(); });
 
   onMount(async () => {
-    loading = true;
+    // Restore cached data immediately so UI is never blank
+    const cachedKgc = getCached<NotificationsData>("notifications");
+    const cachedLuna = getCached<LunaNotification[]>("luna_updates");
+    const cachedKwic = getCached<KwicPortalHome>("kwic_home");
+    const cachedMail = getCached<MailMessage[]>("mail_inbox");
+    if (cachedKgc) kgcData = cachedKgc;
+    if (cachedLuna) lunaNotifications = cachedLuna;
+    if (cachedKwic) kwicHome = cachedKwic;
+    if (cachedMail) mailMessages = cachedMail;
+    if (cachedKgc || cachedLuna || cachedKwic || cachedMail) loading = false;
+
     try {
       const [kgc, luna, kwic, mail] = await Promise.allSettled([
         cachedFetch("notifications", fetchNotifications),

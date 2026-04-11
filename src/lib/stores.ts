@@ -410,10 +410,12 @@ const DISK_CACHE_KEYS = new Set([
 ]);
 
 // Keys eligible for SQLite DB persistence (async SWR).
-// The Rust backend already saves these on successful fetch via kgc_fetch_cached!,
+// The Rust backend already saves these on successful fetch via save_data_cache,
 // so we only need to *read* from DB on cold start — no frontend writes needed.
 const DB_CACHE_KEYS = new Set([
   "grades", "registration",
+  "kwic_home", "notifications", "luna_updates", "luna_todo",
+  "cancellations", "makeup", "rooms", "mail_inbox",
 ]);
 const DISK_PREFIX = "selah_cache_";
 const DISK_CACHE_VERSION = 1;
@@ -521,19 +523,22 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
 
   // SQLite SWR: async DB read → return stale, revalidate in background
   if (DB_CACHE_KEYS.has(key) && !entry) {
-    const dbPromise = invoke<string | null>("get_data_cache", { key }).then((json) => {
+    const dbSwr = invoke<string | null>("get_data_cache", { key }).then((json) => {
       if (!json) return null;
       try { return JSON.parse(json) as T; } catch { return null; }
-    }).catch(() => null);
-
-    return dbPromise.then((dbData) => {
+    }).catch(() => null).then((dbData) => {
       if (dbData != null) {
         const now = Date.now();
         cache.set(key, { data: dbData, ts: now });
+        // Persist to localStorage so getCached() can find it synchronously next time
+        if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, dbData, now);
         // Background refresh (Rust saves to DB on success automatically)
+        // Replace the inflight entry with the bg promise so further callers
+        // dedup against the refresh, not the already-resolved DB read.
         const bg = fetcher().then((freshData) => {
           const ts = Date.now();
           cache.set(key, { data: freshData, ts });
+          if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, freshData, ts);
           notifySwr(key, freshData);
           return freshData;
         }).catch((err) => {
@@ -544,14 +549,19 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
         return dbData;
       }
       // No DB cache — fall through to normal fetch
-      const p = fetcher().then((data) => {
+      return fetcher().then((data) => {
         const ts = Date.now();
         cache.set(key, { data, ts });
+        if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
         return data;
-      }).finally(() => inflight.delete(key));
-      inflight.set(key, p);
-      return p;
+      });
     });
+    // Store outer promise immediately so refreshCache deduplicates against it
+    inflight.set(key, dbSwr.finally(() => {
+      // Only delete if inflight still points to us (bg refresh may have replaced it)
+      if (inflight.get(key) === dbSwr) inflight.delete(key);
+    }));
+    return dbSwr;
   }
 
   const p = fetcher().then((data) => {

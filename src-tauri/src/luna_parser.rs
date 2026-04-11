@@ -221,16 +221,25 @@ pub fn parse_luna_notifications(html: &str) -> Vec<LunaNotification> {
             .unwrap_or_default()
             .to_string();
 
-        if !date.is_empty() {
-            items.push(LunaNotification {
-                date,
-                course_info,
-                module,
-                content,
-                url,
-                idnumber,
-            });
+        if date.is_empty() {
+            continue;
         }
+
+        // Skip LUNA system-wide announcements (e.g. 時間割 section notices about
+        // guest access, maintenance schedules, etc.) — these are not course-specific
+        // and cause errors when detail-fetched.
+        if course_info == "時間割" {
+            continue;
+        }
+
+        items.push(LunaNotification {
+            date,
+            course_info,
+            module,
+            content,
+            url,
+            idnumber,
+        });
     }
 
     items

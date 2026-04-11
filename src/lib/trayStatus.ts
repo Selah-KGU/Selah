@@ -31,11 +31,19 @@ function findNextSchoolDay(entries: KgcCourseRow[], fromJsDow: number): { dayLab
   return null;
 }
 
+/** Truncate text to maxLen, appending ellipsis if needed */
+function truncate(s: string, maxLen: number): string {
+  return s.length > maxLen ? s.slice(0, maxLen - 1) + "..." : s;
+}
+
 function buildStatusItems(): string[] {
   const items: string[] = [];
   const now = new Date();
   const todayDay = jsToUnifiedDay(now.getDay());
   const nowMin = now.getHours() * 60 + now.getMinutes();
+
+  let todayHasRemaining = false;
+  let currentOrNext: string | null = null;
 
   // 1. Today's classes
   if (timetableData?.raw.kgc_entries_current.length) {
@@ -43,48 +51,59 @@ function buildStatusItems(): string[] {
       .filter(e => e.day === todayDay && !e.is_cancelled)
       .sort((a, b) => a.period - b.period);
 
-    let foundNext = false;
+    const remaining = todayClasses.filter(e => {
+      const pt = PERIOD_TIMES[e.period];
+      return pt && nowMin < pt.endH * 60 + pt.endM;
+    });
+    todayHasRemaining = remaining.length > 0;
+
     for (const entry of todayClasses) {
       const pt = PERIOD_TIMES[entry.period];
       if (!pt) continue;
       const endMin = pt.endH * 60 + pt.endM;
       const startMin = pt.startH * 60 + pt.startM;
       if (nowMin < endMin) {
+        const name = truncate(entry.name, 16);
         const isLive = nowMin >= startMin;
         if (isLive) {
-          items.push(`${entry.period}限 ${entry.name} ~${pt.end}`);
+          const left = endMin - nowMin;
+          currentOrNext = `${entry.period}限 ${name} (残${left}分)`;
         } else {
-          items.push(`次: ${entry.period}限 ${entry.name} ${pt.start}~`);
+          const diff = startMin - nowMin;
+          if (diff <= 60) {
+            currentOrNext = `${diff}分後 ${entry.period}限 ${name}`;
+          } else {
+            currentOrNext = `次: ${entry.period}限 ${name} ${pt.start}~`;
+          }
         }
-        foundNext = true;
         break;
       }
     }
 
-    const remaining = todayClasses.filter(e => {
-      const pt = PERIOD_TIMES[e.period];
-      return pt && nowMin < pt.endH * 60 + pt.endM;
-    });
+    if (currentOrNext) items.push(currentOrNext);
+
     if (remaining.length > 1) {
       items.push(`今日あと${remaining.length}コマ`);
+    } else if (remaining.length === 1 && !currentOrNext) {
+      // last class already counted above
     }
 
-    // 2. Next school day preview (always show, not just when today has no classes)
-    if (!foundNext) {
+    // Next school day preview (when all today's classes are done, or always as secondary info)
+    if (!todayHasRemaining) {
       const next = findNextSchoolDay(timetableData.raw.kgc_entries_current, now.getDay());
       if (next) {
         const label = next.dayOffset === 1 ? "明日" : `${next.dayLabel}曜`;
-        items.push(`${label} ${next.classes.length}コマ`);
         const first = next.classes[0];
         const pt = PERIOD_TIMES[first.period];
+        items.push(`${label} ${next.classes.length}コマ`);
         if (pt) {
-          items.push(`${label}${first.period}限 ${first.name} ${pt.start}~`);
+          items.push(`${label}${first.period}限 ${truncate(first.name, 14)} ${pt.start}~`);
         }
       }
     }
   }
 
-  // 3. All pending todos (not just within 5 days)
+  // 2. Pending TODOs
   if (todoItems.length > 0) {
     const pending = todoItems
       .filter(t => !t.status.includes("提出済"))
@@ -95,21 +114,28 @@ function buildStatusItems(): string[] {
       });
 
     if (pending.length > 0) {
-      // Show the nearest deadline
       const first = pending[0];
       if (first.deadline) {
         const dl = new Date(first.deadline.replace(/\//g, "-"));
-        const diffDays = Math.ceil((dl.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-        const dlLabel = diffDays <= 0 ? "今日〆" : diffDays === 1 ? "明日〆" : `${diffDays}日後〆`;
-        items.push(`${first.content_name} ${dlLabel}`);
-      } else {
-        items.push(`${first.content_name}`);
+        const diffMs = dl.getTime() - now.getTime();
+        const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+        const dlLabel = diffDays <= 0 ? "今日〆切" : diffDays === 1 ? "明日〆切" : `あと${diffDays}日`;
+        items.push(`${truncate(first.content_name, 14)} ${dlLabel}`);
       }
 
       if (pending.length > 1) {
-        items.push(`未提出 ${pending.length}件`);
+        items.push(`未提出課題 ${pending.length}件`);
       }
     }
+  }
+
+  // 3. Fallback: show a calm message so tray is never empty
+  if (items.length === 0) {
+    const h = now.getHours();
+    if (h < 5) items.push("おやすみなさい");
+    else if (h < 12) items.push("おはようございます");
+    else if (h < 18) items.push("予定なし");
+    else items.push("お疲れさまでした");
   }
 
   return items;
