@@ -417,14 +417,26 @@ pub async fn request_ai_refresh(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn test_notification(title: String, body: String) -> Result<String, String> {
+pub async fn test_notification(app: tauri::AppHandle, title: String, body: String) -> Result<String, String> {
     log::info!("test_notification called: title={}, body={}", title, body);
-    send_native_notification(&title, &body)
+    send_native_notification(&app, &title, &body)
 }
 
-/// Send a native macOS notification via osascript.
-/// Works in both dev mode (bare binary) and production (.app bundle).
-pub fn send_native_notification(title: &str, body: &str) -> Result<String, String> {
+/// Send a native notification.
+/// Primary: tauri_plugin_notification (uses the app icon).
+/// Fallback: osascript (works in dev mode without a .app bundle).
+pub fn send_native_notification(app: &tauri::AppHandle, title: &str, body: &str) -> Result<String, String> {
+    use tauri_plugin_notification::NotificationExt;
+    match app.notification().builder().title(title).body(body).show() {
+        Ok(_) => Ok("Notification sent".to_string()),
+        Err(e) => {
+            log::warn!("tauri notification failed ({}), falling back to osascript", e);
+            send_osascript_notification(title, body)
+        }
+    }
+}
+
+fn send_osascript_notification(title: &str, body: &str) -> Result<String, String> {
     let script = format!(
         "display notification {} with title {}",
         osascript_quote(body),
