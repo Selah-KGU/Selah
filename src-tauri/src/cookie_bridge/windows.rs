@@ -52,7 +52,6 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
     win.with_webview(move |webview| {
         unsafe {
             use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
-            use webview2_com::string_from_pcwstr;
 
             let core_webview = webview
                 .controller()
@@ -67,7 +66,7 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
                 Box::new(
                     move |error_code, return_json| {
                         let result = if error_code.is_ok() {
-                            Ok(string_from_pcwstr(&return_json))
+                            Ok(return_json)
                         } else {
                             Err(format!("CDP call failed: {:?}", error_code))
                         };
