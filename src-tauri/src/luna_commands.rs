@@ -26,6 +26,44 @@ async fn luna_get(http: &reqwest::Client, path: &str) -> Result<String, String> 
     ).await
 }
 
+/// Luna GET with Referer header — required for form pages that serve CSRF tokens.
+async fn luna_get_with_referer(http: &reqwest::Client, path: &str, referer_path: &str) -> Result<String, String> {
+    let url = format!("{}{}", config::LUNA_BASE, path);
+    let referer = format!("{}{}", config::LUNA_BASE, referer_path);
+    let mut current_url = url;
+    for i in 0..10 {
+        let resp = http.get(&current_url)
+            .header("Referer", &referer)
+            .send().await
+            .map_err(|e| format!("リクエスト失敗: {}", e))?;
+        let status = resp.status();
+        if status.is_redirection() {
+            if let Some(loc) = resp.headers().get("location") {
+                let loc_str = loc.to_str().unwrap_or_default();
+                current_url = if loc_str.starts_with('/') {
+                    format!("{}{}", config::LUNA_BASE, loc_str)
+                } else {
+                    loc_str.to_string()
+                };
+                log::debug!("luna_get_with_referer redirect #{} -> {}", i + 1, client::safe_truncate(&current_url, 120));
+                if current_url.contains("sso.kwansei.ac.jp") {
+                    return Err(luna_client::LUNA_SESSION_EXPIRED_MSG.into());
+                }
+                continue;
+            }
+        }
+        if !status.is_success() {
+            return Err(format!("HTTP {}", status));
+        }
+        let body = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
+        if luna_client::is_luna_session_expired(&body) {
+            return Err(luna_client::LUNA_SESSION_EXPIRED_MSG.into());
+        }
+        return Ok(body);
+    }
+    Err("リダイレクトが多すぎます".into())
+}
+
 /// Luna POST: submit a form without holding the lock.
 async fn luna_post(http: &reqwest::Client, path: &str, params: &[(String, String)]) -> Result<String, String> {
     let url = format!("{}{}", config::LUNA_BASE, path);
@@ -942,8 +980,8 @@ pub async fn luna_fetch_discussion_detail(
 }
 
 /// Post a new thread to a Luna discussion forum
-/// Flow: 1) GET setthread page → extract _cid, _csrf
-///       2) POST /lms/course/forums/setthread with title + content
+/// Flow: 1) GET setthread page → extract _csrf (no _cid on this page)
+///       2) POST /lms/course/forums/setthread with _method=put and Quill fields
 #[tauri::command]
 pub async fn luna_post_discussion(
     state: State<'_, AppState>,
@@ -960,24 +998,26 @@ pub async fn luna_post_discussion(
         .ok_or("forumId が見つかりません")?;
 
     // Step 1: Fetch the setthread page to get tokens
+    let themetop_path = format!(
+        "/lms/course/forums/themetop?idnumber={}&forumId={}",
+        idnumber, forum_id
+    );
     let setthread_url = format!(
         "/lms/course/forums/setthread?idnumber={}&forumId={}&threadId=&groupId=",
         idnumber, forum_id
     );
-    let html = luna_get(&http, &setthread_url).await?;
+    let html = luna_get_with_referer(&http, &setthread_url, &themetop_path).await?;
 
-    // Dump for debugging
-    #[cfg(debug_assertions)]
-    {
-        let dump_path = std::env::temp_dir().join(format!("luna_setthread_{}.html", forum_id));
-        let _ = std::fs::write(&dump_path, &html);
-        log::info!("Setthread HTML dumped ({} bytes)", html.len());
-    }
+    log::info!("Setthread HTML fetched ({} bytes)", html.len());
 
-    let cid = extract_input_value(&html, "_cid")
-        .ok_or("_cid トークンが見つかりません")?;
+    // setthread page only has _csrf (no _cid), plus _method=put
     let csrf = extract_input_value(&html, "_csrf")
-        .ok_or("_csrf トークンが見つかりません")?;
+        .ok_or_else(|| {
+            let has_form = html.contains("<form");
+            let has_login = html.contains("linkCommonLogin") && html.contains("login-body");
+            format!("_csrf トークンが見つかりません (len={}, has_form={}, login_page={})",
+                html.len(), has_form, has_login)
+        })?;
 
     log::info!("New thread: idnumber={}, forumId={}, title={}", idnumber, forum_id, title);
 
@@ -986,24 +1026,24 @@ pub async fn luna_post_discussion(
         "ops": [{"insert": format!("{}\n", content)}]
     }).to_string();
 
-    // Step 2: POST the new thread
-    // setthread page likely uses multipart like other Luna forms
+    // Step 2: POST with _method=put (Luna emulates PUT via POST)
+    // Field names match the actual form: threadContentsText, threadContentsHtml, threadContents
     let post_params = vec![
-        ("_cid".to_string(), cid),
         ("_csrf".to_string(), csrf),
+        ("_method".to_string(), "put".to_string()),
         ("idnumber".to_string(), idnumber),
         ("forumId".to_string(), forum_id),
         ("threadId".to_string(), String::new()),
         ("groupId".to_string(), String::new()),
         ("threadTitle".to_string(), title),
-        ("contents".to_string(), content_json.clone()),
-        ("contentsText".to_string(), content_json),
-        ("contentsHtml".to_string(), format!("<p>{}</p>", html_escape(&content))),
+        ("threadContentsText".to_string(), content_json),
+        ("threadContentsHtml".to_string(), format!("<p>{}</p>", html_escape(&content))),
+        ("threadContents".to_string(), content.clone()),
     ];
 
     let resp = luna_post(&http, "/lms/course/forums/setthread", &post_params).await?;
 
-    if resp.contains("error") && resp.contains("\"success\":false") {
+    if resp.contains("\"success\":false") {
         return Err(format!("投稿失敗: {}", crate::client::safe_truncate(&resp, 200)));
     }
 
@@ -1013,7 +1053,7 @@ pub async fn luna_post_discussion(
 
 /// Reply to an existing thread
 /// Flow: 1) GET thread page → extract _cid, _csrf, hidden fields
-///       2) POST /lms/course/forums/thread with postContentsText (Quill JSON)
+///       2) POST /lms/course/forums/thread (multipart) with Quill fields
 #[tauri::command]
 pub async fn luna_reply_discussion(
     state: State<'_, AppState>,
@@ -1022,11 +1062,23 @@ pub async fn luna_reply_discussion(
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
 
-    // Fetch thread page to get tokens
-    let html = luna_get(&http, &url).await?;
+    // Fetch thread page to get tokens (with Referer from themetop)
+    let referer_path = {
+        let idn = extract_url_param(&url, "idnumber").unwrap_or_default();
+        let fid = extract_url_param(&url, "forumId").unwrap_or_default();
+        format!("/lms/course/forums/themetop?idnumber={}&forumId={}", idn, fid)
+    };
+    let html = luna_get_with_referer(&http, &url, &referer_path).await?;
+
+    log::info!("Reply HTML fetched ({} bytes)", html.len());
 
     let cid = extract_input_value(&html, "_cid")
-        .ok_or("_cid トークンが見つかりません")?;
+        .ok_or_else(|| {
+            let has_form = html.contains("<form");
+            let has_login = html.contains("linkCommonLogin") && html.contains("login-body");
+            format!("_cid トークンが見つかりません (len={}, has_form={}, login_page={})",
+                html.len(), has_form, has_login)
+        })?;
     let csrf = extract_input_value(&html, "_csrf")
         .ok_or("_csrf トークンが見つかりません")?;
     let idnumber = extract_input_value(&html, "idnumber")
@@ -1041,43 +1093,43 @@ pub async fn luna_reply_discussion(
 
     log::info!("Reply: idnumber={}, forumId={}, threadId={}", idnumber, forum_id, thread_id);
 
-    // Extract additional hidden fields
+    // Extract additional hidden fields from the actual form
+    let current_thread = extract_input_value(&html, "currentThread")
+        .unwrap_or_else(|| "0".to_string());
+    let address_type = extract_input_value(&html, "forum.addressType")
+        .unwrap_or_else(|| "0".to_string());
+    let group_id = extract_input_value(&html, "forum.groupId")
+        .unwrap_or_default();
     let time_start = extract_input_value(&html, "forum.timeStart")
-        .unwrap_or_default();
-    let forum_title = extract_input_value(&html, "forum.title")
-        .unwrap_or_default();
-    let forum_contents = extract_input_value(&html, "forum.contents")
         .unwrap_or_default();
 
     let content_json = serde_json::json!({
         "ops": [{"insert": format!("{}\n", content)}]
     }).to_string();
 
-    // Build multipart form (thread page uses enctype="multipart/form-data")
+    // Build multipart form matching the actual thread page form (enctype="multipart/form-data")
     let form = reqwest::multipart::Form::new()
         .text("_cid", cid)
         .text("_csrf", csrf)
         .text("idnumber", idnumber)
         .text("forumId", forum_id)
         .text("threadId", thread_id)
-        .text("postId", "")
-        .text("parentPostId", "")
-        .text("editFlag", "1")
-        .text("editAuthority", "")
-        .text("currentThread", "0")
+        .text("forum.addressType", address_type)
+        .text("forum.groupId", group_id)
+        .text("forum.timeStart", time_start)
+        .text("currentThread", current_thread)
         .text("postContentsText", content_json)
         .text("postContentsHtml", format!("<p>{}</p>", html_escape(&content)))
         .text("postContents", content.clone())
         .text("postSendFlag", "false")
-        .text("forum.addressType", "0")
-        .text("forum.groupId", "")
-        .text("forum.timeStart", time_start)
-        .text("forum.title", forum_title)
-        .text("forum.contents", forum_contents);
+        .text("postId", "")
+        .text("parentPostId", "")
+        .text("editFlag", "1")
+        .text("editAuthority", "");
 
     let resp = luna_post_multipart(&http, "/lms/course/forums/thread", form).await?;
 
-    if resp.contains("error") && resp.contains("\"success\":false") {
+    if resp.contains("\"success\":false") {
         return Err(format!("投稿失敗: {}", crate::client::safe_truncate(&resp, 200)));
     }
 
