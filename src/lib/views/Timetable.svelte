@@ -584,6 +584,15 @@
       scheduleData = data;
       if (data.ai_result) aiResult = data.ai_result;
       localStorage.setItem("selah-sunday-refreshed", todayKey);
+
+      // Sync calendars with refreshed data (both weeks)
+      for (const week of ["current", "next"] as const) {
+        const entries = week === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
+        const label = week === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
+        if (entries.length > 0) {
+          await autoSyncCalendars(entries, label);
+        }
+      }
       localStorage.setItem("selah-cal-last-sync", String(Date.now()));
       console.log("[Timetable] Sunday auto-refresh completed");
     } catch (e) {

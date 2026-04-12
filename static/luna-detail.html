@@ -4,793 +4,767 @@
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Luna 詳細</title>
+<title>Luna</title>
 <style>
   :root {
     --bg-primary: #ffffff;
     --bg-secondary: #f5f5f7;
+    --bg-tertiary: #ededf0;
     --text-primary: #1d1d1f;
     --text-secondary: #6e6e73;
     --text-tertiary: #aeaeb2;
-    --border: rgba(0, 0, 0, 0.08);
-    --accent: #4a90d9;
+    --border: rgba(0,0,0,0.05);
+    --border-strong: rgba(0,0,0,0.10);
+    --accent: #007aff;
+    --accent-bg: rgba(0,122,255,0.08);
     --red: #ff3b30;
-    --bg-card: rgba(0, 0, 0, 0.03);
-    --bg-hover: rgba(0, 0, 0, 0.04);
+    --red-bg: rgba(255,59,48,0.08);
+    --orange: #ff9500;
+    --orange-bg: rgba(255,149,0,0.08);
+    --green: #34c759;
+    --green-bg: rgba(52,199,89,0.08);
+    --yellow: #e6b800;
+    --yellow-bg: rgba(245,197,66,0.10);
+    --purple: #af52de;
+    --purple-bg: rgba(175,82,222,0.08);
+    --card-bg: #ffffff;
+    --card-bg-hover: #ffffff;
+    --card-border: rgba(0,0,0,0.03);
+    --card-border-hover: rgba(0,0,0,0.08);
+    --card-shadow: 0 0.5px 2px rgba(0,0,0,0.04);
+    --card-shadow-hover: 0 2px 8px rgba(0,0,0,0.07);
+    --card-radius: 16px;
+    --inner-radius: 12px;
     color-scheme: light;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg-primary: #1c1c1e;
-      --bg-secondary: #2c2c2e;
+      --bg-primary: #000000;
+      --bg-secondary: #1c1c1e;
+      --bg-tertiary: #2c2c2e;
       --text-primary: #f5f5f7;
-      --text-secondary: #98989d;
-      --text-tertiary: #636366;
-      --border: rgba(255, 255, 255, 0.08);
-      --accent: #4a90d9;
+      --text-secondary: #a1a1a6;
+      --text-tertiary: #7c7c80;
+      --border: rgba(255,255,255,0.08);
+      --border-strong: rgba(255,255,255,0.14);
+      --accent: #0a84ff;
+      --accent-bg: rgba(10,132,255,0.15);
       --red: #ff453a;
-      --bg-card: rgba(255, 255, 255, 0.05);
-      --bg-hover: rgba(255, 255, 255, 0.06);
+      --red-bg: rgba(255,69,58,0.15);
+      --orange: #ff9f0a;
+      --orange-bg: rgba(255,159,10,0.15);
+      --green: #30d158;
+      --green-bg: rgba(48,209,88,0.15);
+      --yellow: #ffd60a;
+      --yellow-bg: rgba(255,214,10,0.12);
+      --purple: #bf5af2;
+      --purple-bg: rgba(191,90,242,0.15);
+      --card-bg: #2c2c2e;
+      --card-bg-hover: #3a3a3c;
+      --card-border: rgba(255,255,255,0.10);
+      --card-border-hover: rgba(255,255,255,0.22);
+      --card-shadow: none;
+      --card-shadow-hover: none;
       color-scheme: dark;
     }
   }
   [data-theme="dark"] {
-    --bg-primary: #1c1c1e;
-    --bg-secondary: #2c2c2e;
+    --bg-primary: #000000;
+    --bg-secondary: #1c1c1e;
+    --bg-tertiary: #2c2c2e;
     --text-primary: #f5f5f7;
-    --text-secondary: #98989d;
-    --text-tertiary: #636366;
-    --border: rgba(255, 255, 255, 0.08);
-    --accent: #4a90d9;
+    --text-secondary: #a1a1a6;
+    --text-tertiary: #7c7c80;
+    --border: rgba(255,255,255,0.08);
+    --border-strong: rgba(255,255,255,0.14);
+    --accent: #0a84ff;
+    --accent-bg: rgba(10,132,255,0.15);
     --red: #ff453a;
-    --bg-card: rgba(255, 255, 255, 0.05);
-    --bg-hover: rgba(255, 255, 255, 0.06);
+    --red-bg: rgba(255,69,58,0.15);
+    --orange: #ff9f0a;
+    --orange-bg: rgba(255,159,10,0.15);
+    --green: #30d158;
+    --green-bg: rgba(48,209,88,0.15);
+    --yellow: #ffd60a;
+    --yellow-bg: rgba(255,214,10,0.12);
+    --purple: #bf5af2;
+    --purple-bg: rgba(191,90,242,0.15);
+    --card-bg: #2c2c2e;
+    --card-bg-hover: #3a3a3c;
+    --card-border: rgba(255,255,255,0.10);
+    --card-border-hover: rgba(255,255,255,0.22);
+    --card-shadow: none;
+    --card-shadow-hover: none;
     color-scheme: dark;
   }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    background: var(--bg-primary);
+    background: var(--bg-secondary);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.5;
-    padding: 20px;
     -webkit-user-select: text;
     user-select: text;
+    overflow-y: auto;
   }
-  .loading {
-    text-align: center;
-    padding: 40px 0;
-    color: var(--text-secondary);
+
+  /* Window Title Bar */
+  .window-titlebar {
+    position:sticky; top:0; z-index:200;
+    height:32px;
+    display:flex; align-items:center; justify-content:flex-end;
+    padding:0 14px 0 78px;
+    -webkit-app-region:drag;
+    background:color-mix(in srgb, var(--bg-primary) 80%, transparent);
+    backdrop-filter:saturate(180%) blur(20px);
+    -webkit-backdrop-filter:saturate(180%) blur(20px);
+    border-bottom:0.5px solid var(--border);
   }
-  .spinner {
-    width: 24px;
-    height: 24px;
-    margin: 0 auto 12px;
-    border: 2.5px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
+  .window-titlebar .luna-open-btn {
+    -webkit-app-region:no-drag;
+    display:inline-flex; align-items:center; gap:5px;
+    padding:4px 10px; border-radius:6px;
+    font-size:11px; font-weight:500; letter-spacing:0.01em;
+    color:var(--text-secondary); background:transparent;
+    border:none; cursor:pointer; font-family:inherit;
+    transition:background .15s, color .15s;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .error {
-    color: var(--red);
-    text-align: center;
-    padding: 20px;
-    font-size: 13px;
+  .window-titlebar .luna-open-btn:hover {
+    background:var(--border); color:var(--text-primary);
   }
-  .course-label {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    margin-bottom: 2px;
+  .window-titlebar .luna-open-btn:active {
+    background:var(--border-strong);
   }
-  .page-title-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    margin-bottom: 4px;
+  .window-titlebar .luna-open-btn svg { opacity:0.55; }
+
+  /* Loading / Error */
+  .loading { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:300px; color:var(--text-tertiary); gap:12px; }
+  .spinner { width:28px; height:28px; border:3px solid var(--border-strong); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .error { color:var(--red); text-align:center; padding:40px 24px; font-size:14px; }
+
+  /* Hero Header */
+  .hero { padding:14px 24px 20px; background:var(--bg-primary); border-bottom:0.5px solid var(--border); }
+  .hero-label { display:inline; font-size:12px; font-weight:500; color:var(--text-tertiary); letter-spacing:0.02em; }
+  .hero-title-row { display:flex; align-items:flex-start; gap:10px; margin-bottom:2px; }
+  .hero-title { font-size:22px; font-weight:700; line-height:1.25; letter-spacing:-0.02em; flex:1; min-width:0; }
+  .hero-info-row { display:flex; align-items:center; flex-wrap:nowrap; gap:6px 10px; margin-top:6px; overflow:hidden; white-space:nowrap; }
+  .hero-subtitle { font-size:13px; color:var(--text-secondary); display:inline-flex; align-items:center; gap:6px; flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .hero-subtitle svg { flex-shrink:0; opacity:0.5; }
+  .hero-sep { width:1px; height:14px; background:var(--border-strong); flex-shrink:0; opacity:0.7; }
+  .hero-ta-tag { display:inline-flex; align-items:center; gap:4px; font-size:11px; color:var(--text-secondary); flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .hero-ta-tag .ta-label { font-weight:600; color:var(--text-tertiary); font-size:10px; letter-spacing:0.03em; flex-shrink:0; }
+  .hero-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  .hero-badge {
+    display:inline-flex; align-items:center; gap:4px;
+    padding:6px 12px; border-radius:8px; font-size:11px; font-weight:600;
+    cursor:pointer; border:none; font-family:inherit; transition:opacity .15s;
   }
-  .page-title {
-    font-size: 17px;
-    font-weight: 700;
-    line-height: 1.3;
-    flex: 1;
-    min-width: 0;
+  .hero-badge:hover { opacity:0.8; }
+  .hero-badge.zoom { background:#2d8cff; color:#fff; }
+  .hero-badge.panopto { background:#00a651; color:#fff; }
+  .hero-badge.syllabus { background:#1a3a6c; color:#ffd60a; }
+  .hero-badge.syllabus:hover { opacity:0.85; }
+  .hero-badge.zoom:hover { opacity:0.85; background:#2d8cff; }
+  .hero-badge.panopto:hover { opacity:0.85; background:#00a651; }
+  .hero-badge.luna-link { display:none; }
+  .hero-badge.ta { display:none; }
+
+  /* Content Sections */
+  .sections-scroll { padding:16px 20px; display:flex; flex-direction:column; gap:20px; }
+  .sec { display:flex; flex-direction:column; gap:8px; }
+  .sec-head { display:flex; align-items:center; gap:6px; padding:0 4px; }
+  .sec-label { font-size:14px; font-weight:700; color:var(--text-primary); letter-spacing:-0.01em; }
+  .sec-count { font-size:12px; font-weight:600; color:var(--text-tertiary); }
+  .sec-badge { margin-left:2px; }
+  .sec-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+  .sec-grid.mat-grid { grid-template-columns:repeat(4,1fr); }
+  .sec-empty { font-size:12px; color:var(--text-tertiary); padding:8px 4px; }
+
+  /* Item Cards (Bento tiles) */
+  .item-card {
+    background:var(--card-bg); border-radius:var(--inner-radius); box-shadow:var(--card-shadow);
+    padding:12px; cursor:pointer; border:0.5px solid var(--card-border); width:100%; text-align:left; font-family:inherit;
+    display:flex; flex-direction:column; gap:4px; height:80px; overflow:hidden;
+    transition:box-shadow .15s, border-color .15s, background .15s;
   }
-  .luna-open-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
-    border: 0.5px solid var(--border);
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    cursor: pointer;
-    flex-shrink: 0;
-    margin-top: 1px;
-    transition: background 0.15s;
+  .item-card:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
+
+  /* List Items (inside cards) */
+  .item-row { display:flex; align-items:flex-start; gap:6px; flex-wrap:wrap; }
+  .item-title {
+    font-size:13px;
+    font-weight:500;
+    color:var(--text-primary);
+    display:-webkit-box;
+    -webkit-line-clamp:2;
+    -webkit-box-orient:vertical;
+    overflow:hidden;
+    line-height:1.4;
+    word-break:break-word;
+    flex:1;
+    /* 标准属性 line-clamp 以实现兼容性 */
+    display:box;
+    box-orient:vertical;
+    line-clamp:2;
   }
-  .luna-open-btn:hover { background: var(--bg-hover); }
-  .meta-table {
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    margin-bottom: 14px;
+  .item-badge { font-size:10px; font-weight:700; padding:2px 7px; border-radius:6px; flex-shrink:0; white-space:nowrap; }
+  .item-badge.new { background:var(--red-bg); color:var(--red); }
+  .item-badge.pending { background:var(--orange-bg); color:var(--orange); }
+  .item-badge.done { background:var(--green-bg); color:var(--green); }
+  .item-sub { font-size:11px; color:var(--text-tertiary); margin-top:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  /* Material Card - fixed size + file download */
+  .mat-card {
+    background:var(--card-bg); border-radius:var(--inner-radius); box-shadow:var(--card-shadow);
+    padding:10px; cursor:pointer; border:0.5px solid var(--card-border); width:100%; text-align:left; font-family:inherit;
+    display:flex; flex-direction:column; gap:3px;
+    height:90px; overflow:hidden;
+    transition:box-shadow .15s, border-color .15s, background .15s;
   }
-  .meta-row {
-    display: flex;
-    padding: 8px 12px;
-    font-size: 12px;
-    border-bottom: 0.5px solid var(--border);
-    gap: 8px;
+  .mat-card:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
+  .mat-title {
+    font-size:12px;
+    font-weight:500;
+    color:var(--text-primary);
+    display:-webkit-box;
+    display:box;
+    -webkit-line-clamp:2;
+    line-clamp:2;
+    -webkit-box-orient:vertical;
+    box-orient:vertical;
+    overflow:hidden;
+    line-height:1.3;
+    word-break:break-word;
   }
-  .meta-row:last-child { border-bottom: none; }
-  .meta-key {
-    width: 110px;
-    flex-shrink: 0;
-    color: var(--text-secondary);
-    font-weight: 500;
+  .mat-time { font-size:10px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .mat-files { display:flex; flex-direction:column; gap:2px; margin-top:auto; flex-shrink:0; overflow:hidden; }
+  .mat-file-btn {
+    display:flex; align-items:center; gap:5px;
+    padding:4px 7px; border-radius:7px; border:none; cursor:pointer;
+    background:var(--accent-bg); color:var(--accent);
+    font-size:10px; font-weight:500; font-family:inherit; text-align:left;
+    transition:background .15s;
+    width:100%;
   }
-  .meta-value {
-    flex: 1;
-    color: var(--text-primary);
-    word-break: break-word;
+  .mat-file-btn:hover { background:color-mix(in srgb, var(--accent) 15%, transparent); }
+  .mat-file-btn:disabled { opacity:0.5; cursor:default; }
+  .mat-file-btn svg { flex-shrink:0; opacity:0.7; }
+  .mat-file-btn span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mat-more { font-size:10px; color:var(--text-tertiary); padding:0 2px; }
+
+  /* Task-style Cards (Reports/Exams) - matches LunaTodo layout */
+  .task-list { display:flex; flex-direction:column; gap:4px; }
+  .task-card {
+    display:flex; align-items:center; gap:14px;
+    padding:14px; border-radius:12px;
+    background:var(--card-bg); border:0.5px solid var(--card-border);
+    box-shadow:var(--card-shadow);
+    cursor:pointer; font-family:inherit; text-align:left; width:100%;
+    transition:border-color .15s, box-shadow .15s, transform .1s;
+    position:relative;
   }
-  .section {
-    margin-bottom: 14px;
+  .task-card:hover { background:var(--card-bg-hover); border-color:var(--card-border-hover); box-shadow:var(--card-shadow-hover); }
+  .task-card:active { transform:scale(0.99); }
+
+  /* Urgency bar (4px vertical) */
+  .urgency-bar {
+    flex-shrink:0; width:4px; border-radius:2px;
+    background:var(--accent-bg); overflow:hidden; position:relative;
+    align-self:stretch; margin:2px 0;
   }
-  .section-heading {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 6px;
+  .urgency-fill {
+    position:absolute; bottom:0; left:0; width:100%; border-radius:2px;
+    background:var(--accent); transition:height .5s cubic-bezier(.2,.8,.2,1);
   }
-  .section-body {
-    font-size: 13px;
-    color: var(--text-primary);
-    line-height: 1.6;
-    white-space: pre-wrap;
-    word-break: break-word;
+  .urgency-bar.done { background:var(--green-bg); }
+  .urgency-bar.done .urgency-fill { background:var(--green); }
+  .urgency-bar.overdue { background:var(--red-bg); }
+  .urgency-bar.overdue .urgency-fill { background:var(--red); }
+  .urgency-bar.critical { background:var(--orange-bg); }
+  .urgency-bar.critical .urgency-fill { background:var(--orange); animation:bar-pulse 2s ease-in-out infinite; }
+  .urgency-bar.soon { background:var(--yellow-bg); }
+  .urgency-bar.soon .urgency-fill { background:var(--yellow); }
+  @keyframes bar-pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+
+  /* Task body */
+  .task-body { flex:1; min-width:0; }
+  .task-name {
+    font-size:14px; font-weight:600; color:var(--text-primary); line-height:1.35;
+    margin-bottom:4px; overflow:hidden; text-overflow:ellipsis;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    display:box; line-clamp:2; box-orient:vertical;
   }
-  .attachments {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 0.5px solid var(--border);
+  .task-sub { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--text-tertiary); flex-wrap:wrap; }
+  .task-sep { width:2px; height:2px; border-radius:50%; background:var(--text-tertiary); flex-shrink:0; opacity:0.5; }
+  .task-type { white-space:nowrap; }
+  .task-date { white-space:nowrap; font-variant-numeric:tabular-nums; }
+
+  /* Remaining label (right side) */
+  .remaining {
+    flex-shrink:0; font-size:11px; font-weight:600; padding:2px 8px; border-radius:6px;
+    background:var(--accent-bg); color:var(--accent); white-space:nowrap; font-variant-numeric:tabular-nums;
   }
-  .attachments h4 {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-  }
+  .remaining.done { background:var(--green-bg); color:var(--green); }
+  .remaining.overdue { background:var(--red-bg); color:var(--red); }
+  .remaining.critical { background:var(--orange-bg); color:var(--orange); }
+  .remaining.soon { background:var(--yellow-bg); color:var(--yellow); }
+
+  /* Arrow */
+  .task-arrow { flex-shrink:0; color:var(--text-tertiary); opacity:0.5; }
+
+  .btn { padding:8px 14px; border-radius:10px; border:none; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; text-align:center; transition:opacity .15s,background .15s; }
+  .btn:disabled { opacity:0.4; cursor:default; }
+  .btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .btn.primary { background:var(--accent); color:#fff; }
+  .btn.primary:hover:not(:disabled) { opacity:0.85; }
+  .btn.secondary { background:var(--bg-tertiary); color:var(--text-primary); }
+  .btn.secondary:hover:not(:disabled) { background:var(--border-strong); }
+  .text-input { width:100%; padding:8px 12px; border:0.5px solid var(--border-strong); border-radius:10px; background:var(--bg-tertiary); color:var(--text-primary); font-size:13px; font-family:inherit; resize:vertical; }
+  .text-input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-bg); }
+
+  /* Detail / Generic View */
+  .detail-wrap { padding:24px; }
+  .detail-wrap .page-title { font-size:20px; font-weight:700; margin-bottom:6px; letter-spacing:-0.01em; }
+  .detail-wrap .course-label { font-size:12px; color:var(--text-tertiary); margin-bottom:4px; }
+  .meta-table { background:var(--card-bg); border-radius:var(--card-radius); box-shadow:var(--card-shadow); border:0.5px solid var(--card-border); overflow:hidden; margin:14px 0; }
+  .meta-row { display:flex; padding:10px 16px; font-size:13px; border-bottom:0.5px solid var(--border); gap:12px; }
+  .meta-row:last-child { border-bottom:none; }
+  .meta-key { width:120px; flex-shrink:0; color:var(--text-secondary); font-weight:500; }
+  .meta-value { flex:1; color:var(--text-primary); word-break:break-word; }
+  .section { margin:16px 0; }
+  .section-heading { font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:6px; }
+  .section-body { font-size:14px; color:var(--text-primary); line-height:1.7; white-space:pre-wrap; word-break:break-word; }
+  .attachments { margin-top:16px; }
+  .attachments h4 { font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:8px; }
   .attachment {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 12px;
-    font-size: 12px;
-    color: var(--accent);
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    cursor: pointer;
-    font-family: inherit;
-    font-weight: 500;
-    width: 100%;
-    text-align: left;
-    transition: background 0.15s ease;
-    margin-bottom: 4px;
-    border: none;
+    display:flex; align-items:center; gap:8px;
+    padding:10px 14px; font-size:13px; font-weight:500; color:var(--accent);
+    background:var(--card-bg); box-shadow:var(--card-shadow);
+    border:0.5px solid var(--card-border);
+    border-radius:var(--inner-radius); cursor:pointer; font-family:inherit;
+    width:100%; text-align:left; margin-bottom:6px;
+    transition:border-color .15s, box-shadow .15s;
   }
-  .attachment:hover { background: var(--bg-hover); }
-  .attachment span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .empty {
-    color: var(--text-tertiary);
-    font-size: 13px;
-    text-align: center;
-    padding: 40px 0;
+  .attachment:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
+  .attachment span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* Thread / Discussion */
+  .thread-list { display:flex; flex-direction:column; gap:8px; margin-top:14px; }
+  .thread-card { background:var(--card-bg); box-shadow:var(--card-shadow); border:0.5px solid var(--card-border); border-radius:var(--card-radius); padding:14px 16px; cursor:pointer; transition:border-color .15s, box-shadow .15s; }
+  .thread-card:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
+  .thread-title { font-size:14px; font-weight:600; color:var(--accent); margin-bottom:4px; }
+  .thread-body { font-size:13px; color:var(--text-primary); line-height:1.6; white-space:pre-wrap; word-break:break-word; margin-bottom:8px; }
+  .thread-meta { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--text-tertiary); }
+  .thread-meta .author { font-weight:600; color:var(--text-secondary); }
+  .reply-section { margin-top:20px; padding-top:16px; border-top:0.5px solid var(--border); }
+  .reply-section h3 { font-size:14px; font-weight:600; color:var(--text-secondary); margin-bottom:10px; }
+  .reply-actions { display:flex; justify-content:flex-end; margin-top:8px; }
+  .back-btn { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border:0.5px solid var(--border); border-radius:8px; background:var(--bg-tertiary); color:var(--accent); font-size:13px; font-weight:500; cursor:pointer; margin-bottom:12px; transition:background .15s; }
+  .back-btn:hover { background:var(--accent-bg); border-color:var(--accent); }
+  .back-btn svg { transform:rotate(90deg); width:12px; height:12px; }
+  .status { font-size:12px; color:var(--text-tertiary); margin-top:16px; text-align:center; }
+
+  /* KG Detail Collapsible */
+  .kg-toggle {
+    display:flex; align-items:center; justify-content:space-between; width:100%;
+    padding:12px 16px; background:var(--card-bg); box-shadow:var(--card-shadow);
+    border:0.5px solid var(--card-border);
+    border-radius:var(--card-radius); cursor:pointer; font-family:inherit;
+    font-size:13px; font-weight:600; color:var(--text-secondary);
+    transition:border-color .15s, box-shadow .15s;
   }
-  .status {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    margin-top: 16px;
-    text-align: center;
-  }
-  /* Course detail styles */
-  .course-semester {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-  }
-  .course-teachers {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-bottom: 6px;
-  }
-  .course-staff-badges {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-bottom: 12px;
-  }
-  .assistant-badge {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 6px;
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    color: var(--text-secondary);
-  }
-  .course-tools {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 14px;
-  }
-  .tool-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 5px 10px;
-    border-radius: 8px;
-    font-size: 11px;
-    font-weight: 500;
-    border: 0.5px solid var(--border);
-    background: var(--bg-card);
-    color: var(--accent);
-    cursor: pointer;
-    font-family: inherit;
-    transition: opacity 0.15s, background 0.15s;
-  }
-  .tool-chip:hover { background: var(--bg-hover); }
-  .tool-chip.zoom {
-    background: #2d8cff;
-    color: #fff;
-    border-color: #2d8cff;
-  }
-  .tool-chip.zoom:hover { opacity: 0.85; background: #2d8cff; }
-  .tool-chip.panopto {
-    background: #00a651;
-    color: #fff;
-    border-color: #00a651;
-  }
-  .tool-chip.panopto:hover { opacity: 0.85; background: #00a651; }
-  .tool-chip.syllabus {
-    background: #1a3a5c;
-    color: #fff;
-    border-color: #1a3a5c;
-  }
-  .tool-chip.syllabus:hover { opacity: 0.85; background: #1a3a5c; }
-  .course-section {
-    margin-bottom: 16px;
-  }
-  .course-section-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .content-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .content-item {
-    display: flex;
-    flex-direction: column;
-    padding: 8px 12px;
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    cursor: pointer;
-    font-family: inherit;
-    text-align: left;
-    transition: background 0.15s;
-    width: 100%;
-  }
-  .content-item:hover { background: var(--bg-hover); }
-  .content-item-main {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .content-item-title {
-    flex: 1;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .content-item-status {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    flex-shrink: 0;
-  }
-  .content-item-status.highlight { color: var(--red); font-weight: 600; }
-  .content-item-period {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    margin-top: 2px;
-  }
-  .announcement-item {
-    display: flex;
-    flex-direction: column;
-    padding: 8px 12px;
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    cursor: pointer;
-    font-family: inherit;
-    text-align: left;
-    transition: background 0.15s;
-    width: 100%;
-  }
-  .announcement-item:hover { background: var(--bg-hover); }
-  .ann-title-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .ann-title {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-primary);
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .ann-new-badge {
-    font-size: 9px;
-    font-weight: 700;
-    color: var(--red);
-    background: rgba(255, 59, 48, 0.1);
-    padding: 1px 5px;
-    border-radius: 4px;
-    flex-shrink: 0;
-  }
-  .ann-date {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    margin-top: 2px;
-  }
-  .expand-actions {
-    padding: 8px 12px;
-    background: var(--bg-secondary);
-    border: 0.5px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 8px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .action-btn {
-    padding: 6px 12px;
-    border-radius: 8px;
-    border: 0.5px solid var(--border);
-    background: var(--bg-card);
-    color: var(--text-primary);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    font-family: inherit;
-    text-align: center;
-    transition: background 0.15s;
-  }
-  .action-btn:hover { background: var(--bg-hover); }
-  .action-btn.accent {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
-  }
-  .action-btn.accent:hover { opacity: 0.9; }
-  .action-btn:disabled { opacity: 0.5; cursor: default; }
-  .reply-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 6px 10px;
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-card);
-    color: var(--text-primary);
-    font-size: 12px;
-    font-family: inherit;
-    resize: vertical;
-  }
-  .reply-input:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.12);
-  }
-  .content-item-files {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    flex-shrink: 0;
-  }
-  /* KG detail collapsible */
-  .kg-detail-section {
-    margin-top: 8px;
-    border-top: 0.5px solid var(--border);
-    padding-top: 12px;
-  }
-  .kg-detail-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    padding: 8px 12px;
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    transition: background 0.15s;
-  }
-  .kg-detail-toggle:hover { background: var(--bg-hover); }
-  .kg-detail-toggle-label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .kg-chevron {
-    transition: transform 0.2s ease;
-    flex-shrink: 0;
-  }
-  .kg-detail-body {
-    margin-top: 8px;
-  }
-  .kg-detail-loading {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 0;
-    color: var(--text-tertiary);
-    font-size: 12px;
-  }
-  .kg-detail-loading .spinner {
-    margin: 0;
-    flex-shrink: 0;
+  .kg-toggle:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
+  .kg-toggle-label { display:flex; align-items:center; gap:8px; }
+  .kg-chevron { transition:transform .2s ease; }
+  .kg-body { margin-top:8px; }
+  .kg-loading { display:flex; align-items:center; gap:8px; padding:16px 0; color:var(--text-tertiary); font-size:13px; }
+  .kg-loading .spinner { margin:0; width:18px; height:18px; border-width:2px; }
+
+  @media (max-width:560px) {
+    .sec-grid { grid-template-columns:repeat(2,1fr); }
+    .sec-grid.mat-grid { grid-template-columns:repeat(3,1fr); }
+    .hero { padding:20px 16px 16px; }
+    .hero-title { font-size:19px; }
+    .sections-scroll { padding:12px 14px; }
   }
 </style>
 </head>
 <body>
+  <div class="window-titlebar" id="titlebar" data-tauri-drag-region></div>
   <div id="content">
     <div class="loading">
       <div class="spinner"></div>
-      <span>読み込み中...</span>
+      <span>Loading...</span>
     </div>
   </div>
   <script>
     (function() {
       var t = localStorage.getItem('selah-theme');
-      if (t === 'light' || t === 'dark') {
-        document.documentElement.setAttribute('data-theme', t);
-      }
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
     })();
 
-    function escapeHtml(str) {
-      var div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
+    function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function linkifyText(s) {
+      return escapeHtml(s).replace(/(https?:\/\/[^\s<)\]]+)/g,
+        '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;word-break:break-all;">$1</a>');
     }
 
-    function linkifyText(str) {
-      // Escape HTML first, then convert URLs to clickable links
-      var escaped = escapeHtml(str);
-      // Match URLs (http/https)
-      return escaped.replace(/(https?:\/\/[^\s<)\]]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;cursor:pointer;word-break:break-all;">$1</a>');
+    var ICONS = {
+      bell: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>',
+      folder: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>',
+      file: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+      check: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="16" x2="12" y2="16"/></svg>',
+      chat: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+      person: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+      external: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
+      download: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><polyline points="8 13 12 17 16 13"/></svg>',
+      clip: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>',
+      chevron: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
+      kg: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="16" x2="12" y2="16"/></svg>',
+      done: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11.5 14.5 16 9.5"/></svg>',
+    };
+
+    function statusBadge(status) {
+      if (!status) return '';
+      if (status.indexOf('\u672a') >= 0) return '<span class="item-badge pending">' + escapeHtml(status) + '</span>';
+      return '<span class="item-badge done">' + escapeHtml(status) + '</span>';
     }
 
+    // Urgency helpers for task-style cards
+    function parseDeadlineFromPeriod(period) {
+      // period is like "2026/04/01 00:00 ～ 2026/07/04 23:59" — extract end date only
+      if (!period) return 0;
+      var parts = period.split(/[~\uff5e]/);
+      if (parts.length < 2) return 0;
+      var end = parts[1].trim();
+      if (!end) return 0;
+      return new Date(end.replace(/\//g, '-')).getTime() || 0;
+    }
+    function taskUrgency(period, status) {
+      if (status && status.indexOf('\u672a') < 0) return 'done';
+      var deadline = parseDeadlineFromPeriod(period);
+      if (!deadline) return 'normal';
+      var diff = deadline - Date.now();
+      if (diff <= 0) return 'overdue';
+      if (diff < 86400000) return 'critical';
+      if (diff < 4 * 86400000) return 'soon';
+      return 'normal';
+    }
+    function taskUrgencyPct(period, status) {
+      if (status && status.indexOf('\u672a') < 0) return 1;
+      var deadline = parseDeadlineFromPeriod(period);
+      if (!deadline) return 0;
+      var diff = deadline - Date.now();
+      if (diff <= 0) return 1;
+      var horizon = 7 * 86400000;
+      if (diff >= horizon) return 0;
+      return 1 - diff / horizon;
+    }
+    function taskRemaining(period, status) {
+      if (status && status.indexOf('\u672a') < 0) return status;
+      var deadline = parseDeadlineFromPeriod(period);
+      if (!deadline) return '';
+      var diff = deadline - Date.now();
+      if (diff <= 0) {
+        var elapsed = -diff;
+        if (elapsed < 3600000) return Math.floor(elapsed / 60000) + '\u5206\u8d85\u904e';
+        if (elapsed < 86400000) return Math.floor(elapsed / 3600000) + '\u6642\u9593\u8d85\u904e';
+        return Math.floor(elapsed / 86400000) + '\u65e5\u8d85\u904e';
+      }
+      if (diff < 3600000) return '\u6b8b\u308a' + Math.ceil(diff / 60000) + '\u5206';
+      if (diff < 86400000) return '\u6b8b\u308a' + Math.floor(diff / 3600000) + '\u6642\u9593';
+      return '\u6b8b\u308a' + Math.floor(diff / 86400000) + '\u65e5';
+    }
+    function taskStatusClass(status) {
+      if (!status) return '';
+      if (status.indexOf('\u672a') >= 0) return 'pending';
+      return 'done';
+    }
+    function urgencyOrder(period, status) {
+      var u = taskUrgency(period, status);
+      if (u === 'overdue') return 0;
+      if (u === 'critical') return 1;
+      if (u === 'soon') return 2;
+      if (u === 'normal') return 3;
+      return 4; // done
+    }
+    function shortPeriod(period) {
+      // Extract just the end date part: "～ 2026/07/04 23:59" -> "7/4 23:59"
+      if (!period) return '';
+      var parts = period.split(/[~\uff5e]/);
+      var end = (parts[1] || '').trim();
+      if (!end) return period;
+      var m = end.match(/(\d+)\/(\d+)\/(\d+)\s+(\d+:\d+)/);
+      if (m) return parseInt(m[2]) + '/' + parseInt(m[3]) + ' ' + m[4];
+      return end;
+    }
+    function pubDate(period) {
+      // Extract just the start/publish date: "2026/04/01 00:00 ～ ..." -> "4/1"
+      if (!period) return '';
+      var parts = period.split(/[~\uff5e]/);
+      var start = (parts[0] || '').trim();
+      if (!start) return '';
+      var m = start.match(/(\d+)\/(\d+)\/(\d+)/);
+      if (m) return parseInt(m[2]) + '/' + parseInt(m[3]);
+      return start;
+    }
+    function shortDate(d) {
+      // "2026/04/01 09:00" -> "4/1"
+      if (!d) return '';
+      var m = d.match(/(\d+)\/(\d+)\/(\d+)/);
+      if (m) return parseInt(m[2]) + '/' + parseInt(m[3]);
+      return d;
+    }
+
+    // Generic Detail
     function renderDetail(data) {
-      var content = document.getElementById('content');
-
-      if (data.error) {
-        content.innerHTML = '<div class="error">' + escapeHtml(data.error) + '</div>';
-        return;
+      var c = document.getElementById('content');
+      if (data.error) { c.innerHTML = '<div class="error">' + escapeHtml(data.error) + '</div>'; return; }
+      var h = '<div class="detail-wrap">';
+      if (data.course_name) h += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
+      if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
+      if (data.sections) for (var i = 0; i < data.sections.length; i++) {
+        var s = data.sections[i];
+        h += '<div class="section">';
+        if (s.heading) h += '<div class="section-heading">' + escapeHtml(s.heading) + '</div>';
+        h += '<div class="section-body">' + linkifyText(s.body) + '</div></div>';
       }
-
-      var html = '';
-
-      if (data.course_name) {
-        html += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
-      }
-      if (data.title) {
-        html += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
-      }
-
-      // Sections
-      if (data.sections && data.sections.length > 0) {
-        for (var i = 0; i < data.sections.length; i++) {
-          var sec = data.sections[i];
-          html += '<div class="section">';
-          if (sec.heading) {
-            html += '<div class="section-heading">' + escapeHtml(sec.heading) + '</div>';
-          }
-          html += '<div class="section-body">' + linkifyText(sec.body) + '</div>';
-          html += '</div>';
-        }
-      }
-
-      // Meta
-      if (data.meta && data.meta.length > 0) {
-        html += '<div class="meta-table">';
+      if (data.meta && data.meta.length) {
+        h += '<div class="meta-table">';
         for (var j = 0; j < data.meta.length; j++) {
           var m = data.meta[j];
-          html += '<div class="meta-row"><span class="meta-key">' + escapeHtml(m[0]) + '</span><span class="meta-value">' + linkifyText(m[1] || '—') + '</span></div>';
+          h += '<div class="meta-row"><span class="meta-key">' + escapeHtml(m[0]) + '</span><span class="meta-value">' + linkifyText(m[1] || '\u2014') + '</span></div>';
         }
-        html += '</div>';
+        h += '</div>';
       }
-
-      // Attachments
-      if (data.attachments && data.attachments.length > 0) {
-        html += '<div class="attachments"><h4>添付ファイル</h4>';
+      if (data.attachments && data.attachments.length) {
+        h += '<div class="attachments"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
         for (var k = 0; k < data.attachments.length; k++) {
-          var att = data.attachments[k];
-          html += '<button class="attachment" data-url="' + escapeHtml(att.url) + '" data-name="' + escapeHtml(att.name) + '">';
-          html += '<span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>' + escapeHtml(att.name) + '</span>';
-          html += '<span style="flex:none;opacity:0.6"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><polyline points="8 13 12 17 16 13"/></svg></span>';
-          html += '</button>';
+          var a = data.attachments[k];
+          h += '<button class="attachment" data-url="' + escapeHtml(a.url) + '" data-name="' + escapeHtml(a.name) + '">';
+          h += '<span>' + ICONS.clip + ' ' + escapeHtml(a.name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
         }
-        html += '</div>';
+        h += '</div>';
       }
-
-      if (!data.sections?.length && !data.meta?.length && !data.attachments?.length) {
-        html += '<div class="empty">詳細情報を取得できませんでした</div>';
-      }
-
-      content.innerHTML = html;
-
-      // Attach download handlers
-      var buttons = content.querySelectorAll('.attachment');
-      for (var b = 0; b < buttons.length; b++) {
-        buttons[b].addEventListener('click', function() {
-          var url = this.getAttribute('data-url');
-          var name = this.getAttribute('data-name');
-          downloadAttachment(url, name);
-        });
-      }
+      if (!data.sections?.length && !data.meta?.length && !data.attachments?.length)
+        h += '<div class="card-empty" style="padding:40px 0">\u8a73\u7d30\u60c5\u5831\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f</div>';
+      h += '</div>';
+      c.innerHTML = h;
+      c.querySelectorAll('.attachment').forEach(function(b) {
+        b.addEventListener('click', function() { downloadAttachment(b.dataset.url, b.dataset.name); });
+      });
     }
 
+    // Material Info
     function renderMaterialInfo(params) {
-      var data = {
-        title: params.get('title') || '',
-        course_name: '',
-        sections: [],
-        attachments: [],
-        meta: [],
-      };
+      var data = { title: params.get('title') || '', course_name: '', sections: [], attachments: [], meta: [] };
       var period = params.get('period');
-      if (period) data.meta.push(['公開期間', period]);
-
-      // Parse material files from infoId param (JSON array)
-      var filesJson = params.get('infoId');
-      var idnumber = params.get('idnumber') || '';
-      var files = [];
-      if (filesJson) {
-        try { files = JSON.parse(filesJson); } catch(e) {}
-      }
-
+      if (period) data.meta.push(['\u516c\u958b\u671f\u9593', period]);
       renderDetail(data);
-
-      // Render file download buttons
-      if (files.length > 0) {
-        var content = document.getElementById('content');
-        var filesHtml = '<div class="attachments"><h4>ファイル (' + files.length + ')</h4>';
-        for (var i = 0; i < files.length; i++) {
-          var f = files[i];
-          filesHtml += '<button class="attachment material-dl" data-idx="' + i + '">';
-          filesHtml += '<span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>' + escapeHtml(f.display_name || f.file_name) + '</span>';
-          filesHtml += '<span style="flex:none;opacity:0.6"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><polyline points="8 13 12 17 16 13"/></svg></span>';
-          filesHtml += '</button>';
-        }
-        filesHtml += '</div>';
-        content.insertAdjacentHTML('beforeend', filesHtml);
-
-        // Attach download handlers
-        var dlBtns = content.querySelectorAll('.material-dl');
-        for (var b = 0; b < dlBtns.length; b++) {
-          dlBtns[b].addEventListener('click', (function(file) {
-            return function() {
-              downloadMaterial(idnumber, file, this);
-            };
-          })(files[dlBtns[b].getAttribute('data-idx')]));
-        }
+      var filesJson = params.get('infoId'), idnumber = params.get('idnumber') || '', files = [];
+      if (filesJson) try { files = JSON.parse(filesJson); } catch(e) {}
+      if (!files.length) return;
+      var c = document.getElementById('content');
+      var fh = '<div class="attachments" style="padding:0 24px 24px"><h4>\u30d5\u30a1\u30a4\u30eb (' + files.length + ')</h4>';
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        fh += '<button class="attachment material-dl" data-idx="' + i + '"><span>' + ICONS.clip + ' ' + escapeHtml(f.display_name || f.file_name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
       }
+      fh += '</div>';
+      c.insertAdjacentHTML('beforeend', fh);
+      c.querySelectorAll('.material-dl').forEach(function(b) {
+        b.addEventListener('click', (function(file) { return function() { downloadMaterial(idnumber, file, this); }; })(files[b.dataset.idx]));
+      });
     }
 
+    // Discussion Thread List
     function renderDiscussion(data) {
-      var content = document.getElementById('content');
-      if (!data) {
-        content.innerHTML = '<div class="error">データがありません</div>';
-        return;
-      }
-      // Extract idnumber and forumId from current URL params for thread navigation
+      var c = document.getElementById('content');
+      if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
       var params = new URLSearchParams(window.location.search);
       var discussionPath = params.get('path') || '';
-      var pathParams = new URLSearchParams(discussionPath.split('?')[1] || '');
-      var idnumber = pathParams.get('idnumber') || '';
-      var forumId = pathParams.get('forumId') || '';
-
-      var html = '';
-      if (data.course_name) {
-        html += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
-      }
-      if (data.title) {
-        html += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
-      }
-      // Description (theme content)
-      if (data.description) {
-        html += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
-      }
-      // Meta info
-      if (data.meta && data.meta.length > 0) {
-        html += '<div class="meta-table">';
+      var pp = new URLSearchParams(discussionPath.split('?')[1] || '');
+      var idnumber = pp.get('idnumber') || '', forumId = pp.get('forumId') || '';
+      var h = '<div class="detail-wrap">';
+      if (data.course_name) h += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
+      if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
+      if (data.description) h += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
+      if (data.meta && data.meta.length) {
+        h += '<div class="meta-table">';
         for (var j = 0; j < data.meta.length; j++) {
           var m = data.meta[j];
-          html += '<div class="meta-row"><span class="meta-key">' + escapeHtml(m[0]) + '</span><span class="meta-value">' + linkifyText(m[1] || '—') + '</span></div>';
+          h += '<div class="meta-row"><span class="meta-key">' + escapeHtml(m[0]) + '</span><span class="meta-value">' + linkifyText(m[1] || '\u2014') + '</span></div>';
         }
-        html += '</div>';
+        h += '</div>';
       }
-      // Thread posts
-      if (data.posts && data.posts.length > 0) {
-        html += '<div style="margin-top:14px;padding-top:12px;border-top:0.5px solid var(--border)">';
-        html += '<div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">スレッド一覧 (' + data.posts.length + ')</div>';
+      if (data.posts && data.posts.length) {
+        h += '<div class="thread-list">';
         for (var i = 0; i < data.posts.length; i++) {
           var p = data.posts[i];
-          html += '<div class="thread-card" data-thread-id="' + escapeHtml(p.thread_id || '') + '" style="background:var(--bg-card);border:0.5px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:6px;cursor:pointer">';
-          // Title row
-          if (p.title) {
-            html += '<div style="font-size:13px;font-weight:600;color:var(--accent);margin-bottom:4px">' + escapeHtml(p.title) + '</div>';
-          }
-          // Content
-          if (p.content) {
-            html += '<div style="font-size:13px;color:var(--text-primary);line-height:1.6;margin-bottom:6px;white-space:pre-wrap;word-break:break-word">' + linkifyText(p.content) + '</div>';
-          }
-          // Meta row: author, date, status
-          html += '<div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-tertiary)">';
-          if (p.author) html += '<span style="font-weight:500;color:var(--text-secondary)">' + escapeHtml(p.author) + '</span>';
-          if (p.date) html += '<span>' + escapeHtml(p.date) + '</span>';
-          if (p.status) html += '<span style="margin-left:auto;opacity:0.8">' + escapeHtml(p.status) + '</span>';
-          html += '</div>';
-          html += '</div>';
+          h += '<div class="thread-card" data-thread-id="' + escapeHtml(p.thread_id || '') + '">';
+          if (p.title) h += '<div class="thread-title">' + escapeHtml(p.title) + '</div>';
+          if (p.content) h += '<div class="thread-body">' + linkifyText(p.content) + '</div>';
+          h += '<div class="thread-meta">';
+          if (p.author) h += '<span class="author">' + escapeHtml(p.author) + '</span>';
+          if (p.date) h += '<span>' + escapeHtml(p.date) + '</span>';
+          if (p.status) h += '<span style="margin-left:auto">' + escapeHtml(p.status) + '</span>';
+          h += '</div></div>';
         }
-        html += '</div>';
+        h += '</div>';
       }
-      if (!data.description && (!data.posts || data.posts.length === 0) && (!data.meta || data.meta.length === 0)) {
-        html += '<div class="empty">掲示板の内容を取得できませんでした</div>';
-      }
-      content.innerHTML = html;
+      // New thread form
+      h += '<div class="reply-section"><h3>新しいスレッド</h3>';
+      h += '<input id="newThreadTitle" class="text-input" type="text" placeholder="タイトル..." style="margin-bottom:8px">';
+      h += '<textarea id="newThreadContent" class="text-input" rows="4" placeholder="内容を入力..."></textarea>';
+      h += '<div class="reply-actions"><button id="newThreadBtn" class="btn primary">投稿</button></div></div>';
 
-      // Make thread cards clickable - open thread detail window
-      content.querySelectorAll('.thread-card').forEach(function(card) {
-        card.addEventListener('click', async function() {
-          var threadId = card.getAttribute('data-thread-id');
-          if (!threadId || !idnumber || !forumId) return;
-          var invoke = window.__TAURI__?.core?.invoke;
-          if (!invoke) return;
-          var threadUrl = '/lms/course/forums/thread?idnumber=' + idnumber + '&forumId=' + forumId + '&threadId=' + threadId + '&screen=2';
-          var threadTitle = card.querySelector('div')?.textContent || 'スレッド';
-          try {
-            await invoke('luna_open_detail_window', {
-              path: threadUrl,
-              title: threadTitle,
-              mode: 'thread',
-            });
-          } catch (e) { console.error(e); }
+      h += '</div>';
+      c.innerHTML = h;
+      // Thread card click -> show thread detail inline
+      c.querySelectorAll('.thread-card').forEach(function(card, idx) {
+        card.addEventListener('click', function() {
+          var post = data.posts[idx];
+          if (!post) return;
+          showThreadInline(c, data, post, idnumber, forumId, discussionPath);
         });
       });
+      wireNewThreadForm(c, discussionPath);
     }
 
+    function showThreadInline(c, discData, post, idnumber, forumId, discussionPath) {
+      var h = '<div class="detail-wrap">';
+      h += '<button class="back-btn" id="backToList">' + ICONS.chevron + ' \u30b9\u30ec\u30c3\u30c9\u4e00\u89a7</button>';
+      if (post.title) h += '<div class="page-title">' + escapeHtml(post.title) + '</div>';
+      h += '<div class="thread-meta" style="margin-bottom:12px">';
+      if (post.author) h += '<span class="author">' + escapeHtml(post.author) + '</span>';
+      if (post.date) h += '<span>' + escapeHtml(post.date) + '</span>';
+      if (post.status) h += '<span style="margin-left:auto">' + escapeHtml(post.status) + '</span>';
+      h += '</div>';
+      if (post.content) h += '<div class="section"><div class="section-body" style="white-space:pre-wrap;word-break:break-word">' + linkifyText(post.content) + '</div></div>';
+      var tid = post.thread_id || '';
+      if (tid && idnumber && forumId) {
+        h += '<div class="reply-section"><h3>\u8fd4\u4fe1</h3>';
+        h += '<textarea id="replyContent" class="text-input" rows="4" placeholder="\u8fd4\u4fe1\u5185\u5bb9\u3092\u5165\u529b..."></textarea>';
+        h += '<div class="reply-actions"><button id="replyBtn" class="btn primary">\u9001\u4fe1</button></div></div>';
+      }
+      h += '</div>';
+      c.innerHTML = h;
+      document.getElementById('backToList').addEventListener('click', function() {
+        renderDiscussion(discData);
+      });
+      var replyBtn = document.getElementById('replyBtn'), replyArea = document.getElementById('replyContent');
+      if (replyBtn && tid) {
+        var tUrl = '/lms/course/forums/thread?idnumber=' + idnumber + '&forumId=' + forumId + '&threadId=' + tid + '&screen=2';
+        replyBtn.addEventListener('click', async function() {
+          var inv = window.__TAURI__?.core?.invoke;
+          if (!inv || !replyArea.value.trim()) return;
+          replyBtn.disabled = true; replyBtn.textContent = '\u9001\u4fe1\u4e2d...';
+          try {
+            var result = await inv('luna_reply_discussion', { url: tUrl, content: replyArea.value.trim() });
+            replyArea.value = '';
+            replyBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
+            setTimeout(function() { replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false; }, 2000);
+          } catch(e) {
+            alert('\u8fd4\u4fe1\u30a8\u30e9\u30fc: ' + String(e));
+            replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
+          }
+        });
+      }
+    }
+
+    function wireNewThreadForm(c, discussionPath) {
+      var newBtn = document.getElementById('newThreadBtn');
+      var newTitle = document.getElementById('newThreadTitle');
+      var newContent = document.getElementById('newThreadContent');
+      if (newBtn && discussionPath) {
+        newBtn.addEventListener('click', async function() {
+          var inv = window.__TAURI__?.core?.invoke;
+          if (!inv || !newTitle.value.trim() || !newContent.value.trim()) return;
+          newBtn.disabled = true; newBtn.textContent = '\u6295\u7a3f\u4e2d...';
+          try {
+            var result = await inv('luna_post_discussion', { url: discussionPath, title: newTitle.value.trim(), content: newContent.value.trim() });
+            newTitle.value = ''; newContent.value = '';
+            newBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
+            setTimeout(function() { newBtn.textContent = '\u6295\u7a3f'; newBtn.disabled = false; }, 2000);
+          } catch(e) {
+            var st = c.querySelector('.post-status') || Object.assign(document.createElement('div'), { className: 'post-status' });
+            st.textContent = '\u6295\u7a3f\u30a8\u30e9\u30fc: ' + String(e); st.style.color = 'var(--red)'; c.appendChild(st);
+            newBtn.textContent = '\u6295\u7a3f'; newBtn.disabled = false;
+          }
+        });
+      }
+    }
+
+    // Thread Detail + Reply
     function renderThreadDetail(data, threadUrl) {
-      var content = document.getElementById('content');
-      if (!data) {
-        content.innerHTML = '<div class="error">データがありません</div>';
-        return;
-      }
-      var html = '';
-      if (data.course_name) {
-        html += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
-      }
-      if (data.title) {
-        html += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
-      }
-      // Description
-      if (data.description) {
-        html += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
-      }
-      // Meta info
-      if (data.meta && data.meta.length > 0) {
-        html += '<div class="meta-table">';
+      var c = document.getElementById('content');
+      if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+      var h = '<div class="detail-wrap">';
+      if (data.course_name) h += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
+      if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
+      if (data.description) h += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
+      if (data.meta && data.meta.length) {
+        h += '<div class="meta-table">';
         for (var j = 0; j < data.meta.length; j++) {
           var m = data.meta[j];
-          html += '<div class="meta-row"><span class="meta-key">' + escapeHtml(m[0]) + '</span><span class="meta-value">' + linkifyText(m[1] || '—') + '</span></div>';
+          h += '<div class="meta-row"><span class="meta-key">' + escapeHtml(m[0]) + '</span><span class="meta-value">' + linkifyText(m[1] || '\u2014') + '</span></div>';
         }
-        html += '</div>';
+        h += '</div>';
       }
-      // Reply form
-      html += '<div style="margin-top:14px;padding-top:12px;border-top:0.5px solid var(--border)">';
-      html += '<div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">返信</div>';
-      html += '<textarea id="replyContent" style="width:100%;box-sizing:border-box;min-height:80px;padding:8px 10px;border:0.5px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text-primary);font-size:13px;line-height:1.6;resize:vertical;font-family:inherit" placeholder="返信内容を入力..."></textarea>';
-      html += '<div style="display:flex;justify-content:flex-end;margin-top:6px">';
-      html += '<button id="replyBtn" style="padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">送信</button>';
-      html += '</div>';
-      html += '</div>';
-      content.innerHTML = html;
-
-      // Wire up reply button
-      var replyBtn = document.getElementById('replyBtn');
-      var replyContent = document.getElementById('replyContent');
+      h += '<div class="reply-section"><h3>\u8fd4\u4fe1</h3>';
+      h += '<textarea id="replyContent" class="text-input" rows="4" placeholder="\u8fd4\u4fe1\u5185\u5bb9\u3092\u5165\u529b..."></textarea>';
+      h += '<div class="reply-actions"><button id="replyBtn" class="btn primary">\u9001\u4fe1</button></div></div></div>';
+      c.innerHTML = h;
+      var replyBtn = document.getElementById('replyBtn'), replyContent = document.getElementById('replyContent');
       replyBtn.addEventListener('click', async function() {
-        var invoke = window.__TAURI__?.core?.invoke;
-        if (!invoke || !replyContent.value.trim()) return;
-        replyBtn.disabled = true;
-        replyBtn.textContent = '送信中...';
+        var inv = window.__TAURI__?.core?.invoke;
+        if (!inv || !replyContent.value.trim()) return;
+        replyBtn.disabled = true; replyBtn.textContent = '\u9001\u4fe1\u4e2d...';
         try {
-          var result = await invoke('luna_reply_discussion', {
-            url: threadUrl,
-            content: replyContent.value.trim(),
-          });
+          var result = await inv('luna_reply_discussion', { url: threadUrl, content: replyContent.value.trim() });
           replyContent.value = '';
-          replyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:2px"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11.5 14.5 16 9.5"/></svg>' + escapeHtml(result);
-          setTimeout(function() { replyBtn.textContent = '送信'; replyBtn.disabled = false; }, 2000);
-        } catch (e) {
-          var statusEl = document.querySelector('.status');
-          if (!statusEl) {
-            statusEl = document.createElement('div');
-            statusEl.className = 'status';
-            content.appendChild(statusEl);
-          }
-          statusEl.textContent = '投稿エラー: ' + String(e);
-          statusEl.style.color = 'var(--red)';
-          replyBtn.textContent = '送信';
-          replyBtn.disabled = false;
+          replyBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
+          setTimeout(function() { replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false; }, 2000);
+        } catch(e) {
+          var st = c.querySelector('.status') || Object.assign(document.createElement('div'), { className: 'status' });
+          st.textContent = '\u6295\u7a3f\u30a8\u30e9\u30fc: ' + String(e); st.style.color = 'var(--red)'; c.appendChild(st);
+          replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
         }
       });
     }
 
+    // Course Detail (Bento Layout)
     function renderCourseDetail(data, idnumber, kgcPath) {
-      var content = document.getElementById('content');
-      if (!data) {
-        content.innerHTML = '<div class="error">データがありません</div>';
-        return;
-      }
-      var html = '';
-      // Course header
-      html += '<div class="page-title-row">';
-      html += '<div class="page-title">' + escapeHtml(data.course_name || '') + '</div>';
-      html += '<button class="luna-open-btn" data-luna-course-url="https://luna.kwansei.ac.jp/lms/course?idnumber=' + encodeURIComponent(idnumber) + '" title="LUNAで開く"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>';
-      html += '</div>';
-      if (data.semester) {
-        html += '<div class="course-semester">' + escapeHtml(data.semester) + '</div>';
-      }
-      if (data.teachers) {
-        html += '<div class="course-teachers"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>' + escapeHtml(data.teachers) + '</span></div>';
-      }
-      if (data.ta_info || data.la_info) {
-        html += '<div class="course-staff-badges">';
-        if (data.ta_info) html += '<span class="assistant-badge">TA: ' + escapeHtml(data.ta_info) + '</span>';
-        if (data.la_info) html += '<span class="assistant-badge">LA: ' + escapeHtml(data.la_info) + '</span>';
-        html += '</div>';
-      }
-      // Online tools + syllabus
-      if ((data.online_tools && data.online_tools.length > 0) || data.syllabus_url) {
-      html += '<div class="course-tools">';
-      if (data.online_tools) {
-        for (var t = 0; t < data.online_tools.length; t++) {
+      var c = document.getElementById('content');
+      if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+
+      // Luna link in titlebar
+      document.getElementById('titlebar').innerHTML = '<button class="luna-open-btn" data-luna-course-url="https://luna.kwansei.ac.jp/lms/course?idnumber=' + encodeURIComponent(idnumber) + '" title="LUNA\u3067\u958b\u304f"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>LUNA</button>';
+
+      // Hero Header
+      var h = '<div class="hero">';
+      h += '<div class="hero-title-row"><div class="hero-title">' + escapeHtml(data.course_name || '') + '</div></div>';
+      // Build tooltip for full info
+      var infoTip = [];
+      if (data.semester) infoTip.push(data.semester);
+      if (data.teachers) infoTip.push(data.teachers);
+      if (data.ta_info) infoTip.push('TA: ' + data.ta_info);
+      if (data.la_info) infoTip.push('LA: ' + data.la_info);
+      h += '<div class="hero-info-row" title="' + escapeHtml(infoTip.join(' / ')) + '">';
+      if (data.semester) h += '<span class="hero-label">' + escapeHtml(data.semester) + '</span>';
+      if (data.teachers) { if (data.semester) h += '<span class="hero-sep"></span>'; h += '<span class="hero-subtitle">' + ICONS.person + ' ' + escapeHtml(data.teachers) + '</span>'; }
+      if (data.ta_info) { h += '<span class="hero-sep"></span><span class="hero-ta-tag"><span class="ta-label">TA</span>' + escapeHtml(data.ta_info) + '</span>'; }
+      if (data.la_info) { h += '<span class="hero-sep"></span><span class="hero-ta-tag"><span class="ta-label">LA</span>' + escapeHtml(data.la_info) + '</span>'; }
+      h += '</div>';
+      var hasMeta = (data.online_tools && data.online_tools.length) || data.syllabus_url;
+      if (hasMeta) {
+        h += '<div class="hero-meta">';
+        if (data.online_tools) for (var t = 0; t < data.online_tools.length; t++) {
           var tool = data.online_tools[t];
-          var chipClass = 'tool-chip';
+          var chipClass = 'hero-badge';
           var chipIcon = '';
           if (tool.url.indexOf('zoom') >= 0) {
             chipClass += ' zoom';
@@ -799,538 +773,360 @@
             chipClass += ' panopto';
             chipIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
           }
-          html += '<button class="' + chipClass + '" data-lti-path="' + escapeHtml(tool.url) + '">' + chipIcon + escapeHtml(tool.name) + '</button>';
+          h += '<button class="' + chipClass + '" data-lti-path="' + escapeHtml(tool.url) + '">' + chipIcon + escapeHtml(tool.name) + '</button>';
         }
+        if (data.syllabus_url) h += '<button class="hero-badge syllabus" data-syllabus-url="' + escapeHtml(data.syllabus_url) + '"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>\u30b7\u30e9\u30d0\u30b9</button>';
+        h += '</div>';
       }
-      if (data.syllabus_url) {
-        html += '<button class="tool-chip syllabus" data-syllabus-url="' + escapeHtml(data.syllabus_url) + '"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>シラバス</button>';
-      }
-      html += '</div>';
-      }
+      h += '</div>';
+
+      // Sections
+      h += '<div class="sections-scroll">';
 
       // Announcements
-      if (data.announcements && data.announcements.length > 0) {
-        html += '<div class="course-section"><div class="course-section-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>お知らせ</div>';
-        html += '<div class="content-list">';
+      var annCount = data.announcements ? data.announcements.length : 0;
+      if (annCount) {
+        h += '<div class="sec">';
+        h += '<div class="sec-head"><span class="sec-label">\u304a\u77e5\u3089\u305b</span><span class="sec-count">' + annCount + '</span></div>';
+        h += '<div class="sec-grid">';
         for (var a = 0; a < data.announcements.length; a++) {
           var ann = data.announcements[a];
-          html += '<button class="announcement-item" data-ann-id="' + escapeHtml(ann.info_id || '') + '" data-ann-title="' + escapeHtml(ann.title || '') + '">';
-          html += '<div class="ann-title-row"><span class="ann-title">' + escapeHtml(ann.title) + '</span>';
-          if (ann.is_new) html += '<span class="ann-new-badge">NEW</span>';
-          html += '</div>';
-          if (ann.start_date) html += '<span class="ann-date">' + escapeHtml(ann.start_date) + '</span>';
-          html += '</button>';
+          h += '<button class="item-card" data-ann-id="' + escapeHtml(ann.info_id || '') + '" data-ann-title="' + escapeHtml(ann.title || '') + '">';
+          h += '<div class="item-row"><span class="item-title">' + escapeHtml(ann.title) + '</span>';
+          if (ann.is_new) h += '<span class="item-badge new">NEW</span>';
+          h += '</div>';
+          if (ann.start_date) h += '<span class="item-sub">' + shortDate(ann.start_date) + '</span>';
+          h += '</button>';
         }
-        html += '</div></div>';
+        h += '</div></div>';
       }
 
       // Materials
-      if (data.materials && data.materials.length > 0) {
-        html += '<div class="course-section"><div class="course-section-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>教材</div>';
-        html += '<div class="content-list">';
+      var matCount = data.materials ? data.materials.length : 0;
+      if (matCount) {
+        h += '<div class="sec">';
+        h += '<div class="sec-head"><span class="sec-label">\u6559\u6750</span><span class="sec-count">' + matCount + '</span></div>';
+        h += '<div class="sec-grid mat-grid">';
         for (var m = 0; m < data.materials.length; m++) {
           var mat = data.materials[m];
-          html += '<button class="content-item" data-material-idx="' + m + '">';
-          html += '<div class="content-item-main"><span class="content-item-title">' + escapeHtml(mat.title) + '</span>';
-          if (mat.status) html += '<span class="content-item-files">' + escapeHtml(mat.status) + '</span>';
-          html += '</div>';
-          if (mat.period) html += '<span class="content-item-period">' + escapeHtml(mat.period) + '</span>';
-          html += '</button>';
+          var hasFiles = mat.files && mat.files.length;
+          var maxShow = 1;
+          h += '<div class="mat-card" data-material-idx="' + m + '">';
+          h += '<div class="mat-title">' + escapeHtml(mat.title) + '</div>';
+          if (mat.period) h += '<div class="mat-time">' + pubDate(mat.period) + '</div>';
+          if (hasFiles) {
+            h += '<div class="mat-files">';
+            for (var fi = 0; fi < Math.min(mat.files.length, maxShow); fi++) {
+              var f = mat.files[fi];
+              h += '<button class="mat-file-btn" data-mat-idx="' + m + '" data-file-idx="' + fi + '">';
+              h += '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+              h += '<span>' + escapeHtml(f.display_name || f.file_name) + '</span></button>';
+            }
+            if (mat.files.length > maxShow) h += '<span class="mat-more">+' + (mat.files.length - maxShow) + '\u4ef6</span>';
+            h += '</div>';
+          }
+          h += '</div>';
         }
-        html += '</div></div>';
+        h += '</div></div>';
       }
 
       // Reports
-      if (data.reports && data.reports.length > 0) {
-        html += '<div class="course-section"><div class="course-section-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>課題</div>';
-        html += '<div class="content-list" id="reports-list">';
-        for (var r = 0; r < data.reports.length; r++) {
+      var repCount = data.reports ? data.reports.length : 0;
+      var pendingReps = data.reports ? data.reports.filter(function(r) { return r.status && r.status.indexOf('\u672a') >= 0; }).length : 0;
+      if (repCount) {
+        h += '<div class="sec">';
+        h += '<div class="sec-head"><span class="sec-label">\u8ab2\u984c</span><span class="sec-count">' + repCount + '</span>';
+        if (pendingReps > 0) h += '<span class="item-badge pending sec-badge">\u672a\u63d0\u51fa ' + pendingReps + '</span>';
+        h += '</div>';
+        h += '<div class="task-list">';
+        var repIdx = data.reports.map(function(_, i) { return i; });
+        repIdx.sort(function(a, b) {
+          var da = urgencyOrder(data.reports[a].period, data.reports[a].status);
+          var db = urgencyOrder(data.reports[b].period, data.reports[b].status);
+          if (da !== db) return da - db;
+          var ta = parseDeadlineFromPeriod(data.reports[a].period) || Infinity;
+          var tb = parseDeadlineFromPeriod(data.reports[b].period) || Infinity;
+          return ta - tb;
+        });
+        for (var ri = 0; ri < repIdx.length; ri++) {
+          var r = repIdx[ri];
           var rep = data.reports[r];
-          var statusHighlight = rep.status && rep.status.indexOf('未') >= 0 ? ' highlight' : '';
-          html += '<div class="report-wrapper" data-report-idx="' + r + '">';
-          html += '<button class="content-item" data-report-toggle="' + r + '">';
-          html += '<div class="content-item-main"><span class="content-item-title">' + escapeHtml(rep.title) + '</span>';
-          if (rep.status) html += '<span class="content-item-status' + statusHighlight + '">' + escapeHtml(rep.status) + '</span>';
-          html += '</div>';
-          if (rep.period) html += '<span class="content-item-period">' + escapeHtml(rep.period) + '</span>';
-          html += '</button>';
-          html += '<div class="expand-actions" style="display:none" id="report-expand-' + r + '">';
-          if (rep.url) html += '<button class="action-btn" data-report-detail-url="' + escapeHtml(rep.url) + '" data-report-detail-title="' + escapeHtml(rep.title) + '">詳細を見る</button>';
-          html += '<button class="action-btn accent" data-report-submit="' + r + '">ファイルを提出</button>';
-          html += '</div>';
-          html += '</div>';
+          var urg = taskUrgency(rep.period, rep.status);
+          var pct = taskUrgencyPct(rep.period, rep.status);
+          var remain = taskRemaining(rep.period, rep.status);
+          h += '<button class="task-card" data-report-idx="' + r + '">';
+          h += '<div class="urgency-bar ' + urg + '"><div class="urgency-fill" style="height:' + Math.max(Math.round(pct * 100), 6) + '%"></div></div>';
+          h += '<div class="task-body">';
+          h += '<div class="task-name">' + escapeHtml(rep.title) + '</div>';
+          h += '<div class="task-sub">';
+          if (rep.status) h += '<span class="task-type">' + escapeHtml(rep.status) + '</span>';
+          if (rep.status && rep.period) h += '<span class="task-sep"></span>';
+          if (rep.period) h += '<span class="task-date">' + shortPeriod(rep.period) + '</span>';
+          h += '</div>';
+          h += '</div>';
+          if (remain) h += '<span class="remaining ' + urg + '">' + remain + '</span>';
+          h += '<svg class="task-arrow" width="7" height="12" viewBox="0 0 7 12" fill="none"><path d="M1 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+          h += '</button>';
         }
-        html += '</div></div>';
+        h += '</div></div>';
       }
 
-      // Examinations
-      if (data.examinations && data.examinations.length > 0) {
-        html += '<div class="course-section"><div class="course-section-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="16" x2="12" y2="16"/></svg>テスト</div>';
-        html += '<div class="content-list">';
-        for (var x = 0; x < data.examinations.length; x++) {
+      // Exams
+      var exCount = data.examinations ? data.examinations.length : 0;
+      var pendingEx = data.examinations ? data.examinations.filter(function(e) { return e.status && e.status.indexOf('\u672a') >= 0; }).length : 0;
+      if (exCount) {
+        h += '<div class="sec">';
+        h += '<div class="sec-head"><span class="sec-label">\u30c6\u30b9\u30c8</span><span class="sec-count">' + exCount + '</span>';
+        if (pendingEx > 0) h += '<span class="item-badge pending sec-badge">\u672a\u56de\u7b54 ' + pendingEx + '</span>';
+        h += '</div>';
+        h += '<div class="task-list">';
+        var exIdx = data.examinations.map(function(_, i) { return i; });
+        exIdx.sort(function(a, b) {
+          var da = urgencyOrder(data.examinations[a].period, data.examinations[a].status);
+          var db = urgencyOrder(data.examinations[b].period, data.examinations[b].status);
+          if (da !== db) return da - db;
+          var ta = parseDeadlineFromPeriod(data.examinations[a].period) || Infinity;
+          var tb = parseDeadlineFromPeriod(data.examinations[b].period) || Infinity;
+          return ta - tb;
+        });
+        for (var xi = 0; xi < exIdx.length; xi++) {
+          var x = exIdx[xi];
           var exam = data.examinations[x];
-          var exStatusHighlight = exam.status && exam.status.indexOf('未') >= 0 ? ' highlight' : '';
-          html += '<button class="content-item" data-exam-url="' + escapeHtml(exam.url || '') + '" data-exam-title="' + escapeHtml(exam.title) + '">';
-          html += '<div class="content-item-main"><span class="content-item-title">' + escapeHtml(exam.title) + '</span>';
-          if (exam.status) html += '<span class="content-item-status' + exStatusHighlight + '">' + escapeHtml(exam.status) + '</span>';
-          html += '</div>';
-          if (exam.period) html += '<span class="content-item-period">' + escapeHtml(exam.period) + '</span>';
-          html += '</button>';
+          var exUrg = taskUrgency(exam.period, exam.status);
+          var exPct = taskUrgencyPct(exam.period, exam.status);
+          var exRemain = taskRemaining(exam.period, exam.status);
+          h += '<button class="task-card" data-exam-url="' + escapeHtml(exam.url || '') + '" data-exam-title="' + escapeHtml(exam.title) + '">';
+          h += '<div class="urgency-bar ' + exUrg + '"><div class="urgency-fill" style="height:' + Math.max(Math.round(exPct * 100), 6) + '%"></div></div>';
+          h += '<div class="task-body">';
+          h += '<div class="task-name">' + escapeHtml(exam.title) + '</div>';
+          h += '<div class="task-sub">';
+          if (exam.status) h += '<span class="task-type">' + escapeHtml(exam.status) + '</span>';
+          if (exam.status && exam.period) h += '<span class="task-sep"></span>';
+          if (exam.period) h += '<span class="task-date">' + shortPeriod(exam.period) + '</span>';
+          h += '</div>';
+          h += '</div>';
+          if (exRemain) h += '<span class="remaining ' + exUrg + '">' + exRemain + '</span>';
+          h += '<svg class="task-arrow" width="7" height="12" viewBox="0 0 7 12" fill="none"><path d="M1 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+          h += '</button>';
         }
-        html += '</div></div>';
+        h += '</div></div>';
       }
 
       // Discussions
-      if (data.discussions && data.discussions.length > 0) {
-        html += '<div class="course-section"><div class="course-section-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>掲示板</div>';
-        html += '<div class="content-list" id="discussions-list">';
+      var discCount = data.discussions ? data.discussions.length : 0;
+      if (discCount) {
+        h += '<div class="sec">';
+        h += '<div class="sec-head"><span class="sec-label">\u63b2\u793a\u677f</span><span class="sec-count">' + discCount + '</span></div>';
+        h += '<div class="sec-grid">';
         for (var d = 0; d < data.discussions.length; d++) {
           var disc = data.discussions[d];
-          var dStatusHighlight = disc.status && disc.status.indexOf('未') >= 0 ? ' highlight' : '';
-          html += '<div class="discussion-wrapper" data-disc-idx="' + d + '">';
-          html += '<button class="content-item" data-disc-toggle="' + d + '">';
-          html += '<div class="content-item-main"><span class="content-item-title">' + escapeHtml(disc.title) + '</span>';
-          if (disc.status) html += '<span class="content-item-status' + dStatusHighlight + '">' + escapeHtml(disc.status) + '</span>';
-          html += '</div>';
-          if (disc.period) html += '<span class="content-item-period">' + escapeHtml(disc.period) + '</span>';
-          html += '</button>';
-          html += '<div class="expand-actions" style="display:none" id="disc-expand-' + d + '">';
-          html += '<button class="action-btn" data-disc-view="' + d + '">スレッドを見る</button>';
-          html += '<div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">';
-          html += '<input class="reply-input" type="text" placeholder="タイトル（必須）" maxlength="255" id="disc-title-' + d + '" />';
-          html += '<textarea class="reply-input" placeholder="説明" rows="3" id="disc-content-' + d + '"></textarea>';
-          html += '<button class="action-btn accent" data-disc-post="' + d + '">スレッド登録</button>';
-          html += '</div>';
-          html += '</div>';
-          html += '</div>';
+          h += '<button class="item-card" data-disc-idx="' + d + '">';
+          h += '<div class="item-row"><span class="item-title">' + escapeHtml(disc.title) + '</span>' + statusBadge(disc.status) + '</div>';
+          if (disc.period) h += '<span class="item-sub">' + shortPeriod(disc.period) + '</span>';
+          h += '</button>';
         }
-        html += '</div></div>';
+        h += '</div></div>';
       }
 
-      // Empty state
-      if ((!data.materials || data.materials.length === 0) && (!data.reports || data.reports.length === 0) &&
-          (!data.examinations || data.examinations.length === 0) && (!data.discussions || data.discussions.length === 0)) {
-        html += '<div class="empty">コンテンツがありません</div>';
-      }
-
-      // KG course detail collapsible section
+      // KG Detail
       if (kgcPath) {
-        html += '<div class="course-section kg-detail-section">';
-        html += '<button class="kg-detail-toggle" id="kg-detail-toggle">';
-        html += '<span class="kg-detail-toggle-label"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="16" x2="12" y2="16"/></svg>KG 授業詳細</span>';
-        html += '<svg class="kg-chevron" id="kg-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
-        html += '</button>';
-        html += '<div class="kg-detail-body" id="kg-detail-body" style="display:none">';
-        html += '<div class="kg-detail-loading"><div class="spinner" style="width:16px;height:16px;border-width:2px"></div><span>読み込み中...</span></div>';
-        html += '</div>';
-        html += '</div>';
+        h += '<div class="sec">';
+        h += '<button class="kg-toggle" id="kg-toggle"><span class="kg-toggle-label">' + ICONS.kg + ' KG \u6388\u696d\u8a73\u7d30</span>';
+        h += '<span class="kg-chevron" id="kg-chevron">' + ICONS.chevron + '</span></button>';
+        h += '<div class="kg-body" id="kg-body" style="display:none"><div class="kg-loading"><div class="spinner"></div><span>\u8aad\u307f\u8fbc\u307f\u4e2d...</span></div></div>';
+        h += '</div>';
       }
 
-      content.innerHTML = html;
+      h += '</div>';
+      c.innerHTML = h;
 
-      // Wire up KG detail toggle
-      if (kgcPath) {
-        var kgToggle = document.getElementById('kg-detail-toggle');
-        var kgBody = document.getElementById('kg-detail-body');
-        var kgChevron = document.getElementById('kg-chevron');
-        var kgLoaded = false;
-        kgToggle.addEventListener('click', async function() {
-          var isOpen = kgBody.style.display !== 'none';
-          if (isOpen) {
-            kgBody.style.display = 'none';
-            kgChevron.style.transform = '';
-          } else {
-            kgBody.style.display = '';
-            kgChevron.style.transform = 'rotate(180deg)';
-            if (!kgLoaded) {
-              kgLoaded = true;
-              var inv = window.__TAURI__?.core?.invoke;
-              if (inv) {
-                try {
-                  var detail = await inv('fetch_course_detail', { path: kgcPath });
-                  if (detail.fields && detail.fields.length > 0) {
-                    var fhtml = '<div class="meta-table">';
-                    for (var fi = 0; fi < detail.fields.length; fi++) {
-                      fhtml += '<div class="meta-row"><span class="meta-key">' + escapeHtml(detail.fields[fi][0]) + '</span><span class="meta-value">' + linkifyText(detail.fields[fi][1] || '—') + '</span></div>';
-                    }
-                    fhtml += '</div>';
-                    kgBody.innerHTML = fhtml;
-                  } else {
-                    kgBody.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;padding:8px 0">詳細情報はありません</div>';
-                  }
-                } catch (e) {
-                  kgBody.innerHTML = '<div style="color:var(--red);font-size:12px;padding:8px 0">' + escapeHtml(String(e)) + '</div>';
-                }
-              }
-            }
-          }
-        });
-      }
-
-      // Wire up event handlers
+      // Event Wiring
       var invoke = window.__TAURI__?.core?.invoke;
       if (!invoke) return;
 
-      // LTI tools (Zoom, Panopto, etc.) — open full Luna URL in webview browser
-      content.querySelectorAll('[data-lti-path]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var path = btn.getAttribute('data-lti-path');
-          var fullUrl = 'https://luna.kwansei.ac.jp' + path;
-          invoke('open_external_url', { url: fullUrl }).catch(console.error);
-        });
+      // LTI tools
+      c.querySelectorAll('[data-lti-path]').forEach(function(b) {
+        b.addEventListener('click', function() { invoke('open_external_url', { url: 'https://luna.kwansei.ac.jp' + b.dataset.ltiPath }); });
       });
-      // Syllabus
-      content.querySelectorAll('[data-syllabus-url]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          invoke('open_external_url', { url: btn.getAttribute('data-syllabus-url') }).catch(console.error);
-        });
+      c.querySelectorAll('[data-syllabus-url]').forEach(function(b) {
+        b.addEventListener('click', function() { invoke('open_external_url', { url: b.dataset.syllabusUrl }); });
       });
-      // Luna course page
-      content.querySelectorAll('[data-luna-course-url]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          invoke('open_external_url', { url: btn.getAttribute('data-luna-course-url') }).catch(console.error);
-        });
+      c.querySelectorAll('[data-luna-course-url]').forEach(function(b) {
+        b.addEventListener('click', function() { invoke('open_external_url', { url: b.dataset.lunaCourseUrl }); });
+      });
+      document.getElementById('titlebar').querySelectorAll('[data-luna-course-url]').forEach(function(b) {
+        b.addEventListener('click', function() { invoke('open_external_url', { url: b.dataset.lunaCourseUrl }); });
       });
 
       // Announcements
-      content.querySelectorAll('.announcement-item').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var infoId = btn.getAttribute('data-ann-id');
-          var title = btn.getAttribute('data-ann-title');
-          if (!infoId || !idnumber) return;
-          invoke('luna_open_detail_window', { path: '', title: title, mode: 'announcement', idnumber: idnumber, infoId: infoId }).catch(console.error);
+      c.querySelectorAll('[data-ann-id]').forEach(function(b) {
+        b.addEventListener('click', function() {
+          var id = b.dataset.annId, title = b.dataset.annTitle;
+          if (id && idnumber) invoke('luna_open_detail_window', { path: '', title: title, mode: 'announcement', idnumber: idnumber, infoId: id });
         });
       });
 
-      // Materials
-      content.querySelectorAll('[data-material-idx]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var idx = parseInt(btn.getAttribute('data-material-idx'));
-          var item = data.materials[idx];
+      // Materials - individual file download buttons
+      c.querySelectorAll('.mat-file-btn[data-mat-idx]').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var mi = parseInt(btn.dataset.matIdx), fi = parseInt(btn.dataset.fileIdx);
+          var item = data.materials[mi]; if (!item || !item.files || !item.files[fi]) return;
+          downloadMaterial(idnumber, item.files[fi], btn);
+        });
+      });
+      // Material card click fallback (opens detail window)
+      c.querySelectorAll('.mat-card[data-material-idx]').forEach(function(b) {
+        b.addEventListener('click', function(e) {
+          if (e.target.closest('.mat-file-btn')) return;
+          var item = data.materials[parseInt(b.dataset.materialIdx)];
           if (!item) return;
-          invoke('luna_open_detail_window', {
-            path: '',
-            title: item.title,
-            mode: 'material',
-            period: item.period || null,
-            status: item.status || null,
-            idnumber: idnumber || null,
-            infoId: item.files && item.files.length ? JSON.stringify(item.files) : null,
-          }).catch(console.error);
+          invoke('luna_open_detail_window', { path: '', title: item.title, mode: 'material', period: item.period || null, status: item.status || null, idnumber: idnumber || null, infoId: item.files?.length ? JSON.stringify(item.files) : null });
         });
       });
 
-      // Report toggles
-      var expandedReport = null;
-      content.querySelectorAll('[data-report-toggle]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var idx = btn.getAttribute('data-report-toggle');
-          var panel = document.getElementById('report-expand-' + idx);
-          if (expandedReport === idx) {
-            panel.style.display = 'none';
-            expandedReport = null;
-          } else {
-            if (expandedReport !== null) {
-              var prev = document.getElementById('report-expand-' + expandedReport);
-              if (prev) prev.style.display = 'none';
-            }
-            panel.style.display = '';
-            expandedReport = idx;
-          }
+      // Reports toggle
+      // Reports - click to open detail
+      c.querySelectorAll('[data-report-idx]').forEach(function(b) {
+        b.addEventListener('click', function() {
+          var item = data.reports[parseInt(b.dataset.reportIdx)];
+          if (!item || !item.url) return;
+          var up = new URLSearchParams(item.url.split('?')[1] || '');
+          var reportId = up.get('reportId') || '';
+          invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'report', idnumber: idnumber || null, infoId: reportId || null });
         });
       });
-      // Report detail buttons
-      content.querySelectorAll('[data-report-detail-url]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var url = btn.getAttribute('data-report-detail-url');
-          var title = btn.getAttribute('data-report-detail-title');
-          invoke('luna_open_detail_window', { path: url, title: title }).catch(console.error);
+
+      // Exams
+      c.querySelectorAll('[data-exam-url]').forEach(function(b) {
+        b.addEventListener('click', function() { if (b.dataset.examUrl) invoke('luna_open_detail_window', { path: b.dataset.examUrl, title: b.dataset.examTitle }); });
+      });
+
+      // Discussions - click to open detail
+      c.querySelectorAll('[data-disc-idx]').forEach(function(b) {
+        b.addEventListener('click', function() {
+          var item = data.discussions[parseInt(b.dataset.discIdx)];
+          if (item?.url) invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'discussion' });
         });
       });
-      // Report submission
-      content.querySelectorAll('[data-report-submit]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var idx = parseInt(btn.getAttribute('data-report-submit'));
-          var item = data.reports[idx];
-          if (!item || !item.url || !idnumber) return;
-          var urlParams = new URLSearchParams(item.url.split('?')[1] || '');
-          var reportId = urlParams.get('reportId');
-          if (!reportId) return;
-          var input = document.createElement('input');
-          input.type = 'file';
-          input.accept = '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.zip,.jpg,.jpeg,.png';
-          input.onchange = async function() {
-            var file = input.files && input.files[0];
-            if (!file) return;
-            btn.disabled = true;
-            btn.textContent = '提出中...';
+
+      // KG Detail
+      if (kgcPath) {
+        var kgT = document.getElementById('kg-toggle'), kgB = document.getElementById('kg-body'), kgC = document.getElementById('kg-chevron');
+        var kgLoaded = false;
+        kgT.addEventListener('click', async function() {
+          var open = kgB.style.display !== 'none';
+          kgB.style.display = open ? 'none' : '';
+          kgC.style.transform = open ? '' : 'rotate(180deg)';
+          if (!open && !kgLoaded) {
+            kgLoaded = true;
             try {
-              var arrayBuf = await file.arrayBuffer();
-              var bytes = new Uint8Array(arrayBuf);
-              var binary = '';
-              var chunkSize = 8192;
-              for (var i = 0; i < bytes.length; i += chunkSize) {
-                var chunk = bytes.subarray(i, i + chunkSize);
-                for (var j = 0; j < chunk.length; j++) {
-                  binary += String.fromCharCode(chunk[j]);
-                }
-              }
-              var base64 = btoa(binary);
-              var result = await invoke('luna_submit_report', {
-                idnumber: idnumber,
-                reportId: reportId,
-                fileName: file.name,
-                fileBase64: base64,
-              });
-              alert(result);
-              // Refresh course data
-              var newData = await invoke('luna_fetch_course_detail', { idnumber: idnumber });
-              renderCourseDetail(newData, idnumber);
-            } catch (e) {
-              alert('提出エラー: ' + String(e));
-              btn.disabled = false;
-              btn.textContent = 'ファイルを提出';
-            }
-          };
-          input.click();
-        });
-      });
-
-      // Examination links
-      content.querySelectorAll('[data-exam-url]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var url = btn.getAttribute('data-exam-url');
-          var title = btn.getAttribute('data-exam-title');
-          if (url) invoke('luna_open_detail_window', { path: url, title: title }).catch(console.error);
-        });
-      });
-
-      // Discussion toggles
-      var expandedDisc = null;
-      content.querySelectorAll('[data-disc-toggle]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var idx = btn.getAttribute('data-disc-toggle');
-          var panel = document.getElementById('disc-expand-' + idx);
-          if (expandedDisc === idx) {
-            panel.style.display = 'none';
-            expandedDisc = null;
-          } else {
-            if (expandedDisc !== null) {
-              var prev = document.getElementById('disc-expand-' + expandedDisc);
-              if (prev) prev.style.display = 'none';
-            }
-            panel.style.display = '';
-            expandedDisc = idx;
+              var detail = await invoke('fetch_course_detail', { path: kgcPath });
+              if (detail.fields?.length) {
+                var fh = '<div class="meta-table" style="margin:8px 0 0">';
+                for (var f = 0; f < detail.fields.length; f++) fh += '<div class="meta-row"><span class="meta-key">' + escapeHtml(detail.fields[f][0]) + '</span><span class="meta-value">' + linkifyText(detail.fields[f][1] || '\u2014') + '</span></div>';
+                fh += '</div>';
+                kgB.innerHTML = fh;
+              } else kgB.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;padding:16px;text-align:center">\u8a73\u7d30\u60c5\u5831\u306f\u3042\u308a\u307e\u305b\u3093</div>';
+            } catch(e) { kgB.innerHTML = '<div style="color:var(--red);font-size:12px;padding:16px">' + escapeHtml(String(e)) + '</div>'; }
           }
         });
-      });
-      // Discussion view threads
-      content.querySelectorAll('[data-disc-view]').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var idx = parseInt(btn.getAttribute('data-disc-view'));
-          var item = data.discussions[idx];
-          if (!item || !item.url) return;
-          invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'discussion' }).catch(console.error);
-        });
-      });
-      // Discussion post thread
-      content.querySelectorAll('[data-disc-post]').forEach(function(btn) {
-        btn.addEventListener('click', async function() {
-          var idx = parseInt(btn.getAttribute('data-disc-post'));
-          var item = data.discussions[idx];
-          if (!item || !item.url) return;
-          var titleInput = document.getElementById('disc-title-' + idx);
-          var contentInput = document.getElementById('disc-content-' + idx);
-          if (!titleInput.value.trim()) return;
-          btn.disabled = true;
-          btn.textContent = '登録中...';
-          try {
-            var result = await invoke('luna_post_discussion', {
-              url: item.url,
-              title: titleInput.value.trim(),
-              content: contentInput.value.trim(),
-            });
-            alert(result);
-            titleInput.value = '';
-            contentInput.value = '';
-          } catch (e) {
-            alert('投稿エラー: ' + String(e));
-          }
-          btn.disabled = false;
-          btn.textContent = 'スレッド登録';
-        });
-      });
-    }
-
-    async function downloadMaterial(idnumber, file, btn) {
-      var invoke = window.__TAURI__?.core?.invoke;
-      if (!invoke) return;
-      var origHtml = btn.innerHTML;
-      btn.innerHTML = '<span>ダウンロード中...</span>';
-      btn.disabled = true;
-      try {
-        var path = await invoke('luna_download_material', {
-          idnumber: idnumber,
-          fileName: file.file_name,
-          objectName: file.object_name,
-          resourceId: file.resource_id,
-          fileType: file.file_type || '0',
-          materialId: file.material_id || null,
-          displayName: file.display_name || null,
-          endDate: file.end_date || null,
-        });
-        btn.innerHTML = '<span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11.5 14.5 16 9.5"/></svg>' + escapeHtml(file.display_name || file.file_name) + '</span>';
-        // Open in Finder
-        await invoke('luna_reveal_file', { path: path });
-      } catch (e) {
-        btn.innerHTML = origHtml;
-        btn.disabled = false;
-        var statusEl = document.querySelector('.status');
-        if (!statusEl) {
-          statusEl = document.createElement('div');
-          statusEl.className = 'status';
-          document.getElementById('content').appendChild(statusEl);
-        }
-        statusEl.textContent = 'ダウンロードエラー: ' + String(e);
-        statusEl.style.color = 'var(--red)';
       }
     }
 
+    // Download helpers
+    async function downloadMaterial(idnumber, file, btn) {
+      var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
+      var orig = btn.innerHTML; btn.innerHTML = '<span>\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u4e2d...</span>'; btn.disabled = true;
+      try {
+        var path = await invoke('luna_download_material', { idnumber: idnumber, fileName: file.file_name, objectName: file.object_name, resourceId: file.resource_id, fileType: file.file_type || '0', materialId: file.material_id || null, displayName: file.display_name || null, endDate: file.end_date || null });
+        btn.innerHTML = '<span>' + ICONS.done + ' ' + escapeHtml(file.display_name || file.file_name) + '</span>';
+        await invoke('luna_reveal_file', { path: path });
+      } catch(e) { btn.innerHTML = orig; btn.disabled = false; showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e)); }
+    }
     async function downloadAttachment(url, name) {
-      var invoke = window.__TAURI__?.core?.invoke;
-      if (!invoke) return;
+      var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
       try {
         var result = await invoke('luna_download_file', { url: url, filename: name });
-        if (result.startsWith('http')) {
-          await invoke('open_external_url', { url: result });
-        } else {
-          await invoke('luna_reveal_file', { path: result });
-        }
-      } catch (e) {
-        var statusEl = document.querySelector('.status');
-        if (!statusEl) {
-          statusEl = document.createElement('div');
-          statusEl.className = 'status';
-          document.getElementById('content').appendChild(statusEl);
-        }
-        statusEl.textContent = 'ダウンロードエラー: ' + String(e);
-        statusEl.style.color = 'var(--red)';
-      }
+        if (result.startsWith('http')) await invoke('open_external_url', { url: result });
+        else await invoke('luna_reveal_file', { path: result });
+      } catch(e) { showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e)); }
+    }
+    function showStatus(msg) {
+      var st = document.querySelector('.status') || Object.assign(document.createElement('div'), { className: 'status' });
+      st.textContent = msg; st.style.color = 'var(--red)';
+      document.getElementById('content').appendChild(st);
     }
 
+    // Router
     document.addEventListener('DOMContentLoaded', async function() {
       var params = new URLSearchParams(window.location.search);
-      var mode = params.get('mode');
-      var path = params.get('path');
-
-      // Material info mode (no fetch needed)
-      if (mode === 'material') {
-        renderMaterialInfo(params);
-        return;
-      }
-
+      var mode = params.get('mode'), path = params.get('path');
+      if (mode === 'material') { renderMaterialInfo(params); return; }
       var invoke = window.__TAURI__?.core?.invoke;
-      if (!invoke) {
-        renderDetail({ error: 'Tauri IPC が利用できません' });
-        return;
-      }
-
-      // Course detail mode
-      if (mode === 'course') {
-        var idnumber = params.get('idnumber');
-        var kgcPath = params.get('kgcPath') || '';
-        if (!idnumber) {
-          renderDetail({ error: 'コース番号が指定されていません' });
-          return;
-        }
-        try {
-          var courseData = await invoke('luna_fetch_course_detail', { idnumber: idnumber });
-          renderCourseDetail(courseData, idnumber, kgcPath);
-        } catch (e) {
-          renderDetail({ error: String(e) });
-        }
-        return;
-      }
-
-      // Announcement detail mode
-      if (mode === 'announcement') {
-        var idnumber = params.get('idnumber');
-        var infoId = params.get('infoId');
-        if (!idnumber || !infoId) {
-          renderDetail({ error: 'パラメータが不足しています' });
-          return;
-        }
-        try {
-          var detail = await invoke('luna_fetch_announcement_detail', { idnumber: idnumber, infoId: infoId });
-          renderDetail(detail);
-        } catch (e) {
-          renderDetail({ error: String(e) });
-        }
-        return;
-      }
-
-      // Discussion theme list mode (themetop)
-      if (mode === 'discussion') {
-        if (!path) {
-          renderDetail({ error: 'パスが指定されていません' });
-          return;
-        }
-        try {
-          var thread = await invoke('luna_fetch_discussion_detail', { url: path });
-          renderDiscussion(thread);
-        } catch (e) {
-          renderDetail({ error: String(e) });
-        }
-        return;
-      }
-
-      // Thread detail mode (view a specific thread + reply)
-      if (mode === 'thread') {
-        if (!path) {
-          renderDetail({ error: 'パスが指定されていません' });
-          return;
-        }
-        try {
-          var threadData = await invoke('luna_fetch_thread_posts', { url: path });
-          renderThreadDetail(threadData, path);
-        } catch (e) {
-          renderDetail({ error: String(e) });
-        }
-        return;
-      }
-
-      // Detail fetch mode
-      if (!path) {
-        renderDetail({ error: 'パスが指定されていません' });
-        return;
-      }
-
+      if (!invoke) { renderDetail({ error: 'Tauri IPC \u304c\u5229\u7528\u3067\u304d\u307e\u305b\u3093' }); return; }
       try {
-        var detail = await invoke('luna_fetch_detail', { path: path });
-        renderDetail(detail);
-      } catch (e) {
-        renderDetail({ error: String(e) });
-      }
+        if (mode === 'course') {
+          var idn = params.get('idnumber'), kgcPath = params.get('kgcPath') || '';
+          if (!idn) { renderDetail({ error: '\u30b3\u30fc\u30b9\u756a\u53f7\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          renderCourseDetail(await invoke('luna_fetch_course_detail', { idnumber: idn }), idn, kgcPath);
+        } else if (mode === 'announcement') {
+          var idn2 = params.get('idnumber'), infoId = params.get('infoId');
+          if (!idn2 || !infoId) { renderDetail({ error: '\u30d1\u30e9\u30e1\u30fc\u30bf\u304c\u4e0d\u8db3\u3057\u3066\u3044\u307e\u3059' }); return; }
+          renderDetail(await invoke('luna_fetch_announcement_detail', { idnumber: idn2, infoId: infoId }));
+        } else if (mode === 'report') {
+          if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          var reportData = await invoke('luna_fetch_detail', { path: path });
+          renderDetail(reportData);
+          // Add file submit button if idnumber and reportId are available
+          var repIdnumber = params.get('idnumber'), repReportId = params.get('reportId');
+          if (repIdnumber && repReportId) {
+            var submitWrap = document.createElement('div');
+            submitWrap.style.cssText = 'padding:0 24px 24px';
+            var submitBtn = document.createElement('button');
+            submitBtn.className = 'btn primary';
+            submitBtn.style.cssText = 'width:100%';
+            submitBtn.textContent = '\u30d5\u30a1\u30a4\u30eb\u3092\u63d0\u51fa';
+            submitBtn.addEventListener('click', function() {
+              var input = document.createElement('input'); input.type = 'file';
+              input.accept = '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.zip,.jpg,.jpeg,.png';
+              input.onchange = async function() {
+                var file = input.files?.[0]; if (!file) return;
+                submitBtn.disabled = true; submitBtn.textContent = '\u63d0\u51fa\u4e2d...';
+                try {
+                  var buf = await file.arrayBuffer(); var bytes = new Uint8Array(buf);
+                  var binary = ''; for (var i = 0; i < bytes.length; i += 8192) { var chunk = bytes.subarray(i, i + 8192); for (var j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j]); }
+                  var result = await invoke('luna_submit_report', { idnumber: repIdnumber, reportId: repReportId, fileName: file.name, fileBase64: btoa(binary) });
+                  submitBtn.textContent = result;
+                } catch(e) { alert('\u63d0\u51fa\u30a8\u30e9\u30fc: ' + String(e)); submitBtn.disabled = false; submitBtn.textContent = '\u30d5\u30a1\u30a4\u30eb\u3092\u63d0\u51fa'; }
+              };
+              input.click();
+            });
+            submitWrap.appendChild(submitBtn);
+            document.getElementById('content').appendChild(submitWrap);
+          }
+        } else if (mode === 'discussion') {
+          if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          renderDiscussion(await invoke('luna_fetch_discussion_detail', { url: path }));
+        } else if (mode === 'thread') {
+          if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          renderThreadDetail(await invoke('luna_fetch_thread_posts', { url: path }), path);
+        } else {
+          if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          renderDetail(await invoke('luna_fetch_detail', { path: path }));
+        }
+      } catch(e) { renderDetail({ error: String(e) }); }
     });
 
-    // Universal link interceptor: route all <a> clicks through smart browser
+    // Universal link interceptor
     document.addEventListener('click', function(e) {
-      var a = e.target.closest ? e.target.closest('a[href]') : null;
-      if (!a) return;
-      var href = a.getAttribute('href');
-      if (!href || href === '#') return;
-      e.preventDefault();
-      e.stopPropagation();
-      // Resolve relative Luna URLs
-      if (href.startsWith('/')) {
-        href = 'https://luna.kwansei.ac.jp' + href;
-      }
-      // Only allow http/https
+      var a = e.target.closest?.('a[href]'); if (!a) return;
+      var href = a.getAttribute('href'); if (!href || href === '#') return;
+      e.preventDefault(); e.stopPropagation();
+      if (href.startsWith('/')) href = 'https://luna.kwansei.ac.jp' + href;
       if (!href.startsWith('http://') && !href.startsWith('https://')) return;
-      var inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-      if (inv) {
-        inv('kwic_open_link', { url: href, title: a.textContent.trim() || href });
-      }
+      var inv = window.__TAURI__?.core?.invoke;
+      if (inv) inv('kwic_open_link', { url: href, title: a.textContent.trim() || href });
     }, true);
   </script>
 </body>

@@ -1,6 +1,6 @@
 //! Windows: extract cookies from WebView2 via Chrome DevTools Protocol.
 //!
-//! Uses `Network.getAllCookies` CDP method through `ICoreWebView2::CallDevToolsProtocolMethodAsync`.
+//! Uses `Network.getAllCookies` CDP method through `ICoreWebView2::CallDevToolsProtocolMethod`.
 //! The callback plumbing relies on `webview2-com`'s handler helper types.
 //!
 //! NOTE: The exact `webview2-com` version must be compatible with the version
@@ -52,6 +52,8 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
     win.with_webview(move |webview| {
         unsafe {
             use webview2_com::Microsoft::Web::WebView2::Win32::*;
+            use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+            use webview2_com::string_from_pcwstr;
 
             let core_webview = webview
                 .controller()
@@ -62,12 +64,11 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
             let method: Vec<u16> = "Network.getAllCookies\0".encode_utf16().collect();
             let params: Vec<u16> = "{}\0".encode_utf16().collect();
 
-            let handler = ICoreWebView2CallDevToolsProtocolMethodCompletedHandler::create(
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(
                 Box::new(
-                    move |error_code: windows_core::HRESULT,
-                          return_json: windows_core::PCWSTR| {
+                    move |error_code, return_json| {
                         let result = if error_code.is_ok() {
-                            Ok(return_json.to_string().unwrap_or_default())
+                            Ok(string_from_pcwstr(return_json))
                         } else {
                             Err(format!("CDP call failed: {:#010x}", error_code.0))
                         };
@@ -82,12 +83,12 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
             );
 
             core_webview
-                .CallDevToolsProtocolMethodAsync(
+                .CallDevToolsProtocolMethod(
                     windows_core::PCWSTR(method.as_ptr()),
                     windows_core::PCWSTR(params.as_ptr()),
                     &handler,
                 )
-                .expect("CallDevToolsProtocolMethodAsync dispatch failed");
+                .expect("CallDevToolsProtocolMethod dispatch failed");
         }
     })
     .map_err(|e| format!("with_webview failed: {}", e))?;

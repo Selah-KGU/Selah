@@ -217,6 +217,20 @@ pub async fn luna_open_detail_window(
                 urlencoding::encode(&title)
             )
         }
+        Some("report") => {
+            let mut parts = format!(
+                "luna-detail.html?mode=report&path={}&title={}",
+                urlencoding::encode(&path),
+                urlencoding::encode(&title)
+            );
+            if let Some(id) = &idnumber {
+                parts.push_str(&format!("&idnumber={}", urlencoding::encode(id)));
+            }
+            if let Some(info) = &info_id {
+                parts.push_str(&format!("&reportId={}", urlencoding::encode(info)));
+            }
+            parts
+        }
         Some("thread") => {
             format!(
                 "luna-detail.html?mode=thread&path={}&title={}",
@@ -240,14 +254,22 @@ pub async fn luna_open_detail_window(
         }
     };
 
-    tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
         tauri::WebviewUrl::App(url_str.into()),
     )
     .title(&title)
-    .inner_size(480.0, 560.0)
-    .resizable(true)
+    .inner_size(720.0, 780.0)
+    .min_inner_size(560.0, 480.0)
+    .resizable(true);
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+
+    builder
     .build()
     .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
 
