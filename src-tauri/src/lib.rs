@@ -92,6 +92,7 @@ fn save_data_cache(db: tauri::State<'_, db::Database>, key: String, json: String
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(not(target_os = "windows"))]
             app.handle().plugin(tauri_plugin_notification::init())?;
             app.handle().plugin(tauri_plugin_opener::init())?;
             app.handle().plugin(

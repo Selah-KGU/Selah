@@ -42,11 +42,18 @@ pub struct TrayClassEntry {
 }
 
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    // macOS: monochrome template icon for the menu bar.
+    // Windows: use the full-colour app icon for the system tray.
+    #[cfg(target_os = "macos")]
     let icon = Image::from_bytes(include_bytes!("../icons/tray-icon@2x.png"))
         .map_err(|e| tauri::Error::AssetNotFound(format!("tray icon: {}", e)))?;
+    #[cfg(not(target_os = "macos"))]
+    let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
+        .map_err(|e| tauri::Error::AssetNotFound(format!("tray icon: {}", e)))?;
+
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .icon_as_template(true)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Selah")
         .on_tray_icon_event(|tray, event| {
             match event {
@@ -107,17 +114,35 @@ fn toggle_tray_popup(app: &AppHandle, icon_rect: Rect) -> Result<(), String> {
         Size::Logical(s) => (s.width, s.height),
     };
 
-    // Center popup horizontally below the tray icon
+    // Center popup horizontally relative to tray icon
     let icon_center_x = icon_x + icon_w / 2.0;
     let mut x = (icon_center_x - popup_w / 2.0).max(4.0);
-    // Place directly below the icon bottom edge
-    let y = icon_y + icon_h + 4.0;
 
-    // Clamp to screen right edge
+    // On macOS the menu bar is at the top, so open below the icon.
+    // On Windows the taskbar is typically at the bottom, so open above the icon.
+    let mut y;
+    #[cfg(target_os = "macos")]
+    {
+        y = icon_y + icon_h + 4.0;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        y = icon_y - popup_h - 4.0;
+        if y < 4.0 {
+            // Taskbar is at the top — fall back to below
+            y = icon_y + icon_h + 4.0;
+        }
+    }
+
+    // Clamp to screen edges
     if let Some(monitor) = app.primary_monitor().ok().flatten() {
         let screen_w = monitor.size().width as f64 / scale;
+        let screen_h = monitor.size().height as f64 / scale;
         if x + popup_w > screen_w - 4.0 {
             x = screen_w - popup_w - 4.0;
+        }
+        if y + popup_h > screen_h - 4.0 {
+            y = screen_h - popup_h - 4.0;
         }
     }
 
