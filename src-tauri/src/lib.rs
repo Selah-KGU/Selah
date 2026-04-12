@@ -175,6 +175,7 @@ pub fn run() {
             timetable::get_schedule_snapshot,
             timetable::sync_schedule_data,
             timetable::enrich_schedule,
+            timetable::refresh_luna_counts,
             timetable::ai_generate_schedule,
             commands::fetch_course_detail,
             commands::open_detail_window,

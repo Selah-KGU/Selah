@@ -20,7 +20,7 @@ use crate::parser;
 use crate::AppState;
 
 const AUTH_REQUIRED_MSG: &str = "ログインしてください";
-const AI_CACHE_MAX_AGE: i64 = 6 * 3600; // 6 hours
+const AI_CACHE_MAX_AGE: i64 = 12 * 3600; // 12 hours
 
 /// Guard to prevent concurrent enrichment runs (Struts token conflicts).
 static ENRICHMENT_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -415,6 +415,135 @@ pub async fn enrich_schedule(
     let result = enrich_schedule_inner(&state, &db).await;
     ENRICHMENT_RUNNING.store(false, Ordering::SeqCst);
     result
+}
+
+/// Standalone Luna activity counts refresh (no KGC gate needed).
+/// Only fetches counts for courses whose cached data is older than the DB threshold (3h).
+#[tauri::command]
+pub async fn refresh_luna_counts(
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+) -> Result<i32, String> {
+    let luna_targets = db.luna_ids_needing_counts()?;
+    if luna_targets.is_empty() {
+        log::info!("refresh_luna_counts: all counts are fresh, skipping");
+        return Ok(0);
+    }
+
+    let luna_http = {
+        let luna = state.luna.lock().await;
+        if !luna.authenticated {
+            return Err("Luna not authenticated".into());
+        }
+        luna.http.clone()
+    };
+
+    log::info!("refresh_luna_counts: {} courses need updates", luna_targets.len());
+    let mut updated = 0i32;
+
+    for luna_id in &luna_targets {
+        if luna_id.is_empty() { continue; }
+        let course_url = format!("{}/lms/course?idnumber={}", config::LUNA_BASE, luna_id);
+        let contents_url = format!("{}/lms/contents?idnumber={}", config::LUNA_BASE, luna_id);
+
+        let course_html = match client::fetch_with_redirect(
+            &luna_http, &course_url, config::LUNA_BASE,
+            luna_client::LUNA_SESSION_EXPIRED_MSG,
+            luna_client::is_luna_session_expired,
+        ).await {
+            Ok(h) => h,
+            Err(e) => { log::warn!("refresh_luna_counts: course page failed for {}: {}", luna_id, e); continue; }
+        };
+
+        let course_data = luna_parser::parse_luna_course_contents(&course_html, luna_id);
+        let new_announcements = course_data.announcements.iter().filter(|a| a.is_new).count() as i32;
+        let announcement_count = course_data.announcements.len() as i32;
+
+        let mut activities: Vec<LunaActivityRow> = Vec::new();
+        for ann in &course_data.announcements {
+            activities.push(LunaActivityRow {
+                luna_id: luna_id.clone(),
+                activity_type: "announcement".into(),
+                title: ann.title.clone(),
+                period: format!("{} ~ {}", ann.start_date, ann.end_date),
+                status: if ann.is_new { "new".into() } else { "read".into() },
+            });
+        }
+
+        let (reports, exams, discussions) = match client::fetch_with_redirect(
+            &luna_http, &contents_url, config::LUNA_BASE,
+            luna_client::LUNA_SESSION_EXPIRED_MSG,
+            luna_client::is_luna_session_expired,
+        ).await {
+            Ok(html) => {
+                let (materials, reps, exs, discs) = luna_parser::parse_luna_contents_page(&html);
+                for m in &materials {
+                    activities.push(LunaActivityRow {
+                        luna_id: luna_id.clone(),
+                        activity_type: "material".into(),
+                        title: m.title.clone(),
+                        period: m.period.clone(),
+                        status: m.status.clone(),
+                    });
+                }
+                for r in &reps {
+                    activities.push(LunaActivityRow {
+                        luna_id: luna_id.clone(),
+                        activity_type: "report".into(),
+                        title: r.title.clone(),
+                        period: r.period.clone(),
+                        status: r.status.clone(),
+                    });
+                }
+                for e in &exs {
+                    activities.push(LunaActivityRow {
+                        luna_id: luna_id.clone(),
+                        activity_type: "exam".into(),
+                        title: e.title.clone(),
+                        period: e.period.clone(),
+                        status: e.status.clone(),
+                    });
+                }
+                for d in &discs {
+                    activities.push(LunaActivityRow {
+                        luna_id: luna_id.clone(),
+                        activity_type: "discussion".into(),
+                        title: d.title.clone(),
+                        period: d.period.clone(),
+                        status: d.status.clone(),
+                    });
+                }
+
+                let pending_reports = reps.iter().filter(|r| r.status.contains("未提出")).count() as i32;
+                let pending_exams = exs.iter().filter(|e| {
+                    e.status.contains("未回答") || e.status.contains("未受験")
+                }).count() as i32;
+                (pending_reports, pending_exams, discs.len() as i32)
+            }
+            Err(e) => { log::warn!("refresh_luna_counts: contents failed for {}: {}", luna_id, e); (0, 0, 0) }
+        };
+
+        if let Err(e) = db.replace_luna_activities(luna_id, &activities) {
+            log::warn!("refresh_luna_counts: failed to save activities for {}: {}", luna_id, e);
+        }
+
+        let counts = LunaCountsRow {
+            announcements: announcement_count,
+            new_announcements,
+            reports,
+            exams,
+            discussions,
+        };
+        if let Err(e) = db.upsert_luna_counts(luna_id, &counts) {
+            log::warn!("refresh_luna_counts: failed to save counts for {}: {}", luna_id, e);
+        }
+
+        updated += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    log::info!("refresh_luna_counts: updated {}/{} courses", updated, luna_targets.len());
+    Ok(updated)
 }
 
 async fn enrich_schedule_inner(

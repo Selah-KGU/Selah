@@ -408,7 +408,7 @@ impl Database {
     /// Get luna_ids that need count enrichment (never fetched, or >1h stale).
     pub fn luna_ids_needing_counts(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        let threshold = epoch_secs() - 3600;
+        let threshold = epoch_secs() - 3 * 3600; // 3 hours
         let mut stmt = conn.prepare(
             "SELECT DISTINCT luna_id FROM luna_courses
              WHERE luna_id NOT IN (SELECT luna_id FROM luna_counts WHERE updated_at > ?1)"

@@ -1,4 +1,4 @@
-name: Build DMG
+name: Build
 
 on:
   push:
@@ -7,7 +7,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ── Read version (shared) ─────────────────────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+  # ── macOS (universal) ─────────────────────────────────────────────────────
   build-macos:
+    needs: prepare
     runs-on: macos-latest
     permissions:
       contents: write
@@ -18,26 +35,16 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read version
-        id: version
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Current version: ${VERSION}"
-
       - name: Delete existing release if tag occupied
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          # Delete the release (if any) associated with this tag
+          TAG="${{ needs.prepare.outputs.tag }}"
           RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq '.id' 2>/dev/null || true)
           if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" -eq "$RELEASE_ID" ] 2>/dev/null; then
             echo "Deleting existing release ${TAG} (id=${RELEASE_ID})"
             gh api -X DELETE "repos/${{ github.repository }}/releases/${RELEASE_ID}"
           fi
-          # Delete the git tag (if any)
           if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
             echo "Deleting existing tag ${TAG}"
             git push origin --delete "${TAG}" || true
@@ -68,8 +75,49 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target universal-apple-darwin
-          tagName: ${{ steps.version.outputs.tag }}
-          releaseName: "Selah ${{ steps.version.outputs.tag }}"
-          releaseBody: "See the assets for the DMG installer."
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
+          releaseBody: "See the assets for installers."
+          releaseDraft: true
+          prerelease: false
+
+  # ── Windows (x64) ─────────────────────────────────────────────────────────
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (Windows x64)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target x86_64-pc-windows-msvc
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
+          releaseBody: "See the assets for installers."
           releaseDraft: true
           prerelease: false

@@ -871,6 +871,10 @@ export async function enrichSchedule(): Promise<void> {
   return invoke<void>("enrich_schedule");
 }
 
+export async function refreshLunaCounts(): Promise<number> {
+  return invoke<number>("refresh_luna_counts");
+}
+
 export async function aiGenerateSchedule(
   currentWeekLabel: string,
   nextWeekLabel: string,

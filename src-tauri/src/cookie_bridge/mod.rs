@@ -1,74 +1,31 @@
-//! Cookie Bridge: extract cookies from WKWebView's native cookie store
+//! Cookie Bridge: extract cookies from the platform's native webview cookie store
 //! and inject them into reqwest cookie jars.
 //!
-//! This replaces the fragile SAMLResponse interception approach by letting
-//! the webview complete SAML authentication natively, then extracting
-//! the resulting session cookies via the WKHTTPCookieStore ObjC API.
+//! - macOS: WKHTTPCookieStore (ObjC API via objc2)
+//! - Windows: WebView2 Chrome DevTools Protocol (CDP)
 
-use std::ptr::NonNull;
-
-use objc2::MainThreadMarker;
-use objc2_foundation::{NSArray, NSHTTPCookie};
-use objc2_web_kit::WKWebsiteDataStore;
 use tauri::Manager;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::extract_all_cookies;
+
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+use self::windows::extract_all_cookies;
 
 /// Plain cookie data extracted from the webview (Send + Sync safe).
 #[derive(Debug, Clone)]
-struct CookieData {
+pub(crate) struct CookieData {
     pub name: String,
     pub value: String,
     pub domain: String,
     pub path: String,
     pub secure: bool,
     pub http_only: bool,
-    /// Unix timestamp (seconds since epoch) when the cookie expires.
-    /// None for session cookies.
     pub expires_unix: Option<f64>,
-}
-
-/// Extract all cookies from the default WKWebsiteDataStore.
-/// Dispatches to the main thread since WKWebKit APIs are main-thread-only.
-async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<CookieData>, String> {
-    let (tx, rx) = tokio::sync::oneshot::channel::<Vec<CookieData>>();
-    let tx = std::sync::Mutex::new(Some(tx));
-
-    app.run_on_main_thread(move || {
-        // SAFETY: run_on_main_thread guarantees we're on the main thread
-        let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let data_store = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
-        let http_cookie_store = unsafe { data_store.httpCookieStore() };
-
-        let block = block2::RcBlock::new(
-            move |cookies_ptr: NonNull<NSArray<NSHTTPCookie>>| {
-                let cookies = unsafe { cookies_ptr.as_ref() };
-                let count = cookies.count();
-                let mut result = Vec::with_capacity(count);
-                for i in 0..count {
-                    let c = cookies.objectAtIndex(i);
-                    let expires_unix = c.expiresDate()
-                        .map(|d| d.timeIntervalSince1970());
-                    result.push(CookieData {
-                        name: c.name().to_string(),
-                        value: c.value().to_string(),
-                        domain: c.domain().to_string(),
-                        path: c.path().to_string(),
-                        secure: c.isSecure(),
-                        http_only: c.isHTTPOnly(),
-                        expires_unix,
-                    });
-                }
-                if let Some(sender) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                    let _ = sender.send(result);
-                }
-            },
-        );
-
-        unsafe { http_cookie_store.getAllCookies(&block) };
-    })
-    .map_err(|e| format!("Main thread dispatch failed: {}", e))?;
-
-    rx.await
-        .map_err(|_| "Cookie extraction failed: channel closed".to_string())
 }
 
 /// Extract cookies matching a specific domain from the webview.
@@ -81,7 +38,6 @@ async fn extract_cookies_for_domain(
     Ok(all
         .into_iter()
         .filter(|c| {
-            // Match exact domain or parent domain cookie (e.g. ".kwansei.ac.jp" matches "kg-course.kwansei.ac.jp")
             let cookie_domain = c.domain.trim_start_matches('.');
             cookie_domain == domain_owned
                 || domain_owned.ends_with(&format!(".{}", cookie_domain))
@@ -135,14 +91,12 @@ fn inject_cookies(
 }
 
 /// Check if a URL indicates we've arrived at an SP domain after SAML.
-/// Returns true if the URL is on the SP domain and not at an auth-related path.
 pub fn is_post_saml_sp_url(url: &url::Url, sp_host: &str) -> bool {
     let host = url.host_str().unwrap_or("");
     if host != sp_host {
         return false;
     }
     let path = url.path();
-    // Filter out SAML/SSO/Shibboleth paths that are part of the auth flow
     if path.contains("Shibboleth.sso")
         || path.starts_with("/saml/")
         || path.starts_with("/Shibboleth.sso")
@@ -154,11 +108,6 @@ pub fn is_post_saml_sp_url(url: &url::Url, sp_host: &str) -> bool {
 
 /// Extract cookies for a specific SP domain (+ parent SSO cookies) from the webview
 /// and inject them into a reqwest cookie store.
-///
-/// This is the standard cookie bridge flow used after every SAML authentication:
-/// 1. Extract cookies matching the SP subdomain (e.g. "luna.kwansei.ac.jp")
-/// 2. Extract parent domain SSO cookies ("kwansei.ac.jp")
-/// 3. Inject both sets into the reqwest cookie jar
 pub async fn extract_and_inject(
     app: &tauri::AppHandle,
     sp_domain: &str,
@@ -182,14 +131,6 @@ pub async fn extract_and_inject(
     Ok(())
 }
 
-/// Create a hidden WebView that navigates to a SAML entry URL and waits for the
-/// SP page to finish loading. Returns `Ok(Some(window))` when SAML completes
-/// (the caller should extract cookies then close the window), `Ok(None)` when
-/// the Okta session has expired (timeout), or `Err` on build failure.
-///
-/// This is the shared core of all headless refresh flows.
-/// Okta/SSO domains — if the headless WebView lands here, the session is expired
-/// and we can abort immediately instead of waiting for the full timeout.
 const OKTA_HOSTS: &[&str] = &["sso.kwansei.ac.jp", "idp.kwansei.ac.jp", "sts.kwansei.ac.jp"];
 
 fn is_okta_login_page(url: &url::Url) -> bool {
@@ -208,8 +149,6 @@ pub async fn headless_saml_window(
         let _ = w.close();
     }
 
-    // Channel sends `true` = SAML complete (SP page loaded),
-    //                `false` = Okta login page detected (session expired).
     let (tx, mut rx) = tokio::sync::mpsc::channel::<bool>(1);
 
     let parsed_url: url::Url = saml_url
@@ -248,7 +187,6 @@ pub async fn headless_saml_window(
             Ok(Some(win))
         }
         Ok(Some(false)) => {
-            // Okta login page detected — session is expired, abort immediately
             let _ = win.close();
             Ok(None)
         }
@@ -263,5 +201,3 @@ pub async fn headless_saml_window(
         }
     }
 }
-
-
