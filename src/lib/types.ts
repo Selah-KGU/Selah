@@ -122,6 +122,28 @@ export interface AiScheduleResult {
   cross_week_insights: string;
 }
 
+export interface AiTodoTaskGuide {
+  task_name: string;
+  course_name: string;
+  deadline: string;
+  urgency: "overdue" | "critical" | "soon" | "normal";
+  background: string;
+  study_hints: string[];
+  estimated_minutes: number;
+}
+
+export interface AiTodoDailyPlan {
+  label: string;
+  tasks: string[];
+  free_hours: number;
+}
+
+export interface AiTodoAnalysis {
+  task_guides: AiTodoTaskGuide[];
+  daily_plan: AiTodoDailyPlan[];
+  advice: string;
+}
+
 export interface ScheduleRawData {
   kgc_entries_current: KgcCourseRow[];
   kgc_entries_next: KgcCourseRow[];

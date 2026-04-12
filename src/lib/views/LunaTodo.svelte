@@ -1,14 +1,20 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { lunaInvoke } from "../api";
+  import { lunaInvoke, aiAnalyzeTodo } from "../api";
   import { cachedFetch, onCacheUpdate, lunaAuthState } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
-  import type { LunaTodoItem } from "../types";
+  import AiTodoPage from "./AiTodoPage.svelte";
+  import type { LunaTodoItem, AiTodoAnalysis } from "../types";
 
   let loading = $state(true);
   let error = $state("");
   let todoItems = $state<LunaTodoItem[]>([]);
   let selectedCourse = $state("all");
+
+  // AI state
+  let aiResult = $state<AiTodoAnalysis | null>(null);
+  let aiLoading = $state(false);
+  let showAiPage = $state(false);
 
   let pending = $derived(todoItems.filter(t => !t.status.includes("提出済")));
 
@@ -27,20 +33,6 @@
     let items = pending;
     if (selectedCourse !== "all") items = items.filter(t => t.course_name === selectedCourse);
     return items.slice().sort((a, b) => parseDeadline(a.deadline) - parseDeadline(b.deadline));
-  });
-
-  const unsubTodo = onCacheUpdate<LunaTodoItem[]>("luna_todo", (fresh) => { todoItems = fresh; });
-  onDestroy(() => unsubTodo());
-
-  onMount(async () => {
-    loading = true;
-    error = "";
-    try {
-      todoItems = await cachedFetch("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"));
-    } catch (e: any) {
-      error = String(e);
-    }
-    loading = false;
   });
 
   async function refresh() {
@@ -69,7 +61,6 @@
     return "normal";
   }
 
-  /** 0 = calm (>7d), 1 = overdue. Increases as deadline approaches over 7-day horizon. */
   function urgencyPct(deadline: string): number {
     if (!deadline) return 0;
     const diff = parseDeadline(deadline) - Date.now();
@@ -104,8 +95,44 @@
       console.error("Failed to open detail window:", e);
     }
   }
+
+  async function enterAiMode() {
+    showAiPage = true;
+    // Pre-load cached result if not already loaded
+    if (!aiResult && !aiLoading) {
+      aiLoading = true;
+      try {
+        aiResult = await aiAnalyzeTodo(false);
+      } catch { /* AI page handles errors itself */ }
+      aiLoading = false;
+    }
+  }
+
+  const unsubTodo = onCacheUpdate<LunaTodoItem[]>("luna_todo", (fresh) => { todoItems = fresh; });
+  onDestroy(() => { unsubTodo(); });
+
+  onMount(async () => {
+    loading = true;
+    error = "";
+    try {
+      todoItems = await cachedFetch("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"));
+    } catch (e: any) {
+      error = String(e);
+    }
+    loading = false;
+    // Pre-fetch cached AI result (non-blocking)
+    if (pending.length > 0) {
+      aiLoading = true;
+      aiAnalyzeTodo(false).then(r => { aiResult = r; }).catch(() => {}).finally(() => { aiLoading = false; });
+    }
+  });
 </script>
 
+{#if showAiPage}
+  <div class="view">
+    <AiTodoPage initial={aiResult} onBack={() => showAiPage = false} />
+  </div>
+{:else}
 <div class="view">
   <div class="title-row">
     <div class="title-left">
@@ -114,12 +141,29 @@
         <span class="count" class:count-warn={pending.length >= 10}>{pending.length}</span>
       {/if}
     </div>
-    <button class="refresh-btn" onclick={refresh} disabled={loading}>
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class:spin={loading}>
-        <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        <path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-    </button>
+    <div class="title-actions">
+      {#if pending.length > 0}
+        <button class="ai-pill" onclick={enterAiMode} disabled={aiLoading && !aiResult}>
+          <svg class="ai-pill-icon" width="12" height="12" viewBox="0 0 20 20" fill="none" class:spin={aiLoading && !aiResult}>
+            {#if aiLoading && !aiResult}
+              <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="35 12" stroke-linecap="round"/>
+            {:else}
+              <path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="currentColor" stroke-width="1" stroke-linejoin="round" fill="none"/>
+            {/if}
+          </svg>
+          <span class="ai-pill-label">AI 辅助モード</span>
+          <svg class="ai-pill-arrow" width="6" height="10" viewBox="0 0 6 10" fill="none">
+            <path d="M1 1l4 4-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      {/if}
+      <button class="refresh-btn" onclick={refresh} disabled={loading}>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class:spin={loading}>
+          <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
   </div>
 
   {#if pending.length > 1 && courses.length > 1}
@@ -155,12 +199,9 @@
               style="--delay: {Math.min(i * 0.05, 0.5)}s"
               onclick={() => openDetail(item.url, item.content_name || item.content_type)}
             >
-              <!-- Urgency bar -->
               <div class="urgency-bar" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>
                 <div class="urgency-fill" style="height: {Math.max(pct * 100, 6)}%"></div>
               </div>
-
-              <!-- Main info -->
               <div class="task-body">
                 <div class="task-name">{item.content_name}</div>
                 <div class="task-sub">
@@ -176,13 +217,9 @@
                   <div class="task-feedback">{item.feedback}</div>
                 {/if}
               </div>
-
-              <!-- Remaining label -->
               {#if remaining}
                 <span class="remaining" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>{remaining}</span>
               {/if}
-
-              <!-- Arrow -->
               <svg class="task-arrow" width="7" height="12" viewBox="0 0 7 12" fill="none">
                 <path d="M1 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
@@ -193,6 +230,7 @@
     {/if}
   </ViewLoader>
 </div>
+{/if}
 
 <style>
   /* ── Title row (matches other views) ── */
@@ -227,13 +265,18 @@
     background: rgba(255, 149, 0, 0.12);
   }
   .refresh-btn {
-    padding: 6px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
     background: transparent;
     border: none;
     border-radius: 6px;
     color: var(--text-tertiary);
     cursor: pointer;
     transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .refresh-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .refresh-btn:disabled { opacity: 0.4; cursor: default; }
@@ -455,6 +498,57 @@
   .task:hover .task-arrow {
     opacity: 0.6;
     transform: translateX(0);
+  }
+
+  /* ── Title actions ── */
+  .title-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* ── AI Capsule Pill ── */
+  .ai-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 50px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 0.5px solid rgba(175, 82, 222, 0.25);
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.08), rgba(0, 122, 255, 0.06));
+    transition: all 0.2s;
+    white-space: nowrap;
+    max-width: 280px;
+  }
+  .ai-pill:hover {
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.15), rgba(0, 122, 255, 0.12));
+    border-color: rgba(175, 82, 222, 0.4);
+  }
+  .ai-pill:active { transform: scale(0.97); }
+  .ai-pill:disabled { opacity: 0.5; cursor: default; }
+  .ai-pill-icon {
+    flex-shrink: 0;
+    color: rgba(175, 82, 222, 0.85);
+  }
+  .ai-pill-label {
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.9), rgba(0, 122, 255, 0.9));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .ai-pill-arrow {
+    flex-shrink: 0;
+    color: rgba(175, 82, 222, 0.5);
+    transition: all 0.2s;
+  }
+  .ai-pill:hover .ai-pill-arrow {
+    color: rgba(175, 82, 222, 0.85);
+    transform: translateX(1px);
   }
 
 </style>

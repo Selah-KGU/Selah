@@ -177,6 +177,7 @@ pub fn run() {
             timetable::enrich_schedule,
             timetable::refresh_luna_counts,
             timetable::ai_generate_schedule,
+            timetable::ai_analyze_todo,
             commands::fetch_course_detail,
             commands::open_detail_window,
             commands::open_external_url,

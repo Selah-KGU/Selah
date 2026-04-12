@@ -756,9 +756,9 @@ pub async fn ai_generate_schedule(
 
     let prompt = build_ai_schedule_prompt(&raw, &config);
     let lang_hint = match config.reply_language.as_str() {
-        "zh" => "\n\n回答は中国語（簡体字）で書いてください。",
-        "en" => "\n\nPlease write all text fields in English.",
-        "ko" => "\n\n모든 텍스트 필드를 한국어로 작성하세요.",
+        "zh" => "\n\n重要: 所有文本字段用中文（简体字）写。科目名・日付保持原数据不变。",
+        "en" => "\n\nIMPORTANT: Write all text fields in English. Keep course names and dates as-is.",
+        "ko" => "\n\n중요: 모든 텍스트 필드를 한국어로 작성. 과목명・날짜는 원본 그대로.",
         _ => "",
     };
     log::info!("ai_generate_schedule: calling AI with {} chars prompt", prompt.len());
@@ -784,6 +784,358 @@ pub async fn ai_generate_schedule(
 
     db.save_ai_schedule_cache(&result)?;
     Ok(result)
+}
+
+// ── Todo AI Analysis ──
+
+const TODO_AI_CACHE_KEY: &str = "ai_todo_analysis";
+const TODO_AI_CACHE_MAX_AGE: i64 = 6 * 3600; // 6 hours
+
+const TODO_SYSTEM_PROMPT: &str = r#"あなたは関西学院大学の学生専属の学習コンサルタントAIです。
+学生が今抱えている未提出課題・テスト・ディスカッション等のタスクと、それに紐づくコースの授業計画（シラバス）・教材・過去の授業内容を受け取り、**本当に役立つ具体的な学習支援**を行ってください。
+
+## あなたの役割
+1. **課題の本質を理解する**: 授業計画・シラバスから、その課題が「何を求めているか」「どの授業回の内容に対応するか」を特定し、学生に伝える
+2. **必要な知識を整理する**: その課題に取り組むために必要な前提知識・概念・理論を、授業内容から推測して簡潔にまとめる
+3. **具体的な行動手順を示す**: 「調べましょう」「頑張りましょう」のような曖昧な助言ではなく、「第N回の〇〇の概念を復習→△△の観点でアウトラインを作成→□□に注意して執筆」のように、実際に手を動かせるステップを示す
+4. **時間配分を最適化する**: 3日間の計画で、各タスクの所要時間・優先度・授業スケジュール（空きコマ）を考慮した現実的な作業スケジュールを組む
+
+## 出力JSON形式（他のテキストは一切不要）
+{
+  "task_guides": [
+    {
+      "task_name": "課題名（提出物のタイトルをそのまま使用）",
+      "course_name": "科目名",
+      "deadline": "YYYY/MM/DD HH:MM",
+      "urgency": "overdue|critical|soon|normal",
+      "background": "この課題の文脈説明。「第N回で扱った〇〇（具体的な概念名）に関連する課題です。△△の理論/手法/知識が前提となります。教材『□□』の内容を参照すると理解が深まります。」のように、授業計画・教材タイトル・シラバスの内容を根拠にした具体的な記述を2-4文で書く。",
+      "study_hints": [
+        "第5回の講義スライドでXXの定義を確認する",
+        "XXとYYの関係を表にまとめる",
+        "序論でXXを定義し、本論でYYの事例を3つ挙げて分析する"
+      ],
+      "estimated_minutes": 120
+    }
+  ],
+  "daily_plan": [
+    {
+      "label": "今日（M/D）|明日（M/D）|明後日（M/D）",
+      "tasks": ["（task_guidesのtask_nameと完全一致）（N分・緊急）", "（同上）（N分）"],
+      "free_hours": 4.0
+    }
+  ],
+  "advice": "句点区切りの3〜5文。作業負荷の全体像と戦略的なアドバイス。"
+}
+
+## urgency判定基準
+- overdue: 締切が既に過ぎている
+- critical: 締切まで24時間以内
+- soon: 締切まで3日以内
+- normal: それ以外
+
+## 品質基準
+- backgroundは**必ず授業計画・教材・シラバスの具体的な情報を引用**すること。汎用的な文章は禁止
+- study_hintsは**その課題固有の手順**を書くこと。どの課題にも使い回せる汎用ステップは禁止
+  - 良い例: 「第3回で扱ったマーケティングミックス（4P）のフレームワークを使って分析する」
+  - 悪い例: 「関連資料を調べて要点をまとめる」
+- 課題タイプ別の重点:
+  - レポート/課題 → テーマの特定・必要な理論の整理・構成案・執筆・推敲の手順
+  - テスト/小テスト → 出題範囲の特定・重要概念リストアップ・理解度チェック方法
+  - ディスカッション → 議題の背景理解・多角的な視点の整理・投稿文の構成
+- study_hintsの各項目に「ステップN:」「第N步:」「まず」「次に」などの序数・接続詞を付けない（UIが自動で番号を付与する）
+- daily_planのlabelには日付を含める（例: 「今日（4/12）」）
+- daily_plan.tasksの各文字列は「{task_guidesのtask_nameと完全一致}（N分）」の形式にする。task_nameと一致しないと詳細が表示されないため厳守
+- free_hoursは時間割の授業時間を除いた学習可能時間（9:00-22:00の範囲で概算）
+- 期限切れタスクは最優先で今日の計画に入れる
+- estimated_minutesは課題の複雑さと授業レベルを考慮した現実的な見積もり
+- adviceは「。」区切りで循環表示されるため、各文が独立して意味をなすようにする
+- 回答はJSONのみ。マークダウンのコードブロック(```)は使わない
+- 回答は指定された言語で書くこと"#;
+
+#[tauri::command]
+pub async fn ai_analyze_todo(
+    db: State<'_, Database>,
+    force: bool,
+) -> Result<serde_json::Value, String> {
+    // Check cache first
+    if !force {
+        if let Ok(Some((json, ts))) = db.get_data_cache(TODO_AI_CACHE_KEY) {
+            let now = crate::db::epoch_secs();
+            if now - ts < TODO_AI_CACHE_MAX_AGE {
+                if let Ok(cached) = serde_json::from_str::<serde_json::Value>(&json) {
+                    log::info!("ai_analyze_todo: returning cached result (age={}s)", now - ts);
+                    return Ok(cached);
+                }
+            }
+        }
+    }
+
+    let config = ai::load_ai_config();
+    if config.api_key.is_empty() {
+        return Err("APIキーが設定されていません。設定画面でAPIキーを入力してください。".into());
+    }
+
+    // Gather todo items from cache
+    let todo_items: Vec<crate::luna_parser::LunaTodoItem> = db
+        .get_data_cache("luna_todo")
+        .ok()
+        .flatten()
+        .and_then(|(json, _)| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+
+    if todo_items.is_empty() {
+        return Err("TODO項目がありません。先にTODOリストを読み込んでください。".into());
+    }
+
+    // Gather enrichment data from DB
+    let snap = db.get_snapshot_state()?.unwrap_or_default();
+    let raw = db.build_raw_data(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        Vec::new(),
+    )?;
+
+    let prompt = build_todo_ai_prompt(&todo_items, &raw, &config);
+    log::info!("ai_analyze_todo: calling AI with {} chars prompt, {} todo items", prompt.len(), todo_items.len());
+    log::debug!("ai_analyze_todo: full prompt:\n{}", prompt);
+
+    let lang_hint = match config.reply_language.as_str() {
+        "zh" => "\n\n重要: background, study_hints, advice, daily_plan.label, daily_plan.tasks 等所有文本用中文（简体字）写。task_name・course_name・deadline保持原数据不变。",
+        "en" => "\n\nIMPORTANT: Write background, study_hints, advice, daily_plan.label, daily_plan.tasks in English. Keep task_name, course_name, deadline as-is from source data.",
+        "ko" => "\n\n중요: background, study_hints, advice, daily_plan.label, daily_plan.tasks 등 모든 텍스트를 한국어로 작성. task_name・course_name・deadline은 원본 데이터 그대로.",
+        _ => "",
+    };
+    let sys = if lang_hint.is_empty() {
+        TODO_SYSTEM_PROMPT.to_string()
+    } else {
+        format!("{}{}", TODO_SYSTEM_PROMPT, lang_hint)
+    };
+    let messages = vec![
+        ai::ChatMessage { role: "system".into(), content: sys },
+        ai::ChatMessage { role: "user".into(), content: prompt },
+    ];
+
+    let response = ai::chat_completion_public(&config, messages).await?;
+    log::info!("ai_analyze_todo: got response ({} chars)", response.len());
+
+    let json_str = extract_json_from_response(&response);
+    let result: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&response, 200)))?;
+
+    // Cache the result
+    let cache_json = serde_json::to_string(&result).unwrap_or_default();
+    let _ = db.save_data_cache(TODO_AI_CACHE_KEY, &cache_json);
+
+    Ok(result)
+}
+
+fn build_todo_ai_prompt(
+    todos: &[crate::luna_parser::LunaTodoItem],
+    raw: &ScheduleRawData,
+    config: &crate::ai::AiConfig,
+) -> String {
+    let mut text = String::new();
+
+    // Today's date and day of week
+    let today = chrono::Local::now();
+    let today_date = today.date_naive();
+    text.push_str(&format!("## 今日: {} ({})\n", today.format("%Y年%m月%d日"), today.format("%A")));
+
+    // Semester week info
+    let mut current_week: i32 = 4; // default fallback
+    if !config.spring_start.is_empty() {
+        if let Ok(spring) = chrono::NaiveDate::parse_from_str(&config.spring_start, "%Y-%m-%d") {
+            let days_since = (today_date - spring).num_days();
+            if days_since >= 0 && days_since < 150 {
+                let week = (days_since / 7 + 1) as i32;
+                current_week = week;
+                text.push_str(&format!("春学期 第{}週目（全15週）\n", week));
+            }
+        }
+    }
+    if !config.fall_start.is_empty() {
+        if let Ok(fall) = chrono::NaiveDate::parse_from_str(&config.fall_start, "%Y-%m-%d") {
+            let days_since = (today_date - fall).num_days();
+            if days_since >= 0 && days_since < 150 {
+                let week = (days_since / 7 + 1) as i32;
+                current_week = week;
+                text.push_str(&format!("秋学期 第{}週目（全15週）\n", week));
+            }
+        }
+    }
+
+    // ── Pending TODO items with full detail ──
+    text.push_str("\n## 未提出タスク一覧\n");
+    let pending: Vec<&crate::luna_parser::LunaTodoItem> = todos.iter()
+        .filter(|t| !t.status.contains("提出済"))
+        .collect();
+
+    for item in &pending {
+        // Calculate urgency for context
+        let urgency_hint = if !item.deadline.is_empty() {
+            if let Ok(dl) = chrono::NaiveDateTime::parse_from_str(&item.deadline, "%Y-%m-%d %H:%M") {
+                let diff = dl.signed_duration_since(today.naive_local());
+                let hours = diff.num_hours();
+                if hours < 0 { "【期限超過】" }
+                else if hours < 24 { "【24h以内】" }
+                else if hours < 72 { "【3日以内】" }
+                else { "" }
+            } else { "" }
+        } else { "" };
+
+        text.push_str(&format!(
+            "- {}{} [{}] | 科目: {} | 締切: {} | 状態: {}\n",
+            urgency_hint,
+            item.content_name, item.content_type, item.course_name,
+            if item.deadline.is_empty() { "未設定" } else { &item.deadline },
+            item.status,
+        ));
+        if !item.feedback.is_empty() {
+            text.push_str(&format!("  教員フィードバック: {}\n", item.feedback));
+        }
+    }
+
+    // ── This week timetable (for daily_plan scheduling) ──
+    if !raw.kgc_entries_current.is_empty() {
+        text.push_str(&format!("\n## 今週の時間割 ({})\n", raw.current_week_label));
+        for e in &raw.kgc_entries_current {
+            let status = if e.is_cancelled { " [休講]" } else if e.is_makeup { " [補講]" } else { "" };
+            text.push_str(&format!(
+                "- {}曜{}限: {}{}\n", day_int_to_str(e.day), e.period, e.name, status
+            ));
+        }
+    }
+
+    // ── Luna activity details for EVERY pending course ──
+    let pending_course_names: std::collections::HashSet<&str> = pending.iter()
+        .map(|t| t.course_name.as_str())
+        .collect();
+
+    if !raw.luna_activities.is_empty() {
+        let luna_id_to_name: std::collections::HashMap<&str, &str> = raw.luna_courses.iter()
+            .map(|c| (c.luna_id.as_str(), c.name.as_str()))
+            .collect();
+
+        let mut grouped: std::collections::HashMap<&str, Vec<&crate::db::LunaActivityRow>> = Default::default();
+        for a in &raw.luna_activities {
+            grouped.entry(a.luna_id.as_str()).or_default().push(a);
+        }
+
+        text.push_str("\n## コース別の活動詳細（教材・課題・テスト・ディスカッション）\n");
+        for (id, items) in &grouped {
+            let name = luna_id_to_name.get(id).unwrap_or(id);
+            if !pending_course_names.contains(*name) { continue; }
+
+            text.push_str(&format!("### {}\n", name));
+
+            // Separate by type for clarity
+            let materials: Vec<_> = items.iter().filter(|a| a.activity_type == "material").collect();
+            let reports: Vec<_> = items.iter().filter(|a| a.activity_type == "report").collect();
+            let exams: Vec<_> = items.iter().filter(|a| a.activity_type == "exam").collect();
+            let discussions: Vec<_> = items.iter().filter(|a| a.activity_type == "discussion").collect();
+
+
+            if !materials.is_empty() {
+                text.push_str("  教材:\n");
+                for a in &materials {
+                    text.push_str(&format!("    - {}", a.title));
+                    if !a.period.is_empty() { text.push_str(&format!(" ({})", a.period)); }
+                    text.push('\n');
+                }
+            }
+            if !reports.is_empty() {
+                text.push_str("  課題:\n");
+                for a in &reports {
+                    text.push_str(&format!("    - {}", a.title));
+                    if !a.period.is_empty() { text.push_str(&format!(" (期限: {})", a.period)); }
+                    if !a.status.is_empty() { text.push_str(&format!(" [{}]", a.status)); }
+                    text.push('\n');
+                }
+            }
+            if !exams.is_empty() {
+                text.push_str("  テスト:\n");
+                for a in &exams {
+                    text.push_str(&format!("    - {}", a.title));
+                    if !a.period.is_empty() { text.push_str(&format!(" (期間: {})", a.period)); }
+                    if !a.status.is_empty() { text.push_str(&format!(" [{}]", a.status)); }
+                    text.push('\n');
+                }
+            }
+            if !discussions.is_empty() {
+                text.push_str("  ディスカッション:\n");
+                for a in &discussions {
+                    text.push_str(&format!("    - {}", a.title));
+                    if !a.period.is_empty() { text.push_str(&format!(" (期間: {})", a.period)); }
+                    if !a.status.is_empty() { text.push_str(&format!(" [{}]", a.status)); }
+                    text.push('\n');
+                }
+            }
+        }
+    }
+
+    // ── Session plans (授業計画) — show more sessions for full context ──
+    if !raw.session_plans.is_empty() {
+        let code_to_name: std::collections::HashMap<&str, &str> = raw.kgc_entries_current.iter()
+            .chain(raw.kgc_entries_next.iter())
+            .map(|e| (e.kgc_code.as_str(), e.name.as_str()))
+            .collect();
+
+        let mut any_plan = false;
+        for (code, plans) in &raw.session_plans {
+            let cname = code_to_name.get(code.as_str()).copied().unwrap_or("");
+            if !pending_course_names.contains(cname) { continue; }
+            if !any_plan {
+                text.push_str("\n## 関連コースの授業計画\n");
+                any_plan = true;
+            }
+            text.push_str(&format!("### {} [{}]\n", cname, code));
+            for p in plans {
+                // Show all sessions up to current + 3 for full context
+                if p.session_num <= current_week + 3 {
+                    let marker = if p.session_num == current_week { " ← 今週" }
+                        else if p.session_num == current_week - 1 { " ← 先週" }
+                        else { "" };
+                    let mut line = format!("  第{}回:", p.session_num);
+                    if !p.topic.is_empty() { line.push_str(&format!(" {}", p.topic)); }
+                    if !p.delivery_mode.is_empty() { line.push_str(&format!(" [{}]", p.delivery_mode)); }
+                    if !p.study_outside.is_empty() { line.push_str(&format!(" | 予復習: {}", p.study_outside)); }
+                    line.push_str(marker);
+                    line.push('\n');
+                    text.push_str(&line);
+                }
+            }
+        }
+    }
+
+    // ── KGC course details (syllabus: grading, textbooks, objectives, etc.) ──
+    if !raw.kgc_course_details.is_empty() {
+        let code_to_name: std::collections::HashMap<&str, &str> = raw.kgc_entries_current.iter()
+            .chain(raw.kgc_entries_next.iter())
+            .map(|e| (e.kgc_code.as_str(), e.name.as_str()))
+            .collect();
+
+        let mut any_detail = false;
+        for detail in &raw.kgc_course_details {
+            let cname = code_to_name.get(detail.kgc_code.as_str()).copied().unwrap_or("");
+            if !pending_course_names.contains(cname) { continue; }
+            if detail.fields.is_empty() { continue; }
+            if !any_detail {
+                text.push_str("\n## 関連コースのシラバス詳細\n");
+                any_detail = true;
+            }
+            text.push_str(&format!("### {} [{}]\n", cname, detail.kgc_code));
+            if !detail.delivery_mode.is_empty() {
+                text.push_str(&format!("  授業形態: {}\n", detail.delivery_mode));
+            }
+            for (label, value) in &detail.fields {
+                if !value.is_empty() {
+                    text.push_str(&format!("  {}: {}\n", label, value));
+                }
+            }
+        }
+    }
+
+    text
 }
 
 // ── Internal helpers ──

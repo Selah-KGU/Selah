@@ -51,7 +51,6 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
 
     win.with_webview(move |webview| {
         unsafe {
-            use webview2_com::Microsoft::Web::WebView2::Win32::*;
             use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
             use webview2_com::string_from_pcwstr;
 
@@ -68,9 +67,9 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
                 Box::new(
                     move |error_code, return_json| {
                         let result = if error_code.is_ok() {
-                            Ok(string_from_pcwstr(return_json))
+                            Ok(string_from_pcwstr(&return_json))
                         } else {
-                            Err(format!("CDP call failed: {:#010x}", error_code.0))
+                            Err(format!("CDP call failed: {:?}", error_code))
                         };
                         if let Some(sender) =
                             tx.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -82,6 +81,7 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
                 ),
             );
 
+            // PCWSTR from windows-core 0.61 matches webview2-com-sys 0.38's expected types.
             core_webview
                 .CallDevToolsProtocolMethod(
                     windows_core::PCWSTR(method.as_ptr()),

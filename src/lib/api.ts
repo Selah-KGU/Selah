@@ -14,7 +14,7 @@ import type {
   AiConfig,
   AiChatMessage,
 } from "./stores";
-import type { ScheduleResponse, AiScheduleResult } from "./types";
+import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
 import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache } from "./stores";
 import { get } from "svelte/store";
 
@@ -885,6 +885,10 @@ export async function aiGenerateSchedule(
     nextWeekLabel,
     force,
   });
+}
+
+export async function aiAnalyzeTodo(force: boolean = false): Promise<AiTodoAnalysis> {
+  return invoke<AiTodoAnalysis>("ai_analyze_todo", { force });
 }
 
 export async function fetchGrades(): Promise<GradesData> {
