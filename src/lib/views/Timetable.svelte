@@ -282,7 +282,9 @@
   // ── Auto-sync to calendars if data changed ──
   async function autoSyncCalendars(entries: KgcCourseRow[], weekLabel: string) {
     const newHash = computeScheduleHash(entries);
-    const hashKey = `schedule_hash_${activeWeek}`;
+    // Derive stable hash key from weekLabel (e.g. "2026/04/13") instead of activeWeek tab
+    const weekId = weekLabel.slice(0, 10).replace(/\//g, "");
+    const hashKey = `schedule_hash_${weekId}`;
     let changed = true;
     try {
       const oldHash = await getDataCache(hashKey);
@@ -345,10 +347,14 @@
       // Reload cached extras (exam might have updated)
       loadCachedExtras();
 
-      // Auto-sync calendars (hash-based, non-blocking)
-      const entries = activeWeek === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
-      const label = activeWeek === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
-      autoSyncCalendars(entries, label);
+      // Auto-sync calendars (hash-based, non-blocking) - sync both weeks
+      for (const week of ["current", "next"] as const) {
+        const entries = week === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
+        const label = week === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
+        if (entries.length > 0) {
+          await autoSyncCalendars(entries, label);
+        }
+      }
       localStorage.setItem("selah-cal-last-sync", String(Date.now()));
     } catch (e: any) {
       error = e?.message || String(e);
@@ -397,20 +403,23 @@
     gcalSyncing = true;
     gcalError = "";
     try {
-      const entries = buildCalendarEntries(kgcEntries);
-      const label = activeWeek === "current"
-        ? (scheduleData.raw.current_week_label || "")
-        : (scheduleData.raw.next_week_label || "");
+      const weeks = [
+        { entries: scheduleData.raw.kgc_entries_current, label: scheduleData.raw.current_week_label || "" },
+        { entries: scheduleData.raw.kgc_entries_next, label: scheduleData.raw.next_week_label || "" },
+      ];
 
       // Apple Calendar.app sync (respect enabled setting)
       const syscalEnabled = localStorage.getItem("selah-syscal-enabled") === "true";
       if (syscalEnabled) {
-        try {
-          if (entries.length > 0) {
-            await syncCalendar(entries, label);
+        for (const { entries: raw, label } of weeks) {
+          const calEntries = buildCalendarEntries(raw);
+          if (calEntries.length > 0) {
+            try {
+              await syncCalendar(calEntries, label);
+            } catch (e: any) {
+              console.error("[Timetable] Calendar.app sync failed:", e);
+            }
           }
-        } catch (e: any) {
-          console.error("[Timetable] Calendar.app sync failed:", e);
         }
       }
 
@@ -422,7 +431,12 @@
           gcalSyncing = false;
           return;
         }
-        await gcalSyncTimetable(entries, label);
+        for (const { entries: raw, label } of weeks) {
+          const calEntries = buildCalendarEntries(raw);
+          if (calEntries.length > 0) {
+            await gcalSyncTimetable(calEntries, label);
+          }
+        }
         const freshStatus = await gcalCheckSession();
         gcalAuthState.update(s => ({
           ...s,
