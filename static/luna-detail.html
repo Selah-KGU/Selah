@@ -100,6 +100,7 @@
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  button { -webkit-appearance:none; appearance:none; }
   body {
     background: var(--bg-secondary);
     color: var(--text-primary);
@@ -108,6 +109,7 @@
     -webkit-user-select: text;
     user-select: text;
     overflow-y: auto;
+    overflow-x: hidden;
   }
 
   /* Window Title Bar */
@@ -363,7 +365,8 @@
     background:var(--card-bg); box-shadow:var(--card-shadow);
     border:0.5px solid var(--card-border);
     border-radius:var(--inner-radius); cursor:pointer; font-family:inherit;
-    width:100%; text-align:left; margin-bottom:6px;
+    width:100%; max-width:100%; text-align:left; margin-bottom:6px;
+    overflow:hidden;
     transition:border-color .15s, box-shadow .15s;
   }
   .attachment:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
