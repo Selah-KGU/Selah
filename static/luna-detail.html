@@ -253,6 +253,8 @@
   .mat-file-btn:disabled { opacity:0.5; cursor:default; }
   .mat-file-btn svg { flex-shrink:0; opacity:0.7; }
   .mat-file-btn span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mat-link-btn { color:var(--text-secondary); background:color-mix(in srgb, var(--text-secondary) 8%, transparent); }
+  .mat-link-btn:hover { background:color-mix(in srgb, var(--text-secondary) 15%, transparent); }
   .mat-more { font-size:10px; color:var(--text-tertiary); padding:0 2px; }
 
   /* Task-style Cards (Reports/Exams) - matches LunaTodo layout */
@@ -366,6 +368,14 @@
   }
   .attachment:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
   .attachment span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .attachment.link-item { color:var(--text-primary); }
+  .link-badge { display:inline-block; font-size:10px; font-weight:700; letter-spacing:0.02em; padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; color:#fff; }
+  .link-badge.zoom { background:#2d8cff; }
+  .link-badge.panopto { background:#00a651; }
+  .link-badge.video { background:#ff4444; }
+  .link-badge.cloud { background:#0078d4; }
+  .link-badge.google { background:#4285f4; }
+  .link-badge.teams { background:#6264a7; }
 
   /* Thread / Discussion */
   .thread-list { display:flex; flex-direction:column; gap:8px; margin-top:14px; }
@@ -557,20 +567,51 @@
         h += '</div>';
       }
       if (data.attachments && data.attachments.length) {
-        h += '<div class="attachments"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
+        // Group by type: files first, then external links
+        var fileAtts = [], linkAtts = [];
         for (var k = 0; k < data.attachments.length; k++) {
           var a = data.attachments[k];
-          h += '<button class="attachment" data-url="' + escapeHtml(a.url) + '" data-name="' + escapeHtml(a.name) + '">';
-          h += '<span>' + ICONS.clip + ' ' + escapeHtml(a.name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
+          if (a.link_type === 'file' || !a.link_type) fileAtts.push(a);
+          else linkAtts.push(a);
         }
-        h += '</div>';
+        if (fileAtts.length) {
+          h += '<div class="attachments"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
+          for (var k = 0; k < fileAtts.length; k++) {
+            var a = fileAtts[k];
+            h += '<button class="attachment" data-url="' + escapeHtml(a.url) + '" data-name="' + escapeHtml(a.name) + '" data-type="file">';
+            h += '<span>' + ICONS.clip + ' ' + escapeHtml(a.name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
+          }
+          h += '</div>';
+        }
+        if (linkAtts.length) {
+          h += '<div class="attachments"><h4>\u30ea\u30f3\u30af</h4>';
+          for (var k = 0; k < linkAtts.length; k++) {
+            var a = linkAtts[k];
+            var icon = ICONS.external, badge = '';
+            var lt = a.link_type || 'web';
+            if (lt === 'zoom') { badge = '<span class="link-badge zoom">Zoom</span>'; }
+            else if (lt === 'panopto') { badge = '<span class="link-badge panopto">Panopto</span>'; }
+            else if (lt === 'video') { badge = '<span class="link-badge video">\u52d5\u753b</span>'; }
+            else if (lt === 'cloud') { badge = '<span class="link-badge cloud">Cloud</span>'; }
+            else if (lt === 'google') { badge = '<span class="link-badge google">Google</span>'; }
+            else if (lt === 'teams') { badge = '<span class="link-badge teams">Teams</span>'; }
+            h += '<button class="attachment link-item" data-url="' + escapeHtml(a.url) + '" data-name="' + escapeHtml(a.name) + '" data-type="' + lt + '">';
+            h += '<span>' + icon + ' ' + badge + escapeHtml(a.name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.external + '</span></button>';
+          }
+          h += '</div>';
+        }
       }
       if (!data.sections?.length && !data.meta?.length && !data.attachments?.length)
         h += '<div class="card-empty" style="padding:40px 0">\u8a73\u7d30\u60c5\u5831\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f</div>';
       h += '</div>';
       c.innerHTML = h;
       c.querySelectorAll('.attachment').forEach(function(b) {
-        b.addEventListener('click', function() { downloadAttachment(b.dataset.url, b.dataset.name); });
+        var type = b.dataset.type || 'file';
+        if (type === 'file') {
+          b.addEventListener('click', function() { downloadAttachment(b.dataset.url, b.dataset.name); });
+        } else {
+          b.addEventListener('click', function() { openExternalLink(b.dataset.url, b.dataset.name); });
+        }
       });
     }
 
@@ -584,15 +625,43 @@
       if (filesJson) try { files = JSON.parse(filesJson); } catch(e) {}
       if (!files.length) return;
       var c = document.getElementById('content');
-      var fh = '<div class="attachments" style="padding:0 24px 24px"><h4>\u30d5\u30a1\u30a4\u30eb (' + files.length + ')</h4>';
+      // Split into downloadable files and external links
+      var dlFiles = [], linkFiles = [];
       for (var i = 0; i < files.length; i++) {
-        var f = files[i];
-        fh += '<button class="attachment material-dl" data-idx="' + i + '"><span>' + ICONS.clip + ' ' + escapeHtml(f.display_name || f.file_name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
+        var f = files[i]; f._idx = i;
+        var lt = f.link_type || (f.file_type === '0' ? 'file' : 'web');
+        f._lt = lt;
+        if (lt === 'file') dlFiles.push(f); else linkFiles.push(f);
       }
-      fh += '</div>';
-      c.insertAdjacentHTML('beforeend', fh);
+      var fh = '';
+      if (dlFiles.length) {
+        fh += '<div class="attachments" style="padding:0 24px 24px"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb (' + dlFiles.length + ')</h4>';
+        for (var i = 0; i < dlFiles.length; i++) {
+          var f = dlFiles[i];
+          fh += '<button class="attachment material-dl" data-idx="' + f._idx + '"><span>' + ICONS.clip + ' ' + escapeHtml(f.display_name || f.file_name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
+        }
+        fh += '</div>';
+      }
+      if (linkFiles.length) {
+        fh += '<div class="attachments" style="padding:0 24px 24px"><h4>\u30ea\u30f3\u30af (' + linkFiles.length + ')</h4>';
+        for (var i = 0; i < linkFiles.length; i++) {
+          var f = linkFiles[i], lt = f._lt, badge = '';
+          if (lt === 'zoom') badge = '<span class="link-badge zoom">Zoom</span>';
+          else if (lt === 'panopto') badge = '<span class="link-badge panopto">Panopto</span>';
+          else if (lt === 'video') badge = '<span class="link-badge video">\u52d5\u753b</span>';
+          else if (lt === 'cloud') badge = '<span class="link-badge cloud">Cloud</span>';
+          else if (lt === 'google') badge = '<span class="link-badge google">Google</span>';
+          else if (lt === 'teams') badge = '<span class="link-badge teams">Teams</span>';
+          fh += '<button class="attachment link-item material-link" data-idx="' + f._idx + '"><span>' + ICONS.external + ' ' + badge + escapeHtml(f.display_name || f.file_name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.external + '</span></button>';
+        }
+        fh += '</div>';
+      }
+      if (fh) c.insertAdjacentHTML('beforeend', fh);
       c.querySelectorAll('.material-dl').forEach(function(b) {
         b.addEventListener('click', (function(file) { return function() { downloadMaterial(idnumber, file, this); }; })(files[b.dataset.idx]));
+      });
+      c.querySelectorAll('.material-link').forEach(function(b) {
+        b.addEventListener('click', (function(file) { return function() { openMaterialLink(idnumber, file, this); }; })(files[b.dataset.idx]));
       });
     }
 
@@ -834,8 +903,14 @@
             h += '<div class="mat-files">';
             for (var fi = 0; fi < Math.min(mat.files.length, maxShow); fi++) {
               var f = mat.files[fi];
-              h += '<button class="mat-file-btn" data-mat-idx="' + m + '" data-file-idx="' + fi + '">';
-              h += '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+              var flt = f.link_type || (f.file_type === '0' ? 'file' : 'web');
+              var isLink = flt !== 'file';
+              h += '<button class="mat-file-btn' + (isLink ? ' mat-link-btn' : '') + '" data-mat-idx="' + m + '" data-file-idx="' + fi + '">';
+              if (isLink) {
+                h += '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+              } else {
+                h += '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+              }
               h += '<span>' + escapeHtml(f.display_name || f.file_name) + '</span></button>';
             }
             if (mat.files.length > maxShow) h += '<span class="mat-more">+' + (mat.files.length - maxShow) + '\u4ef6</span>';
@@ -988,7 +1063,10 @@
           e.stopPropagation();
           var mi = parseInt(btn.dataset.matIdx), fi = parseInt(btn.dataset.fileIdx);
           var item = data.materials[mi]; if (!item || !item.files || !item.files[fi]) return;
-          downloadMaterial(idnumber, item.files[fi], btn);
+          var f = item.files[fi];
+          var flt = f.link_type || (f.file_type === '0' ? 'file' : 'web');
+          if (flt !== 'file') openMaterialLink(idnumber, f, btn);
+          else downloadMaterial(idnumber, f, btn);
         });
       });
       // Material card click fallback (opens detail window)
@@ -1060,6 +1138,15 @@
         await invoke('luna_reveal_file', { path: path });
       } catch(e) { btn.innerHTML = orig; btn.disabled = false; showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e)); }
     }
+    async function openMaterialLink(idnumber, file, btn) {
+      var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
+      var orig = btn.innerHTML; btn.innerHTML = '<span>\u958b\u3044\u3066\u3044\u307e\u3059...</span>'; btn.disabled = true;
+      try {
+        var url = await invoke('luna_resolve_material_link', { idnumber: idnumber, fileName: file.file_name, objectName: file.object_name, resourceId: file.resource_id, fileType: file.file_type || '0', materialId: file.material_id || null, displayName: file.display_name || null, endDate: file.end_date || null });
+        await invoke('open_external_url', { url: url });
+        btn.innerHTML = orig; btn.disabled = false;
+      } catch(e) { btn.innerHTML = orig; btn.disabled = false; showStatus('\u30ea\u30f3\u30af\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f: ' + String(e)); }
+    }
     async function downloadAttachment(url, name) {
       var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
       try {
@@ -1067,6 +1154,13 @@
         if (result.startsWith('http')) await invoke('open_external_url', { url: result });
         else await invoke('luna_reveal_file', { path: result });
       } catch(e) { showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e)); }
+    }
+    async function openExternalLink(url, name) {
+      var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
+      try {
+        var fullUrl = url.startsWith('http') ? url : 'https://luna.kwansei.ac.jp' + url;
+        await invoke('open_external_url', { url: fullUrl });
+      } catch(e) { showStatus('\u30ea\u30f3\u30af\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f: ' + String(e)); }
     }
     function showStatus(msg) {
       var st = document.querySelector('.status') || Object.assign(document.createElement('div'), { className: 'status' });

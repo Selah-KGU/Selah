@@ -92,7 +92,6 @@ fn save_data_cache(db: tauri::State<'_, db::Database>, key: String, json: String
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            #[cfg(not(target_os = "windows"))]
             app.handle().plugin(tauri_plugin_notification::init())?;
             app.handle().plugin(tauri_plugin_opener::init())?;
             app.handle().plugin(
@@ -211,6 +210,7 @@ pub fn run() {
             luna_commands::luna_fetch_course_detail,
             luna_commands::luna_download_file,
             luna_commands::luna_download_material,
+            luna_commands::luna_resolve_material_link,
             luna_commands::luna_launch_lti,
             luna_commands::luna_reveal_file,
             luna_commands::luna_submit_report,

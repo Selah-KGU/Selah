@@ -709,8 +709,31 @@ pub async fn luna_download_file(
         return Ok(url);
     }
 
+    if url.is_empty() {
+        return Err("ダウンロードURLが見つかりません".into());
+    }
+
     let http = luna_http(&state).await?;
+
+    log::info!("Attachment download: url='{}', filename='{}'", url, filename);
+
     let bytes = luna_download(&http, &url).await?;
+
+    log::info!("Attachment downloaded {} bytes for '{}'", bytes.len(), filename);
+
+    if bytes.is_empty() {
+        return Err("ダウンロードされたファイルが空です".into());
+    }
+
+    // Check if we got an HTML error page instead of the actual file
+    if bytes.len() < 2000 {
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            if text.contains("<!DOCTYPE") || text.contains("<html") || text.contains("<HTML") {
+                log::error!("Attachment download returned HTML instead of file: {}", crate::client::safe_truncate(text, 500));
+                return Err("サーバーがファイルではなくエラーページを返しました".into());
+            }
+        }
+    }
 
     save_to_downloads(&filename, &bytes)
 }
@@ -855,6 +878,162 @@ pub async fn luna_download_material(
     }
 
     save_to_downloads(&file_name, &bytes)
+}
+
+/// Resolve an HTML-type material to its actual external URL.
+/// Same tempfile+sethtmlfiledown flow as download, but parses the HTML for the link.
+#[tauri::command]
+pub async fn luna_resolve_material_link(
+    state: State<'_, AppState>,
+    idnumber: String,
+    file_name: String,
+    object_name: String,
+    resource_id: String,
+    file_type: String,
+    material_id: Option<String>,
+    display_name: Option<String>,
+    end_date: Option<String>,
+) -> Result<String, String> {
+    let http = luna_http(&state).await?;
+
+    log::info!("Material link resolve: file='{}', resource='{}', type='{}'",
+        file_name, resource_id, file_type);
+
+    let course_url = format!("/lms/course?idnumber={}", idnumber);
+    let _ = luna_get(&http, &course_url).await;
+
+    // Step 1: Prepare tempfile
+    let tempfile_query = format!(
+        "fileName={}&objectName={}&id={}&idnumber={}",
+        urlencoding::encode(&file_name),
+        urlencoding::encode(&object_name),
+        urlencoding::encode(&resource_id),
+        urlencoding::encode(&idnumber),
+    );
+    let tempfile_url = format!("/lms/course/make/tempfile?{}", tempfile_query);
+    let file_id = luna_get(&http, &tempfile_url).await
+        .map_err(|e| format!("Failed to prepare tempfile: {}", e))?;
+    let file_id = file_id.trim().to_string();
+
+    if file_id.contains('<') || file_id.is_empty() {
+        return Err(format!("tempfile returned unexpected response (len={})", file_id.len()));
+    }
+
+    // Step 2: Fetch HTML via sethtmlfiledown
+    let path_encoded_name = make_down_file_name(&file_name);
+    let base_path = format!("/lms/course/materialref/sethtmlfiledown/{}", path_encoded_name);
+    let dl_title = display_name.unwrap_or_default();
+    let content_id = material_id.unwrap_or_default();
+    let end_date_val = end_date.unwrap_or_default();
+
+    fn form_encode(s: &str) -> String {
+        let mut result = String::new();
+        for ch in s.chars() {
+            if ch.is_ascii_alphanumeric() || "-._~".contains(ch) {
+                result.push(ch);
+            } else if ch == ' ' {
+                result.push('+');
+            } else {
+                let mut buf = [0u8; 4];
+                let s = ch.encode_utf8(&mut buf);
+                for b in s.bytes() {
+                    result.push_str(&format!("%{:02X}", b));
+                }
+            }
+        }
+        result
+    }
+    let query_string = format!(
+        "fileName={}&fileId={}&idnumber={}&resourceId={}&screen=1&contentId={}&endDate={}&title={}",
+        form_encode(&file_name),
+        form_encode(&file_id),
+        form_encode(&idnumber),
+        form_encode(&resource_id),
+        form_encode(&content_id),
+        form_encode(&end_date_val),
+        form_encode(&dl_title),
+    );
+    let full_url = format!("{}{}?{}", config::LUNA_BASE, base_path, query_string);
+
+    let resp = http.get(&full_url).send().await
+        .map_err(|e| format!("Request failed: {}", e))?;
+    let final_url = resp.url().to_string();
+    let html = resp.text().await.unwrap_or_default();
+
+    log::info!("Material link HTML (len={}, final_url={}): {}", html.len(), final_url, crate::client::safe_truncate(&html, 1000));
+
+    // If we were redirected to an external URL, return that
+    if !final_url.contains("luna.kwansei.ac.jp") {
+        return Ok(final_url);
+    }
+
+    // Try to extract URL from the HTML content
+    // 1) meta refresh: <meta http-equiv="refresh" content="0;url=...">
+    // 2) window.location / location.href in script
+    // 3) iframe src
+    // 4) anchor href
+    let doc = scraper::Html::parse_document(&html);
+
+    // meta refresh
+    if let Some(meta) = doc.select(&scraper::Selector::parse("meta[http-equiv='refresh']").unwrap()).next() {
+        if let Some(content) = meta.value().attr("content") {
+            if let Some(idx) = content.to_lowercase().find("url=") {
+                let url = content[idx + 4..].trim().trim_matches(|c| c == '\'' || c == '"');
+                if !url.is_empty() {
+                    return Ok(url.to_string());
+                }
+            }
+        }
+    }
+
+    // iframe src
+    if let Some(iframe) = doc.select(&scraper::Selector::parse("iframe[src]").unwrap()).next() {
+        if let Some(src) = iframe.value().attr("src") {
+            if src.starts_with("http") {
+                return Ok(src.to_string());
+            }
+        }
+    }
+
+    // window.location or location.href in script
+    for script in doc.select(&scraper::Selector::parse("script").unwrap()) {
+        let text = script.text().collect::<String>();
+        for pattern in &["window.location.href", "window.location", "location.href", "window.open("] {
+            if let Some(idx) = text.find(pattern) {
+                let after = &text[idx + pattern.len()..];
+                // Find URL in quotes after = or (
+                let start = after.find(|c: char| c == '\'' || c == '"');
+                if let Some(s) = start {
+                    let quote = after.as_bytes()[s] as char;
+                    if let Some(e) = after[s + 1..].find(quote) {
+                        let url = &after[s + 1..s + 1 + e];
+                        if url.starts_with("http") {
+                            return Ok(url.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // <a> with external href
+    for a in doc.select(&scraper::Selector::parse("a[href]").unwrap()) {
+        if let Some(href) = a.value().attr("href") {
+            if href.starts_with("http") && !href.contains("luna.kwansei.ac.jp") {
+                return Ok(href.to_string());
+            }
+        }
+    }
+
+    // Fallback: if the HTML body itself looks like a plain URL
+    let body_text = doc.select(&scraper::Selector::parse("body").unwrap()).next()
+        .map(|b| b.text().collect::<String>().trim().to_string())
+        .unwrap_or_default();
+    if body_text.starts_with("http") && !body_text.contains(' ') {
+        return Ok(body_text);
+    }
+
+    Err("リンク先のURLを抽出できませんでした".into())
 }
 
 /// Submit a report (課題提出) to Luna

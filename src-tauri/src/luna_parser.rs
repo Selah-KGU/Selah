@@ -272,6 +272,8 @@ pub struct LunaDetailPage {
 pub struct LunaAttachment {
     pub name: String,
     pub url: String,
+    #[serde(default)]
+    pub link_type: String,  // "file", "external", "video", "zoom", "panopto", "web"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -515,6 +517,54 @@ fn extract_named_quill_text(html: &str, var_name: &str) -> Option<String> {
 ///
 /// Luna detail pages use a consistent pattern:
 ///   .course-title-txt          → course name
+/// Classify a URL into a link type for display purposes.
+fn classify_link(url: &str, name: &str) -> String {
+    let u = url.to_lowercase();
+    let n = name.to_lowercase();
+
+    // Internal Luna download paths → file
+    if !u.starts_with("http") {
+        return "file".into();
+    }
+
+    // Zoom
+    if u.contains("zoom.us") || u.contains("zoom.") || u.contains("/lti/zoom") {
+        return "zoom".into();
+    }
+    // Panopto
+    if u.contains("panopto") || u.contains("/lti/panopto") || u.contains("/Panopto/") {
+        return "panopto".into();
+    }
+    // Video platforms
+    if u.contains("youtube.com") || u.contains("youtu.be") || u.contains("vimeo.com") {
+        return "video".into();
+    }
+    // SharePoint / OneDrive (often used for video/file sharing)
+    if u.contains("sharepoint.com") || u.contains("onedrive.live.com") || u.contains("1drv.ms") {
+        return "cloud".into();
+    }
+    // Google (Drive, Docs, Slides, Sheets, Forms)
+    if u.contains("drive.google.com") || u.contains("docs.google.com")
+        || u.contains("forms.gle") || u.contains("forms.google.com")
+    {
+        return "google".into();
+    }
+    // Microsoft Teams
+    if u.contains("teams.microsoft.com") || u.contains("teams.live.com") {
+        return "teams".into();
+    }
+    // Known file extensions in URL or name → treat as downloadable external file
+    let file_exts = [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+                     ".zip", ".rar", ".7z", ".mp4", ".mp3", ".wav", ".png", ".jpg", ".jpeg"];
+    for ext in &file_exts {
+        if u.ends_with(ext) || n.ends_with(ext) {
+            return "file".into();
+        }
+    }
+
+    "web".into()
+}
+
 ///   .contents-title-txt        → page title (e.g. "テスト 受験トップ")
 ///   .contents-detail.contents-vertical → each field row:
 ///     .contents-header-txt .bold-txt → label
@@ -626,17 +676,19 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 if let Some(form) = doc.select(&sel).next() {
                     let action = form.value().attr("action").unwrap_or_default().to_string();
                     if !action.is_empty() {
-                        // Collect fixed hidden input params
+                        // Collect ALL hidden input params (including _cid/_csrf which are
+                        // needed for form GET submissions). Skip only the dynamic fields
+                        // that are filled by JS at click time (objectName, downloadFileName,
+                        // downloadMode) — we supply those per-file when building the URL.
                         let mut params = Vec::new();
                         if let Ok(input_sel) = Selector::parse("input[type='hidden']") {
                             for input in form.select(&input_sel) {
                                 let iname = input.value().attr("name").unwrap_or_default();
                                 let ival = input.value().attr("value").unwrap_or_default();
-                                // Skip dynamic fields that are filled by JS (empty value)
-                                // and CSRF/session tokens
                                 if !ival.is_empty()
-                                    && iname != "_cid" && iname != "_csrf"
-                                    && iname != "downloadFileName" && iname != "downloadMode"
+                                    && iname != "objectName"
+                                    && iname != "downloadFileName"
+                                    && iname != "downloadMode"
                                 {
                                     params.push((iname.to_string(), ival.to_string()));
                                 }
@@ -668,7 +720,8 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                     })
                     .unwrap_or_default();
 
-                // Build URL using the discovered download form
+                // Build URL replicating the browser's form GET submission:
+                //   {action}?{hidden_params}&objectName=...&downloadFileName=...&downloadMode=0
                 let url = if let Some((ref action, ref fixed_params)) = download_form_info {
                     let mut params: Vec<String> = fixed_params.iter()
                         .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
@@ -676,16 +729,20 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                     if !object_name.is_empty() {
                         params.push(format!("objectName={}", urlencoding::encode(&object_name)));
                     }
-                    // Append filename to the action path (Luna convention)
-                    let encoded_name = urlencoding::encode(&name);
-                    format!("{}/{}?{}", action, encoded_name, params.join("&"))
+                    params.push(format!("downloadFileName={}", urlencoding::encode(&name)));
+                    params.push("downloadMode=0".to_string());
+                    format!("{}?{}", action, params.join("&"))
                 } else {
-                    // Fallback: generic tempfile endpoint
-                    format!("/lms/course/make/tempfile?objectName={}", object_name)
+                    // No download form found — can't construct a proper download URL
+                    log::warn!("[attachments] no download form for '{}', objectName='{}'", name, object_name);
+                    String::new()
                 };
 
-                log::debug!("[attachments] name='{}', url='{}'", name, url);
-                attachments.push(LunaAttachment { name, url });
+                let link_type = classify_link(&url, &name);
+                log::debug!("[attachments] name='{}', url='{}', type='{}'", name, url, link_type);
+                if !url.is_empty() {
+                    attachments.push(LunaAttachment { name, url, link_type });
+                }
             }
         }
     }
@@ -702,7 +759,8 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                     let name = a.text().collect::<String>().trim().to_string();
                     let url = a.value().attr("href").unwrap_or_default().to_string();
                     if !name.is_empty() && !url.is_empty() && !url.contains("javascript:") {
-                        attachments.push(LunaAttachment { name, url });
+                        let link_type = classify_link(&url, &name);
+                        attachments.push(LunaAttachment { name, url, link_type });
                     }
                 }
             }
@@ -715,14 +773,15 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
             let url = a.value().attr("href").unwrap_or_default().to_string();
             if !url.is_empty() && url.starts_with("http") {
                 // Show a friendly name for external video links
-                let display_name = if url.contains("sharepoint.com") {
-                    "動画 (SharePoint)".to_string()
-                } else if url.contains("youtube") || url.contains("youtu.be") {
-                    "動画 (YouTube)".to_string()
-                } else {
-                    "外部リンク".to_string()
+                let link_type = classify_link(&url, "");
+                let display_name = match link_type.as_str() {
+                    "cloud" => format!("動画 ({})", if url.contains("sharepoint") { "SharePoint" } else { "OneDrive" }),
+                    "video" => format!("動画 ({})", if url.contains("youtube") || url.contains("youtu.be") { "YouTube" } else { "Vimeo" }),
+                    "zoom" => "Zoom ミーティング".to_string(),
+                    "panopto" => "Panopto 録画".to_string(),
+                    _ => "外部リンク".to_string(),
                 };
-                attachments.push(LunaAttachment { name: display_name, url });
+                attachments.push(LunaAttachment { name: display_name, url, link_type });
             }
         }
     }
@@ -761,7 +820,8 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 && !attachments.iter().any(|att| att.url == url)
             {
                 let display = if name.is_empty() { url.clone() } else { name };
-                attachments.push(LunaAttachment { name: display, url });
+                let link_type = classify_link(&url, &display);
+                attachments.push(LunaAttachment { name: display, url, link_type });
             }
         }
     }
@@ -1080,6 +1140,8 @@ pub struct LunaMaterialFile {
     pub file_type: String,      // "0" = file, else HTML
     pub end_date: String,       // open end date (e.g. "2026-07-04 00:00:00.0")
     pub scan_status: String,    // virus scan status ("1" = clean)
+    #[serde(default)]
+    pub link_type: String,      // "file", "zoom", "panopto", "video", "cloud", "google", "teams", "web"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1393,6 +1455,13 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
 
+            let link_type = if file_type == "0" {
+                classify_link(&file_name, &display_name)
+            } else {
+                let cl = classify_link(&display_name, &file_name);
+                if cl == "file" { "web".to_string() } else { cl }
+            };
+
             files.push(LunaMaterialFile {
                 display_name,
                 file_name,
@@ -1402,6 +1471,7 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
                 file_type,
                 end_date,
                 scan_status,
+                link_type,
             });
         }
 

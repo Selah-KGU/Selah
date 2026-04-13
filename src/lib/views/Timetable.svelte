@@ -22,7 +22,8 @@
   let examEntries = $state<ExamEntry[]>([]);
   let favoriteEntries = $state<SyllabusEntry[]>([]);
   let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") !== "0");
-  let syscalEnabled = $state(localStorage.getItem("selah-syscal-enabled") === "true");
+  const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+  let syscalEnabled = $state(isMac && localStorage.getItem("selah-syscal-enabled") === "true");
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let calSyncTimer: ReturnType<typeof setInterval> | undefined;
@@ -707,7 +708,7 @@
 
   function handleVisibilityChange() {
     if (document.visibilityState === "visible") {
-      syscalEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
+      syscalEnabled = isMac && localStorage.getItem("selah-syscal-enabled") !== "false";
     }
   }
 

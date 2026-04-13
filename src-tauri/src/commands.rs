@@ -735,6 +735,11 @@ pub async fn sync_calendar(
     entries: Vec<CalendarSyncEntry>,
     week_label: String,
 ) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&entries, &week_label);
+        return Err("Apple Calendar は macOS でのみ利用可能です".into());
+    }
     #[cfg(not(debug_assertions))]
     {
         let _ = (&entries, &week_label);
@@ -833,6 +838,8 @@ cal.events().length;
 /// Get info about the KG-Course calendar (exists, event count)
 #[tauri::command]
 pub async fn get_calendar_info() -> Result<serde_json::Value, String> {
+    #[cfg(not(target_os = "macos"))]
+    { return Ok(serde_json::json!({ "exists": false, "count": 0 })); }
     #[cfg(not(debug_assertions))]
     { return Ok(serde_json::json!({ "exists": false, "count": 0 })); }
     #[cfg(debug_assertions)]
@@ -870,6 +877,11 @@ if (!cal) {
 /// Clear all events from the KG-Course calendar, or delete the calendar entirely
 #[tauri::command]
 pub async fn clear_calendar(delete_calendar: bool) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = delete_calendar;
+        return Err("Apple Calendar は macOS でのみ利用可能です".into());
+    }
     #[cfg(not(debug_assertions))]
     {
         let _ = delete_calendar;

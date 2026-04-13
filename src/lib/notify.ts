@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-/** Send a native macOS notification via osascript */
+/** Send a native notification */
 export async function nativeNotify(title: string, body?: string) {
   await invoke("test_notification", { title, body: body ?? "" });
 }
