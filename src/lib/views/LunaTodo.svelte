@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { lunaInvoke, aiAnalyzeTodo } from "../api";
-  import { cachedFetch, onCacheUpdate, lunaAuthState } from "../stores";
+  import { cachedFetch, invalidateCache, onCacheUpdate, lunaAuthState } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
   import type { LunaTodoItem, AiTodoAnalysis } from "../types";
@@ -39,6 +39,7 @@
     loading = true;
     error = "";
     try {
+      invalidateCache("luna_todo");
       todoItems = await cachedFetch("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"));
     } catch (e: any) {
       error = String(e);
@@ -90,7 +91,22 @@
   async function openDetail(path: string, title: string) {
     if (!path) return;
     try {
-      await lunaInvoke("luna_open_detail_window", { path, title });
+      // Detect mode from URL path and extract params for proper window setup
+      const params: Record<string, any> = { path, title };
+      const urlParts = new URLSearchParams(path.split('?')[1] || '');
+      const idnumber = urlParts.get('idnumber') || undefined;
+
+      if (path.includes('/report/submission')) {
+        params.mode = 'report';
+        params.idnumber = idnumber;
+        params.infoId = urlParts.get('reportId') || undefined;
+      } else if (path.includes('/forums/themetop')) {
+        params.mode = 'discussion';
+      } else if (path.includes('/forums/thread')) {
+        params.mode = 'thread';
+      }
+
+      await lunaInvoke("luna_open_detail_window", params);
     } catch (e: any) {
       console.error("Failed to open detail window:", e);
     }
