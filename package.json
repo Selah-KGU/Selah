@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "keywords": [],
-  "author": "mirai_mamori",
+  "author": "mirai-mamori",
   "license": "MIT",
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.0.0",

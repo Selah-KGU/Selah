@@ -315,6 +315,13 @@ pub async fn luna_open_detail_window(
             }
             parts
         }
+        Some("survey") | Some("questionnaire") => {
+            format!(
+                "luna-detail.html?mode=survey&path={}&title={}",
+                urlencoding::encode(&path),
+                urlencoding::encode(&title)
+            )
+        }
         Some("thread") => {
             format!(
                 "luna-detail.html?mode=thread&path={}&title={}",
@@ -627,6 +634,101 @@ pub async fn luna_fetch_announcement_detail(
     }
 }
 
+/// Fetch and parse a Luna survey detail page
+#[tauri::command]
+pub async fn luna_fetch_survey_detail(
+    state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
+    path: String,
+) -> Result<luna_parser::LunaSurveyDetail, String> {
+    if path.starts_with("http") || !path.starts_with('/') {
+        return Err("許可されていないパスです".into());
+    }
+    let cache_key = format!("luna_survey:{}", path);
+    match luna_http(&state).await {
+        Ok(http) => match luna_get(&http, &path).await {
+            Ok(html) => {
+                #[cfg(debug_assertions)]
+                {
+                    let filename = path.replace(['/', '?', '&'], "_");
+                    let dump_path = std::env::temp_dir().join(format!("luna_survey{}.html", filename));
+                    let _ = std::fs::write(&dump_path, &html);
+                    log::info!("Luna survey detail dumped to {} ({} bytes)", dump_path.display(), html.len());
+                }
+                let data = luna_parser::parse_luna_survey_detail(&html);
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let _ = db.save_data_cache(&cache_key, &json);
+                }
+                Ok(data)
+            }
+            Err(e) => {
+                if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        log::info!("luna_survey: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                }
+                Err(e)
+            }
+        },
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("luna_survey: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Submit survey answers to Luna
+#[tauri::command]
+pub async fn luna_submit_survey(
+    state: State<'_, AppState>,
+    form_fields: Vec<(String, String)>,
+    answers: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    // Build the full POST params: hidden fields + user answers
+    let mut params: Vec<(String, String)> = Vec::new();
+
+    // Add all hidden form fields (includes _cid, _csrf, idnumber, surveyId, takeFlag,
+    // answer[N].surveyNo, answer[N].surveyNoSub, answerDetail[N].*, enableSurveyItems[N])
+    for (k, v) in &form_fields {
+        params.push((k.clone(), v.clone()));
+    }
+
+    // Merge user answers: answers map is {questionIndex: selectedValue}
+    // The form field is answer[N].answerItem[0].answer = selectedValue
+    for (idx_str, value) in &answers {
+        let idx: usize = idx_str.parse().map_err(|_| "無効な質問インデックスです")?;
+        let field_name = format!("answer[{}].answerItem[0].answer", idx);
+        // Replace existing empty field or add new one
+        let mut found = false;
+        for p in &mut params {
+            if p.0 == field_name {
+                p.1 = value.clone();
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            params.push((field_name, value.clone()));
+        }
+    }
+
+    let http = luna_http(&state).await?;
+    let response = luna_post(&http, "/lms/course/surveys/take", &params).await?;
+
+    // Check for error indicators in the response
+    if response.contains("エラー") && response.contains("回答期間を過ぎている") {
+        return Err("回答期間を過ぎています".into());
+    }
+
+    Ok(())
+}
+
 /// Fetch and parse course top page (/lms/course?idnumber=XXX)
 #[tauri::command]
 pub async fn luna_fetch_course_detail(
@@ -719,11 +821,12 @@ pub async fn luna_fetch_course_detail(
     }
 
     // Merge actual content items from contents page
-    let (materials, reports, examinations, discussions) = luna_parser::parse_luna_contents_page(&contents_html);
+    let (materials, reports, examinations, discussions, surveys) = luna_parser::parse_luna_contents_page(&contents_html);
     result.materials = materials;
     result.reports = reports;
     result.examinations = examinations;
     result.discussions = discussions;
+    result.surveys = surveys;
 
     // Cache the complete result
     if let Ok(json) = serde_json::to_string(&result) {

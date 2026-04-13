@@ -104,6 +104,8 @@
         params.mode = 'discussion';
       } else if (path.includes('/forums/thread')) {
         params.mode = 'thread';
+      } else if (path.includes('/surveys/take') || path.includes('/course/surveys')) {
+        params.mode = 'survey';
       }
 
       await lunaInvoke("luna_open_detail_window", params);

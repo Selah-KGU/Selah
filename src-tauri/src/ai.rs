@@ -143,17 +143,7 @@ struct GeminiPartResponse {
 // ============ Config persistence ============
 
 fn config_path() -> PathBuf {
-    let dir = crate::client::data_dir();
-    // Migrate from old config_dir location
-    let old = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("com.haru.kwic")
-        .join("ai_config.json");
-    let new = dir.join("ai_config.json");
-    if old.exists() && !new.exists() {
-        let _ = std::fs::rename(&old, &new);
-    }
-    new
+    crate::client::data_dir().join("ai_config.json")
 }
 
 /// Public accessor for other modules (e.g. timetable AI schedule).

@@ -472,7 +472,7 @@ pub async fn refresh_luna_counts(
             luna_client::is_luna_session_expired,
         ).await {
             Ok(html) => {
-                let (materials, reps, exs, discs) = luna_parser::parse_luna_contents_page(&html);
+                let (materials, reps, exs, discs, _surveys) = luna_parser::parse_luna_contents_page(&html);
                 for m in &materials {
                     activities.push(LunaActivityRow {
                         luna_id: luna_id.clone(),
@@ -648,7 +648,7 @@ async fn enrich_schedule_inner(
                 luna_client::is_luna_session_expired,
             ).await {
                 Ok(html) => {
-                    let (materials, reps, exs, discs) = luna_parser::parse_luna_contents_page(&html);
+                    let (materials, reps, exs, discs, _surveys) = luna_parser::parse_luna_contents_page(&html);
 
                     // Store material items
                     for m in &materials {

@@ -47,8 +47,7 @@
   $effect(() => {
     const tab = $activeTab;
     if (!visited.has(tab)) {
-      visited.add(tab);
-      visited = visited;
+      visited = new Set([...visited, tab]);
     }
   });
 

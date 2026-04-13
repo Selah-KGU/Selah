@@ -651,9 +651,9 @@
       }
       for (const { idx: i, url } of lunaItems) {
         detailPromises.push(
-          lunaInvoke<{ title: string; course_name: string; sections: { heading: string; html: string }[]; attachments: { name: string; url: string }[]; meta: Record<string, string> }>("luna_fetch_detail", { path: url })
+          lunaInvoke<{ title: string; course_name: string; sections: { heading: string; body: string }[]; attachments: { name: string; url: string }[]; meta: Record<string, string> }>("luna_fetch_detail", { path: url })
             .then(d => {
-              const text = d.sections.map(s => (s.heading ? s.heading + ": " : "") + stripHtml(s.html)).join(" ");
+              const text = d.sections.map(s => (s.heading ? s.heading + ": " : "") + stripHtml(s.body || "")).join(" ");
               const body = truncate(text, 300);
               if (body) allNotifs[i].body = body;
             })

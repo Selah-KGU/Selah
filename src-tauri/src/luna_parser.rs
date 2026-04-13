@@ -103,6 +103,13 @@ sel!(SEL_DISC_NAME_FB,  ".course-view-forum-title");
 sel!(SEL_DISC_PERIOD,   ".course-view-forum-period.sp-contents-hidden");
 sel!(SEL_DISC_STATUS,   ".course-view-forum-postzyoukyou");
 
+// ── Survey/questionnaire list selectors ──
+sel!(SEL_SURVEY_LIST,   "#questionnaire .course-result-list, #courseViewSurveyList .course-result-list");
+sel!(SEL_SURV_NAME,     ".course-view-questionnaire-name.link-txt");
+sel!(SEL_SURV_NAME_FB,  ".course-view-questionnaire-name");
+sel!(SEL_SURV_PERIOD,   ".course-view-questionnaire-period.sp-contents-hidden");
+sel!(SEL_SURV_STATUS,   ".course-view-questionnaire-answer-status");
+
 // ── Utility selectors ──
 sel!(SEL_A_HREF,        "a[href]");
 sel!(SEL_SPAN,          "span");
@@ -1149,6 +1156,7 @@ pub struct LunaCourseContents {
     pub reports: Vec<LunaContentItem>,
     pub examinations: Vec<LunaContentItem>,
     pub discussions: Vec<LunaContentItem>,
+    pub surveys: Vec<LunaContentItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1197,6 +1205,46 @@ pub struct LunaOnlineTool {
     pub name: String,
     pub url: String,
     pub icon: String,
+}
+
+// ── Survey (questionnaire) detail types ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LunaSurveyDetail {
+    pub title: String,
+    pub description: String,
+    pub period: String,
+    pub anonymity: String,
+    pub allow_edit: String,
+    pub answer_status: String,
+    pub respondent: String,
+    pub attachments: Vec<LunaSurveyAttachment>,
+    pub questions: Vec<LunaSurveyQuestion>,
+    /// Hidden form fields needed for submission (_cid, _csrf, idnumber, surveyId, takeFlag,
+    /// and per-question answer[N].surveyNo / answer[N].surveyNoSub)
+    #[serde(default)]
+    pub form_fields: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LunaSurveyAttachment {
+    pub file_name: String,
+    pub object_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LunaSurveyQuestion {
+    pub number: String,
+    pub body: String,
+    pub required: bool,
+    pub answer_type: String,
+    pub options: Vec<LunaSurveyOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LunaSurveyOption {
+    pub value: String,
+    pub label: String,
 }
 
 pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseContents {
@@ -1347,6 +1395,7 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
             reports: Vec::new(),
             examinations: Vec::new(),
             discussions: Vec::new(),
+            surveys: Vec::new(),
         };
     }
 
@@ -1365,6 +1414,7 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
         reports: Vec::new(),
         examinations: Vec::new(),
         discussions: Vec::new(),
+        surveys: Vec::new(),
     }
 }
 
@@ -1404,13 +1454,14 @@ fn extract_onclick_tag(onclick: &str) -> String {
 
 /// Parse the contents top page (/lms/contents?idnumber=XXX)
 /// Extracts materials, reports, examinations, discussions
-pub fn parse_luna_contents_page(html: &str) -> (Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>) {
+pub fn parse_luna_contents_page(html: &str) -> (Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>) {
     let doc = Html::parse_document(html);
     let materials = parse_materials(&doc);
     let reports = parse_reports(&doc);
     let examinations = parse_examinations(&doc);
     let discussions = parse_discussions(&doc);
-    (materials, reports, examinations, discussions)
+    let surveys = parse_surveys(&doc);
+    (materials, reports, examinations, discussions, surveys)
 }
 
 fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
@@ -1627,6 +1678,224 @@ fn parse_discussions(doc: &Html) -> Vec<LunaContentItem> {
     items
 }
 
+fn parse_surveys(doc: &Html) -> Vec<LunaContentItem> {
+    let mut items = Vec::new();
+
+    for row in doc.select(&SEL_SURVEY_LIST) {
+        let (title, mut url) = if let Some(a) = row.select(&SEL_SURV_NAME).next() {
+            let t = a.text().collect::<String>().trim().to_string();
+            let u = a.value().attr("href").unwrap_or_default().to_string();
+            (t, u)
+        } else if let Some(a) = row.select(&SEL_LINK_TXT).next() {
+            let t = a.text().collect::<String>().trim().to_string();
+            let u = a.value().attr("href").unwrap_or_default().to_string();
+            (t, u)
+        } else if let Some(el) = row.select(&SEL_SURV_NAME_FB).next() {
+            let t = el.text().collect::<String>().trim().to_string();
+            (t, String::new())
+        } else {
+            continue;
+        };
+
+        if title.is_empty() { continue; }
+
+        if url.is_empty() || url == "#" || url == "javascript:void(0)" {
+            url = extract_url_from_row(&row);
+        }
+
+        let period = row.select(&SEL_SURV_PERIOD).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        let status = row.select(&SEL_SURV_STATUS).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        items.push(LunaContentItem {
+            title,
+            url,
+            period,
+            status,
+            item_type: "survey".to_string(),
+            files: Vec::new(),
+        });
+    }
+    items
+}
+
+/// Parse a survey take/detail page (/lms/course/surveys/take?idnumber=...&surveyId=...)
+pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
+    let doc = Html::parse_document(html);
+
+    // Extract header info from .contents-detail.contents-vertical rows
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut period = String::new();
+    let mut anonymity = String::new();
+    let mut allow_edit = String::new();
+    let mut answer_status = String::new();
+    let mut respondent = String::new();
+    let mut attachments = Vec::new();
+
+    let header_sel = Selector::parse(".contents-list > .contents-detail.contents-vertical").unwrap();
+    for row in doc.select(&header_sel) {
+        let label_sel = Selector::parse(".contents-header .bold-txt").unwrap();
+        let label = row.select(&label_sel).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        let value_sel = Selector::parse(".contents-input-area").unwrap();
+        let value_el = row.select(&value_sel).next();
+
+        match label.as_str() {
+            "タイトル" => {
+                title = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+            }
+            "内容" => {
+                // Quill editor content — in static HTML, .ql-editor doesn't exist.
+                // Try extracting from setJsonData in page-level scripts first.
+                description = extract_named_quill_text(html, "bodyText")
+                    .unwrap_or_default();
+                if description.is_empty() {
+                    // Fallback: try ql-editor if Quill somehow rendered
+                    let ql_sel = Selector::parse(".ql-editor").unwrap();
+                    description = value_el
+                        .and_then(|v| v.select(&ql_sel).next())
+                        .map(|e| e.text().collect::<String>().trim().to_string())
+                        .unwrap_or_default();
+                }
+                if description.is_empty() {
+                    let row_html = row.html();
+                    if let Some(qt) = extract_quill_text(&row_html) {
+                        description = extract_quill_plain_text(&qt).unwrap_or_default();
+                    }
+                }
+            }
+            "回答期間" => {
+                period = value_el
+                    .map(|e| e.select(&SEL_SPAN).map(|s| s.text().collect::<String>().trim().to_string()).collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+            }
+            "記名・無記名" => {
+                anonymity = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+            }
+            "回答の修正" => {
+                allow_edit = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+            }
+            "回答状況" => {
+                answer_status = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+            }
+            "氏名" => {
+                respondent = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+            }
+            "添付ファイル" => {
+                if let Some(area) = value_el {
+                    let dl_sel = Selector::parse(".downloadFile").unwrap();
+                    let obj_sel = Selector::parse(".objectName").unwrap();
+                    let fname_sel = Selector::parse(".fileName").unwrap();
+                    let file_name = area.select(&fname_sel).next()
+                        .or_else(|| area.select(&dl_sel).next())
+                        .map(|e| e.text().collect::<String>().trim().to_string())
+                        .unwrap_or_default();
+                    let object_name = area.select(&obj_sel).next()
+                        .map(|e| e.text().collect::<String>().trim().to_string())
+                        .unwrap_or_default();
+                    if !file_name.is_empty() {
+                        attachments.push(LunaSurveyAttachment { file_name, object_name });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Parse questions from #survey_question_subblock
+    // Note: Quill content is NOT rendered into .ql-editor in static HTML.
+    // Question bodies are in: _QuillUtil.surveyTakeItemText.setJsonData("{...}", 'reference');
+    // Answer labels are in: _QuillUtil.answerListContents_X_Y.setJsonData("{...}", 'reference');
+    // Answer types are in: <input type="hidden" class="branchType" value="list|radio|check|text|textArea|multRadio|multCheck">
+    let mut questions = Vec::new();
+    let q_block_sel = Selector::parse("#survey_question_subblock .question_itme").unwrap();
+    let q_required_sel = Selector::parse(".contents-hissu").unwrap();
+    let q_branch_type_sel = Selector::parse(".branchType").unwrap();
+
+    for (q_idx, q_el) in doc.select(&q_block_sel).enumerate() {
+        let required = q_el.select(&q_required_sel).next().is_some();
+        let number = (q_idx + 1).to_string();
+
+        // Extract question body from surveyTakeItemText.setJsonData in script
+        let q_html = q_el.html();
+        let body = extract_named_quill_text(&q_html, "surveyTakeItemText")
+            .unwrap_or_default();
+
+        // Determine answer type from hidden branchType input
+        let branch_type = q_el.select(&q_branch_type_sel).next()
+            .and_then(|e| e.value().attr("value"))
+            .unwrap_or_default();
+        let answer_type = match branch_type {
+            "list" => "list",
+            "radio" | "multRadio" => "radio",
+            "check" | "multCheck" => "checkbox",
+            "text" | "textArea" => "text",
+            _ => "",
+        }.to_string();
+
+        // Extract option labels from answerListContents_X_Y.setJsonData
+        let mut options = Vec::new();
+        if answer_type != "text" {
+            let mut opt_idx = 0;
+            loop {
+                let var_name = format!("answerListContents_{}_{}", q_idx, opt_idx);
+                if let Some(label) = extract_named_quill_text(&q_html, &var_name) {
+                    options.push(LunaSurveyOption {
+                        value: (opt_idx + 1).to_string(),
+                        label,
+                    });
+                    opt_idx += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if !body.is_empty() || !options.is_empty() {
+            questions.push(LunaSurveyQuestion {
+                number,
+                body,
+                required,
+                answer_type,
+                options,
+            });
+        }
+    }
+
+    // Extract hidden form fields from #surveysTakeForm for submission
+    let mut form_fields: Vec<(String, String)> = Vec::new();
+    let form_sel = Selector::parse("#surveysTakeForm").unwrap();
+    if let Some(form) = doc.select(&form_sel).next() {
+        for input in form.select(&SEL_HIDDEN_INPUT) {
+            let name = input.value().attr("name").unwrap_or_default();
+            let value = input.value().attr("value").unwrap_or_default();
+            if !name.is_empty() {
+                form_fields.push((name.to_string(), value.to_string()));
+            }
+        }
+    }
+
+    LunaSurveyDetail {
+        title,
+        description,
+        period,
+        anonymity,
+        allow_edit,
+        answer_status,
+        respondent,
+        attachments,
+        questions,
+        form_fields,
+    }
+}
+
 /// Extract a URL from onclick attributes or <a> tags within a row element
 fn extract_url_from_row(row: &scraper::ElementRef) -> String {
     // Check all <a> tags for href
@@ -1768,7 +2037,7 @@ mod tests {
     fn test_parse_contents_page() {
         let html = std::fs::read_to_string("/tmp/luna_contents_2026510010040201.html")
             .expect("Contents HTML dump file not found");
-        let (materials, reports, examinations, discussions) = parse_luna_contents_page(&html);
+        let (materials, reports, examinations, discussions, _surveys) = parse_luna_contents_page(&html);
         println!("Materials: {}", materials.len());
         for m in &materials {
             println!("  {} | {} | {}", m.title, m.period, m.status);

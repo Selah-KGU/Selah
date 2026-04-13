@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' data: https:">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Luna</title>
 <style>
@@ -419,6 +419,32 @@
     .hero-title { font-size:19px; }
     .sections-scroll { padding:12px 14px; }
   }
+
+  .survey-questions { display:flex; flex-direction:column; gap:16px; margin-top:20px; padding:0 24px 24px; }
+  .survey-q-card { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--card-radius); padding:20px; box-shadow:var(--card-shadow); transition:border-color .15s, box-shadow .15s; }
+  .survey-q-card:hover { border-color:var(--card-border-hover); box-shadow:var(--card-shadow-hover); }
+  .survey-q-header { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+  .survey-q-num { font-weight:700; font-size:13px; color:var(--accent); background:var(--accent-bg); padding:3px 10px; border-radius:6px; letter-spacing:0.5px; }
+  .survey-q-req { font-size:11px; font-weight:600; color:var(--red); background:var(--red-bg); padding:3px 8px; border-radius:6px; letter-spacing:0.3px; }
+  .survey-q-body { font-size:14px; line-height:1.7; color:var(--text-primary); margin-bottom:14px; white-space:pre-wrap; word-break:break-word; }
+  .survey-q-options { display:flex; flex-direction:column; gap:4px; }
+  .survey-opt-label { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text-primary); padding:8px 12px; border-radius:var(--inner-radius); cursor:pointer; transition:background .15s; }
+  .survey-opt-label:hover { background:var(--bg-secondary); }
+  .survey-opt-label:has(input:checked) { background:var(--accent-bg); }
+  .survey-opt-label input[type="radio"], .survey-opt-label input[type="checkbox"] { accent-color:var(--accent); width:16px; height:16px; flex-shrink:0; cursor:pointer; }
+  .survey-select { background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border-strong); border-radius:var(--inner-radius); padding:10px 14px; font-size:13px; width:100%; appearance:none; -webkit-appearance:none; background-image:url("data:image/svg+xml,%3Csvg width='10' height='6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236e6e73'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 12px center; padding-right:32px; transition:border-color .15s; }
+  .survey-select:focus { border-color:var(--accent); outline:none; }
+  .survey-text-input { background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border-strong); border-radius:var(--inner-radius); padding:10px 14px; font-size:13px; width:100%; resize:vertical; font-family:inherit; line-height:1.5; transition:border-color .15s; }
+  .survey-text-input:focus { border-color:var(--accent); outline:none; }
+  .survey-submit-area { display:flex; align-items:center; justify-content:center; gap:12px; padding:16px 24px 28px; }
+  .survey-submit-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:12px 40px; border-radius:var(--inner-radius); border:none; background:var(--accent); color:#fff; font-size:15px; font-weight:600; cursor:pointer; transition:opacity .15s, transform .1s; letter-spacing:0.3px; }
+  .survey-submit-btn:hover { opacity:0.88; }
+  .survey-submit-btn:active { transform:scale(0.97); }
+  .survey-submit-btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; }
+  .survey-submit-status { font-size:13px; color:var(--text-secondary); text-align:center; min-height:20px; }
+  .survey-info-bar { display:flex; flex-wrap:wrap; gap:10px; padding:0 24px; margin-top:4px; }
+  .survey-info-chip { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--text-secondary); background:var(--bg-tertiary); padding:4px 10px; border-radius:6px; }
+  .survey-info-chip strong { color:var(--text-primary); font-weight:500; }
 </style>
 </head>
 <body>
@@ -825,6 +851,131 @@
     }
 
     // Course Detail (Bento Layout)
+    function renderSurveyDetail(data) {
+      var c = document.getElementById('content');
+      if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+      var h = '<div class="detail-wrap">';
+      if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
+      if (data.description) h += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
+      // Info chips
+      var chips = [];
+      if (data.period) chips.push(['\u671f\u9593', data.period]);
+      if (data.anonymity) chips.push(['\u533f\u540d\u6027', data.anonymity]);
+      if (data.allow_edit) chips.push(['\u56de\u7b54\u306e\u5909\u66f4', data.allow_edit]);
+      if (data.answer_status) chips.push(['\u72b6\u614b', data.answer_status]);
+      if (data.respondent) chips.push(['\u56de\u7b54\u8005', data.respondent]);
+      if (chips.length) {
+        h += '<div class="survey-info-bar">';
+        for (var j = 0; j < chips.length; j++) h += '<span class="survey-info-chip">' + escapeHtml(chips[j][0]) + ' <strong>' + escapeHtml(chips[j][1]) + '</strong></span>';
+        h += '</div>';
+      }
+      if (data.attachments && data.attachments.length) {
+        h += '<div class="attachments" style="margin:12px 24px 0"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
+        for (var k = 0; k < data.attachments.length; k++) {
+          var att = data.attachments[k];
+          h += '<button class="attachment survey-att" data-obj="' + escapeHtml(att.object_name) + '" data-name="' + escapeHtml(att.file_name) + '">';
+          h += '<span>' + ICONS.clip + ' ' + escapeHtml(att.file_name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
+        }
+        h += '</div>';
+      }
+      if (data.questions && data.questions.length) {
+        h += '<div class="survey-questions">';
+        for (var qi = 0; qi < data.questions.length; qi++) {
+          var q = data.questions[qi];
+          h += '<div class="survey-q-card" data-qi="' + qi + '">';
+          h += '<div class="survey-q-header"><span class="survey-q-num">Q' + escapeHtml(q.number) + '</span>';
+          if (q.required) h += '<span class="survey-q-req">\u5fc5\u9808</span>';
+          h += '</div>';
+          h += '<div class="survey-q-body">' + linkifyText(q.body) + '</div>';
+          if (q.options && q.options.length) {
+            h += '<div class="survey-q-options">';
+            for (var oi = 0; oi < q.options.length; oi++) {
+              var opt = q.options[oi];
+              var inputType = q.answer_type === 'checkbox' ? 'checkbox' : 'radio';
+              if (q.answer_type === 'list') {
+                if (oi === 0) h += '<select class="survey-select" name="sq' + qi + '"><option value="">-- \u9078\u629e\u3057\u3066\u304f\u3060\u3055\u3044 --</option>';
+                h += '<option value="' + escapeHtml(opt.value) + '">' + escapeHtml(opt.label) + '</option>';
+                if (oi === q.options.length - 1) h += '</select>';
+              } else {
+                h += '<label class="survey-opt-label"><input type="' + inputType + '" name="sq' + qi + '" value="' + escapeHtml(opt.value) + '"> ' + escapeHtml(opt.label) + '</label>';
+              }
+            }
+            h += '</div>';
+          }
+          if (q.answer_type === 'text') {
+            h += '<div class="survey-q-options"><textarea class="survey-text-input" rows="3" name="sq' + qi + '" placeholder="\u81ea\u7531\u8a18\u8ff0"></textarea></div>';
+          }
+          h += '</div>';
+        }
+        h += '</div>';
+        // Submit area
+        h += '<div class="survey-submit-area"><div style="text-align:center">';
+        h += '<button class="survey-submit-btn" id="surveySubmitBtn">\u56de\u7b54\u3092\u63d0\u51fa</button>';
+        h += '<div class="survey-submit-status" id="surveySubmitStatus"></div>';
+        h += '</div></div>';
+      }
+      if (!data.questions?.length && !data.description) h += '<div class="card-empty" style="padding:40px 0">\u8a73\u7d30\u60c5\u5831\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f</div>';
+      h += '</div>';
+      c.innerHTML = h;
+      // Attachment download
+      c.querySelectorAll('.survey-att').forEach(function(b) {
+        b.addEventListener('click', function() {
+          var inv = window.__TAURI__?.core?.invoke; if (!inv) return;
+          inv('luna_download_file', { objectName: b.dataset.obj, fileName: b.dataset.name });
+        });
+      });
+      // Submit handler
+      var submitBtn = document.getElementById('surveySubmitBtn');
+      var statusEl = document.getElementById('surveySubmitStatus');
+      if (submitBtn && data.form_fields) {
+        submitBtn.addEventListener('click', async function() {
+          var inv = window.__TAURI__?.core?.invoke; if (!inv) return;
+          // Collect answers
+          var answers = {};
+          var qLen = data.questions.length;
+          var missing = [];
+          for (var i = 0; i < qLen; i++) {
+            var q = data.questions[i];
+            var els = c.querySelectorAll('[name="sq' + i + '"]');
+            var val = '';
+            if (q.answer_type === 'list') {
+              val = els[0] ? els[0].value : '';
+            } else if (q.answer_type === 'text') {
+              val = els[0] ? els[0].value : '';
+            } else {
+              els.forEach(function(el) { if (el.checked) val = el.value; });
+            }
+            answers[String(i)] = val;
+            if (q.required && !val) missing.push('Q' + q.number);
+          }
+          if (missing.length) {
+            statusEl.textContent = '\u672a\u56de\u7b54: ' + missing.join(', ');
+            statusEl.style.color = 'var(--red)';
+            return;
+          }
+          submitBtn.disabled = true;
+          submitBtn.textContent = '\u63d0\u51fa\u4e2d...';
+          statusEl.textContent = '';
+          statusEl.style.color = '';
+          try {
+            await inv('luna_submit_survey', { formFields: data.form_fields, answers: answers });
+            submitBtn.textContent = '\u63d0\u51fa\u5b8c\u4e86';
+            statusEl.textContent = '\u56de\u7b54\u304c\u63d0\u51fa\u3055\u308c\u307e\u3057\u305f';
+            statusEl.style.color = 'var(--green)';
+          } catch(e) {
+            statusEl.textContent = '\u63d0\u51fa\u30a8\u30e9\u30fc: ' + String(e);
+            statusEl.style.color = 'var(--red)';
+            submitBtn.disabled = false;
+            submitBtn.textContent = '\u518d\u8a66\u884c';
+          }
+        });
+      } else if (submitBtn && !data.form_fields) {
+        submitBtn.disabled = true;
+        submitBtn.style.opacity = '0.4';
+        statusEl.textContent = '\u30d5\u30a9\u30fc\u30e0\u60c5\u5831\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f';
+      }
+    }
+
     function renderCourseDetail(data, idnumber, kgcPath) {
       var c = document.getElementById('content');
       if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
@@ -1022,6 +1173,34 @@
         h += '</div></div>';
       }
 
+      // Surveys
+      var survCount = data.surveys ? data.surveys.length : 0;
+      if (survCount) {
+        var pendingSurv = data.surveys.filter(function(s) { return s.status && s.status.indexOf('\u672a') >= 0; }).length;
+        h += '<div class="sec">';
+        h += '<div class="sec-head"><span class="sec-label">\u30a2\u30f3\u30b1\u30fc\u30c8</span><span class="sec-count">' + (pendingSurv ? pendingSurv + '/' : '') + survCount + '</span></div>';
+        var survIdx = data.surveys.map(function(_, i) { return i; });
+        survIdx.sort(function(a, b) {
+          var da2 = urgencyOrder(data.surveys[a].period, data.surveys[a].status);
+          var db2 = urgencyOrder(data.surveys[b].period, data.surveys[b].status);
+          if (da2 !== db2) return da2 - db2;
+          var ta2 = parseDeadlineFromPeriod(data.surveys[a].period) || Infinity;
+          var tb2 = parseDeadlineFromPeriod(data.surveys[b].period) || Infinity;
+          return ta2 - tb2;
+        });
+        h += '<div class="sec-grid">';
+        for (var sv = 0; sv < survIdx.length; sv++) {
+          var surv = data.surveys[survIdx[sv]];
+          var su = taskUrgency(surv.period, surv.status);
+          h += '<button class="item-card task ' + su + '" data-surv-idx="' + survIdx[sv] + '">';
+          h += '<div class="item-row"><span class="item-title">' + escapeHtml(surv.title) + '</span>' + statusBadge(surv.status) + '</div>';
+          var srem = taskRemaining(surv.period, surv.status);
+          if (srem || surv.period) h += '<span class="item-sub">' + escapeHtml(srem || shortPeriod(surv.period)) + '</span>';
+          h += '</button>';
+        }
+        h += '</div></div>';
+      }
+
       // KG Detail
       if (kgcPath) {
         h += '<div class="sec">';
@@ -1104,6 +1283,14 @@
         b.addEventListener('click', function() {
           var item = data.discussions[parseInt(b.dataset.discIdx)];
           if (item?.url) invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'discussion' });
+        });
+      });
+
+      // Surveys - click to open detail
+      c.querySelectorAll('[data-surv-idx]').forEach(function(b) {
+        b.addEventListener('click', function() {
+          var item = data.surveys[parseInt(b.dataset.survIdx)];
+          if (item?.url) invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'survey' });
         });
       });
 
@@ -1315,6 +1502,9 @@
         } else if (mode === 'thread') {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
           renderThreadDetail(await invoke('luna_fetch_thread_posts', { url: path }), path);
+        } else if (mode === 'survey') {
+          if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          renderSurveyDetail(await invoke('luna_fetch_survey_detail', { path: path }));
         } else {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
           renderDetail(await invoke('luna_fetch_detail', { path: path }));

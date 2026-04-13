@@ -136,21 +136,6 @@ pub(crate) fn data_dir() -> std::path::PathBuf {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let dir = base.join("com.kgu.selah");
         let _ = std::fs::create_dir_all(&dir);
-        // Migrate from old paths (runs once)
-        for old_name in ["com.kwic.app", "com.haru.kwic"] {
-            let old = base.join(old_name);
-            if old.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&old) {
-                    for entry in entries.flatten() {
-                        let dest = dir.join(entry.file_name());
-                        if !dest.exists() {
-                            let _ = std::fs::rename(entry.path(), dest);
-                        }
-                    }
-                }
-                let _ = std::fs::remove_dir(&old);
-            }
-        }
         dir
     }).clone()
 }
