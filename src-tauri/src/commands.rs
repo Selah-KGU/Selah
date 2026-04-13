@@ -15,13 +15,11 @@ use crate::auth;
 use crate::parser;
 use crate::AppState;
 
-const AUTH_REQUIRED_MSG: &str = "ログインしてください";
-
 /// Briefly lock KGC client, check auth and clone http. Releases lock immediately.
 async fn kgc_http(state: &AppState) -> Result<reqwest::Client, String> {
     let client = state.client.lock().await;
     if !client.is_authenticated() {
-        return Err(AUTH_REQUIRED_MSG.into());
+        return Err(config::KGC_AUTH_REQUIRED_MSG.into());
     }
     Ok(client.http.clone())
 }
@@ -54,7 +52,7 @@ async fn kgc_try_fetch(state: &AppState, path: &str) -> Result<String, String> {
         (client.http.clone(), client.is_authenticated())
     };
     if !is_auth {
-        return Err(AUTH_REQUIRED_MSG.into());
+        return Err(config::KGC_AUTH_REQUIRED_MSG.into());
     }
     let url = format!("{}{}", config::KG_COURSE_BASE, path);
     client::fetch_with_redirect(
@@ -1003,7 +1001,7 @@ pub async fn open_detail_window(
     let existing = app.webview_windows().keys()
         .filter(|k| k.starts_with("detail-")).count();
     if existing >= 10 {
-        return Err("開いているウィンドウが多すぎます。いくつか閉じてください。".into());
+        return Err(config::TOO_MANY_WINDOWS_MSG.into());
     }
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1168,7 +1166,7 @@ pub async fn fetch_student_profile(state: State<'_, AppState>, db: State<'_, cra
                 return Ok(cached);
             }
         }
-        return Err(AUTH_REQUIRED_MSG.into());
+        return Err(config::KGC_AUTH_REQUIRED_MSG.into());
     }
     // Fetch timetable page for basic info (name, id, faculty, department)
     let url1 = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
@@ -1267,14 +1265,15 @@ pub async fn debug_ping(target: String) -> Result<PingResult, String> {
         return Err("許可されていないホストです".into());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .danger_accept_invalid_certs(false)
-        .build()
-        .map_err(|e| e.to_string())?;
+    static PING_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build ping client")
+    });
 
     let start = Instant::now();
-    match client.head(&target).send().await {
+    match PING_CLIENT.head(&target).send().await {
         Ok(resp) => {
             let latency = start.elapsed().as_millis() as u64;
             Ok(PingResult {
@@ -1816,6 +1815,50 @@ pub async fn get_session_expiry(state: State<'_, AppState>) -> Result<Option<i64
 /// Uses the Cookie Bridge approach: navigate to the SP's login entry, let the
 /// webview's persisted Okta cookies auto-authenticate, then extract session cookies.
 /// Returns true on success, false when Okta has also expired.
+
+/// Shared helper for headless SAML refresh (Luna / KWIC pattern).
+/// Handles: headless window -> cookie injection -> verify with redirect detection.
+/// Returns `Ok(true)` on verified success, `Ok(false)` if Okta expired, `Err` on failure.
+async fn headless_saml_refresh(
+    app: &tauri::AppHandle,
+    label: &str,
+    saml_url: &str,
+    sp_domain: &str,
+    base_url: &str,
+    verify_url: &str,
+    cookie_store: &reqwest_cookie_store::CookieStoreMutex,
+    http: &reqwest::Client,
+    session_expired_msg: &str,
+    is_session_expired: fn(&str) -> bool,
+) -> Result<bool, String> {
+    log::info!("headless_{}: starting (Cookie Bridge)", label);
+
+    let win = match cookie_bridge::headless_saml_window(
+        app, label, saml_url, sp_domain, 20,
+    ).await? {
+        Some(w) => w,
+        None => return Ok(false),
+    };
+
+    cookie_bridge::extract_and_inject(app, sp_domain, cookie_store, base_url).await?;
+
+    let result = client::fetch_with_redirect(
+        http, verify_url, base_url, session_expired_msg, is_session_expired,
+    ).await;
+    let _ = win.close();
+
+    match result {
+        Ok(_) => {
+            log::info!("headless_{}: succeeded (verified)", label);
+            Ok(true)
+        }
+        Err(e) => {
+            log::warn!("headless_{}: cookie injection succeeded but session invalid: {}", label, e);
+            Err(e)
+        }
+    }
+}
+
 async fn headless_kgc_refresh(
     app: &tauri::AppHandle,
     state: &AppState,
@@ -1876,41 +1919,23 @@ async fn headless_luna_refresh(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<bool, String> {
-    log::info!("headless_luna_refresh: starting (Cookie Bridge)");
+    let luna = state.luna.lock().await;
+    let cookie_store = luna.cookie_store.clone();
+    let http = luna.http.clone();
+    drop(luna);
 
-    let win = match cookie_bridge::headless_saml_window(
-        app, "luna-headless", config::LUNA_SAML_URL, "luna.kwansei.ac.jp", 20,
-    ).await? {
-        Some(w) => w,
-        None => return Ok(false),
-    };
-
-    let cookie_store = state.luna.lock().await.cookie_store.clone();
-    cookie_bridge::extract_and_inject(
-        app, "luna.kwansei.ac.jp", &cookie_store, config::LUNA_BASE,
-    ).await?;
-
-    // Verify session against the server before marking authenticated
-    let http = state.luna.lock().await.http.clone();
     let verify_url = format!("{}/lms/timetable", config::LUNA_BASE);
-    match client::fetch_with_redirect(
-        &http, &verify_url, config::LUNA_BASE,
+    let ok = headless_saml_refresh(
+        app, "luna-headless", config::LUNA_SAML_URL, "luna.kwansei.ac.jp",
+        config::LUNA_BASE, &verify_url, &cookie_store, &http,
         luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
-    ).await {
-        Ok(_) => {
-            let mut luna = state.luna.lock().await;
-            luna.authenticated = true;
-            luna.save_session();
-            log::info!("headless_luna_refresh: succeeded (verified)");
-            let _ = win.close();
-            Ok(true)
-        }
-        Err(e) => {
-            log::warn!("headless_luna_refresh: cookie injection succeeded but session invalid: {}", e);
-            let _ = win.close();
-            Err(e)
-        }
+    ).await?;
+    if ok {
+        let mut luna = state.luna.lock().await;
+        luna.authenticated = true;
+        luna.save_session();
     }
+    Ok(ok)
 }
 
 /// Attempt a silent (headless) KWIC Portal session refresh via an invisible WebView.
@@ -1918,41 +1943,23 @@ async fn headless_kwic_refresh(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<bool, String> {
-    log::info!("headless_kwic_refresh: starting (Cookie Bridge)");
+    let kwic = state.kwic.lock().await;
+    let cookie_store = kwic.cookie_store.clone();
+    let http = kwic.http.clone();
+    drop(kwic);
 
-    let win = match cookie_bridge::headless_saml_window(
-        app, "kwic-headless", config::KWIC_SAML_URL, "kwic.kwansei.ac.jp", 20,
-    ).await? {
-        Some(w) => w,
-        None => return Ok(false),
-    };
-
-    let cookie_store = state.kwic.lock().await.cookie_store.clone();
-    cookie_bridge::extract_and_inject(
-        app, "kwic.kwansei.ac.jp", &cookie_store, config::KWIC_BASE,
-    ).await?;
-
-    // Verify session against the server before marking authenticated
-    let http = state.kwic.lock().await.http.clone();
     let verify_url = format!("{}/portal/home", config::KWIC_BASE);
-    match client::fetch_with_redirect(
-        &http, &verify_url, config::KWIC_BASE,
+    let ok = headless_saml_refresh(
+        app, "kwic-headless", config::KWIC_SAML_URL, "kwic.kwansei.ac.jp",
+        config::KWIC_BASE, &verify_url, &cookie_store, &http,
         kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
-    ).await {
-        Ok(_) => {
-            let mut kwic = state.kwic.lock().await;
-            kwic.authenticated = true;
-            kwic.save_session();
-            log::info!("headless_kwic_refresh: succeeded (verified)");
-            let _ = win.close();
-            Ok(true)
-        }
-        Err(e) => {
-            log::warn!("headless_kwic_refresh: cookie injection succeeded but session invalid: {}", e);
-            let _ = win.close();
-            Err(e)
-        }
+    ).await?;
+    if ok {
+        let mut kwic = state.kwic.lock().await;
+        kwic.authenticated = true;
+        kwic.save_session();
     }
+    Ok(ok)
 }
 
 /// Silently refresh one or all service sessions using hidden WebViews.

@@ -330,11 +330,9 @@ async fn call_gemini(
 
 /// Truncate error body to avoid leaking excessive API detail to the frontend.
 fn truncate_error(body: &str) -> String {
-    if body.chars().count() <= 200 {
-        body.to_string()
-    } else {
-        let truncated: String = body.chars().take(200).collect();
-        format!("{}…", truncated)
+    match body.char_indices().nth(200) {
+        Some((i, _)) => format!("{}...", &body[..i]),
+        None => body.to_string(),
     }
 }
 

@@ -49,12 +49,14 @@
     "category": "Education",
     "shortDescription": "関西学院大学の学生向け統合キャンパスアプリ",
     "longDescription": "Selah は関西学院大学の KG-Course・Luna LMS・KWIC・Microsoft 365 メールを一画面に統合し、時間割・成績・課題・通知を素早く確認できるデスクトップアプリです。",
-    "copyright": "2025 haru",
+    "copyright": "Copyright 2025-2026 haru. All rights reserved.",
     "macOS": {
       "minimumSystemVersion": "11.0",
       "files": {
-        "PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy"
-      }
+        "PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy",
+        "Entitlements.plist": "Entitlements.plist"
+      },
+      "entitlements": "Entitlements.plist"
     },
     "windows": {
       "digestAlgorithm": "sha256",

@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
-use crate::mail::{MailMessage, MailDetail, MailProfile, MailConfig, MailAttachment};
+use crate::config;
+use crate::mail::{self, MailMessage, MailDetail, MailProfile, MailConfig, MailAttachment};
 use crate::AppState;
-
-const MAIL_AUTH_REQUIRED_MSG: &str = "メールにログインしてください";
 
 /// Decode JWT payload without signature verification (we trust Microsoft's token)
 fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
@@ -167,33 +166,64 @@ pub async fn mail_fetch_profile(
     state: State<'_, AppState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<MailProfile, String> {
-    let mut mail = state.mail.lock().await;
-    if !mail.is_authenticated() {
-        if let Ok(Some((json, _))) = db.get_data_cache("mail_profile") {
-            if let Ok(cached) = serde_json::from_str(&json) {
-                log::info!("mail_profile: cache fallback (not authenticated)");
-                return Ok(cached);
-            }
-        }
-        return Err(MAIL_AUTH_REQUIRED_MSG.into());
-    }
-    match mail.fetch_profile().await {
-        Ok(data) => {
-            if let Ok(json) = serde_json::to_string(&data) {
-                let _ = db.save_data_cache("mail_profile", &json);
-            }
-            Ok(data)
-        }
-        Err(e) => {
+    // Phase 1: short lock – auth check + token preparation
+    let prep = {
+        let mut mail = state.mail.lock().await;
+        if !mail.is_authenticated() {
             if let Ok(Some((json, _))) = db.get_data_cache("mail_profile") {
                 if let Ok(cached) = serde_json::from_str(&json) {
-                    log::info!("mail_profile: cache fallback ({})", e);
+                    log::info!("mail_profile: cache fallback (not authenticated)");
                     return Ok(cached);
                 }
             }
-            Err(e)
+            return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
         }
+        mail.prepare_http().await
+    };
+    let (http, token) = prep?;
+
+    // Phase 2: lock-free network I/O
+    let url = format!("{}/me?$select=displayName,mail,userPrincipalName", config::GRAPH_BASE);
+    let body = match mail::graph_get_lockfree(&http, &url, &token).await {
+        Ok(body) => body,
+        Err((_, true)) => {
+            // 401: re-lock and retry with full auth refresh
+            let mut mail = state.mail.lock().await;
+            match mail.fetch_profile().await {
+                Ok(data) => {
+                    if let Ok(json) = serde_json::to_string(&data) {
+                        let _ = db.save_data_cache("mail_profile", &json);
+                    }
+                    return Ok(data);
+                }
+                Err(e) => {
+                    if let Ok(Some((json, _))) = db.get_data_cache("mail_profile") {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("mail_profile: cache fallback ({})", e);
+                            return Ok(cached);
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err((msg, false)) => {
+            if let Ok(Some((json, _))) = db.get_data_cache("mail_profile") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("mail_profile: cache fallback ({})", msg);
+                    return Ok(cached);
+                }
+            }
+            return Err(msg);
+        }
+    };
+
+    let data: MailProfile = serde_json::from_value(body)
+        .map_err(|e| format!("プロフィール解析失敗: {}", e))?;
+    if let Ok(json) = serde_json::to_string(&data) {
+        let _ = db.save_data_cache("mail_profile", &json);
     }
+    Ok(data)
 }
 
 /// Fetch inbox messages
@@ -204,39 +234,77 @@ pub async fn mail_fetch_inbox(
     top: Option<u32>,
     skip: Option<u32>,
 ) -> Result<Vec<MailMessage>, String> {
-    let mut mail = state.mail.lock().await;
-    if !mail.is_authenticated() {
-        // Try cache fallback
-        if let Ok(Some((json, _))) = db.get_data_cache("mail_inbox") {
-            if let Ok(cached) = serde_json::from_str(&json) {
-                log::info!("mail_inbox: cache fallback (not authenticated)");
-                return Ok(cached);
-            }
-        }
-        return Err(MAIL_AUTH_REQUIRED_MSG.into());
-    }
-    match mail.fetch_inbox(top.unwrap_or(20), skip.unwrap_or(0)).await {
-        Ok(data) => {
-            // Only cache the first page (skip=0) to avoid stale pagination
-            if skip.unwrap_or(0) == 0 {
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let _ = db.save_data_cache("mail_inbox", &json);
+    let top_val = top.unwrap_or(20);
+    let skip_val = skip.unwrap_or(0);
+
+    // Phase 1: short lock
+    let prep = {
+        let mut mail = state.mail.lock().await;
+        if !mail.is_authenticated() {
+            if let Ok(Some((json, _))) = db.get_data_cache("mail_inbox") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("mail_inbox: cache fallback (not authenticated)");
+                    return Ok(cached);
                 }
             }
-            Ok(data)
+            return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
         }
-        Err(e) => {
-            if skip.unwrap_or(0) == 0 {
+        mail.prepare_http().await
+    };
+    let (http, token) = prep?;
+
+    // Phase 2: lock-free network I/O
+    let url = format!(
+        "{}/me/mailFolders/inbox/messages?$top={}&$skip={}&$orderby=receivedDateTime desc&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments",
+        config::GRAPH_BASE, top_val, skip_val,
+    );
+    let body = match mail::graph_get_lockfree(&http, &url, &token).await {
+        Ok(body) => body,
+        Err((_, true)) => {
+            let mut mail = state.mail.lock().await;
+            match mail.fetch_inbox(top_val, skip_val).await {
+                Ok(data) => {
+                    if skip_val == 0 {
+                        if let Ok(json) = serde_json::to_string(&data) {
+                            let _ = db.save_data_cache("mail_inbox", &json);
+                        }
+                    }
+                    return Ok(data);
+                }
+                Err(e) => {
+                    if skip_val == 0 {
+                        if let Ok(Some((json, _))) = db.get_data_cache("mail_inbox") {
+                            if let Ok(cached) = serde_json::from_str(&json) {
+                                log::info!("mail_inbox: cache fallback ({})", e);
+                                return Ok(cached);
+                            }
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err((msg, false)) => {
+            if skip_val == 0 {
                 if let Ok(Some((json, _))) = db.get_data_cache("mail_inbox") {
                     if let Ok(cached) = serde_json::from_str(&json) {
-                        log::info!("mail_inbox: cache fallback ({})", e);
+                        log::info!("mail_inbox: cache fallback ({})", msg);
                         return Ok(cached);
                     }
                 }
             }
-            Err(e)
+            return Err(msg);
+        }
+    };
+
+    let resp: mail::GraphListResponse<MailMessage> = serde_json::from_value(body)
+        .map_err(|e| format!("メール解析失敗: {}", e))?;
+    if skip_val == 0 {
+        if let Ok(json) = serde_json::to_string(&resp.value) {
+            let _ = db.save_data_cache("mail_inbox", &json);
         }
     }
+    Ok(resp.value)
 }
 
 /// Fetch a single message detail
@@ -246,38 +314,73 @@ pub async fn mail_fetch_message(
     db: State<'_, crate::db::Database>,
     message_id: String,
 ) -> Result<MailDetail, String> {
+    mail::validate_message_id(&message_id)?;
     let cache_key = format!("mail_msg:{}", message_id);
-    let mut mail = state.mail.lock().await;
-    if !mail.is_authenticated() {
-        if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
-            if let Ok(cached) = serde_json::from_str(&json) {
-                log::info!("{}: cache fallback (not authenticated)", cache_key);
-                return Ok(cached);
-            }
-        }
-        return Err(MAIL_AUTH_REQUIRED_MSG.into());
-    }
-    // Mark as read in background
-    if let Err(e) = mail.mark_as_read(&message_id).await {
-        log::warn!("Failed to mark message {} as read: {}", message_id, e);
-    }
-    match mail.fetch_message(&message_id).await {
-        Ok(data) => {
-            if let Ok(json) = serde_json::to_string(&data) {
-                let _ = db.save_data_cache(&cache_key, &json);
-            }
-            Ok(data)
-        }
-        Err(e) => {
+
+    // Phase 1: short lock – auth check, mark_as_read (fast PATCH), prepare token
+    let prep = {
+        let mut mail = state.mail.lock().await;
+        if !mail.is_authenticated() {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
-                    log::info!("{}: cache fallback ({})", cache_key, e);
+                    log::info!("{}: cache fallback (not authenticated)", cache_key);
                     return Ok(cached);
                 }
             }
-            Err(e)
+            return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
         }
+        // Mark as read while we hold the lock (best-effort, fast PATCH)
+        if let Err(e) = mail.mark_as_read(&message_id).await {
+            log::warn!("Failed to mark message {} as read: {}", message_id, e);
+        }
+        mail.prepare_http().await
+    };
+    let (http, token) = prep?;
+
+    // Phase 2: lock-free fetch message (the heavier GET)
+    let url = format!(
+        "{}/me/messages/{}?$select=id,subject,body,from,receivedDateTime,isRead,hasAttachments,toRecipients,ccRecipients",
+        config::GRAPH_BASE, message_id,
+    );
+    let body = match mail::graph_get_lockfree(&http, &url, &token).await {
+        Ok(body) => body,
+        Err((_, true)) => {
+            let mut mail = state.mail.lock().await;
+            match mail.fetch_message(&message_id).await {
+                Ok(data) => {
+                    if let Ok(json) = serde_json::to_string(&data) {
+                        let _ = db.save_data_cache(&cache_key, &json);
+                    }
+                    return Ok(data);
+                }
+                Err(e) => {
+                    if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("{}: cache fallback ({})", cache_key, e);
+                            return Ok(cached);
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err((msg, false)) => {
+            if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("{}: cache fallback ({})", cache_key, msg);
+                    return Ok(cached);
+                }
+            }
+            return Err(msg);
+        }
+    };
+
+    let data: MailDetail = serde_json::from_value(body)
+        .map_err(|e| format!("メール詳細解析失敗: {}", e))?;
+    if let Ok(json) = serde_json::to_string(&data) {
+        let _ = db.save_data_cache(&cache_key, &json);
     }
+    Ok(data)
 }
 
 /// Get mail config
@@ -315,7 +418,7 @@ pub async fn mail_fetch_attachments(
 ) -> Result<Vec<MailAttachment>, String> {
     let mut mail = state.mail.lock().await;
     if !mail.is_authenticated() {
-        return Err("メールにログインしてください".into());
+        return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
     }
     mail.fetch_attachments(&message_id).await
 }
@@ -330,7 +433,7 @@ pub async fn mail_download_attachment(
 ) -> Result<String, String> {
     let mut mail = state.mail.lock().await;
     if !mail.is_authenticated() {
-        return Err("メールにログインしてください".into());
+        return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
     }
     mail.download_attachment(&message_id, &attachment_id, &file_name).await
 }

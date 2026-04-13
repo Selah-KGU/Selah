@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { activeTab, aiRefreshRequested, unreadNotifCount, unreadMailCount, readIdsStore, onCacheUpdate, getCached, loadReadIds, isReadId, notifKey } from "./stores";
+  import { activeTab, aiRefreshRequested, unreadNotifCount, unreadMailCount, readIdsStore, onCacheUpdate, getCached, loadReadIds, notifKey } from "./stores";
+  import { get } from "svelte/store";
   import type { NotificationsData } from "./stores";
   import Icon from "./Icon.svelte";
   import type { IconName } from "./Icon.svelte";
@@ -46,7 +47,8 @@
   $effect(() => {
     const tab = $activeTab;
     if (!visited.has(tab)) {
-      visited = new Set([...visited, tab]);
+      visited.add(tab);
+      visited = visited;
     }
   });
 
@@ -64,21 +66,25 @@
     const kgcItems = getCached<NotificationsData>("notifications")?.entries ?? [];
     const lunaItems = getCached<LunaNotification[]>("luna_updates") ?? [];
     const kwicHome = getCached<KwicPortalHome>("kwic_home");
+    const readIds = get(readIdsStore);
+    const kgcRead = new Set(readIds.kgc);
+    const lunaRead = new Set(readIds.luna);
+    const kwicRead = new Set(readIds.kwic);
     let count = 0;
     for (const n of kgcItems) {
       const readKey = n.id || notifKey(n.title, n.date);
-      if (!isReadId("kgc", readKey)) count++;
+      if (!kgcRead.has(readKey)) count++;
     }
     for (const n of lunaItems) {
       const readKey = (n.url || n.idnumber || "") || notifKey(n.content, n.date);
-      if (!isReadId("luna", readKey)) count++;
+      if (!lunaRead.has(readKey)) count++;
     }
     if (kwicHome) {
       for (const sec of kwicHome.sections) {
         if (sec.title === "メインリンク" || sec.title === "注目コンテンツ" || sec.title === "授業のお知らせ") continue;
         for (const item of sec.items) {
           const readKey = item.id || notifKey(item.title, item.date);
-          if (!isReadId("kwic", readKey)) count++;
+          if (!kwicRead.has(readKey)) count++;
         }
       }
     }

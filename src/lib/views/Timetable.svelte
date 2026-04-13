@@ -28,6 +28,7 @@
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let calSyncTimer: ReturnType<typeof setInterval> | undefined;
   let calSyncInitTimeout: ReturnType<typeof setTimeout> | undefined;
+  let lunaCountsInitTimeout: ReturnType<typeof setTimeout> | undefined;
   let lunaCountsTimer: ReturnType<typeof setInterval> | undefined;
 
   // ── Constants ──
@@ -517,9 +518,12 @@
   let screenIdx = $derived(cellInfoTick % screenLabels.length);
   let screenLabel = $derived(screenLabels[screenIdx]);
 
+  let cellInfoTimeout: ReturnType<typeof setTimeout> | undefined;
+
   function stepCellInfo() {
     cellInfoFade = false;
-    setTimeout(() => {
+    clearTimeout(cellInfoTimeout);
+    cellInfoTimeout = setTimeout(() => {
       cellInfoTick++;
       cellInfoFade = true;
     }, 200);
@@ -700,7 +704,7 @@
     startTipCycle();
     startCalSyncTimer();
     // Luna activity counts: run once after 10s, then every 3 hours
-    setTimeout(() => autoRefreshLunaCounts(), 10_000);
+    lunaCountsInitTimeout = setTimeout(() => autoRefreshLunaCounts(), 10_000);
     lunaCountsTimer = setInterval(() => autoRefreshLunaCounts(), LUNA_COUNTS_INTERVAL);
     window.addEventListener("keydown", handleKeydown);
     window.addEventListener("selah-fav-toggle", handleFavToggle as EventListener);
@@ -730,7 +734,9 @@
     stopTipCycle();
     stopCalSyncTimer();
     if (lunaCountsTimer) clearInterval(lunaCountsTimer);
+    if (lunaCountsInitTimeout) clearTimeout(lunaCountsInitTimeout);
     if (toastTimer) clearTimeout(toastTimer);
+    clearTimeout(cellInfoTimeout);
     window.removeEventListener("keydown", handleKeydown);
     window.removeEventListener("selah-fav-toggle", handleFavToggle as EventListener);
     document.removeEventListener("visibilitychange", handleVisibilityChange);

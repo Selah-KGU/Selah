@@ -278,10 +278,11 @@
   // Import pre-boot logs from index.html collector
   if (typeof window !== "undefined" && (window as any).__SELAH_PREBOOT_LOGS__) {
     const prebootLogs: { type: string; message: string; time: string }[] = (window as any).__SELAH_PREBOOT_LOGS__;
-    for (const log of prebootLogs) {
+    const imported = prebootLogs.map(log => {
       const level = (["info", "warn", "error", "debug"].includes(log.type) ? log.type : "info") as LogEntry["level"];
-      logEntries = [...logEntries, { time: log.time, level, message: log.message }];
-    }
+      return { time: log.time, level, message: log.message };
+    });
+    logEntries = [...logEntries, ...imported];
     delete (window as any).__SELAH_PREBOOT_LOGS__;
   }
   addLog("info", "デバッグパネル初期化完了");

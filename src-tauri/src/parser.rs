@@ -10,6 +10,9 @@ pub(crate) static SEL_TH: LazyLock<Selector> = LazyLock::new(|| Selector::parse(
 pub(crate) static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).expect("valid selector"));
 pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output").expect("valid selector"));
 static SEL_TABLE_OUTPUT_SEISEKIT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output_seisekiT").expect("valid selector"));
+static SEL_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("input").expect("valid selector"));
+static SEL_SELECT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("select").expect("valid selector"));
+static SEL_OPTION_SELECTED: LazyLock<Selector> = LazyLock::new(|| Selector::parse("option[selected]").expect("valid selector"));
 static SESSION_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"第([\d,～~・-]+)回|Session\s+([\d,～~-]+)").unwrap());
 static NUM_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\d+").unwrap());
 
@@ -30,11 +33,11 @@ pub struct StudentInfo {
     pub address: String,
 }
 
-/// Extract value of a hidden input by name attribute
-fn hidden_input(doc: &Html, name: &str) -> String {
-    let selector_str = format!(r#"input[type="hidden"][name="{}"]"#, name);
-    if let Ok(sel) = Selector::parse(&selector_str) {
-        if let Some(el) = doc.select(&sel).next() {
+/// Extract value of a hidden input by name attribute.
+/// Shared across parser, syllabus, and other KGC page parsing.
+pub(crate) fn hidden_input(doc: &Html, name: &str) -> String {
+    for el in doc.select(&SEL_HIDDEN_INPUT) {
+        if el.value().attr("name") == Some(name) {
             return el.value().attr("value").unwrap_or("").trim().to_string();
         }
     }
@@ -245,9 +248,9 @@ pub fn parse_timetable(html: &str) -> TimetableData {
 
     // Collect ALL input fields from the form for resubmission
     // The Struts form requires all fields to be present when POSTing
-    let all_input_sel = Selector::parse("input").expect("valid selector");
+    let all_input_sel = &*SEL_INPUT;
     let mut form_fields = std::collections::HashMap::new();
-    for el in doc.select(&all_input_sel) {
+    for el in doc.select(all_input_sel) {
         let name = el.value().attr("name").unwrap_or("").trim();
         let value = el.value().attr("value").unwrap_or("").trim();
         if name.is_empty() {
@@ -262,16 +265,13 @@ pub fn parse_timetable(html: &str) -> TimetableData {
         form_fields.entry(name.to_string()).or_insert_with(|| value.to_string());
     }
     // Also collect <select> values
-    if let Ok(sel_sel) = Selector::parse("select") {
-        let opt_sel = Selector::parse("option[selected]").expect("valid selector");
-        for select_el in doc.select(&sel_sel) {
-            let name = select_el.value().attr("name").unwrap_or("").trim();
-            if !name.is_empty() {
-                let value = select_el.select(&opt_sel).next()
-                    .and_then(|o| o.value().attr("value"))
-                    .unwrap_or("").trim();
-                form_fields.entry(name.to_string()).or_insert_with(|| value.to_string());
-            }
+    for select_el in doc.select(&SEL_SELECT) {
+        let name = select_el.value().attr("name").unwrap_or("").trim();
+        if !name.is_empty() {
+            let value = select_el.select(&SEL_OPTION_SELECTED).next()
+                .and_then(|o| o.value().attr("value"))
+                .unwrap_or("").trim();
+            form_fields.entry(name.to_string()).or_insert_with(|| value.to_string());
         }
     }
 

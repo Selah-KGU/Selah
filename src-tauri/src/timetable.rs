@@ -19,7 +19,6 @@ use crate::luna_parser;
 use crate::parser;
 use crate::AppState;
 
-const AUTH_REQUIRED_MSG: &str = "ログインしてください";
 const AI_CACHE_MAX_AGE: i64 = 12 * 3600; // 12 hours
 
 /// Guard to prevent concurrent enrichment runs (Struts token conflicts).
@@ -42,10 +41,7 @@ fn day_str_to_int(d: &str) -> i32 {
 }
 
 fn day_int_to_str(d: i32) -> &'static str {
-    match d {
-        1 => "月", 2 => "火", 3 => "水", 4 => "木", 5 => "金", 6 => "土",
-        _ => "?",
-    }
+    if (1..=6).contains(&d) { config::DAY_SHORT[d as usize] } else { "?" }
 }
 
 /// Response type: raw data + optional cached AI result.
@@ -104,7 +100,7 @@ pub async fn sync_schedule_data(
     let kgc_http = {
         let client = state.client.lock().await;
         if !client.is_authenticated() {
-            return Err(AUTH_REQUIRED_MSG.into());
+            return Err(config::KGC_AUTH_REQUIRED_MSG.into());
         }
         client.http.clone()
     };
@@ -184,11 +180,11 @@ pub async fn sync_schedule_data(
     let snap = SnapshotState {
         current_week_label: current_week_label.clone(),
         next_week_label: next_week_label.clone(),
-        luna_year: year.clone(),
-        luna_term: term.clone(),
+        luna_year: year,
+        luna_term: term,
         luna_communities: communities.clone(),
-        luna_year_options: year_opts.clone(),
-        luna_term_options: term_opts.clone(),
+        luna_year_options: year_opts,
+        luna_term_options: term_opts,
         updated_at: 0, // filled by save_snapshot_state
     };
     db.save_snapshot_state(&snap)?;
@@ -199,7 +195,7 @@ pub async fn sync_schedule_data(
     }
 
     // ── Step 6: Build final response from DB ──
-    let raw = db.build_raw_data(&current_week_label, &next_week_label, communities.clone())?;
+    let raw = db.build_raw_data(&current_week_label, &next_week_label, communities)?;
     log::info!(
         "sync_schedule_data: done — kgc_current={}, kgc_next={}, luna={}, plans={}, counts={}",
         raw.kgc_entries_current.len(), raw.kgc_entries_next.len(),
@@ -212,11 +208,11 @@ pub async fn sync_schedule_data(
         ai_result,
         ai_stale,
         snapshot_updated_at: epoch_secs(),
-        luna_communities: communities,
-        luna_year_options: year_opts,
-        luna_term_options: term_opts,
-        luna_year: year,
-        luna_term: term,
+        luna_communities: snap.luna_communities,
+        luna_year_options: snap.luna_year_options,
+        luna_term_options: snap.luna_term_options,
+        luna_year: snap.luna_year,
+        luna_term: snap.luna_term,
     })
 }
 

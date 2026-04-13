@@ -29,7 +29,7 @@
     }, new Map<string, number>())
   );
 
-  let filtered = $derived(() => {
+  let filtered = $derived.by(() => {
     let items = pending;
     if (selectedCourse !== "all") items = items.filter(t => t.course_name === selectedCourse);
     return items.slice().sort((a, b) => parseDeadline(a.deadline) - parseDeadline(b.deadline));
@@ -199,11 +199,11 @@
     {#if !$lunaAuthState.authenticated && todoItems.length === 0 && !loading}
       <div class="empty-msg">Luna LMSに接続されていません</div>
     {:else}
-      {#if filtered().length === 0}
+      {#if filtered.length === 0}
         <div class="empty-msg">該当するTODOはありません</div>
       {:else}
         <div class="task-list">
-          {#each filtered() as item, i}
+          {#each filtered as item, i}
             {@const urg = urgency(item.deadline)}
             {@const pct = urgencyPct(item.deadline)}
             {@const remaining = remainingLabel(item.deadline)}

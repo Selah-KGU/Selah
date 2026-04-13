@@ -37,7 +37,7 @@
   }
 
   // Build a map from task_name to guide for quick lookup
-  let guideMap = $derived(() => {
+  let guideMap = $derived.by(() => {
     const m = new Map<string, AiTodoTaskGuide>();
     if (!result?.task_guides) return m;
     for (const g of result.task_guides) {
@@ -48,8 +48,7 @@
 
   // Match a daily_plan task string to its guide (by substring match on task_name)
   function findGuide(taskStr: string): AiTodoTaskGuide | undefined {
-    const map = guideMap();
-    for (const [name, guide] of map) {
+    for (const [name, guide] of guideMap) {
       if (taskStr.includes(name) || name.includes(taskStr.replace(/（.*?）/g, "").trim())) {
         return guide;
       }

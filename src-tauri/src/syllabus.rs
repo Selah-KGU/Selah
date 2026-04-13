@@ -2,14 +2,14 @@ use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-use crate::parser::{SEL_HIDDEN_INPUT, SEL_TABLE_OUTPUT, SEL_TR};
+use crate::parser::{self, SEL_HIDDEN_INPUT, SEL_TABLE_OUTPUT, SEL_TR};
 
 // ============ Selectors ============
 
 static SEL_DD_UL_LI: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dd ul li").expect("valid selector"));
 static SEL_IMG: LazyLock<Selector> = LazyLock::new(|| Selector::parse("img").expect("valid selector"));
-static SEL_EREGISTER: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[name=\"ERegister\"]"#).expect("valid selector"));
-static SEL_TYPE_IMAGE: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type=\"image\"]"#).expect("valid selector"));
+static SEL_EREGISTER: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[name="ERegister"]"#).expect("valid selector"));
+static SEL_TYPE_IMAGE: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="image"]"#).expect("valid selector"));
 
 // ============ Types ============
 
@@ -73,16 +73,13 @@ pub fn parse_search_results_public(html: &str) -> Result<SyllabusSearchResult, S
 fn parse_search_results(html: &str) -> Result<SyllabusSearchResult, String> {
     let doc = Html::parse_document(html);
 
-    // Parse pagination info
-    let total_count = extract_hidden_value(&doc, "hdnCount")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
-    let current_page = extract_hidden_value(&doc, "hdnCurrentPage")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1);
-    let total_pages = extract_hidden_value(&doc, "hdnTotalPage")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1);
+    // Parse pagination info — hidden_input returns "" when not found
+    let total_count = parser::hidden_input(&doc, "hdnCount")
+        .parse::<usize>().unwrap_or(0);
+    let current_page = parser::hidden_input(&doc, "hdnCurrentPage")
+        .parse::<usize>().unwrap_or(1);
+    let total_pages = parser::hidden_input(&doc, "hdnTotalPage")
+        .parse::<usize>().unwrap_or(1);
 
     // Parse result rows from table.output
     let mut entries = Vec::new();
@@ -102,12 +99,6 @@ fn parse_search_results(html: &str) -> Result<SyllabusSearchResult, String> {
         current_page,
         total_pages,
     })
-}
-
-fn extract_hidden_value(doc: &Html, name: &str) -> Option<String> {
-    let selector_str = format!(r#"input[name="{}"]"#, name);
-    let sel = Selector::parse(&selector_str).ok()?;
-    doc.select(&sel).next()?.value().attr("value").map(|s| s.to_string())
 }
 
 fn parse_result_row(tr: &scraper::ElementRef) -> Option<SyllabusEntry> {

@@ -125,7 +125,7 @@ pub struct MailBody {
 
 /// Graph API list response wrapper
 #[derive(Debug, Deserialize)]
-struct GraphListResponse<T> {
+pub(crate) struct GraphListResponse<T> {
     pub value: Vec<T>,
 }
 
@@ -149,7 +149,7 @@ pub struct MailClient {
 }
 
 /// Validate a Graph API message ID (alphanumeric, hyphens, underscores, equals, dots).
-fn validate_message_id(id: &str) -> Result<(), String> {
+pub(crate) fn validate_message_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=.".contains(c)) {
         return Err("無効なメッセージIDです".into());
     }
@@ -312,13 +312,20 @@ impl MailClient {
 
     /// Ensure we have a valid (non-expired) access token, refreshing if needed
     async fn ensure_token(&mut self) -> Result<String, String> {
-        let token = self.token.as_ref().ok_or("メールにログインしてください")?;
+        let token = self.token.as_ref().ok_or(config::MAIL_AUTH_REQUIRED_MSG)?;
         let now = chrono::Utc::now().timestamp();
         if now >= token.expires_at - 60 {
             // Token expired or about to expire, refresh
             self.refresh_token().await?;
         }
         Ok(self.token.as_ref().ok_or("token lost after refresh")?.access_token.clone())
+    }
+
+    /// Prepare an HTTP client + valid access token for lock-free network I/O.
+    /// Callers should: lock -> prepare_http() -> unlock -> use (http, token) for requests.
+    pub async fn prepare_http(&mut self) -> Result<(Client, String), String> {
+        let token = self.ensure_token().await?;
+        Ok((self.http.clone(), token))
     }
 
     /// GET request to Graph API with auto-refresh
@@ -345,7 +352,7 @@ impl MailClient {
                 .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
             if !resp2.status().is_success() {
                 self.clear_token();
-                return Err("メールセッションが期限切れです。再ログインしてください。".into());
+                return Err(config::MAIL_SESSION_EXPIRED_MSG.into());
             }
             return resp2.json().await.map_err(|e| format!("レスポンス解析失敗: {}", e));
         }
@@ -430,7 +437,7 @@ impl MailClient {
                 .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
             if !resp2.status().is_success() {
                 self.clear_token();
-                return Err("メールセッションが期限切れです。再ログインしてください。".into());
+                return Err(config::MAIL_SESSION_EXPIRED_MSG.into());
             }
             return resp2.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("レスポンス読み込み失敗: {}", e));
         }
@@ -514,4 +521,31 @@ impl MailClient {
         log::info!("Attachment saved to: {}", path_str);
         Ok(path_str)
     }
+}
+
+/// Lock-free Graph API GET. Returns Err((msg, needs_reauth)).
+/// On 401, returns Err with needs_reauth=true so callers can re-lock and retry.
+pub async fn graph_get_lockfree(
+    http: &Client,
+    url: &str,
+    token: &str,
+) -> Result<serde_json::Value, (String, bool)> {
+    let resp = http
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| (format!("Graph APIリクエスト失敗: {}", e), false))?;
+
+    let status = resp.status();
+    if status.as_u16() == 401 {
+        return Err((config::MAIL_SESSION_EXPIRED_MSG.into(), true));
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err((format!("Graph APIエラー ({}): {}", status, body), false));
+    }
+    resp.json()
+        .await
+        .map_err(|e| (format!("レスポンス解析失敗: {}", e), false))
 }

@@ -340,7 +340,11 @@
           <div class="detail-body" onclick={handleBodyClick}>
             {#if selectedMessage.body?.content}
               {#if selectedMessage.body.contentType === "html"}
-                {@html DOMPurify.sanitize(selectedMessage.body.content)}
+                {@html DOMPurify.sanitize(selectedMessage.body.content, {
+                  FORBID_TAGS: ['form', 'input', 'button', 'textarea', 'select', 'script', 'iframe', 'object', 'embed', 'style'],
+                  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'formaction', 'action', 'style'],
+                  ALLOW_DATA_ATTR: false,
+                })}
               {:else}
                 <pre class="plain-text">{selectedMessage.body.content}</pre>
               {/if}

@@ -285,6 +285,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_luna_id ON luna_courses(luna_id);
             CREATE INDEX IF NOT EXISTS idx_sp_kgc_code ON session_plans(kgc_code);
             CREATE INDEX IF NOT EXISTS idx_la_luna_id ON luna_activities(luna_id);
+            CREATE INDEX IF NOT EXISTS idx_lc_updated ON luna_counts(updated_at);
         ").map_err(|e| format!("DB index: {}", e))?;
 
         // Drop old merged tables if they exist (migration from old schema)
@@ -321,8 +322,13 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    #[allow(dead_code)]
     pub fn get_kgc_courses(&self, week_label: &str) -> Result<Vec<KgcCourseRow>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        Self::query_kgc_courses(&conn, week_label)
+    }
+
+    fn query_kgc_courses(conn: &Connection, week_label: &str) -> Result<Vec<KgcCourseRow>, String> {
         let mut stmt = conn.prepare(
             "SELECT id, kgc_code, name, day, period, room, detail_path, is_cancelled, is_makeup, is_room_changed, week_label
              FROM kgc_courses WHERE week_label = ?1 ORDER BY day, period"
@@ -387,8 +393,13 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    #[allow(dead_code)]
     pub fn get_luna_courses(&self) -> Result<Vec<LunaCourseRow>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        Self::query_luna_courses(&conn)
+    }
+
+    fn query_luna_courses(conn: &Connection) -> Result<Vec<LunaCourseRow>, String> {
         let mut stmt = conn.prepare(
             "SELECT id, luna_id, name, teacher, day, period FROM luna_courses ORDER BY day, period"
         ).map_err(|e| format!("DB query: {}", e))?;
@@ -424,19 +435,26 @@ impl Database {
     pub fn upsert_session_plans(&self, kgc_code: &str, plans: &[SessionPlanRow]) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let now = epoch_secs();
+        let mut stmt = conn.prepare(
+            "INSERT INTO session_plans (kgc_code, session_num, th_header, topic, delivery_mode, study_outside, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(kgc_code, session_num) DO UPDATE SET th_header=?3, topic=?4, delivery_mode=?5, study_outside=?6, updated_at=?7"
+        ).map_err(|e| format!("DB prepare: {}", e))?;
         for p in plans {
-            conn.execute(
-                "INSERT INTO session_plans (kgc_code, session_num, th_header, topic, delivery_mode, study_outside, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)
-                 ON CONFLICT(kgc_code, session_num) DO UPDATE SET th_header=?3, topic=?4, delivery_mode=?5, study_outside=?6, updated_at=?7",
+            stmt.execute(
                 params![kgc_code, p.session_num, p.th_header, p.topic, p.delivery_mode, p.study_outside, now],
             ).map_err(|e| format!("DB upsert plan: {}", e))?;
         }
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_all_session_plans(&self) -> Result<Vec<(String, Vec<SessionPlanRow>)>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        Self::query_all_session_plans(&conn)
+    }
+
+    fn query_all_session_plans(conn: &Connection) -> Result<Vec<(String, Vec<SessionPlanRow>)>, String> {
         let mut stmt = conn.prepare(
             "SELECT kgc_code, session_num, th_header, topic, delivery_mode, study_outside FROM session_plans ORDER BY kgc_code, session_num"
         ).map_err(|e| format!("DB query: {}", e))?;
@@ -472,8 +490,13 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_all_kgc_course_details(&self) -> Result<Vec<KgcCourseDetailRow>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        Self::query_all_kgc_course_details(&conn)
+    }
+
+    fn query_all_kgc_course_details(conn: &Connection) -> Result<Vec<KgcCourseDetailRow>, String> {
         let mut stmt = conn.prepare(
             "SELECT kgc_code, fields_json, delivery_mode FROM kgc_course_details"
         ).map_err(|e| format!("DB query: {}", e))?;
@@ -501,8 +524,13 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_all_luna_counts(&self) -> Result<Vec<(String, LunaCountsRow)>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        Self::query_all_luna_counts(&conn)
+    }
+
+    fn query_all_luna_counts(conn: &Connection) -> Result<Vec<(String, LunaCountsRow)>, String> {
         let mut stmt = conn.prepare(
             "SELECT luna_id, announcements, new_announcements, reports, exams, discussions FROM luna_counts"
         ).map_err(|e| format!("DB query: {}", e))?;
@@ -522,31 +550,33 @@ impl Database {
 
     /// Replace all activities for a given luna_id with fresh data.
     pub fn replace_luna_activities(&self, luna_id: &str, activities: &[LunaActivityRow]) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let mut conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let now = epoch_secs();
-        conn.execute_batch("BEGIN").map_err(|e| format!("DB begin: {}", e))?;
-        let result = (|| -> Result<(), String> {
-            conn.execute("DELETE FROM luna_activities WHERE luna_id = ?1", params![luna_id])
-                .map_err(|e| format!("DB delete activities: {}", e))?;
+        let tx = conn.transaction().map_err(|e| format!("DB begin: {}", e))?;
+        tx.execute("DELETE FROM luna_activities WHERE luna_id = ?1", params![luna_id])
+            .map_err(|e| format!("DB delete activities: {}", e))?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO luna_activities (luna_id, activity_type, title, period, status, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6)"
+            ).map_err(|e| format!("DB prepare: {}", e))?;
             for a in activities {
-                conn.execute(
-                    "INSERT INTO luna_activities (luna_id, activity_type, title, period, status, updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6)",
+                stmt.execute(
                     params![luna_id, a.activity_type, a.title, a.period, a.status, now],
                 ).map_err(|e| format!("DB insert activity: {}", e))?;
             }
-            Ok(())
-        })();
-        if result.is_ok() {
-            conn.execute_batch("COMMIT").map_err(|e| format!("DB commit: {}", e))?;
-        } else {
-            let _ = conn.execute_batch("ROLLBACK");
         }
-        result
+        tx.commit().map_err(|e| format!("DB commit: {}", e))?;
+        Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_all_luna_activities(&self) -> Result<Vec<LunaActivityRow>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        Self::query_all_luna_activities(&conn)
+    }
+
+    fn query_all_luna_activities(conn: &Connection) -> Result<Vec<LunaActivityRow>, String> {
         let mut stmt = conn.prepare(
             "SELECT luna_id, activity_type, title, period, status FROM luna_activities ORDER BY luna_id, activity_type"
         ).map_err(|e| format!("DB query: {}", e))?;
@@ -641,19 +671,21 @@ impl Database {
     }
 
     /// Build the raw data snapshot for AI analysis.
+    /// Acquires the lock once and runs all queries in a single scope for consistency.
     pub fn build_raw_data(
         &self,
         current_week_label: &str,
         next_week_label: &str,
         luna_communities: Vec<crate::luna_parser::LunaCommunity>,
     ) -> Result<ScheduleRawData, String> {
-        let kgc_current = self.get_kgc_courses(current_week_label)?;
-        let kgc_next = self.get_kgc_courses(next_week_label)?;
-        let luna_courses = self.get_luna_courses()?;
-        let session_plans = self.get_all_session_plans()?;
-        let luna_counts = self.get_all_luna_counts()?;
-        let luna_activities = self.get_all_luna_activities()?;
-        let kgc_course_details = self.get_all_kgc_course_details()?;
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let kgc_current = Self::query_kgc_courses(&conn, current_week_label)?;
+        let kgc_next = Self::query_kgc_courses(&conn, next_week_label)?;
+        let luna_courses = Self::query_luna_courses(&conn)?;
+        let session_plans = Self::query_all_session_plans(&conn)?;
+        let luna_counts = Self::query_all_luna_counts(&conn)?;
+        let luna_activities = Self::query_all_luna_activities(&conn)?;
+        let kgc_course_details = Self::query_all_kgc_course_details(&conn)?;
         Ok(ScheduleRawData {
             kgc_entries_current: kgc_current,
             kgc_entries_next: kgc_next,

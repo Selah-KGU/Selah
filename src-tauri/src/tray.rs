@@ -8,30 +8,6 @@ use tauri::{
 
 use crate::config;
 
-fn day_label(day: &str) -> &str {
-    match day {
-        "月" => "月曜",
-        "火" => "火曜",
-        "水" => "水曜",
-        "木" => "木曜",
-        "金" => "金曜",
-        "土" => "土曜",
-        _ => day,
-    }
-}
-
-fn day_to_chrono_weekday(day: &str) -> Option<chrono::Weekday> {
-    match day {
-        "月" => Some(chrono::Weekday::Mon),
-        "火" => Some(chrono::Weekday::Tue),
-        "水" => Some(chrono::Weekday::Wed),
-        "木" => Some(chrono::Weekday::Thu),
-        "金" => Some(chrono::Weekday::Fri),
-        "土" => Some(chrono::Weekday::Sat),
-        _ => None,
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TrayClassEntry {
     pub day: String,
@@ -241,10 +217,8 @@ pub async fn get_tray_popup_data(
                     arr.as_array().map(|items| {
                         items.iter().filter_map(|item| {
                             let day_num = item.get("day")?.as_i64()? as i32;
-                            let day_str = match day_num {
-                                1 => "月", 2 => "火", 3 => "水", 4 => "木", 5 => "金", 6 => "土",
-                                _ => return None,
-                            };
+                            if day_num < 1 || day_num > 6 { return None; }
+                            let day_str = config::DAY_SHORT[day_num as usize];
                             Some(TrayClassEntry {
                                 day: day_str.to_string(),
                                 period: item.get("period")?.as_i64()? as i32,
@@ -297,7 +271,7 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
 
     for entry in &entries {
         if entry.is_cancelled { continue; }
-        let Some(entry_weekday) = day_to_chrono_weekday(&entry.day) else { continue };
+        let Some(entry_weekday) = config::day_to_chrono_weekday(&entry.day) else { continue };
         if entry.period < 1 || entry.period > 7 { continue; }
         let (sh, sm, _, _) = config::PERIOD_TIMES[(entry.period - 1) as usize];
         let start_minutes = (sh * 60 + sm) as i32;
@@ -345,7 +319,7 @@ pub fn update_tray(app: AppHandle, entries: Vec<TrayClassEntry>) -> Result<(), S
         } else if days_ahead == 1 {
             format!("明日 {}:{:02}", sh, sm)
         } else {
-            format!("{} {}:{:02}", day_label(&entry.day), sh, sm)
+            format!("{} {}:{:02}", config::day_label(&entry.day), sh, sm)
         };
 
         let _ = tray.set_tooltip(Some(&format!("{} | {}", time_label, name)));

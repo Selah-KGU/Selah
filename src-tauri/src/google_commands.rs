@@ -150,13 +150,15 @@ body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content
 h1{font-size:20px;margin:0 0 8px}p{font-size:14px;color:#86868b;margin:0}
 </style></head><body><div class="card"><h1>Google Calendar 認証完了</h1><p>このタブを閉じてください。</p></div></body></html>"#.to_string())
     } else {
+        let escaped_error = error.unwrap_or("不明なエラー")
+            .replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
         ("400 Bad Request", format!(
             r#"<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 body{{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f7;color:#1d1d1f}}
 .card{{text-align:center;padding:40px;border-radius:16px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
 h1{{font-size:20px;margin:0 0 8px;color:#ff3b30}}p{{font-size:14px;color:#86868b;margin:0}}
 </style></head><body><div class="card"><h1>認証エラー</h1><p>{}</p></div></body></html>"#,
-            error.unwrap_or("不明なエラー")
+            escaped_error
         ))
     };
 

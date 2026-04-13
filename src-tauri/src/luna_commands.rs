@@ -5,8 +5,25 @@ use crate::client;
 use crate::luna_client;
 use crate::luna_parser;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::LazyLock;
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+// ── Cached selectors (compiled once, reused across all calls) ──
+macro_rules! sel {
+    ($name:ident, $s:expr) => {
+        static $name: LazyLock<scraper::Selector> =
+            LazyLock::new(|| scraper::Selector::parse($s).expect(concat!("bad selector: ", $s)));
+    };
+}
+sel!(SEL_META_REFRESH,  "meta[http-equiv='refresh']");
+sel!(SEL_IFRAME_SRC,    "iframe[src]");
+sel!(SEL_SCRIPT,        "script");
+sel!(SEL_A_HREF,        "a[href]");
+sel!(SEL_BODY,          "body");
+sel!(SEL_FORM,          "form");
+sel!(SEL_REPORT_FORM,   "form#reportSubmissionForm");
+sel!(SEL_HIDDEN_INPUT,  "input[type='hidden']");
 
 /// Briefly lock Luna client, check auth and clone http. Releases lock immediately.
 async fn luna_http(state: &AppState) -> Result<reqwest::Client, String> {
@@ -212,6 +229,25 @@ fn is_safe_param(s: &str) -> bool {
     !s.is_empty() && s.len() <= 20 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// application/x-www-form-urlencoded: space -> +, encode other special chars.
+fn form_encode(s: &str) -> String {
+    let mut result = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() || "-._~".contains(ch) {
+            result.push(ch);
+        } else if ch == ' ' {
+            result.push('+');
+        } else {
+            let mut buf = [0u8; 4];
+            let s = ch.encode_utf8(&mut buf);
+            for b in s.bytes() {
+                result.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    result
+}
+
 /// Open a Luna detail page in a separate native window
 #[tauri::command]
 pub async fn luna_open_detail_window(
@@ -228,7 +264,7 @@ pub async fn luna_open_detail_window(
     let existing = app.webview_windows().keys()
         .filter(|k| k.starts_with("luna-detail-")).count();
     if existing >= 10 {
-        return Err("開いているウィンドウが多すぎます。いくつか閉じてください。".into());
+        return Err(config::TOO_MANY_WINDOWS_MSG.into());
     }
     let id = LUNA_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("luna-detail-{}", id);
@@ -827,24 +863,6 @@ pub async fn luna_download_material(
 
     // Browser form GET submit uses application/x-www-form-urlencoded
     // Build the full URL manually to avoid reqwest's .query() double-encoding
-    fn form_encode(s: &str) -> String {
-        // application/x-www-form-urlencoded: space → +, encode other special chars
-        let mut result = String::new();
-        for ch in s.chars() {
-            if ch.is_ascii_alphanumeric() || "-._~".contains(ch) {
-                result.push(ch);
-            } else if ch == ' ' {
-                result.push('+');
-            } else {
-                let mut buf = [0u8; 4];
-                let s = ch.encode_utf8(&mut buf);
-                for b in s.bytes() {
-                    result.push_str(&format!("%{:02X}", b));
-                }
-            }
-        }
-        result
-    }
     let query_string = format!(
         "fileName={}&fileId={}&idnumber={}&resourceId={}&screen=1&contentId={}&endDate={}&title={}",
         form_encode(&file_name),
@@ -926,23 +944,6 @@ pub async fn luna_resolve_material_link(
     let content_id = material_id.unwrap_or_default();
     let end_date_val = end_date.unwrap_or_default();
 
-    fn form_encode(s: &str) -> String {
-        let mut result = String::new();
-        for ch in s.chars() {
-            if ch.is_ascii_alphanumeric() || "-._~".contains(ch) {
-                result.push(ch);
-            } else if ch == ' ' {
-                result.push('+');
-            } else {
-                let mut buf = [0u8; 4];
-                let s = ch.encode_utf8(&mut buf);
-                for b in s.bytes() {
-                    result.push_str(&format!("%{:02X}", b));
-                }
-            }
-        }
-        result
-    }
     let query_string = format!(
         "fileName={}&fileId={}&idnumber={}&resourceId={}&screen=1&contentId={}&endDate={}&title={}",
         form_encode(&file_name),
@@ -975,7 +976,7 @@ pub async fn luna_resolve_material_link(
     let doc = scraper::Html::parse_document(&html);
 
     // meta refresh
-    if let Some(meta) = doc.select(&scraper::Selector::parse("meta[http-equiv='refresh']").unwrap()).next() {
+    if let Some(meta) = doc.select(&*SEL_META_REFRESH).next() {
         if let Some(content) = meta.value().attr("content") {
             if let Some(idx) = content.to_lowercase().find("url=") {
                 let url = content[idx + 4..].trim().trim_matches(|c| c == '\'' || c == '"');
@@ -987,7 +988,7 @@ pub async fn luna_resolve_material_link(
     }
 
     // iframe src
-    if let Some(iframe) = doc.select(&scraper::Selector::parse("iframe[src]").unwrap()).next() {
+    if let Some(iframe) = doc.select(&*SEL_IFRAME_SRC).next() {
         if let Some(src) = iframe.value().attr("src") {
             if src.starts_with("http") {
                 return Ok(src.to_string());
@@ -996,7 +997,7 @@ pub async fn luna_resolve_material_link(
     }
 
     // window.location or location.href in script
-    for script in doc.select(&scraper::Selector::parse("script").unwrap()) {
+    for script in doc.select(&*SEL_SCRIPT) {
         let text = script.text().collect::<String>();
         for pattern in &["window.location.href", "window.location", "location.href", "window.open("] {
             if let Some(idx) = text.find(pattern) {
@@ -1017,7 +1018,7 @@ pub async fn luna_resolve_material_link(
     }
 
     // <a> with external href
-    for a in doc.select(&scraper::Selector::parse("a[href]").unwrap()) {
+    for a in doc.select(&*SEL_A_HREF) {
         if let Some(href) = a.value().attr("href") {
             if href.starts_with("http") && !href.contains("luna.kwansei.ac.jp") {
                 return Ok(href.to_string());
@@ -1026,7 +1027,7 @@ pub async fn luna_resolve_material_link(
     }
 
     // Fallback: if the HTML body itself looks like a plain URL
-    let body_text = doc.select(&scraper::Selector::parse("body").unwrap()).next()
+    let body_text = doc.select(&*SEL_BODY).next()
         .map(|b| b.text().collect::<String>().trim().to_string())
         .unwrap_or_default();
     if body_text.starts_with("http") && !body_text.contains(' ') {
@@ -1158,10 +1159,12 @@ pub async fn luna_submit_report(
         raw_resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?
     };
 
-    // Dump confirmation page for debugging
-    let dump_path = std::env::temp_dir().join("luna_report_confirm.html");
-    let _ = std::fs::write(&dump_path, &confirm_html);
-    log::info!("Report confirm page dumped to {} ({} bytes)", dump_path.display(), confirm_html.len());
+    #[cfg(debug_assertions)]
+    {
+        let dump_path = std::env::temp_dir().join("luna_report_confirm.html");
+        let _ = std::fs::write(&dump_path, &confirm_html);
+        log::info!("Report confirm page dumped to {} ({} bytes)", dump_path.display(), confirm_html.len());
+    }
 
     if confirm_html.is_empty() {
         return Err("確認画面が空です。セッションが切れている可能性があります。".into());
@@ -1176,16 +1179,14 @@ pub async fn luna_submit_report(
             .unwrap_or(csrf);
 
         // Find the reportSubmissionForm specifically (not other forms on the page)
-        let form_sel = scraper::Selector::parse("form#reportSubmissionForm").unwrap();
-        let input_sel = scraper::Selector::parse("input[type='hidden']").unwrap();
         let mut action = String::new();
         let mut fields: Vec<(String, String)> = Vec::new();
 
-        if let Some(form_el) = confirm_doc.select(&form_sel).next() {
+        if let Some(form_el) = confirm_doc.select(&*SEL_REPORT_FORM).next() {
             if let Some(a) = form_el.value().attr("action") {
                 action = a.to_string();
             }
-            for input_el in form_el.select(&input_sel) {
+            for input_el in form_el.select(&*SEL_HIDDEN_INPUT) {
                 let name = input_el.value().attr("name").unwrap_or_default();
                 let value = input_el.value().attr("value").unwrap_or_default();
                 if !name.is_empty() {
@@ -1201,8 +1202,7 @@ pub async fn luna_submit_report(
 
         // Fallback: find form by action
         if action.is_empty() {
-            let any_form_sel = scraper::Selector::parse("form").unwrap();
-            for form_el in confirm_doc.select(&any_form_sel) {
+            for form_el in confirm_doc.select(&*SEL_FORM) {
                 if let Some(a) = form_el.value().attr("action") {
                     if a.contains("/report/submission") && !a.contains("download") {
                         action = a.to_string();
@@ -1280,10 +1280,12 @@ pub async fn luna_submit_report(
         raw_resp4.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?
     };
 
-    // Dump and check the result
-    let dump_path2 = std::env::temp_dir().join("luna_report_register_result.html");
-    let _ = std::fs::write(&dump_path2, &register_resp);
-    log::info!("Report register response dumped to {} ({} bytes)", dump_path2.display(), register_resp.len());
+    #[cfg(debug_assertions)]
+    {
+        let dump_path2 = std::env::temp_dir().join("luna_report_register_result.html");
+        let _ = std::fs::write(&dump_path2, &register_resp);
+        log::info!("Report register response dumped to {} ({} bytes)", dump_path2.display(), register_resp.len());
+    }
 
     // Verify: the result page should show completion
     if register_resp.contains("提出が完了") || register_resp.contains("完了しました") {
@@ -1295,8 +1297,11 @@ pub async fn luna_submit_report(
 
         // Re-fetch the original page to verify
         let verify_html = luna_get(&http, &submission_url).await?;
-        let dump_path3 = std::env::temp_dir().join("luna_report_verify.html");
-        let _ = std::fs::write(&dump_path3, &verify_html);
+        #[cfg(debug_assertions)]
+        {
+            let dump_path3 = std::env::temp_dir().join("luna_report_verify.html");
+            let _ = std::fs::write(&dump_path3, &verify_html);
+        }
 
         // Check for "既に提出済みの成果物" section containing actual files
         // NOT just "提出済" in comments or the file_name which might match the user's name

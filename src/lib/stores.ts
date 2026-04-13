@@ -343,13 +343,6 @@ export async function markBatchRead(source: string, ids: string[]): Promise<void
   });
 }
 
-/** Check if a notification is read (non-reactive, for imperative code). */
-export function isReadId(source: string, id: string): boolean {
-  const data = get(readIdsStore);
-  const ids = data[source as keyof ReadIdsData];
-  return ids ? ids.includes(id) : false;
-}
-
 function initTheme(): "system" | "light" | "dark" {
   if (typeof localStorage !== "undefined") {
     const saved = localStorage.getItem("selah-theme");

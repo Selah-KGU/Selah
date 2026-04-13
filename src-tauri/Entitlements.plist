@@ -6,7 +6,11 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Required for OAuth2 loopback redirect (Google Calendar login) -->
     <key>com.apple.security.network.server</key>
+    <true/>
+    <!-- File downloads (mail attachments, Luna course materials) -->
+    <key>com.apple.security.files.downloads.read-write</key>
     <true/>
     <key>keychain-access-groups</key>
     <array>

@@ -73,6 +73,12 @@ sel!(SEL_SUBPORTAL_TITLE_SPAN, ".subportal-block-list-li-txt-info2 span.link-txt
 sel!(SEL_SUBPORTAL_DATE, ".subportal-block-list-li-txt-info3 span");
 sel!(SEL_SUBPORTAL_DEPT, ".subportal-block-list-li-txt-info4");
 
+// Tab-specific notification selectors
+sel!(SEL_TAB1_LI, "#portalinfocontent1 li.portal-info-content-li");
+sel!(SEL_TAB2_LI, "#portalinfocontent2 li.portal-info-content-li");
+sel!(SEL_TAB3_LI, "#portalinfocontent3 li.portal-info-content-li");
+sel!(SEL_TAB4_LI, "#portalinfocontent4 li.portal-info-content-li");
+
 
 // ============ Types ============
 
@@ -384,7 +390,7 @@ pub async fn kwic_open_detail_window(
     let existing = app.webview_windows().keys()
         .filter(|k| k.starts_with("kwic-detail-")).count();
     if existing >= 10 {
-        return Err("開いているウィンドウが多すぎます。いくつか閉じてください。".into());
+        return Err(config::TOO_MANY_WINDOWS_MSG.into());
     }
     let id = KWIC_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("kwic-detail-{}", id);
@@ -518,7 +524,7 @@ pub async fn kwic_open_link(
 //     - .portal-information-new (NEW badge)
 
 fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
-    use scraper::{Html, Selector};
+    use scraper::Html;
 
     let document = Html::parse_document(html);
     let mut sections = Vec::new();
@@ -551,20 +557,15 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
     }
 
     // 2. Parse notification tabs
-    let tab_ids = [
-        ("portalinfocontent1", "呼出し・重要なお知らせ"),
-        ("portalinfocontent2", "学部・研究科からのお知らせ"),
-        ("portalinfocontent3", "授業のお知らせ"),
-        ("portalinfocontent4", "その他"),
+    let tabs: [(&scraper::Selector, &str); 4] = [
+        (&*SEL_TAB1_LI, "呼出し・重要なお知らせ"),
+        (&*SEL_TAB2_LI, "学部・研究科からのお知らせ"),
+        (&*SEL_TAB3_LI, "授業のお知らせ"),
+        (&*SEL_TAB4_LI, "その他"),
     ];
 
-    for (tab_id, tab_title) in &tab_ids {
-        let selector_str = format!("#{} li.portal-info-content-li", tab_id);
-        let sel = match Selector::parse(&selector_str) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let items: Vec<KwicPortalItem> = document.select(&sel).filter_map(|li| {
+    for (sel, tab_title) in &tabs {
+        let items: Vec<KwicPortalItem> = document.select(sel).filter_map(|li| {
             parse_info_item(&li).map(|(mut item, d2, d3, d4)| {
                 item.information_type = d2;
                 item.person_category_cd = d3;
