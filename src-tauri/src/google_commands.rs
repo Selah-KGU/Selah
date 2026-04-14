@@ -43,24 +43,23 @@ pub async fn gcal_open_login(
         let mut gcal = state.gcal.lock().await;
         gcal.auth_url(port)?
     };
-
-    // Open system browser via sandbox-safe opener plugin
-    use tauri_plugin_opener::OpenerExt;
-    app.opener().open_url(&auth_url, None::<&str>)
-        .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
-
     let app_clone = app.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     tokio::spawn(async move {
         // Convert to async listener (no polling loop, proper event-driven accept)
-        std_listener.set_nonblocking(true)
-            .unwrap_or_else(|e| log::warn!("set_nonblocking failed: {}", e));
+        if let Err(e) = std_listener.set_nonblocking(true) {
+            let _ = ready_tx.send(Err(format!("ローカルサーバー初期化失敗(set_nonblocking): {}", e)));
+            return;
+        }
         let listener = match tokio::net::TcpListener::from_std(std_listener) {
             Ok(l) => l,
             Err(e) => {
+                let _ = ready_tx.send(Err(format!("ローカルサーバー初期化失敗(from_std): {}", e)));
                 log::error!("Failed to create async TCP listener: {}", e);
                 return;
             }
         };
+        let _ = ready_tx.send(Ok(()));
 
         let code = tokio::time::timeout(std::time::Duration::from_secs(300), async {
             match listener.accept().await {
@@ -102,6 +101,18 @@ pub async fn gcal_open_login(
             }
         }
     });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(3), ready_rx).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(e))) => return Err(e),
+        Ok(Err(_)) => return Err("ローカルサーバー初期化失敗: ready channel closed".into()),
+        Err(_) => return Err("ローカルサーバー起動タイムアウト".into()),
+    }
+
+    // Open system browser via sandbox-safe opener plugin after listener is ready
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(&auth_url, None::<&str>)
+        .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
 
     Ok(())
 }
