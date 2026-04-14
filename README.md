@@ -139,9 +139,47 @@ npm run tauri build -- --target x86_64-pc-windows-msvc
 
 ビルド成果物は `src-tauri/target/release/bundle/` に出力されます（macOS: `dmg/`, `macos/` ／ Windows: `nsis/`）。
 
-## ダウンロード
+## ダウンロードとインストール
 
-[Releases](../../releases) ページから最新の DMG インストーラーをダウンロードできます。
+最新のインストーラーは [Releases](../../releases/latest) ページから取得できます。お使いのプラットフォームに合わせて以下を選択してください。
+
+| プラットフォーム | ファイル | 対応 |
+|---|---|---|
+| macOS (Apple Silicon / Intel) | `Selah_x.y.z_universal.dmg` | macOS 11.0 Big Sur 以降 |
+| Windows (x64) | `Selah_x.y.z_x64-setup.exe` | Windows 10 / 11 (x64) |
+
+### macOS
+
+1. Releases ページから `Selah_x.y.z_universal.dmg` をダウンロードします。
+2. DMG をダブルクリックして開き、**Selah.app** を `Applications` フォルダへドラッグ & ドロップします。
+3. 初回起動時に「開発元を確認できないため開けません」と表示された場合:
+   - Finder で `アプリケーション` フォルダを開き、**Selah.app** を **右クリック → 開く** を選択してください。
+   - macOS Sequoia 以降では、一度開こうとした後に **システム設定 → プライバシーとセキュリティ** の一番下にある「このまま開く」を押す必要があります。
+4. 初回起動時に SSO ログイン画面が表示されます。関学 ID とパスワードを入力してください（認証は内蔵 WebView 内で完結し、認証情報は外部に送信されません）。
+
+> Selah は現在コード署名されていません。ダウンロード後に `xattr` による隔離属性が付与されている場合は、ターミナルで以下を実行すると Gatekeeper の警告を回避できます。
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/Selah.app
+> ```
+
+### Windows
+
+1. Releases ページから `Selah_x.y.z_x64-setup.exe` をダウンロードします。
+2. インストーラーを実行します。**Windows SmartScreen** の警告が表示された場合は「詳細情報」→「実行」を選択してください。
+3. ウィザードの指示に従ってインストールを完了します（既定の場所は `%LOCALAPPDATA%\Programs\Selah`）。
+4. **WebView2 ランタイム** が未インストールの場合、Windows 11 には標準で含まれていますが、Windows 10 では [Microsoft Edge WebView2 ランタイム](https://developer.microsoft.com/microsoft-edge/webview2/) を別途インストールしてください。
+5. スタートメニューから Selah を起動し、SSO ログイン画面で認証を行います。
+
+### アップデート
+
+- 現在 **自動更新機能は未対応** です。新しいバージョンが公開されたら [Releases](../../releases) ページから手動で最新のインストーラーを取得してください。
+- アップデート時は同じインストーラーを再実行するだけで、設定やキャッシュは保持されます(ユーザーデータは `~/Library/Application Support/com.kgu.selah/` / `%APPDATA%\com.kgu.selah\` に残ります)。
+
+### アンインストール
+
+- **macOS**: `アプリケーション` フォルダから `Selah.app` を削除します。ユーザーデータを完全に消去する場合は `~/Library/Application Support/com.kgu.selah/` も削除してください。
+- **Windows**: 設定 → アプリ → インストールされているアプリ から「Selah」をアンインストールします。ユーザーデータは `%APPDATA%\com.kgu.selah\` に保存されます。
 
 ## 免責事項
 
