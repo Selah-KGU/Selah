@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached } from "../stores";
+  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached, aiNotifStore } from "../stores";
   import type { NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
   import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, aiChat, fetchWeather } from "../api";
   import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
@@ -473,6 +473,7 @@
     unsubLunaNotifs();
     unsubKwicHome();
     unsubWeather();
+    unsubAiNotif();
     unsubAuth();
     unsubLunaAuth();
     unsubKwicAuth();
@@ -484,6 +485,13 @@
   const unsubLunaNotifs = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => { lunaNotifs = fresh ?? []; });
   const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => { kwicHome = fresh ?? null; });
   const unsubWeather = onCacheUpdate<WeatherData>("weather", (fresh) => { if (fresh) applyWeather(fresh); });
+
+  // When AI scheduler signals a refresh (store set to null), re-run AI notif analysis
+  const unsubAiNotif = aiNotifStore.subscribe((val) => {
+    if (val === null && aiEnabled && !aiNotifLoading) {
+      fetchAiNotifs();
+    }
+  });
 
   // Re-fetch when auth state changes (e.g. after re-login, or initial session restore)
   const unsubAuth = authState.subscribe((state) => {
@@ -873,6 +881,7 @@ suggestionsのルール：
 
       aiNotifResult = result;
       localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result, sources: aiNotifSources }));
+      aiNotifStore.set({ result, sources: aiNotifSources, timestamp: Date.now() });
       startSuggestionCycle();
     } catch (e: any) {
       aiNotifError = e?.message || String(e);

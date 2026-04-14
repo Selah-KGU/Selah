@@ -24,8 +24,8 @@ pub struct AiConfig {
     pub temperature: f32,
     pub reply_language: String,
     pub spring_start: String,  // e.g. "2026-04-06" — first Monday of spring semester
-    pub fall_start: String,    // e.g. "2026-09-21" — first Monday of fall semester
-}
+    pub fall_start: String,    // e.g. "2026-09-21" — first Monday of fall semester    /// Auto-refresh interval for AI analysis in minutes (60..1440, 0 = disabled)
+    pub ai_refresh_interval: u32,}
 
 // Custom Debug — mask API key in log output
 impl std::fmt::Debug for AiConfig {
@@ -40,6 +40,7 @@ impl std::fmt::Debug for AiConfig {
             .field("reply_language", &self.reply_language)
             .field("spring_start", &self.spring_start)
             .field("fall_start", &self.fall_start)
+            .field("ai_refresh_interval", &self.ai_refresh_interval)
             .finish()
     }
 }
@@ -56,6 +57,7 @@ impl Default for AiConfig {
             reply_language: "ja".into(),
             spring_start: String::new(),
             fall_start: String::new(),
+            ai_refresh_interval: 360, // default 6 hours
         }
     }
 }

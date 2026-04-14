@@ -15,7 +15,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, cacheStatus } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
@@ -1098,12 +1098,14 @@ const TASK_LABELS: Record<string, string> = {
   student_profile: "学生プロフィール",
   mail_profile: "メールプロフィール",
   preemptive_renewal: "セッション更新チェック",
+  ai_scheduler: "AI 定期更新",
 };
 
 function registerAllTasks() {
   for (const t of getVolatileTargets()) registerTask(t.key, TASK_LABELS[t.key] ?? t.key, "volatile", POLL_INTERVAL);
   for (const t of getStableTargets()) registerTask(t.key, TASK_LABELS[t.key] ?? t.key, "stable", STABLE_POLL_INTERVAL);
   registerTask("preemptive_renewal", TASK_LABELS["preemptive_renewal"], "system", 3 * 60 * 1000);
+  registerTask("ai_scheduler", TASK_LABELS["ai_scheduler"], "stable", 0); // interval updated dynamically
 }
 
 export function startBackgroundPolling() {
@@ -1123,6 +1125,8 @@ export function startBackgroundPolling() {
   preemptiveRenewalTimer = setInterval(checkPreemptiveRenewal, 3 * 60 * 1000);
   // Also poll when window becomes visible after being hidden
   document.addEventListener("visibilitychange", handlePollVisibility);
+  // Start AI auto-refresh scheduler
+  startAiScheduler();
 }
 
 export function stopBackgroundPolling() {
@@ -1132,10 +1136,97 @@ export function stopBackgroundPolling() {
   if (stablePollTimer) { clearInterval(stablePollTimer); stablePollTimer = null; }
   if (preemptiveRenewalTimer) { clearInterval(preemptiveRenewalTimer); preemptiveRenewalTimer = null; }
   document.removeEventListener("visibilitychange", handlePollVisibility);
+  stopAiScheduler();
 }
 
 function handlePollVisibility() {
   if (document.visibilityState === "visible") doPoll();
+}
+
+// ============ Unified AI Refresh Scheduler ============
+// Periodically triggers AI notification analysis and AI todo analysis
+// based on user-configured interval (ai_refresh_interval in AiConfig).
+
+let aiRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let aiRefreshInitTimeout: ReturnType<typeof setTimeout> | null = null;
+const AI_LAST_RUN_KEY = "ai-scheduler-last-run";
+
+function getAiLastRun(): number {
+  try { return parseInt(localStorage.getItem(AI_LAST_RUN_KEY) || "0") || 0; } catch { return 0; }
+}
+
+function setAiLastRun(ts: number) {
+  try { localStorage.setItem(AI_LAST_RUN_KEY, String(ts)); } catch { /* ignore */ }
+}
+
+/** Run both AI analyses, updating shared stores. force=true bypasses backend cache. */
+export async function runAiRefresh(force: boolean = false): Promise<void> {
+  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
+
+  const cfg = await getAiConfig().catch(() => null);
+  if (!cfg || !cfg.api_key?.trim()) return;
+
+  // AI todo analysis (runs if Luna is authenticated)
+  if (get(lunaAuthState).authenticated) {
+    aiRefreshing.update(s => ({ ...s, todo: true }));
+    try {
+      const result = await aiAnalyzeTodo(force);
+      aiTodoStore.set({ result, timestamp: Date.now() });
+    } catch (e) {
+      console.warn("[AI Scheduler] todo analysis failed:", e);
+    } finally {
+      aiRefreshing.update(s => ({ ...s, todo: false }));
+    }
+  }
+
+  // Signal HomePage to refresh AI notifs via the existing store mechanism
+  aiNotifStore.update(s => {
+    // Set timestamp to 0 to signal that a refresh is needed
+    // HomePage will pick this up and run its own fetchAiNotifs with full context
+    return s ? { ...s, timestamp: 0 } : s;
+  });
+
+  setAiLastRun(Date.now());
+}
+
+async function aiSchedulerTick() {
+  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
+  try {
+    const cfg = await getAiConfig();
+    if (!cfg.api_key?.trim() || !cfg.ai_refresh_interval) return;
+    const intervalMs = cfg.ai_refresh_interval * 60 * 1000;
+    const lastRun = getAiLastRun();
+    if (Date.now() - lastRun < intervalMs) return;
+    console.log("[AI Scheduler] interval reached, running AI refresh");
+    updateTask("ai_scheduler", { running: true });
+    await runAiRefresh(true);
+    updateTask("ai_scheduler", { running: false, lastRunTs: Date.now(), lastOk: true });
+  } catch (e) {
+    console.warn("[AI Scheduler] tick error:", e);
+    updateTask("ai_scheduler", { running: false, lastRunTs: Date.now(), lastOk: false });
+  }
+}
+
+export function startAiScheduler() {
+  stopAiScheduler();
+  // Check after 30s initial delay (let data load first)
+  aiRefreshInitTimeout = setTimeout(async () => {
+    // Update interval display from config
+    try {
+      const cfg = await getAiConfig();
+      if (cfg.ai_refresh_interval) {
+        updateTaskInterval("ai_scheduler", cfg.ai_refresh_interval * 60 * 1000);
+      }
+    } catch { /* ignore */ }
+    aiSchedulerTick();
+    // Then check every 5 minutes if interval has been reached
+    aiRefreshTimer = setInterval(aiSchedulerTick, 5 * 60 * 1000);
+  }, 30_000);
+}
+
+export function stopAiScheduler() {
+  if (aiRefreshInitTimeout) { clearTimeout(aiRefreshInitTimeout); aiRefreshInitTimeout = null; }
+  if (aiRefreshTimer) { clearInterval(aiRefreshTimer); aiRefreshTimer = null; }
 }
 
 /** One-click full refresh: invalidate all caches and re-fetch everything */
@@ -1184,8 +1275,17 @@ export async function refreshAllData(): Promise<void> {
   }));
   // Add schedule sync as the last item
   initialItems.push({ key: "schedule_sync", label: "時間割同期", platform: "KGC", status: "pending" });
+  // Add AI refresh items
+  const aiCfg = await getAiConfig().catch(() => null);
+  const aiEnabled = !!(aiCfg?.api_key?.trim());
+  if (aiEnabled) {
+    initialItems.push({ key: "ai_notif", label: "AI 通知分析", platform: "AI", status: "pending" });
+    if (get(lunaAuthState).authenticated) {
+      initialItems.push({ key: "ai_todo", label: "AI 課題分析", platform: "AI", status: "pending" });
+    }
+  }
 
-  cacheStatus.update(s => ({ ...s, fullRefreshing: true, refreshingCount: steps.length + 1, items: initialItems }));
+  cacheStatus.update(s => ({ ...s, fullRefreshing: true, refreshingCount: initialItems.length, items: initialItems }));
   invalidateCache();
 
   function setItemStatus(key: string, status: RefreshItemStatus["status"]) {
@@ -1217,6 +1317,31 @@ export async function refreshAllData(): Promise<void> {
       setItemStatus("schedule_sync", "done");
     } catch {
       setItemStatus("schedule_sync", "error");
+    }
+    // AI refresh (after all data is fresh)
+    if (aiEnabled) {
+      // AI notification analysis — signal HomePage to re-run with fresh data
+      setItemStatus("ai_notif", "running");
+      aiNotifStore.set(null); // clear so HomePage knows to generate fresh
+      // Brief wait for views to pick up fresh data
+      await new Promise(r => setTimeout(r, 500));
+      setItemStatus("ai_notif", "done");
+
+      // AI todo analysis
+      if (get(lunaAuthState).authenticated) {
+        setItemStatus("ai_todo", "running");
+        aiRefreshing.update(s => ({ ...s, todo: true }));
+        try {
+          const result = await aiAnalyzeTodo(true);
+          aiTodoStore.set({ result, timestamp: Date.now() });
+          setItemStatus("ai_todo", "done");
+        } catch {
+          setItemStatus("ai_todo", "error");
+        } finally {
+          aiRefreshing.update(s => ({ ...s, todo: false }));
+        }
+      }
+      setAiLastRun(Date.now());
     }
     cacheStatus.update(s => ({ ...s, lastUpdated: Date.now() }));
   } finally {

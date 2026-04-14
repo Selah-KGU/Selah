@@ -306,6 +306,11 @@ export const aiRefreshRequested = writable<boolean>(false);
 export const unreadNotifCount = writable<number>(0);
 export const unreadMailCount = writable<number>(0);
 
+// ============ AI Refresh Scheduler ============
+export const aiNotifStore = writable<{ result: any; sources: any[]; timestamp: number } | null>(null);
+export const aiTodoStore = writable<{ result: any; timestamp: number } | null>(null);
+export const aiRefreshing = writable<{ notif: boolean; todo: boolean }>({ notif: false, todo: false });
+
 // ============ Cache Status (for titlebar indicator) ============
 export interface RefreshItemStatus {
   key: string;
@@ -410,6 +415,13 @@ export function updateTask(key: string, patch: Partial<Pick<TaskInfo, "running" 
   const t = taskMap.get(key);
   if (!t) return;
   Object.assign(t, patch);
+  notifyTaskListeners();
+}
+
+export function updateTaskInterval(key: string, intervalMs: number) {
+  const t = taskMap.get(key);
+  if (!t) return;
+  t.intervalMs = intervalMs;
   notifyTaskListeners();
 }
 
@@ -731,6 +743,7 @@ export interface AiConfig {
   max_tokens: number;
   temperature: number;
   reply_language: string;
+  ai_refresh_interval: number; // minutes, 0 = disabled
 }
 
 export interface AiChatMessage {

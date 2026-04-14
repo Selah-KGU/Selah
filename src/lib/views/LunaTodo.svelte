@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { lunaInvoke, aiAnalyzeTodo } from "../api";
-  import { cachedFetch, invalidateCache, onCacheUpdate, lunaAuthState } from "../stores";
+  import { cachedFetch, invalidateCache, onCacheUpdate, lunaAuthState, aiTodoStore } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
   import type { LunaTodoItem, AiTodoAnalysis } from "../types";
@@ -127,7 +127,11 @@
   }
 
   const unsubTodo = onCacheUpdate<LunaTodoItem[]>("luna_todo", (fresh) => { todoItems = fresh; });
-  onDestroy(() => { unsubTodo(); });
+  // Subscribe to AI scheduler updates
+  const unsubAiTodo = aiTodoStore.subscribe((val) => {
+    if (val?.result) aiResult = val.result;
+  });
+  onDestroy(() => { unsubTodo(); unsubAiTodo(); });
 
   onMount(async () => {
     loading = true;
