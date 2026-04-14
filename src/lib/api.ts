@@ -15,7 +15,8 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, cacheStatus } from "./stores";
+import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
 // Global listeners — app-lifetime, no cleanup needed
@@ -1007,29 +1008,55 @@ function getStableTargets(): PollTarget[] {
 
 function doPoll() {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
+  const promises: Promise<any>[] = [];
   for (const t of getVolatileTargets()) {
     if (t.guard && !t.guard()) continue;
     updateTask(t.key, { running: true });
+    cacheStatus.update(s => ({ ...s, refreshingCount: s.refreshingCount + 1 }));
     const p = refreshCache(t.key, t.fetcher);
     if (p) {
-      p.then((data) => updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined }));
+      const tracked = p.then((data) => {
+        updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined });
+      }).finally(() => {
+        cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
+      });
+      promises.push(tracked);
     } else {
       updateTask(t.key, { running: false });
+      cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
     }
+  }
+  if (promises.length) {
+    Promise.all(promises).then(() => {
+      cacheStatus.update(s => ({ ...s, lastUpdated: Date.now() }));
+    });
   }
 }
 
 function doStablePoll() {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
+  const promises: Promise<any>[] = [];
   for (const t of getStableTargets()) {
     if (t.guard && !t.guard()) continue;
     updateTask(t.key, { running: true });
+    cacheStatus.update(s => ({ ...s, refreshingCount: s.refreshingCount + 1 }));
     const p = refreshCache(t.key, t.fetcher);
     if (p) {
-      p.then((data) => updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined }));
+      const tracked = p.then((data) => {
+        updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined });
+      }).finally(() => {
+        cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
+      });
+      promises.push(tracked);
     } else {
       updateTask(t.key, { running: false });
+      cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
     }
+  }
+  if (promises.length) {
+    Promise.all(promises).then(() => {
+      cacheStatus.update(s => ({ ...s, lastUpdated: Date.now() }));
+    });
   }
 }
 
@@ -1109,4 +1136,90 @@ export function stopBackgroundPolling() {
 
 function handlePollVisibility() {
   if (document.visibilityState === "visible") doPoll();
+}
+
+/** One-click full refresh: invalidate all caches and re-fetch everything */
+interface RefreshStep {
+  key: string;
+  label: string;
+  platform: string;
+  fetcher: () => Promise<any>;
+  guard?: () => boolean;
+}
+
+/** Ordered refresh sequence: persistent data first, real-time data later. Serial within each platform. */
+function getRefreshSequence(): RefreshStep[] {
+  return [
+    // -- KGC stable (persistent) --
+    { key: "student_profile", label: TASK_LABELS.student_profile, platform: "KGC", fetcher: fetchStudentProfile },
+    { key: "grades", label: TASK_LABELS.grades, platform: "KGC", fetcher: fetchGrades },
+    { key: "exams", label: TASK_LABELS.exams, platform: "KGC", fetcher: fetchExamTimetable },
+    { key: "registration", label: TASK_LABELS.registration, platform: "KGC", fetcher: fetchRegistration },
+    { key: "cancellations", label: TASK_LABELS.cancellations, platform: "KGC", fetcher: fetchCancellations },
+    { key: "makeup", label: TASK_LABELS.makeup, platform: "KGC", fetcher: fetchMakeupClasses },
+    { key: "rooms", label: TASK_LABELS.rooms, platform: "KGC", fetcher: fetchRoomChanges },
+    // -- KGC volatile (real-time) --
+    { key: "notifications", label: TASK_LABELS.notifications, platform: "KGC", fetcher: fetchNotifications },
+    { key: "kwic_home", label: TASK_LABELS.kwic_home, platform: "KGC", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
+    // -- Luna --
+    { key: "luna_todo", label: TASK_LABELS.luna_todo, platform: "Luna", fetcher: () => lunaInvoke<any>("luna_fetch_todo"), guard: () => get(lunaAuthState).authenticated },
+    { key: "luna_updates", label: TASK_LABELS.luna_updates, platform: "Luna", fetcher: () => lunaInvoke<any>("luna_fetch_updates"), guard: () => get(lunaAuthState).authenticated },
+    // -- Mail stable then volatile --
+    { key: "mail_profile", label: TASK_LABELS.mail_profile, platform: "Mail", fetcher: mailFetchProfile, guard: () => get(mailAuthState).authenticated },
+    { key: "mail_inbox", label: TASK_LABELS.mail_inbox, platform: "Mail", fetcher: () => mailFetchInbox(20, 0), guard: () => get(mailAuthState).authenticated },
+    // -- Other --
+    { key: "weather", label: TASK_LABELS.weather, platform: "Other", fetcher: fetchWeather },
+  ];
+}
+
+export async function refreshAllData(): Promise<void> {
+  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
+
+  const sequence = getRefreshSequence();
+  // Filter out guarded items that aren't available
+  const steps = sequence.filter(s => !s.guard || s.guard());
+  // Build initial item status list
+  const initialItems: RefreshItemStatus[] = steps.map(s => ({
+    key: s.key, label: s.label, platform: s.platform, status: "pending",
+  }));
+  // Add schedule sync as the last item
+  initialItems.push({ key: "schedule_sync", label: "時間割同期", platform: "KGC", status: "pending" });
+
+  cacheStatus.update(s => ({ ...s, fullRefreshing: true, refreshingCount: steps.length + 1, items: initialItems }));
+  invalidateCache();
+
+  function setItemStatus(key: string, status: RefreshItemStatus["status"]) {
+    cacheStatus.update(s => ({
+      ...s,
+      items: s.items.map(it => it.key === key ? { ...it, status } : it),
+      refreshingCount: status === "done" || status === "error" ? Math.max(0, s.refreshingCount - 1) : s.refreshingCount,
+    }));
+  }
+
+  try {
+    // Serial execution: one item at a time
+    for (const step of steps) {
+      setItemStatus(step.key, "running");
+      updateTask(step.key, { running: true });
+      try {
+        const data = await refreshCache(step.key, step.fetcher);
+        updateTask(step.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined });
+        setItemStatus(step.key, "done");
+      } catch {
+        updateTask(step.key, { running: false, lastRunTs: Date.now(), lastOk: false });
+        setItemStatus(step.key, "error");
+      }
+    }
+    // Schedule sync
+    setItemStatus("schedule_sync", "running");
+    try {
+      await syncScheduleData();
+      setItemStatus("schedule_sync", "done");
+    } catch {
+      setItemStatus("schedule_sync", "error");
+    }
+    cacheStatus.update(s => ({ ...s, lastUpdated: Date.now() }));
+  } finally {
+    cacheStatus.update(s => ({ ...s, fullRefreshing: false, refreshingCount: 0 }));
+  }
 }

@@ -306,6 +306,31 @@ export const aiRefreshRequested = writable<boolean>(false);
 export const unreadNotifCount = writable<number>(0);
 export const unreadMailCount = writable<number>(0);
 
+// ============ Cache Status (for titlebar indicator) ============
+export interface RefreshItemStatus {
+  key: string;
+  label: string;
+  platform: string;
+  status: "pending" | "running" | "done" | "error";
+}
+
+export interface CacheStatusData {
+  /** Timestamp of the last completed poll cycle (volatile or stable) */
+  lastUpdated: number;
+  /** Number of cache entries currently refreshing */
+  refreshingCount: number;
+  /** Whether a full manual refresh is in progress */
+  fullRefreshing: boolean;
+  /** Per-item refresh status for the current full refresh */
+  items: RefreshItemStatus[];
+}
+export const cacheStatus = writable<CacheStatusData>({
+  lastUpdated: 0,
+  refreshingCount: 0,
+  fullRefreshing: false,
+  items: [],
+});
+
 // ============ Read State (DB is source of truth) ============
 export interface ReadIdsData { kgc: string[]; luna: string[]; kwic: string[] }
 export const readIdsStore = writable<ReadIdsData>({ kgc: [], luna: [], kwic: [] });

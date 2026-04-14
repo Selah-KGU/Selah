@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { authState, theme, cachedFetch, sessionExpired, reloginInProgress } from "./stores";
-  import type { StudentInfo } from "./stores";
-  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin } from "./api";
+  import { authState, theme, cachedFetch, sessionExpired, reloginInProgress, cacheStatus } from "./stores";
+  import type { StudentInfo, RefreshItemStatus } from "./stores";
+  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData } from "./api";
   import { emit } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "./Icon.svelte";
@@ -32,6 +32,32 @@
   }
 
   let reloginLoading = $state(false);
+  let refreshing = $state(false);
+  let showSyncPanel = $state(false);
+
+  function toggleSyncPanel() {
+    showSyncPanel = !showSyncPanel;
+  }
+
+  async function handleRefreshAll() {
+    if (refreshing) return;
+    showSyncPanel = true;
+    refreshing = true;
+    try {
+      await refreshAllData();
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  function formatRelativeTime(ts: number): string {
+    if (!ts) return "";
+    const diff = Math.floor((Date.now() - ts) / 1000);
+    if (diff < 60) return "たった今";
+    if (diff < 3600) return `${Math.floor(diff / 60)}分前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}時間前`;
+    return `${Math.floor(diff / 86400)}日前`;
+  }
 
   async function handleRelogin() {
     reloginLoading = true;
@@ -72,6 +98,22 @@
     <button class="tb-btn" onclick={() => openSettingsWindow()} title="設定" aria-label="設定">
       <Icon name="gear" size={14} />
     </button>
+    {#if $authState.authenticated && !$sessionExpired && !$reloginInProgress}
+      <button
+        class="sync-badge"
+        class:syncing={refreshing || $cacheStatus.fullRefreshing || $cacheStatus.refreshingCount > 0}
+        onclick={toggleSyncPanel}
+        title={$cacheStatus.lastUpdated ? `最終更新: ${formatRelativeTime($cacheStatus.lastUpdated)}` : "データを更新"}
+      >
+        <svg class="sync-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+          <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+        </svg>
+        {#if $cacheStatus.lastUpdated}
+          <span class="sync-time">{formatRelativeTime($cacheStatus.lastUpdated)}</span>
+        {/if}
+      </button>
+    {/if}
     {#if $reloginInProgress}
       <span class="titlebar-status" title="再ログイン中…">
         <span class="titlebar-status-spinner"></span>
@@ -157,6 +199,76 @@
       </div>
     {:else}
       <div class="profile-empty">学生情報を取得できませんでした</div>
+    {/if}
+  </div>
+{/if}
+
+{#if showSyncPanel}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="sync-backdrop" onclick={() => showSyncPanel = false}></div>
+  <div class="sync-popover">
+    <div class="sync-popover-header">
+      <div class="sync-popover-header-left">
+        <span class="sync-popover-title">データ同期</span>
+        {#if $cacheStatus.fullRefreshing}
+          {@const done = $cacheStatus.items.filter(i => i.status === "done" || i.status === "error").length}
+          {@const total = $cacheStatus.items.length}
+          <span class="sync-popover-progress">{done}/{total}</span>
+        {/if}
+      </div>
+      <button
+        class="sync-popover-refresh-btn"
+        onclick={handleRefreshAll}
+        disabled={refreshing || $cacheStatus.fullRefreshing}
+      >
+        {#if refreshing || $cacheStatus.fullRefreshing}
+          <span class="sync-popover-spinner"></span>
+          更新中
+        {:else}
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+            <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+          </svg>
+          すべて更新
+        {/if}
+      </button>
+    </div>
+    {#if $cacheStatus.fullRefreshing}
+      <div class="sync-progress-bar">
+        <div class="sync-progress-fill" style="width: {$cacheStatus.items.length ? ($cacheStatus.items.filter(i => i.status === 'done' || i.status === 'error').length / $cacheStatus.items.length * 100) : 0}%"></div>
+      </div>
+    {/if}
+    {#if $cacheStatus.lastUpdated}
+      <div class="sync-popover-meta">最終更新: {formatRelativeTime($cacheStatus.lastUpdated)}</div>
+    {/if}
+    {#if $cacheStatus.items.length > 0}
+      {@const grouped = Object.groupBy($cacheStatus.items, (it: RefreshItemStatus) => it.platform)}
+      <div class="sync-popover-list">
+        {#each Object.entries(grouped) as [platform, items]}
+          <div class="sync-group">
+            <div class="sync-group-label">{platform}</div>
+            {#each items as item}
+              <div class="sync-item">
+                <span class="sync-item-indicator" class:pending={item.status === "pending"} class:running={item.status === "running"} class:done={item.status === "done"} class:error={item.status === "error"}>
+                  {#if item.status === "running"}
+                    <span class="sync-item-spinner"></span>
+                  {:else if item.status === "done"}
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  {:else if item.status === "error"}
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  {:else}
+                    <span class="sync-item-dot"></span>
+                  {/if}
+                </span>
+                <span class="sync-item-label">{item.label}</span>
+              </div>
+            {/each}
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <div class="sync-popover-empty">「すべて更新」をクリックしてデータを同期してください</div>
     {/if}
   </div>
 {/if}
@@ -322,7 +434,242 @@
     background: var(--bg-hover);
   }
 
+  .sync-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
 
+  .sync-badge:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .sync-badge.syncing .sync-icon {
+    animation: spin 1s linear infinite;
+  }
+
+  .sync-badge.syncing {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-tertiary));
+  }
+
+  .sync-icon {
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+
+  .sync-time {
+    font-variant-numeric: tabular-nums;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  /* Sync status popover */
+  .sync-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 199;
+  }
+
+  .sync-popover {
+    position: fixed;
+    top: 52px;
+    right: 80px;
+    z-index: 200;
+    width: 280px;
+    max-height: 420px;
+    overflow-y: auto;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    padding: 14px;
+    animation: pop-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  .sync-popover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .sync-popover-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .sync-popover-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .sync-popover-refresh-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .sync-popover-refresh-btn:hover {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+
+  .sync-popover-refresh-btn:disabled {
+    cursor: wait;
+    opacity: 0.7;
+  }
+
+  .sync-popover-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+
+  .sync-popover-progress {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sync-progress-bar {
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+
+  .sync-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 1px;
+    transition: width 0.3s ease;
+  }
+
+  .sync-popover-meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sync-popover-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .sync-group-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .sync-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .sync-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    transition: background 0.1s;
+  }
+
+  .sync-item:has(.running) {
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+
+  .sync-item-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+
+  .sync-item-indicator.done {
+    color: var(--green, #34c759);
+  }
+
+  .sync-item-indicator.error {
+    color: var(--red, #ff3b30);
+  }
+
+  .sync-item-indicator.running {
+    color: var(--accent);
+  }
+
+  .sync-item-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+
+  .sync-item-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border-strong);
+    opacity: 0.4;
+  }
+
+  .sync-item-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sync-item-indicator.done + .sync-item-label {
+    color: var(--text-tertiary);
+  }
+
+  .sync-popover-empty {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    text-align: center;
+    padding: 20px 8px;
+    line-height: 1.5;
+  }
 
   /* Profile popover */
   .profile-backdrop {
