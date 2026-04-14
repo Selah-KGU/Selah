@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, gcalDisconnect, syncCalendar, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts } from "../api";
-  import { lunaAuthState, gcalAuthState } from "../stores";
+  import { lunaAuthState, gcalAuthState, registerTask, updateTask } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
@@ -625,6 +625,7 @@
   const LUNA_COUNTS_INTERVAL = 3 * 3600 * 1000; // 3 hours
 
   async function autoRefreshLunaCounts() {
+    updateTask("luna_counts", { running: true });
     try {
       const updated = await refreshLunaCounts();
       if (updated > 0) {
@@ -634,8 +635,10 @@
         scheduleData = data;
         if (data.ai_result) aiResult = data.ai_result;
       }
+      updateTask("luna_counts", { running: false, lastRunTs: Date.now(), lastOk: true });
     } catch (e) {
       console.error("[Timetable] Luna counts auto-refresh failed:", e);
+      updateTask("luna_counts", { running: false, lastRunTs: Date.now(), lastOk: false });
     }
   }
 
@@ -683,15 +686,19 @@
 
       localStorage.setItem("selah-cal-last-sync", String(now));
       console.log("[Timetable] timer-based calendar sync completed");
+      updateTask("cal_sync", { running: false, lastRunTs: Date.now(), lastOk: true });
     } catch (e) {
       console.error("[Timetable] timer-based calendar sync failed:", e);
+      updateTask("cal_sync", { running: false, lastRunTs: Date.now(), lastOk: false });
     }
   }
 
   function startCalSyncTimer() {
+    registerTask("cal_sync", "カレンダー自動同期", "system", CAL_SYNC_CHECK_INTERVAL);
+    registerTask("luna_counts", "Luna 活動カウント更新", "system", LUNA_COUNTS_INTERVAL);
     // Run once on mount after a short delay, then periodically
-    calSyncInitTimeout = setTimeout(() => { checkSundayRefresh(); timerCalendarSync(); }, 5000);
-    calSyncTimer = setInterval(() => { checkSundayRefresh(); timerCalendarSync(); }, CAL_SYNC_CHECK_INTERVAL);
+    calSyncInitTimeout = setTimeout(() => { updateTask("cal_sync", { running: true }); checkSundayRefresh(); timerCalendarSync(); }, 5000);
+    calSyncTimer = setInterval(() => { updateTask("cal_sync", { running: true }); checkSundayRefresh(); timerCalendarSync(); }, CAL_SYNC_CHECK_INTERVAL);
   }
 
   function stopCalSyncTimer() {

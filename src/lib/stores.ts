@@ -358,6 +358,49 @@ function initTheme(): "system" | "light" | "dark" {
 export const theme = writable<"system" | "light" | "dark">(initTheme());
 export const debugVisible = writable<boolean>(false);
 
+// ============ Task Registry (for debug panel task observer) ============
+
+export interface TaskInfo {
+  key: string;
+  label: string;
+  /** "volatile" = frequent, "stable" = infrequent, "system" = internal timers */
+  tier: "volatile" | "stable" | "system";
+  intervalMs: number;
+  lastRunTs: number | null;
+  lastOk: boolean | null;
+  running: boolean;
+}
+
+const taskMap = new Map<string, TaskInfo>();
+const taskListeners = new Set<() => void>();
+
+export function registerTask(key: string, label: string, tier: TaskInfo["tier"], intervalMs: number) {
+  if (!taskMap.has(key)) {
+    taskMap.set(key, { key, label, tier, intervalMs, lastRunTs: null, lastOk: null, running: false });
+    notifyTaskListeners();
+  }
+}
+
+export function updateTask(key: string, patch: Partial<Pick<TaskInfo, "running" | "lastRunTs" | "lastOk">>) {
+  const t = taskMap.get(key);
+  if (!t) return;
+  Object.assign(t, patch);
+  notifyTaskListeners();
+}
+
+export function getTaskSnapshot(): TaskInfo[] {
+  return [...taskMap.values()];
+}
+
+export function onTaskChange(cb: () => void): () => void {
+  taskListeners.add(cb);
+  return () => { taskListeners.delete(cb); };
+}
+
+function notifyTaskListeners() {
+  for (const cb of taskListeners) cb();
+}
+
 // ============ Data Cache ============
 // Unified caching layer: memory + disk (localStorage) + stale-while-revalidate
 //
@@ -616,8 +659,8 @@ export function updateCacheEntry<T>(key: string, updater: (data: T) => T): void 
  * On success, updates cache + disk + notifies SWR listeners.
  * On failure, silently swallowed (stale data retained).
  */
-export function refreshCache<T>(key: string, fetcher: () => Promise<T>): void {
-  if (inflight.has(key)) return; // already refreshing
+export function refreshCache<T>(key: string, fetcher: () => Promise<T>): Promise<T> | null {
+  if (inflight.has(key)) return null; // already refreshing
   const p = fetcher().then((data) => {
     const now = Date.now();
     cache.set(key, { data, ts: now });
@@ -629,6 +672,7 @@ export function refreshCache<T>(key: string, fetcher: () => Promise<T>): void {
     return undefined as unknown as T;
   }).finally(() => { inflight.delete(key); });
   inflight.set(key, p);
+  return p;
 }
 
 // ============ Faculty Filter ============

@@ -2,7 +2,7 @@
  * Tray status cycling: collects data from cache and sends cycling items to the backend tray.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { onCacheUpdate, getCached } from "./stores";
+import { onCacheUpdate, getCached, registerTask, updateTask } from "./stores";
 import type { LunaTodoItem, ScheduleResponse, KgcCourseRow } from "./types";
 import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "./types";
 
@@ -144,14 +144,19 @@ function buildStatusItems(): string[] {
 function scheduleRebuild() {
   if (rebuildTimer) clearTimeout(rebuildTimer);
   rebuildTimer = setTimeout(() => {
+    updateTask("tray_status", { running: true });
     const items = buildStatusItems();
-    invoke("set_tray_status_items", { items }).catch(() => {});
+    invoke("set_tray_status_items", { items }).then(
+      () => updateTask("tray_status", { running: false, lastRunTs: Date.now(), lastOk: true }),
+      () => updateTask("tray_status", { running: false, lastRunTs: Date.now(), lastOk: false }),
+    );
   }, 300);
 }
 
 // ============ Public API ============
 
 export function startTrayStatus() {
+  registerTask("tray_status", "トレイ表示更新", "system", 90_000);
   // Bootstrap from existing cache (disk or memory)
   timetableData = getCached<ScheduleResponse>("schedule_data");
   todoItems = getCached<LunaTodoItem[]>("luna_todo") ?? [];

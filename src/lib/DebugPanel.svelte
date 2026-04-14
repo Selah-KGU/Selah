@@ -1,7 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { authState, lunaAuthState, kwicAuthState, debugVisible } from "./stores";
+  import { authState, lunaAuthState, kwicAuthState, debugVisible, getTaskSnapshot, onTaskChange } from "./stores";
+  import type { TaskInfo } from "./stores";
   import Icon from "./Icon.svelte";
   import { fetchPage, triggerRelogin } from "./api";
   import { nativeNotify } from "./notify";
@@ -37,12 +38,13 @@
     kwic: { valid: boolean; checking: boolean };
   }
 
-  let activeSection = $state<"info" | "network" | "logs">("info");
+  let activeSection = $state<"info" | "network" | "logs" | "tasks">("info");
   let debugInfo = $state<DebugInfo | null>(null);
   let pingResults = $state<PingResult[]>([]);
   let logEntries = $state<LogEntry[]>([]);
   let isPinging = $state(false);
   let consoleInput = $state("");
+  let tasks = $state<TaskInfo[]>([]);
 
   // Session check state
   let sessionCheck = $state<SessionCheck>({
@@ -105,6 +107,10 @@
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onRejection);
 
+    // Subscribe to task registry updates
+    tasks = getTaskSnapshot();
+    const unsubTasks = onTaskChange(() => { tasks = getTaskSnapshot(); });
+
     const origWarn = console.warn;
     const origError = console.error;
     console.warn = (...args: any[]) => {
@@ -119,6 +125,7 @@
     return () => {
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
+      unsubTasks();
       console.warn = origWarn;
       console.error = origError;
     };
@@ -318,6 +325,9 @@
       <button class:active={activeSection === "info"} onclick={() => { activeSection = "info"; fetchDebugInfo(); }}>
         情報・セッション
       </button>
+      <button class:active={activeSection === "tasks"} onclick={() => { activeSection = "tasks"; tasks = getTaskSnapshot(); }}>
+        タスク <span class="tab-count">({tasks.length})</span>
+      </button>
       <button class:active={activeSection === "network"} onclick={() => activeSection = "network"}>
         通信・ブラウザ
       </button>
@@ -379,6 +389,56 @@
               </span>
             </div>
           </div>
+        </div>
+
+      {:else if activeSection === "tasks"}
+        <div class="section" style="animation: fade-in 0.2s ease;">
+          <div class="section-header">
+            <h4>定期タスク</h4>
+            <button class="sm-btn" onclick={() => { tasks = getTaskSnapshot(); }}>更新</button>
+          </div>
+          {#each ["volatile", "stable", "system"] as tier}
+            {@const tierTasks = tasks.filter(t => t.tier === tier)}
+            {#if tierTasks.length > 0}
+              <div class="task-tier-label">
+                {tier === "volatile" ? "高頻度 (5min)" : tier === "stable" ? "低頻度 (12h)" : "システム"}
+              </div>
+              <div class="info-grid" style="margin-bottom:8px;">
+                {#each tierTasks as t}
+                  <div class="info-row" title={t.key}>
+                    <span class="info-key" style="width:140px">{t.label}</span>
+                    <span class="info-val" style="flex:1; justify-content:space-between;">
+                      <span style="display:flex;align-items:center;gap:4px;">
+                        {#if t.running}
+                          <span class="dot-status running"></span>
+                          <span class="task-running">実行中</span>
+                        {:else if t.lastOk === true}
+                          <span class="dot-status ok"></span>
+                          <span>成功</span>
+                        {:else if t.lastOk === false}
+                          <span class="dot-status ng"></span>
+                          <span>失敗</span>
+                        {:else}
+                          <span class="dot-status"></span>
+                          <span class="muted">未実行</span>
+                        {/if}
+                      </span>
+                      <span class="mono" style="color:var(--text-tertiary);font-size:10px;">
+                        {#if t.lastRunTs}
+                          {Math.round((Date.now() - t.lastRunTs) / 1000)}s ago
+                        {:else}
+                          --
+                        {/if}
+                      </span>
+                    </span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {/each}
+          {#if tasks.length === 0}
+            <p class="muted">バックグラウンドポーリング未開始</p>
+          {/if}
         </div>
 
       {:else if activeSection === "network"}
@@ -662,5 +722,22 @@
     font-size: 10px; font-family: "SF Mono", "Menlo", monospace;
     color: var(--text-primary); white-space: pre-wrap; word-break: break-all;
     -webkit-user-select: text; user-select: text; margin: 0; padding: 4px;
+  }
+
+  /* Task observer */
+  .task-tier-label {
+    font-size: 10px; font-weight: 600; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    margin: 8px 0 3px; padding-left: 2px;
+  }
+  .task-tier-label:first-child { margin-top: 0; }
+  .dot-status.running {
+    background: var(--orange, #ff9500);
+    animation: task-pulse 1s ease-in-out infinite;
+  }
+  .task-running { color: var(--orange, #ff9500); font-size: 11px; }
+  @keyframes task-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
   }
 </style>

@@ -3,7 +3,7 @@
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
   import DebugPanel from "./lib/DebugPanel.svelte";
-  import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, debugVisible } from "./lib/stores";
+  import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, debugVisible, registerTask, updateTask } from "./lib/stores";
   import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
   import { listen } from "@tauri-apps/api/event";
@@ -75,6 +75,7 @@
     }
 
     // Periodic session validation (every 3 minutes)
+    registerTask("session_validate", "セッション検証 (KGC/Luna/KWIC)", "system", 3 * 60 * 1000);
     intervalId = setInterval(() => {
       if (document.visibilityState === "visible") {
         doValidate();
@@ -107,6 +108,7 @@
 
     validating = true;
     lastValidateTime = now;
+    updateTask("session_validate", { running: true });
     try {
       // Validate all SAML services in parallel
       const [kgcStatus, lunaValid, kwicValid] = await Promise.all([
@@ -175,8 +177,10 @@
           mailAuthState.set({ authenticated: false, email: "", displayName: "" });
         }
       }
+      updateTask("session_validate", { running: false, lastRunTs: Date.now(), lastOk: true });
     } catch (e) {
       console.warn("[Selah] Session validation/recovery error:", e);
+      updateTask("session_validate", { running: false, lastRunTs: Date.now(), lastOk: false });
     } finally {
       validating = false;
     }
@@ -192,9 +196,7 @@
 {:else}
   <Dashboard />
 {/if}
-{#if import.meta.env.DEV}
-  <DebugPanel />
-{/if}
+<DebugPanel />
 
 <style>
   .app-main {

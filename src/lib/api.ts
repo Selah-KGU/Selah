@@ -15,7 +15,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask } from "./stores";
 import { get } from "svelte/store";
 
 // Global listeners — app-lifetime, no cleanup needed
@@ -1009,7 +1009,13 @@ function doPoll() {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
   for (const t of getVolatileTargets()) {
     if (t.guard && !t.guard()) continue;
-    refreshCache(t.key, t.fetcher);
+    updateTask(t.key, { running: true });
+    const p = refreshCache(t.key, t.fetcher);
+    if (p) {
+      p.then((data) => updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined }));
+    } else {
+      updateTask(t.key, { running: false });
+    }
   }
 }
 
@@ -1017,7 +1023,13 @@ function doStablePoll() {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
   for (const t of getStableTargets()) {
     if (t.guard && !t.guard()) continue;
-    refreshCache(t.key, t.fetcher);
+    updateTask(t.key, { running: true });
+    const p = refreshCache(t.key, t.fetcher);
+    if (p) {
+      p.then((data) => updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined }));
+    } else {
+      updateTask(t.key, { running: false });
+    }
   }
 }
 
@@ -1029,19 +1041,47 @@ async function getSessionExpiry(): Promise<number | null> {
 
 async function checkPreemptiveRenewal() {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
+  updateTask("preemptive_renewal", { running: true });
   try {
     const secs = await getSessionExpiry();
     if (secs !== null && secs <= PREEMPTIVE_RENEWAL_THRESHOLD) {
       console.log(`[preemptive-renewal] Cookie expiry in ${secs}s, triggering sync`);
       await syncSession("all");
     }
+    updateTask("preemptive_renewal", { running: false, lastRunTs: Date.now(), lastOk: true });
   } catch (e) {
     console.warn("[preemptive-renewal] check failed:", e);
+    updateTask("preemptive_renewal", { running: false, lastRunTs: Date.now(), lastOk: false });
   }
+}
+
+const TASK_LABELS: Record<string, string> = {
+  notifications: "KGC お知らせ取得",
+  luna_todo: "Luna 課題一覧",
+  luna_updates: "Luna 更新情報",
+  kwic_home: "KWIC ホーム取得",
+  weather: "天気予報取得",
+  mail_inbox: "メール受信箱",
+  grades: "成績データ",
+  exams: "試験時間割",
+  registration: "履修登録",
+  cancellations: "休講情報",
+  makeup: "補講情報",
+  rooms: "教室変更",
+  student_profile: "学生プロフィール",
+  mail_profile: "メールプロフィール",
+  preemptive_renewal: "セッション更新チェック",
+};
+
+function registerAllTasks() {
+  for (const t of getVolatileTargets()) registerTask(t.key, TASK_LABELS[t.key] ?? t.key, "volatile", POLL_INTERVAL);
+  for (const t of getStableTargets()) registerTask(t.key, TASK_LABELS[t.key] ?? t.key, "stable", STABLE_POLL_INTERVAL);
+  registerTask("preemptive_renewal", TASK_LABELS["preemptive_renewal"], "system", 3 * 60 * 1000);
 }
 
 export function startBackgroundPolling() {
   stopBackgroundPolling();
+  registerAllTasks();
   // Initial volatile poll after a short delay (let views mount first)
   initialPollTimeout = setTimeout(doPoll, 10_000);
   pollTimer = setInterval(() => {
