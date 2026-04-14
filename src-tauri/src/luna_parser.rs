@@ -78,6 +78,8 @@ sel!(SEL_MAT_TITLE,     ".course-material-title-txt");
 sel!(SEL_INPUT_SPAN,    ".contents-input-area span");
 sel!(SEL_MAT_FILE_NAME, ".material-file-name");
 sel!(SEL_MAT_CSS,       ".course-result-list.materialCss");
+sel!(SEL_QL_EDITOR,     ".ql-editor");
+sel!(SEL_SCRIPT,        "script");
 sel!(SEL_FILENAME,      ".fileName");
 sel!(SEL_RESOURCE_ID,   ".resource_Id");
 sel!(SEL_FILETYPE,      ".fileType");
@@ -584,7 +586,97 @@ fn extract_named_quill_text(html: &str, var_name: &str) -> Option<String> {
     }
     if end == 0 { return None; }
     let json_str = &after[..end];
-    extract_quill_plain_text(json_str)
+    extract_quill_rich_html(json_str)
+}
+
+fn escape_html_fragment(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn wrap_quill_inline_attrs(text: &str, attrs: Option<&serde_json::Map<String, serde_json::Value>>) -> String {
+    let mut out = escape_html_fragment(text);
+    let Some(attrs) = attrs else { return out; };
+
+    if attrs.get("bold").and_then(|v| v.as_bool()) == Some(true) {
+        out = format!("<strong>{}</strong>", out);
+    }
+    if attrs.get("italic").and_then(|v| v.as_bool()) == Some(true) {
+        out = format!("<em>{}</em>", out);
+    }
+    if attrs.get("underline").and_then(|v| v.as_bool()) == Some(true) {
+        out = format!("<u>{}</u>", out);
+    }
+    if attrs.get("code").and_then(|v| v.as_bool()) == Some(true) {
+        out = format!("<code>{}</code>", out);
+    }
+
+    let mut style_parts: Vec<String> = Vec::new();
+    if let Some(color) = attrs.get("color").and_then(|v| v.as_str()) {
+        style_parts.push(format!("color:{}", escape_html_fragment(color)));
+    }
+    if let Some(bg) = attrs.get("background").and_then(|v| v.as_str()) {
+        style_parts.push(format!("background-color:{}", escape_html_fragment(bg)));
+    }
+    if !style_parts.is_empty() {
+        out = format!("<span style=\"{}\">{}</span>", style_parts.join(";"), out);
+    }
+
+    if let Some(link) = attrs.get("link").and_then(|v| v.as_str()) {
+        let lower = link.to_lowercase();
+        if lower.starts_with("http://")
+            || lower.starts_with("https://")
+            || lower.starts_with("mailto:")
+            || lower.starts_with("tel:")
+        {
+            out = format!(
+                "<a href=\"{}\" target=\"_blank\" rel=\"noopener\">{}</a>",
+                escape_html_fragment(link),
+                out
+            );
+        }
+    }
+
+    out
+}
+
+fn extract_quill_rich_html(json_str: &str) -> Option<String> {
+    let unescaped = unescape_js_string(json_str);
+    let val: serde_json::Value = serde_json::from_str(&unescaped).ok()?;
+    let ops = val.get("ops")?.as_array()?;
+
+    let mut html = String::new();
+    for op in ops {
+        let Some(insert) = op.get("insert").and_then(|v| v.as_str()) else { continue; };
+        let attrs = op.get("attributes").and_then(|a| a.as_object());
+
+        let mut segment = String::new();
+        for ch in insert.chars() {
+            if ch == '\n' {
+                if !segment.is_empty() {
+                    html.push_str(&wrap_quill_inline_attrs(&segment, attrs));
+                    segment.clear();
+                }
+                html.push_str("<br>");
+            } else {
+                segment.push(ch);
+            }
+        }
+        if !segment.is_empty() {
+            html.push_str(&wrap_quill_inline_attrs(&segment, attrs));
+        }
+    }
+
+    let compact = html
+        .replace("<br>", "")
+        .replace("<br/>", "")
+        .replace("<br />", "")
+        .trim()
+        .to_string();
+    if compact.is_empty() { None } else { Some(html) }
 }
 
 /// Parse any Luna detail page (report/submission, examination, forum, etc.)
@@ -1174,6 +1266,8 @@ pub struct LunaContentItem {
     pub status: String,
     pub item_type: String,   // material, report, examination, discussion
     #[serde(default)]
+    pub description: String,
+    #[serde(default)]
     pub files: Vec<LunaMaterialFile>,
 }
 
@@ -1464,6 +1558,62 @@ pub fn parse_luna_contents_page(html: &str) -> (Vec<LunaContentItem>, Vec<LunaCo
     (materials, reports, examinations, discussions, surveys)
 }
 
+/// Extract plain text from a Quill Delta JSON embedded in a JS script.
+/// The script contains: `_QuillUtil.xxx.setJsonData("{...}", ...)`
+#[cfg(test)]
+fn extract_quill_delta_text(script: &str) -> Option<String> {
+    let marker = ".setJsonData(\"";
+    let start = script.find(marker)? + marker.len();
+    let rest = &script[start..];
+    // Walk to find the unescaped closing quote
+    let mut i = 0;
+    let bytes = rest.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2; // skip escape sequence
+        } else if bytes[i] == b'"' {
+            break;
+        } else {
+            i += 1;
+        }
+    }
+    if i >= bytes.len() { return None; }
+    let escaped = &rest[..i];
+    // Treat as a JSON string body to decode \uXXXX, \", \\n etc.
+    let json_lit = format!("\"{}\"", escaped);
+    let inner_json: String = serde_json::from_str(&json_lit).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&inner_json).ok()?;
+    let ops = val.get("ops")?.as_array()?;
+    let mut text = String::new();
+    for op in ops {
+        if let Some(s) = op.get("insert").and_then(|v| v.as_str()) {
+            text.push_str(s);
+        }
+    }
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
+}
+
+fn extract_quill_delta_html(script: &str) -> Option<String> {
+    let marker = ".setJsonData(\"";
+    let start = script.find(marker)? + marker.len();
+    let rest = &script[start..];
+    let mut i = 0;
+    let bytes = rest.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+        } else if bytes[i] == b'"' {
+            break;
+        } else {
+            i += 1;
+        }
+    }
+    if i >= bytes.len() { return None; }
+    let escaped = &rest[..i];
+    extract_quill_rich_html(escaped)
+}
+
 fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
     let mut items = Vec::new();
 
@@ -1477,6 +1627,25 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
         let period = folder.select(&SEL_INPUT_SPAN)
             .map(|e| e.text().collect::<String>().trim().to_string()).find(|s| s.contains('～'))
             .unwrap_or_default();
+
+        // Prefer rendered Quill HTML to preserve rich text formatting.
+        // Fallback: parse Quill Delta JSON from <script> tags as rich HTML.
+        let description = {
+            let mut text = String::new();
+            if let Some(editor) = folder.select(&SEL_QL_EDITOR).next() {
+                text = editor.inner_html().trim().to_string();
+            }
+            if text.is_empty() {
+                for el in folder.select(&SEL_SCRIPT) {
+                    let src = el.inner_html();
+                    if let Some(t) = extract_quill_delta_html(&src) {
+                        text = t;
+                        break;
+                    }
+                }
+            }
+            text
+        };
 
         // Parse individual material files with download metadata
         let mut files = Vec::new();
@@ -1540,6 +1709,7 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
             url: String::new(),
             period,
             status,
+            description,
             item_type: "material".to_string(),
             files,
         });
@@ -1579,6 +1749,7 @@ fn parse_reports(doc: &Html) -> Vec<LunaContentItem> {
             url,
             period,
             status,
+            description: String::new(),
             item_type: "report".to_string(),
             files: Vec::new(),
         });
@@ -1626,6 +1797,7 @@ fn parse_examinations(doc: &Html) -> Vec<LunaContentItem> {
             url,
             period,
             status,
+            description: String::new(),
             item_type: "examination".to_string(),
             files: Vec::new(),
         });
@@ -1671,6 +1843,7 @@ fn parse_discussions(doc: &Html) -> Vec<LunaContentItem> {
             url,
             period,
             status,
+            description: String::new(),
             item_type: "discussion".to_string(),
             files: Vec::new(),
         });
@@ -1716,6 +1889,7 @@ fn parse_surveys(doc: &Html) -> Vec<LunaContentItem> {
             url,
             period,
             status,
+            description: String::new(),
             item_type: "survey".to_string(),
             files: Vec::new(),
         });
@@ -2080,5 +2254,30 @@ mod tests {
         // Meta should have 掲示期間 and 発信者
         assert!(result.meta.iter().any(|(k, _)| k == "掲示期間"), "Should have 掲示期間");
         assert!(result.meta.iter().any(|(k, _)| k == "発信者"), "Should have 発信者");
+    }
+
+    #[test]
+    fn test_extract_quill_delta_text() {
+        let script = r#"
+            _QuillUtil.materialContents_0.setJsonData("{\"ops\":[{\"insert\":\"\u51FA\u5E2D\u78BA\u8A8D\u306F\u6388\u696D\u5192\u982D\u306B\u884C\u3044\u307E\u3059\u3002\\n\"},{\"attributes\":{\"bold\":true},\"insert\":\"\u5EA7\u5E2D\u8868\u304C\u3042\u308A\u307E\u3059\u3002\"},{\"insert\":\"\\n\"}]}", 'reference');
+        "#;
+        let result = extract_quill_delta_text(script);
+        assert!(result.is_some(), "Should extract text from Quill Delta");
+        let text = result.unwrap();
+        assert!(text.contains("出席確認は授業冒頭に行います。"), "Should contain decoded Japanese text");
+        assert!(text.contains("座席表があります。"), "Should contain bold text too");
+    }
+
+    #[test]
+    fn test_extract_quill_delta_html() {
+        let script = r#"
+            _QuillUtil.materialContents_0.setJsonData("{\"ops\":[{\"attributes\":{\"bold\":true},\"insert\":\"\u592A\u5B57\"},{\"insert\":\" \"},{\"attributes\":{\"italic\":true,\"link\":\"https://example.com\"},\"insert\":\"\u30EA\u30F3\u30AF\"},{\"insert\":\"\\n\"}]}", 'reference');
+        "#;
+        let result = extract_quill_delta_html(script);
+        assert!(result.is_some(), "Should extract rich HTML from Quill Delta");
+        let html = result.unwrap();
+        assert!(html.contains("<strong>太字</strong>"), "Should preserve bold style");
+        assert!(html.contains("<em>リンク</em>"), "Should preserve italic style");
+        assert!(html.contains("href=\"https://example.com\""), "Should preserve link href");
     }
 }

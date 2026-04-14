@@ -3950,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "selah-app"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -3958,6 +3958,7 @@ dependencies = [
  "cookie_store 0.21.1",
  "dirs",
  "log",
+ "notify-rust",
  "objc2",
  "objc2-foundation",
  "objc2-web-kit",

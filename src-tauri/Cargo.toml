@@ -1,6 +1,6 @@
 [package]
 name = "selah-app"
-version = "0.6.0"
+version = "0.6.1"
 description = "Selah - 新月の下で、知性を繋ぐ。すべての関学生に。"
 authors = ["mirai-mamori"]
 license = "MIT"
@@ -35,6 +35,7 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 sha2 = "0.10"
 tauri-plugin-notification = "2.3.3"
+notify-rust = "4"
 time = "0.3.41"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-opener = "2.5.3"

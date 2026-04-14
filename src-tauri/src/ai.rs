@@ -411,57 +411,33 @@ pub async fn test_notification(app: tauri::AppHandle, title: String, body: Strin
 }
 
 /// Send a native notification.
-/// Primary: tauri_plugin_notification (uses the app icon).
-/// Fallback (dev only): osascript (works without a .app bundle).
+/// macOS: uses notify-rust directly so the app's own bundle ID (and icon) is
+/// always used, bypassing the tauri plugin's dev-mode fallback to Terminal.
+/// Other platforms: uses the tauri plugin as before.
 pub fn send_native_notification(app: &tauri::AppHandle, title: &str, body: &str) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_id = &app.config().identifier;
+        let _ = notify_rust::set_application(bundle_id);
+        let mut n = notify_rust::Notification::new();
+        n.summary(title);
+        n.body(body);
+        n.auto_icon();
+        let n = n; // move into spawn
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = n.show() {
+                log::warn!("notify-rust show failed: {}", e);
+            }
+        });
+        Ok("Notification sent".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
     {
         use tauri_plugin_notification::NotificationExt;
-        match app.notification().builder().title(title).body(body).show() {
-            Ok(_) => Ok("Notification sent".to_string()),
-            Err(e) => {
-                log::warn!("tauri notification failed ({})", e);
-                #[cfg(all(debug_assertions, target_os = "macos"))]
-                {
-                    log::info!("falling back to osascript (dev mode)");
-                    send_osascript_notification(title, body)
-                }
-                #[cfg(not(all(debug_assertions, target_os = "macos")))]
-                {
-                    Err(format!("Notification unavailable: {}", e))
-                }
-            }
-        }
+        app.notification().builder().title(title).body(body).show()
+            .map(|_| "Notification sent".to_string())
+            .map_err(|e| format!("Notification unavailable: {}", e))
     }
-}
-
-#[cfg(debug_assertions)]
-fn send_osascript_notification(title: &str, body: &str) -> Result<String, String> {
-    let script = format!(
-        "display notification {} with title {}",
-        osascript_quote(body),
-        osascript_quote(title),
-    );
-    std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .map_err(|e| format!("osascript failed: {}", e))
-        .and_then(|out| {
-            if out.status.success() {
-                Ok("Notification sent".to_string())
-            } else {
-                Err(format!(
-                    "osascript error: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                ))
-            }
-        })
-}
-
-#[cfg(debug_assertions)]
-fn osascript_quote(s: &str) -> String {
-    // AppleScript quoted string: wrap in double quotes, escape backslash and double quote
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{}\"", escaped)
 }
 
 #[tauri::command]

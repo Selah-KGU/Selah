@@ -182,7 +182,7 @@
   .sec-count { font-size:12px; font-weight:600; color:var(--text-tertiary); }
   .sec-badge { margin-left:2px; }
   .sec-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
-  .sec-grid.mat-grid { grid-template-columns:repeat(4,1fr); }
+  .sec-grid.mat-grid { grid-template-columns:repeat(3,1fr); align-items:stretch; }
   .sec-empty { font-size:12px; color:var(--text-tertiary); padding:8px 4px; }
 
   /* Item Cards (Bento tiles) */
@@ -223,7 +223,7 @@
     background:var(--card-bg); border-radius:var(--inner-radius); box-shadow:var(--card-shadow);
     padding:10px; cursor:pointer; border:0.5px solid var(--card-border); width:100%; text-align:left; font-family:inherit;
     display:flex; flex-direction:column; gap:3px;
-    height:90px; overflow:hidden;
+    min-height:70px; overflow:hidden;
     transition:box-shadow .15s, border-color .15s, background .15s;
   }
   .mat-card:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
@@ -242,19 +242,24 @@
     word-break:break-word;
   }
   .mat-time { font-size:10px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .mat-files { display:flex; flex-direction:column; gap:2px; margin-top:auto; flex-shrink:0; overflow:hidden; }
+  .mat-desc {
+    font-size:11px; color:var(--text-secondary); line-height:1.35;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    overflow:hidden; word-break:break-word;
+  }
+  .mat-files { display:flex; flex-wrap:wrap; gap:3px; margin-top:auto; flex-shrink:0; }
   .mat-file-btn {
-    display:flex; align-items:center; gap:5px;
-    padding:4px 7px; border-radius:7px; border:none; cursor:pointer;
+    display:inline-flex; align-items:center; gap:4px;
+    padding:3px 7px; border-radius:6px; border:none; cursor:pointer;
     background:var(--accent-bg); color:var(--accent);
     font-size:10px; font-weight:500; font-family:inherit; text-align:left;
     transition:background .15s;
-    width:100%;
+    max-width:100%; overflow:hidden;
   }
   .mat-file-btn:hover { background:color-mix(in srgb, var(--accent) 15%, transparent); }
   .mat-file-btn:disabled { opacity:0.5; cursor:default; }
   .mat-file-btn svg { flex-shrink:0; opacity:0.7; }
-  .mat-file-btn span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mat-file-btn span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .mat-link-btn { color:var(--text-secondary); background:color-mix(in srgb, var(--text-secondary) 8%, transparent); }
   .mat-link-btn:hover { background:color-mix(in srgb, var(--text-secondary) 15%, transparent); }
   .mat-more { font-size:10px; color:var(--text-tertiary); padding:0 2px; }
@@ -356,8 +361,32 @@
   .meta-value { flex:1; color:var(--text-primary); word-break:break-word; }
   .section { margin:16px 0; }
   .section-heading { font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:6px; }
-  .section-body { font-size:14px; color:var(--text-primary); line-height:1.7; white-space:pre-wrap; word-break:break-word; }
-  .attachments { margin-top:16px; }
+  .section-body { font-size:14px; color:var(--text-primary); line-height:1.7; word-break:break-word; }
+  .rich-text { line-height:1.7; word-break:break-word; overflow-wrap:anywhere; }
+  .rich-text p { margin:0 0 0.45em; }
+  .rich-text p:last-child { margin-bottom:0; }
+  .rich-text ul, .rich-text ol { margin:0.35em 0 0.45em 1.1em; padding:0; }
+  .rich-text li { margin:0.15em 0; }
+  .rich-text strong, .rich-text b { font-weight:600; }
+  .rich-text em, .rich-text i { font-style:italic; }
+  .rich-text code { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:var(--bg-tertiary); padding:1px 4px; border-radius:4px; font-size:0.92em; }
+  .rich-text pre { margin:0.45em 0; padding:8px 10px; border-radius:8px; background:var(--bg-tertiary); overflow:auto; white-space:pre-wrap; }
+  .rich-text blockquote { margin:0.45em 0; padding-left:10px; border-left:3px solid var(--border-strong); color:var(--text-secondary); }
+  .rich-text a { color:var(--accent); text-decoration:underline; word-break:break-all; }
+  .rich-text-compact p,
+  .rich-text-compact ul,
+  .rich-text-compact ol,
+  .rich-text-compact li,
+  .rich-text-compact pre,
+  .rich-text-compact blockquote,
+  .rich-text-compact h1,
+  .rich-text-compact h2,
+  .rich-text-compact h3,
+  .rich-text-compact h4,
+  .rich-text-compact h5,
+  .rich-text-compact h6,
+  .rich-text-compact div { display:inline; margin:0; padding:0; }
+  .attachments { margin-top:16px; overflow:hidden; }
   .attachments h4 { font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:8px; }
   .attachment {
     display:flex; align-items:center; gap:8px;
@@ -365,12 +394,12 @@
     background:var(--card-bg); box-shadow:var(--card-shadow);
     border:0.5px solid var(--card-border);
     border-radius:var(--inner-radius); cursor:pointer; font-family:inherit;
-    width:100%; max-width:100%; text-align:left; margin-bottom:6px;
+    width:100%; max-width:100%; min-width:0; text-align:left; margin-bottom:6px;
     overflow:hidden;
     transition:border-color .15s, box-shadow .15s;
   }
   .attachment:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
-  .attachment span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .attachment span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .attachment.link-item { color:var(--text-primary); }
   .link-badge { display:inline-block; font-size:10px; font-weight:700; letter-spacing:0.02em; padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; color:#fff; }
   .link-badge.zoom { background:#2d8cff; }
@@ -385,7 +414,7 @@
   .thread-card { background:var(--card-bg); box-shadow:var(--card-shadow); border:0.5px solid var(--card-border); border-radius:var(--card-radius); padding:14px 16px; cursor:pointer; transition:border-color .15s, box-shadow .15s; }
   .thread-card:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
   .thread-title { font-size:14px; font-weight:600; color:var(--accent); margin-bottom:4px; }
-  .thread-body { font-size:13px; color:var(--text-primary); line-height:1.6; white-space:pre-wrap; word-break:break-word; margin-bottom:8px; }
+  .thread-body { font-size:13px; color:var(--text-primary); line-height:1.6; word-break:break-word; margin-bottom:8px; }
   .thread-meta { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--text-tertiary); }
   .thread-meta .author { font-weight:600; color:var(--text-secondary); }
   .reply-section { margin-top:20px; padding-top:16px; border-top:0.5px solid var(--border); }
@@ -414,7 +443,7 @@
 
   @media (max-width:560px) {
     .sec-grid { grid-template-columns:repeat(2,1fr); }
-    .sec-grid.mat-grid { grid-template-columns:repeat(3,1fr); }
+    .sec-grid.mat-grid { grid-template-columns:repeat(2,1fr); }
     .hero { padding:20px 16px 16px; }
     .hero-title { font-size:19px; }
     .sections-scroll { padding:12px 14px; }
@@ -465,6 +494,109 @@
     function linkifyText(s) {
       return escapeHtml(s).replace(/(https?:\/\/[^\s<)\]]+)/g,
         '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;word-break:break-all;">$1</a>');
+    }
+
+    function autoLinkEscaped(escaped) {
+      return String(escaped || '').replace(/(https?:\/\/[^\s<)\]]+)/g,
+        '<a href="$1" target="_blank" rel="noopener">$1</a>');
+    }
+
+    function sanitizeRichTextHtml(input) {
+      var raw = String(input || '');
+      if (!raw) return '';
+
+      var hasTag = /<\/?[a-z][\s\S]*>/i.test(raw);
+      if (!hasTag) return autoLinkEscaped(escapeHtml(raw)).replace(/\n/g, '<br>');
+
+      var allowed = {
+        a: true, b: true, strong: true, i: true, em: true, u: true,
+        p: true, br: true, ul: true, ol: true, li: true,
+        code: true, pre: true, blockquote: true,
+        h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
+        span: true, div: true
+      };
+
+      var tpl = document.createElement('template');
+      tpl.innerHTML = raw;
+
+      function safeHref(href) {
+        var h = String(href || '').trim();
+        if (!h) return '';
+        var low = h.toLowerCase();
+        if (low.startsWith('javascript:') || low.startsWith('data:') || low.startsWith('vbscript:')) return '';
+        if (low.startsWith('http://') || low.startsWith('https://') || low.startsWith('mailto:') || low.startsWith('tel:') || h.startsWith('/') || h.startsWith('#')) return h;
+        return '';
+      }
+
+      function sanitizeInlineStyle(styleText) {
+        var rawStyle = String(styleText || '').trim();
+        if (!rawStyle) return '';
+
+        var allowedProps = {
+          'font-weight': /^(normal|bold|[1-9]00)$/i,
+          'font-style': /^(normal|italic|oblique)$/i,
+          'text-decoration': /^(none|underline|line-through|overline)$/i,
+          'text-align': /^(left|right|center|justify|start|end)$/i,
+          'color': /^(#[0-9a-f]{3,8}|rgb\([^\)]{1,40}\)|rgba\([^\)]{1,50}\)|hsl\([^\)]{1,40}\)|hsla\([^\)]{1,50}\)|[a-z]{3,20})$/i,
+          'background-color': /^(#[0-9a-f]{3,8}|rgb\([^\)]{1,40}\)|rgba\([^\)]{1,50}\)|hsl\([^\)]{1,40}\)|hsla\([^\)]{1,50}\)|[a-z]{3,20})$/i
+        };
+
+        var out = [];
+        var parts = rawStyle.split(';');
+        for (var pi = 0; pi < parts.length; pi++) {
+          var seg = parts[pi];
+          var idx = seg.indexOf(':');
+          if (idx <= 0) continue;
+          var key = seg.slice(0, idx).trim().toLowerCase();
+          var val = seg.slice(idx + 1).trim();
+          if (!key || !val) continue;
+          if (val.indexOf('url(') >= 0 || val.indexOf('expression(') >= 0) continue;
+          var rule = allowedProps[key];
+          if (rule && rule.test(val)) out.push(key + ':' + val);
+        }
+
+        return out.join('; ');
+      }
+
+      function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return autoLinkEscaped(escapeHtml(node.nodeValue || ''));
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+        var tag = node.tagName.toLowerCase();
+        if (tag === 'script' || tag === 'style' || tag === 'iframe' || tag === 'object' || tag === 'embed' || tag === 'svg') return '';
+
+        var inner = '';
+        for (var i = 0; i < node.childNodes.length; i++) inner += walk(node.childNodes[i]);
+
+        if (!allowed[tag]) return inner;
+
+        if (tag === 'a') {
+          var href = safeHref(node.getAttribute('href'));
+          if (!href) return inner;
+          return '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener">' + inner + '</a>';
+        }
+
+        var styleAttr = '';
+        if (tag === 'span' || tag === 'p' || tag === 'div'
+          || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') {
+          var safeStyle = sanitizeInlineStyle(node.getAttribute('style'));
+          if (safeStyle) styleAttr = ' style="' + escapeHtml(safeStyle) + '"';
+        }
+
+        return '<' + tag + styleAttr + '>' + inner + '</' + tag + '>';
+      }
+
+      var out = '';
+      for (var i = 0; i < tpl.content.childNodes.length; i++) out += walk(tpl.content.childNodes[i]);
+      return out;
+    }
+
+    function renderRichText(s, compact) {
+      var html = sanitizeRichTextHtml(s);
+      if (!compact) return html;
+      return html;
     }
 
     var ICONS = {
@@ -585,7 +717,7 @@
         var s = data.sections[i];
         h += '<div class="section">';
         if (s.heading) h += '<div class="section-heading">' + escapeHtml(s.heading) + '</div>';
-        h += '<div class="section-body">' + linkifyText(s.body) + '</div></div>';
+        h += '<div class="section-body rich-text">' + renderRichText(s.body) + '</div></div>';
       }
       if (data.meta && data.meta.length) {
         h += '<div class="meta-table">';
@@ -649,6 +781,8 @@
       var data = { title: params.get('title') || '', course_name: '', sections: [], attachments: [], meta: [] };
       var period = params.get('period');
       if (period) data.meta.push(['\u516c\u958b\u671f\u9593', period]);
+      var desc = params.get('status');
+      if (desc) data.sections.push({ heading: '', body: desc });
       renderDetail(data);
       var filesJson = params.get('infoId'), idnumber = params.get('idnumber') || '', files = [];
       if (filesJson) try { files = JSON.parse(filesJson); } catch(e) {}
@@ -705,7 +839,7 @@
       var h = '<div class="detail-wrap">';
       if (data.course_name) h += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
       if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
-      if (data.description) h += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
+      if (data.description) h += '<div class="section"><div class="section-body rich-text">' + renderRichText(data.description) + '</div></div>';
       if (data.meta && data.meta.length) {
         h += '<div class="meta-table">';
         for (var j = 0; j < data.meta.length; j++) {
@@ -720,7 +854,7 @@
           var p = data.posts[i];
           h += '<div class="thread-card" data-thread-id="' + escapeHtml(p.thread_id || '') + '">';
           if (p.title) h += '<div class="thread-title">' + escapeHtml(p.title) + '</div>';
-          if (p.content) h += '<div class="thread-body">' + linkifyText(p.content) + '</div>';
+          if (p.content) h += '<div class="thread-body rich-text">' + renderRichText(p.content) + '</div>';
           h += '<div class="thread-meta">';
           if (p.author) h += '<span class="author">' + escapeHtml(p.author) + '</span>';
           if (p.date) h += '<span>' + escapeHtml(p.date) + '</span>';
@@ -757,7 +891,7 @@
       if (post.date) h += '<span>' + escapeHtml(post.date) + '</span>';
       if (post.status) h += '<span style="margin-left:auto">' + escapeHtml(post.status) + '</span>';
       h += '</div>';
-      if (post.content) h += '<div class="section"><div class="section-body" style="white-space:pre-wrap;word-break:break-word">' + linkifyText(post.content) + '</div></div>';
+      if (post.content) h += '<div class="section"><div class="section-body rich-text">' + renderRichText(post.content) + '</div></div>';
       var tid = post.thread_id || '';
       if (tid && idnumber && forumId) {
         h += '<div class="reply-section"><h3>\u8fd4\u4fe1</h3>';
@@ -819,7 +953,7 @@
       var h = '<div class="detail-wrap">';
       if (data.course_name) h += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
       if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
-      if (data.description) h += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
+      if (data.description) h += '<div class="section"><div class="section-body rich-text">' + renderRichText(data.description) + '</div></div>';
       if (data.meta && data.meta.length) {
         h += '<div class="meta-table">';
         for (var j = 0; j < data.meta.length; j++) {
@@ -856,7 +990,7 @@
       if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
       var h = '<div class="detail-wrap">';
       if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
-      if (data.description) h += '<div class="section"><div class="section-body">' + linkifyText(data.description) + '</div></div>';
+      if (data.description) h += '<div class="section"><div class="section-body rich-text">' + renderRichText(data.description) + '</div></div>';
       // Info chips
       var chips = [];
       if (data.period) chips.push(['\u671f\u9593', data.period]);
@@ -886,7 +1020,7 @@
           h += '<div class="survey-q-header"><span class="survey-q-num">Q' + escapeHtml(q.number) + '</span>';
           if (q.required) h += '<span class="survey-q-req">\u5fc5\u9808</span>';
           h += '</div>';
-          h += '<div class="survey-q-body">' + linkifyText(q.body) + '</div>';
+          h += '<div class="survey-q-body rich-text">' + renderRichText(q.body) + '</div>';
           if (q.options && q.options.length) {
             h += '<div class="survey-q-options">';
             for (var oi = 0; oi < q.options.length; oi++) {
@@ -1049,13 +1183,13 @@
         for (var m = 0; m < data.materials.length; m++) {
           var mat = data.materials[m];
           var hasFiles = mat.files && mat.files.length;
-          var maxShow = 1;
           h += '<div class="mat-card" data-material-idx="' + m + '">';
           h += '<div class="mat-title">' + escapeHtml(mat.title) + '</div>';
+          if (mat.description) h += '<div class="mat-desc rich-text rich-text-compact">' + renderRichText(mat.description, true) + '</div>';
           if (mat.period) h += '<div class="mat-time">' + pubDate(mat.period) + '</div>';
           if (hasFiles) {
             h += '<div class="mat-files">';
-            for (var fi = 0; fi < Math.min(mat.files.length, maxShow); fi++) {
+            for (var fi = 0; fi < mat.files.length; fi++) {
               var f = mat.files[fi];
               var flt = f.link_type || (f.file_type === '0' ? 'file' : 'web');
               var isLink = flt !== 'file';
@@ -1067,7 +1201,6 @@
               }
               h += '<span>' + escapeHtml(f.display_name || f.file_name) + '</span></button>';
             }
-            if (mat.files.length > maxShow) h += '<span class="mat-more">+' + (mat.files.length - maxShow) + '\u4ef6</span>';
             h += '</div>';
           }
           h += '</div>';
@@ -1257,7 +1390,7 @@
           if (e.target.closest('.mat-file-btn')) return;
           var item = data.materials[parseInt(b.dataset.materialIdx)];
           if (!item) return;
-          invoke('luna_open_detail_window', { path: '', title: item.title, mode: 'material', period: item.period || null, status: item.status || null, idnumber: idnumber || null, infoId: item.files?.length ? JSON.stringify(item.files) : null });
+          invoke('luna_open_detail_window', { path: '', title: item.title, mode: 'material', period: item.period || null, status: item.description || null, idnumber: idnumber || null, infoId: item.files?.length ? JSON.stringify(item.files) : null });
         });
       });
 
