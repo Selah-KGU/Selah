@@ -209,6 +209,7 @@ pub fn run() {
             luna_commands::luna_fetch_announcement_detail,
             luna_commands::luna_fetch_survey_detail,
             luna_commands::luna_submit_survey,
+            luna_commands::luna_submit_attendance,
             luna_commands::luna_fetch_course_detail,
             luna_commands::luna_download_file,
             luna_commands::luna_download_material,

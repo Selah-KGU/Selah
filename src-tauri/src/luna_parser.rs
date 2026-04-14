@@ -112,6 +112,13 @@ sel!(SEL_SURV_NAME_FB,  ".course-view-questionnaire-name");
 sel!(SEL_SURV_PERIOD,   ".course-view-questionnaire-period.sp-contents-hidden");
 sel!(SEL_SURV_STATUS,   ".course-view-questionnaire-answer-status");
 
+// ── Attendance selectors ──
+sel!(SEL_ATT_LIST,      "#attendance .course-result-list.contents-display-flex");
+sel!(SEL_ATT_TITLE,     ".course-view-attendance-title");
+sel!(SEL_ATT_DATE,      ".course-view-attendance-date");
+sel!(SEL_ATT_STATUS,    ".course-view-attendance-status");
+sel!(SEL_ATT_ACTION_A,  ".course-view-attendance-status a");
+
 // ── Utility selectors ──
 sel!(SEL_A_HREF,        "a[href]");
 sel!(SEL_SPAN,          "span");
@@ -1249,6 +1256,23 @@ pub struct LunaCourseContents {
     pub examinations: Vec<LunaContentItem>,
     pub discussions: Vec<LunaContentItem>,
     pub surveys: Vec<LunaContentItem>,
+    #[serde(default)]
+    pub attendances: Vec<LunaAttendanceItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LunaAttendanceItem {
+    pub title: String,
+    pub date: String,
+    pub status: String,
+    #[serde(default)]
+    pub can_register: bool,
+    #[serde(default)]
+    pub idnumber: String,
+    #[serde(default)]
+    pub attendance_id: String,
+    #[serde(default)]
+    pub log_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1472,6 +1496,9 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
         online_tools.push(LunaOnlineTool { name, url: href, icon });
     }
 
+    // Parse attendance rows from the course top page
+    let attendances = parse_attendances(&doc, idnumber);
+
     // Fallback if page didn't load
     if menus.is_empty() && course_name.is_empty() {
         return LunaCourseContents {
@@ -1490,6 +1517,7 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
             examinations: Vec::new(),
             discussions: Vec::new(),
             surveys: Vec::new(),
+            attendances: Vec::new(),
         };
     }
 
@@ -1509,7 +1537,58 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
         examinations: Vec::new(),
         discussions: Vec::new(),
         surveys: Vec::new(),
+        attendances,
     }
+}
+
+fn parse_attendances(doc: &Html, fallback_idnumber: &str) -> Vec<LunaAttendanceItem> {
+    let mut items = Vec::new();
+    for row in doc.select(&SEL_ATT_LIST) {
+        let title = row.select(&SEL_ATT_TITLE).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        let date = row.select(&SEL_ATT_DATE).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        let mut status = row.select(&SEL_ATT_STATUS).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        let mut can_register = false;
+        let mut idnumber = fallback_idnumber.to_string();
+        let mut attendance_id = String::new();
+        let mut log_type = String::new();
+
+        if let Some(a) = row.select(&SEL_ATT_ACTION_A).next() {
+            let link_text = a.text().collect::<String>().trim().to_string();
+            if !link_text.is_empty() {
+                status = link_text;
+            }
+            let data1 = a.value().attr("data1").unwrap_or_default().to_string();
+            let data2 = a.value().attr("data2").unwrap_or_default().to_string();
+            let data3 = a.value().attr("data3").unwrap_or_default().to_string();
+
+            if !data1.is_empty() { idnumber = data1; }
+            attendance_id = data2;
+            log_type = data3;
+            can_register = !attendance_id.is_empty() && status.contains("受付");
+        }
+
+        if title.is_empty() && date.is_empty() && status.is_empty() {
+            continue;
+        }
+
+        items.push(LunaAttendanceItem {
+            title,
+            date,
+            status,
+            can_register,
+            idnumber,
+            attendance_id,
+            log_type,
+        });
+    }
+    items
 }
 
 /// Extract TA or LA info from the course page readmore section

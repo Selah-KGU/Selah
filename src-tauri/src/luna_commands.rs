@@ -340,6 +340,13 @@ pub async fn luna_open_detail_window(
             }
             parts
         }
+        Some("attendance") => {
+            format!(
+                "luna-detail.html?mode=attendance&idnumber={}&title={}",
+                urlencoding::encode(idnumber.as_deref().unwrap_or("")),
+                urlencoding::encode(&title)
+            )
+        }
         _ => {
             format!("luna-detail.html?path={}&title={}", urlencoding::encode(&path), urlencoding::encode(&title))
         }
@@ -727,6 +734,94 @@ pub async fn luna_submit_survey(
     }
 
     Ok(())
+}
+
+/// Submit attendance registration (出席登録)
+/// Flow: GET send page -> parse hidden form -> POST submit (up to 2 rounds)
+#[tauri::command]
+pub async fn luna_submit_attendance(
+    state: State<'_, AppState>,
+    idnumber: String,
+    attendance_id: String,
+    one_time_pass: Option<String>,
+    comment: Option<String>,
+) -> Result<String, String> {
+    if !is_safe_param(&idnumber) || !is_safe_param(&attendance_id) {
+        return Err("無効なパラメータです".into());
+    }
+
+    let http = luna_http(&state).await?;
+    let send_path = format!(
+        "/lms/course/attendances/send?idnumber={}&attendanceId={}",
+        idnumber,
+        attendance_id
+    );
+    let referer_path = format!("/lms/course?idnumber={}#attendance", idnumber);
+
+    let mut html = match luna_get_with_referer(&http, &send_path, &referer_path).await {
+        Ok(body) => body,
+        Err(_) => luna_get(&http, &send_path).await?,
+    };
+
+    if html.contains("登録期間外") {
+        return Err("登録期間外です".into());
+    }
+    if html.contains("登録済") || html.contains("出席済") {
+        return Ok("すでに登録済みです".into());
+    }
+
+    for _ in 0..2 {
+        if html.contains("完了") || html.contains("登録しました") || html.contains("登録済") {
+            return Ok("出席を登録しました".into());
+        }
+
+        let (action, mut fields) = match extract_form_fields(&html, "/attendances") {
+            Some(v) => v,
+            None => break,
+        };
+        if fields.is_empty() {
+            break;
+        }
+
+        if let Some(pass) = one_time_pass.as_ref() {
+            upsert_field(&mut fields, "oneTimePass", pass.clone());
+        }
+        if let Some(cmt) = comment.as_ref() {
+            upsert_field(&mut fields, "comment", cmt.clone());
+        }
+
+        if let Some(current_pass) = field_value(&fields, "oneTimePass") {
+            if current_pass.trim().is_empty() {
+                return Err("出席パスワードを入力してください".into());
+            }
+        }
+
+        let submit_url = if action.starts_with("http") {
+            action.clone()
+        } else {
+            format!("{}{}", config::LUNA_BASE, action)
+        };
+
+        let referer = format!("{}{}", config::LUNA_BASE, send_path);
+        let builder = http.post(&submit_url)
+            .header("Referer", &referer)
+            .form(&fields);
+        html = client::send_and_follow_redirect(
+            &http,
+            builder,
+            config::LUNA_BASE,
+            luna_client::LUNA_SESSION_EXPIRED_MSG,
+            luna_client::is_luna_session_expired,
+        ).await?;
+    }
+
+    if html.contains("完了") || html.contains("登録しました") || html.contains("登録済") {
+        Ok("出席を登録しました".into())
+    } else if html.contains("登録期間外") {
+        Err("登録期間外です".into())
+    } else {
+        Err("出席登録フォームを完了できませんでした".into())
+    }
 }
 
 /// Fetch and parse course top page (/lms/course?idnumber=XXX)
@@ -1726,4 +1821,79 @@ fn extract_input_value(html: &str, name: &str) -> Option<String> {
     let end = rest.find('"')?;
     let val = rest[..end].to_string();
     if !val.is_empty() { Some(val) } else { None }
+}
+
+/// Extract first matching form action + fields (hidden/text/textarea/select).
+fn extract_form_fields(html: &str, action_hint: &str) -> Option<(String, Vec<(String, String)>)> {
+    let doc = scraper::Html::parse_document(html);
+    let sel_input = scraper::Selector::parse("input[name]").ok()?;
+    let sel_textarea = scraper::Selector::parse("textarea[name]").ok()?;
+    let sel_select = scraper::Selector::parse("select[name]").ok()?;
+    let sel_opt_selected = scraper::Selector::parse("option[selected]").ok()?;
+    let sel_option = scraper::Selector::parse("option").ok()?;
+
+    let mut fallback: Option<(String, Vec<(String, String)>)> = None;
+    for form in doc.select(&*SEL_FORM) {
+        let action = form.value().attr("action").unwrap_or_default().to_string();
+        let mut fields = Vec::new();
+
+        for input in form.select(&sel_input) {
+            let name = input.value().attr("name").unwrap_or_default();
+            let typ = input.value().attr("type").unwrap_or("text").to_ascii_lowercase();
+            if (typ == "checkbox" || typ == "radio") && input.value().attr("checked").is_none() {
+                continue;
+            }
+            let value = input.value().attr("value").unwrap_or_default();
+            if !name.is_empty() {
+                fields.push((name.to_string(), value.to_string()));
+            }
+        }
+
+        for ta in form.select(&sel_textarea) {
+            let name = ta.value().attr("name").unwrap_or_default();
+            if !name.is_empty() {
+                fields.push((name.to_string(), ta.text().collect::<String>()));
+            }
+        }
+
+        for se in form.select(&sel_select) {
+            let name = se.value().attr("name").unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            let value = se.select(&sel_opt_selected).next()
+                .or_else(|| se.select(&sel_option).next())
+                .and_then(|o| o.value().attr("value"))
+                .unwrap_or_default()
+                .to_string();
+            fields.push((name.to_string(), value));
+        }
+
+        if action.is_empty() || fields.is_empty() {
+            continue;
+        }
+
+        if fallback.is_none() {
+            fallback = Some((action.clone(), fields.clone()));
+        }
+        if action_hint.is_empty() || action.contains(action_hint) {
+            return Some((action, fields));
+        }
+    }
+
+    fallback
+}
+
+fn upsert_field(fields: &mut Vec<(String, String)>, key: &str, value: String) {
+    for (k, v) in fields.iter_mut() {
+        if k == key {
+            *v = value;
+            return;
+        }
+    }
+    fields.push((key.to_string(), value));
+}
+
+fn field_value<'a>(fields: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    fields.iter().find_map(|(k, v)| if k == key { Some(v.as_str()) } else { None })
 }
