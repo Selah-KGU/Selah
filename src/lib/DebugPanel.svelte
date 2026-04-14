@@ -45,6 +45,7 @@
   let isPinging = $state(false);
   let consoleInput = $state("");
   let tasks = $state<TaskInfo[]>([]);
+  let taskTick = $state(0); // drives "Xs ago" refresh
 
   // Session check state
   let sessionCheck = $state<SessionCheck>({
@@ -111,6 +112,11 @@
     tasks = getTaskSnapshot();
     const unsubTasks = onTaskChange(() => { tasks = getTaskSnapshot(); });
 
+    // Auto-refresh "Xs ago" display every 2s when tasks tab is visible
+    const taskTickTimer = setInterval(() => {
+      if (activeSection === "tasks") taskTick++;
+    }, 2000);
+
     const origWarn = console.warn;
     const origError = console.error;
     console.warn = (...args: any[]) => {
@@ -126,6 +132,7 @@
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
       unsubTasks();
+      clearInterval(taskTickTimer);
       console.warn = origWarn;
       console.error = origError;
     };
@@ -425,7 +432,7 @@
                       </span>
                       <span class="mono" style="color:var(--text-tertiary);font-size:10px;">
                         {#if t.lastRunTs}
-                          {Math.round((Date.now() - t.lastRunTs) / 1000)}s ago
+                          {void taskTick, Math.round((Date.now() - t.lastRunTs) / 1000)}s ago
                         {:else}
                           --
                         {/if}

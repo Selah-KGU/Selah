@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, gcalDisconnect, syncCalendar, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts } from "../api";
-  import { lunaAuthState, gcalAuthState, registerTask, updateTask } from "../stores";
+  import { lunaAuthState, gcalAuthState, registerTask, updateTask, onCacheUpdate } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
@@ -26,6 +26,7 @@
   let syscalEnabled = $state(isMac && localStorage.getItem("selah-syscal-enabled") === "true");
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let cacheReloadTimer: ReturnType<typeof setInterval> | undefined;
   let calSyncTimer: ReturnType<typeof setInterval> | undefined;
   let calSyncInitTimeout: ReturnType<typeof setTimeout> | undefined;
   let lunaCountsInitTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -706,10 +707,36 @@
     if (calSyncTimer) { clearInterval(calSyncTimer); calSyncTimer = undefined; }
   }
 
+  const CACHE_RELOAD_FG = 30 * 60 * 1000; // 30 minutes (foreground)
+  const CACHE_RELOAD_BG = 60 * 60 * 1000; // 1 hour (background)
+  let lastCacheReload = 0;
+
+  async function reloadFromCache() {
+    try {
+      const data = await getScheduleSnapshot();
+      scheduleData = data;
+      if (data.ai_result) aiResult = data.ai_result;
+      loadCachedExtras();
+      lastCacheReload = Date.now();
+      console.log("[Timetable] cache reload done");
+    } catch (e) {
+      console.warn("[Timetable] cache reload failed:", e);
+    }
+  }
+
+  function scheduleCacheReload() {
+    if (cacheReloadTimer) clearInterval(cacheReloadTimer);
+    const interval = document.visibilityState === "visible" ? CACHE_RELOAD_FG : CACHE_RELOAD_BG;
+    cacheReloadTimer = setInterval(reloadFromCache, interval);
+  }
+
   onMount(() => {
     loadData();
+    lastCacheReload = Date.now();
     startTipCycle();
     startCalSyncTimer();
+    // Periodic cache reload (no network, just re-read DB snapshot)
+    scheduleCacheReload();
     // Luna activity counts: run once after 10s, then every 3 hours
     lunaCountsInitTimeout = setTimeout(() => autoRefreshLunaCounts(), 10_000);
     lunaCountsTimer = setInterval(() => autoRefreshLunaCounts(), LUNA_COUNTS_INTERVAL);
@@ -734,12 +761,22 @@
   function handleVisibilityChange() {
     if (document.visibilityState === "visible") {
       syscalEnabled = isMac && localStorage.getItem("selah-syscal-enabled") !== "false";
+      // Reload cache if stale when coming back to foreground
+      if (Date.now() - lastCacheReload >= CACHE_RELOAD_FG) reloadFromCache();
     }
+    scheduleCacheReload();
   }
 
+  // SWR: pick up background poll refreshes
+  const unsubExams = onCacheUpdate<ExamTimetableData>("exams", (fresh) => {
+    examEntries = fresh?.entries || [];
+  });
+
   onDestroy(() => {
+    unsubExams();
     stopTipCycle();
     stopCalSyncTimer();
+    if (cacheReloadTimer) clearInterval(cacheReloadTimer);
     if (lunaCountsTimer) clearInterval(lunaCountsTimer);
     if (lunaCountsInitTimeout) clearTimeout(lunaCountsInitTimeout);
     if (toastTimer) clearTimeout(toastTimer);

@@ -22,7 +22,7 @@
     if (showProfile && !profile) {
       profileLoading = true;
       try {
-        profile = await cachedFetch("profile", fetchStudentProfile);
+        profile = await cachedFetch("student_profile", fetchStudentProfile);
       } catch (e) {
         console.warn("Failed to fetch profile:", e);
       } finally {
