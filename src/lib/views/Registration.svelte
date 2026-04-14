@@ -49,7 +49,10 @@
     }
   }
 
-  const unsubReg = onCacheUpdate<RegistrationData>("registration", (fresh) => { data = fresh; });
+  const unsubReg = onCacheUpdate<RegistrationData>("registration", (fresh) => {
+    data = fresh;
+    if (fresh) { error = ""; loading = false; }
+  });
   onDestroy(() => unsubReg());
 
   onMount(async () => {
@@ -57,6 +60,13 @@
       data = await cachedFetch("registration", fetchRegistration);
     } catch (e: any) {
       error = e?.message || String(e);
+      // Auto-retry once after 3s (covers kgc_gate contention / transient errors)
+      setTimeout(async () => {
+        try {
+          data = await cachedFetch("registration", fetchRegistration);
+          error = "";
+        } catch { /* keep existing error */ }
+      }, 3000);
     } finally {
       loading = false;
     }

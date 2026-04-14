@@ -701,7 +701,8 @@ pub struct LanguageOption {
     pub value: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct RegisteredCourse {
     pub period: String,
     pub day: String,
@@ -715,7 +716,8 @@ pub struct RegisteredCourse {
     pub status: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct RegistrationData {
     pub student: StudentInfo,
     pub credit_summary: Vec<CreditSummary>,

@@ -152,11 +152,12 @@
   .hero-label { display:inline; font-size:12px; font-weight:500; color:var(--text-tertiary); letter-spacing:0.02em; }
   .hero-title-row { display:flex; align-items:flex-start; gap:10px; margin-bottom:2px; }
   .hero-title { font-size:22px; font-weight:700; line-height:1.25; letter-spacing:-0.02em; flex:1; min-width:0; }
-  .hero-info-row { display:flex; align-items:center; flex-wrap:nowrap; gap:6px 10px; margin-top:6px; overflow:hidden; white-space:nowrap; }
-  .hero-subtitle { font-size:13px; color:var(--text-secondary); display:inline-flex; align-items:center; gap:6px; flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .hero-info-row { display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; margin-top:6px; min-width:0; }
+  .hero-subtitle { font-size:13px; color:var(--text-secondary); display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
   .hero-subtitle svg { flex-shrink:0; opacity:0.5; }
+  .hero-teachers { flex-shrink:1; min-width:0; }
   .hero-sep { width:1px; height:14px; background:var(--border-strong); flex-shrink:0; opacity:0.7; }
-  .hero-ta-tag { display:inline-flex; align-items:center; gap:4px; font-size:11px; color:var(--text-secondary); flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .hero-ta-tag { display:inline-flex; align-items:center; gap:4px; font-size:11px; color:var(--text-secondary); flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hero-ta-tag .ta-label { font-weight:600; color:var(--text-tertiary); font-size:10px; letter-spacing:0.03em; flex-shrink:0; }
   .hero-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
   .hero-badge {
@@ -244,7 +245,7 @@
   .mat-time { font-size:10px; color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .mat-desc {
     font-size:11px; color:var(--text-secondary); line-height:1.35;
-    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    display:-webkit-box; line-clamp:2; -webkit-line-clamp:2; -webkit-box-orient:vertical;
     overflow:hidden; word-break:break-word;
   }
   .mat-files { display:flex; flex-wrap:wrap; gap:3px; margin-top:auto; flex-shrink:0; }
@@ -877,7 +878,7 @@
       }
       if (fh) c.insertAdjacentHTML('beforeend', fh);
       c.querySelectorAll('.material-dl').forEach(function(b) {
-        b.addEventListener('click', (function(file) { return function() { downloadMaterial(idnumber, file, this); }; })(files[b.dataset.idx]));
+        b.addEventListener('click', (function(file) { return function() { downloadMaterial(idnumber, file, this, data.title); }; })(files[b.dataset.idx]));
       });
       c.querySelectorAll('.material-link').forEach(function(b) {
         b.addEventListener('click', (function(file) { return function() { openMaterialLink(idnumber, file, this); }; })(files[b.dataset.idx]));
@@ -1169,6 +1170,7 @@
     function renderCourseDetail(data, idnumber, kgcPath) {
       var c = document.getElementById('content');
       if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+      _currentCourseName = data.course_name || null;
 
       // Luna link in titlebar
       document.getElementById('titlebar').innerHTML = '<button class="luna-open-btn" data-luna-course-url="https://luna.kwansei.ac.jp/lms/course?idnumber=' + encodeURIComponent(idnumber) + '" title="LUNA\u3067\u958b\u304f"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>LUNA</button>';
@@ -1184,7 +1186,7 @@
       if (data.la_info) infoTip.push('LA: ' + data.la_info);
       h += '<div class="hero-info-row" title="' + escapeHtml(infoTip.join(' / ')) + '">';
       if (data.semester) h += '<span class="hero-label">' + escapeHtml(data.semester) + '</span>';
-      if (data.teachers) { if (data.semester) h += '<span class="hero-sep"></span>'; h += '<span class="hero-subtitle">' + ICONS.person + ' ' + escapeHtml(data.teachers) + '</span>'; }
+      if (data.teachers) { if (data.semester) h += '<span class="hero-sep"></span>'; h += '<span class="hero-subtitle hero-teachers">' + ICONS.person + ' ' + escapeHtml(data.teachers) + '</span>'; }
       if (data.ta_info) { h += '<span class="hero-sep"></span><span class="hero-ta-tag"><span class="ta-label">TA</span>' + escapeHtml(data.ta_info) + '</span>'; }
       if (data.la_info) { h += '<span class="hero-sep"></span><span class="hero-ta-tag"><span class="ta-label">LA</span>' + escapeHtml(data.la_info) + '</span>'; }
       h += '</div>';
@@ -1269,7 +1271,7 @@
         h += '<div class="sec">';
         h += '<div class="sec-head"><span class="sec-label">\u51fa\u5e2d</span><span class="sec-count">' + attCount + '</span>';
         if (hiddenCount > 0 && idnumber) {
-          h += '<button class="attendance-open-btn" data-att-open-window-id="' + escapeHtml(idnumber) + '">\u5168\u3066\u3092\u65b0\u7a97\u53e3\u3067\u958b\u304f</button>';
+          h += '<button class="attendance-open-btn" data-att-open-window-id="' + escapeHtml(idnumber) + '">\u5168\u3066</button>';
         }
         h += '</div>';
         h += '<div class="attendance-list">';
@@ -1534,7 +1536,7 @@
           var f = item.files[fi];
           var flt = f.link_type || (f.file_type === '0' ? 'file' : 'web');
           if (flt !== 'file') openMaterialLink(idnumber, f, btn);
-          else downloadMaterial(idnumber, f, btn);
+          else downloadMaterial(idnumber, f, btn, item.title);
         });
       });
       // Material card click fallback (opens detail window)
@@ -1559,9 +1561,11 @@
         });
       });
 
-      // Exams
+      // Exams — open directly in browser webview (not custom detail parser)
       c.querySelectorAll('[data-exam-url]').forEach(function(b) {
-        b.addEventListener('click', function() { if (b.dataset.examUrl) invoke('luna_open_detail_window', { path: b.dataset.examUrl, title: b.dataset.examTitle }); });
+        b.addEventListener('click', function() {
+          if (b.dataset.examUrl) invoke('open_external_url', { url: 'https://luna.kwansei.ac.jp' + b.dataset.examUrl, title: b.dataset.examTitle || 'テスト' });
+        });
       });
 
       // Discussions - click to open detail
@@ -1657,11 +1661,12 @@
     }
 
     // Download helpers
-    async function downloadMaterial(idnumber, file, btn) {
+    var _currentCourseName = null;
+    async function downloadMaterial(idnumber, file, btn, materialTitle) {
       var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
       var orig = btn.innerHTML; btn.innerHTML = '<span>\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u4e2d...</span>'; btn.disabled = true;
       try {
-        var path = await invoke('luna_download_material', { idnumber: idnumber, fileName: file.file_name, objectName: file.object_name, resourceId: file.resource_id, fileType: file.file_type || '0', materialId: file.material_id || null, displayName: file.display_name || null, endDate: file.end_date || null });
+        var path = await invoke('luna_download_material', { idnumber: idnumber, fileName: file.file_name, objectName: file.object_name, resourceId: file.resource_id, fileType: file.file_type || '0', materialId: file.material_id || null, displayName: file.display_name || null, endDate: file.end_date || null, courseName: _currentCourseName || null, materialTitle: materialTitle || null });
         btn.innerHTML = '<span>' + ICONS.done + ' ' + escapeHtml(file.display_name || file.file_name) + '</span>';
         await invoke('luna_reveal_file', { path: path });
       } catch(e) { btn.innerHTML = orig; btn.disabled = false; showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e)); }

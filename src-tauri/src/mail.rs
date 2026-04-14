@@ -490,9 +490,7 @@ impl MailClient {
         );
         let data = self.graph_get_bytes(&url).await?;
 
-        let downloads_dir = dirs::download_dir()
-            .or_else(|| dirs::home_dir())
-            .unwrap_or_else(|| PathBuf::from("."));
+        let downloads_dir = crate::commands::resolve_download_dir(None, None);
 
         // Avoid overwriting: append a counter if file exists
         let mut dest = downloads_dir.join(&safe_name);

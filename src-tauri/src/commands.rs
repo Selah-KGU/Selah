@@ -2054,3 +2054,145 @@ pub async fn fetch_weather() -> Result<WeatherData, String> {
         tomorrow,
     })
 }
+
+// ============ Download Config ============
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DownloadConfig {
+    pub download_dir: String,
+    pub classify_by_course: bool,
+}
+
+impl Default for DownloadConfig {
+    fn default() -> Self {
+        Self {
+            download_dir: String::new(),
+            classify_by_course: true,
+        }
+    }
+}
+
+fn download_config_path() -> std::path::PathBuf {
+    client::data_dir().join("download_config.json")
+}
+
+pub fn load_download_config() -> DownloadConfig {
+    let path = download_config_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str(&data) {
+                return cfg;
+            }
+        }
+    }
+    DownloadConfig::default()
+}
+
+fn save_download_config_to_disk(config: &DownloadConfig) -> Result<(), String> {
+    let path = download_config_path();
+    let data = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("JSON serialization error: {}", e))?;
+    std::fs::write(&path, &data)
+        .map_err(|e| format!("Failed to write download config: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_download_config() -> DownloadConfig {
+    load_download_config()
+}
+
+#[tauri::command]
+pub fn save_download_config(config: DownloadConfig) -> Result<(), String> {
+    // Validate download_dir if set
+    if !config.download_dir.is_empty() {
+        let p = std::path::Path::new(&config.download_dir);
+        if !p.is_absolute() {
+            return Err("ダウンロードディレクトリは絶対パスで指定してください".into());
+        }
+        // Create if it doesn't exist
+        std::fs::create_dir_all(p)
+            .map_err(|e| format!("ディレクトリの作成に失敗しました: {}", e))?;
+    }
+    save_download_config_to_disk(&config)
+}
+
+#[tauri::command]
+pub async fn select_download_dir() -> Result<String, String> {
+    let result = rfd::AsyncFileDialog::new()
+        .set_title("ダウンロードフォルダを選択")
+        .pick_folder()
+        .await;
+
+    match result {
+        Some(handle) => Ok(handle.path().to_string_lossy().to_string()),
+        None => Err("cancelled".into()),
+    }
+}
+
+/// Sanitize a string to be safe as a directory/file name component.
+fn sanitize_path_component(name: &str) -> String {
+    let s: String = name.chars().map(|c| match c {
+        '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+        _ => c,
+    }).collect();
+    let trimmed = s.trim().trim_matches('.');
+    if trimmed.is_empty() { "_".into() } else { trimmed.to_string() }
+}
+
+/// Simplify a course name for use as a folder name.
+/// Luna course names often look like:
+///   "日本語教育センター 51001004 日本語I ４"
+///   "国際学部_International Studies 34001001 キリスト教学Ａ　１"
+/// We strip the leading department + numeric code prefix, bracket sections, and
+/// trailing parenthesized scheduling info to get just the core course name.
+fn simplify_course_name(name: &str) -> String {
+    static RE_DEPT_CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Match leading "department text + 8-digit code + space" prefix
+        // e.g. "日本語教育センター 51001004 " or "国際学部_International Studies 34001001 "
+        regex::Regex::new(r"^.+\s\d{7,8}\s+").unwrap()
+    });
+    static RE_BRACKET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"[\[［]\d+[\]］]").unwrap()
+    });
+    static RE_PAREN_SUFFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"[（(][^)）]*(?:学期|限|クラス|組|セメスター|Quarter|Semester)[^)）]*[)）]\s*$").unwrap()
+    });
+    // Strip department + course code prefix first
+    let s = RE_DEPT_CODE.replace(name, "");
+    let s = RE_BRACKET.replace_all(&s, "");
+    let s = RE_PAREN_SUFFIX.replace_all(&s, "");
+    // Collapse whitespace
+    let s: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s = s.trim().to_string();
+    if s.is_empty() { name.trim().to_string() } else { s }
+}
+
+/// Resolve the download directory with optional course/session classification.
+/// Returns the target directory (created if needed) for saving a file.
+pub fn resolve_download_dir(course_name: Option<&str>, session_label: Option<&str>) -> std::path::PathBuf {
+    let config = load_download_config();
+    let base = if config.download_dir.is_empty() {
+        dirs::download_dir().unwrap_or_else(std::env::temp_dir)
+    } else {
+        std::path::PathBuf::from(&config.download_dir)
+    };
+
+    if config.classify_by_course {
+        if let Some(course) = course_name {
+            let simplified = simplify_course_name(course);
+            let safe_course = sanitize_path_component(&simplified);
+            let dir = if let Some(session) = session_label {
+                let safe_session = sanitize_path_component(session);
+                base.join(&safe_course).join(&safe_session)
+            } else {
+                base.join(&safe_course)
+            };
+            let _ = std::fs::create_dir_all(&dir);
+            return dir;
+        }
+    }
+
+    base
+}

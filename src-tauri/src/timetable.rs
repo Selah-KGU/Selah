@@ -916,6 +916,11 @@ pub async fn ai_analyze_todo(
 
     let json_str = extract_json_from_response(&response);
     let result: serde_json::Value = serde_json::from_str(json_str)
+        .or_else(|_| {
+            log::warn!("ai todo: initial JSON parse failed, attempting truncation repair");
+            let repaired = repair_truncated_json(json_str);
+            serde_json::from_str::<serde_json::Value>(&repaired)
+        })
         .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&response, 200)))?;
 
     // Cache the result
@@ -1531,6 +1536,11 @@ fn parse_ai_schedule_response(
     }
 
     let parsed: AiResponse = serde_json::from_str(json_str)
+        .or_else(|_| {
+            log::warn!("ai schedule: initial JSON parse failed, attempting truncation repair");
+            let repaired = repair_truncated_json(json_str);
+            serde_json::from_str::<AiResponse>(&repaired)
+        })
         .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(response, 200)))?;
 
     Ok(AiScheduleResult {
@@ -1564,6 +1574,77 @@ fn extract_json_from_response(text: &str) -> &str {
         }
     }
     text.trim()
+}
+
+/// Attempt to repair truncated JSON from an AI response that was cut off mid-stream.
+/// Closes any open strings, arrays and objects to make the JSON parseable.
+fn repair_truncated_json(input: &str) -> String {
+    // First, try to trim back to the last complete value boundary.
+    // Find the last comma or colon followed by a complete value, then close brackets.
+    let mut s = input.trim_end().to_string();
+
+    // If already valid, return as-is
+    if serde_json::from_str::<serde_json::Value>(&s).is_ok() {
+        return s;
+    }
+
+    // Remove trailing incomplete string literal (e.g. `"session_topic":` or `"some text`)
+    // Trim trailing chars that are clearly mid-value
+    loop {
+        let trimmed = s.trim_end();
+        if trimmed.is_empty() { break; }
+        let last = trimmed.as_bytes()[trimmed.len() - 1];
+        // If the last char is a colon, comma, or backslash — remove it
+        if last == b':' || last == b',' || last == b'\\' {
+            s = trimmed[..trimmed.len() - 1].to_string();
+            continue;
+        }
+        break;
+    }
+
+    // Count open vs close brackets to determine what needs closing
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut stack: Vec<char> = Vec::new();
+
+    for ch in s.chars() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string { continue; }
+        match ch {
+            '{' => stack.push('{'),
+            '[' => stack.push('['),
+            '}' => { if stack.last() == Some(&'{') { stack.pop(); } }
+            ']' => { if stack.last() == Some(&'[') { stack.pop(); } }
+            _ => {}
+        }
+    }
+
+    // If we ended inside a string, close it
+    if in_string {
+        s.push('"');
+    }
+
+    // Close all open brackets in reverse order
+    for &bracket in stack.iter().rev() {
+        match bracket {
+            '{' => s.push('}'),
+            '[' => s.push(']'),
+            _ => {}
+        }
+    }
+
+    s
 }
 
 

@@ -20,7 +20,7 @@
   let favLoading = $state(false);
   let favError = $state("");
   let togglingSet = $state(new Set<string>());
-  let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") !== "0");
+  let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") === "1");
 
   // Form state - restore from cache
   const currentYear = new Date().getFullYear().toString();

@@ -21,7 +21,7 @@
   let legendHover = $state(false);
   let examEntries = $state<ExamEntry[]>([]);
   let favoriteEntries = $state<SyllabusEntry[]>([]);
-  let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") !== "0");
+  let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") === "1");
   const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
   let syscalEnabled = $state(isMac && localStorage.getItem("selah-syscal-enabled") === "true");
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);

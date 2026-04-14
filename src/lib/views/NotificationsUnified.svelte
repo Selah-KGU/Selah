@@ -216,8 +216,24 @@
 
   let currentItems = $derived(groupedByTab.get(selectedTab) ?? []);
 
+  // Course filter for class-tab (授業のお知らせ)
+  let selectedCourse = $state("all");
+  let classCourses = $derived.by(() => {
+    const items = groupedByTab.get("授業のお知らせ") ?? [];
+    const counts = new Map<string, number>();
+    for (const n of items) {
+      const key = n.courseInfo || n.category || "";
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  });
+  let filteredItems = $derived.by(() => {
+    if (selectedTab !== "授業のお知らせ" || selectedCourse === "all") return currentItems;
+    return currentItems.filter(n => (n.courseInfo || n.category || "") === selectedCourse);
+  });
+
   async function markAllRead() {
-    const items = currentItems.filter(n => n.source !== "mail" && !isNotifRead(n));
+    const items = filteredItems.filter(n => n.source !== "mail" && !isNotifRead(n));
     if (items.length === 0) return;
     // Group by source
     const bySource = new Map<string, string[]>();
@@ -263,14 +279,14 @@
 <div class="view">
   <div class="title-row">
     <h2>お知らせ</h2>
-    <button class="mark-all-btn" onclick={markAllRead} disabled={currentItems.filter(n => n.source !== "mail" && !isNotifRead(n)).length === 0}>
+    <button class="mark-all-btn" onclick={markAllRead} disabled={filteredItems.filter(n => n.source !== "mail" && !isNotifRead(n)).length === 0}>
       この分類を既読
     </button>
   </div>
 
   <div class="segmented-control" role="tablist">
     {#each TAB_ORDER as tab}
-      <button class="segment" class:active={selectedTab === tab} role="tab" aria-selected={selectedTab === tab} onclick={() => { selectedTab = tab; }}>
+      <button class="segment" class:active={selectedTab === tab} role="tab" aria-selected={selectedTab === tab} onclick={() => { selectedTab = tab; selectedCourse = "all"; }}>
         {#if tab === "呼出し・重要なお知らせ"}
           重要
         {:else if tab === "学部・研究科からのお知らせ"}
@@ -285,9 +301,22 @@
     {/each}
   </div>
 
-  <ViewLoader {loading} {error} empty={currentItems.length === 0 && !loading} emptyMessage="お知らせはありません">
+  {#if selectedTab === "授業のお知らせ" && classCourses.length > 1}
+    <div class="filters">
+      <button class="chip" class:active={selectedCourse === "all"} onclick={() => selectedCourse = "all"}>
+        すべて
+      </button>
+      {#each classCourses as [course, count]}
+        <button class="chip" class:active={selectedCourse === course} onclick={() => selectedCourse = course}>
+          {course} <span class="chip-count">{count}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  <ViewLoader {loading} {error} empty={filteredItems.length === 0 && !loading} emptyMessage="お知らせはありません">
       <div class="notif-list">
-        {#each currentItems as n, i}
+        {#each filteredItems as n, i}
           <button
             class="notif-item"
             class:clickable={n.source === "luna" || n.source === "kwic" || n.source === "mail"}
@@ -460,5 +489,46 @@
   @keyframes notif-enter {
     from { transform: translateY(12px); }
     to { transform: translateY(0); }
+  }
+
+  /* ── Course filter chips ── */
+  .filters {
+    display: flex;
+    gap: 5px;
+    overflow-x: auto;
+    margin-bottom: 12px;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .filters::-webkit-scrollbar { display: none; }
+  .chip {
+    flex-shrink: 0;
+    padding: 5px 14px;
+    border-radius: 16px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    border: 0.5px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+    white-space: nowrap;
+  }
+  .chip:hover { background: var(--bg-hover); }
+  .chip.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    box-shadow: 0 1px 6px rgba(0, 40, 85, 0.2);
+  }
+  .chip-count {
+    font-size: 10px;
+    font-weight: 600;
+    opacity: 0.6;
+    margin-left: 2px;
+  }
+  .chip.active .chip-count {
+    opacity: 0.8;
   }
 </style>

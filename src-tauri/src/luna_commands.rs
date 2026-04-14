@@ -176,9 +176,11 @@ async fn luna_download(http: &reqwest::Client, path: &str) -> Result<Vec<u8>, St
     Err("リダイレクトが多すぎます".into())
 }
 
-/// Save bytes to the Downloads folder with conflict avoidance (appends " (N)" if the file exists).
-fn save_to_downloads(filename: &str, bytes: &[u8]) -> Result<String, String> {
-    let downloads = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+/// Save bytes to the download folder with conflict avoidance (appends " (N)" if the file exists).
+/// If course_name/session_label are provided and classify_by_course is enabled, saves into subfolders.
+fn save_to_downloads(filename: &str, bytes: &[u8], course_name: Option<&str>, session_label: Option<&str>) -> Result<String, String> {
+    let downloads = crate::commands::resolve_download_dir(course_name, session_label);
+    let _ = std::fs::create_dir_all(&downloads);
     let save_path = downloads.join(filename);
 
     let final_path = if save_path.exists() {
@@ -214,6 +216,14 @@ fn save_to_downloads(filename: &str, bytes: &[u8]) -> Result<String, String> {
         .map_err(|e| format!("ファイル保存失敗: {}", e))?;
 
     Ok(final_path.to_string_lossy().to_string())
+}
+
+/// Extract a session label like "第1回" from a material title (e.g. "第1回 イントロダクション").
+fn extract_session_label(title: &str) -> Option<String> {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"第\s*(\d+)\s*回").unwrap()
+    });
+    RE.captures(title).map(|caps| format!("第{}回", &caps[1]))
 }
 
 /// Escape HTML special characters to prevent XSS in server-side rendered content
@@ -385,13 +395,19 @@ pub async fn luna_launch_lti(app: tauri::AppHandle, state: State<'_, AppState>, 
 /// Reveal a file in Finder (restricted to app download directory)
 #[tauri::command]
 pub async fn luna_reveal_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    // Restrict to files under the user's Downloads or app data directory
+    // Restrict to files under the user's Downloads or configured download directory
     let p = std::path::Path::new(&path);
     let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
-    let allowed = dirs::download_dir().unwrap_or_else(|| {
+    let sys_downloads = dirs::download_dir().unwrap_or_else(|| {
         dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(std::env::temp_dir)
     });
-    if !canonical.starts_with(&allowed) {
+    let dl_config = crate::commands::load_download_config();
+    let custom_dir = if dl_config.download_dir.is_empty() { None } else {
+        std::path::Path::new(&dl_config.download_dir).canonicalize().ok()
+    };
+    let allowed = canonical.starts_with(&sys_downloads)
+        || custom_dir.as_ref().map_or(false, |d| canonical.starts_with(d));
+    if !allowed {
         return Err("ダウンロードフォルダ外のファイルは表示できません".into());
     }
     use tauri_plugin_opener::OpenerExt;
@@ -969,7 +985,7 @@ pub async fn luna_download_file(
         }
     }
 
-    save_to_downloads(&filename, &bytes)
+    save_to_downloads(&filename, &bytes, None, None)
 }
 
 /// Replicate Luna's CommonUtil.makeDownFileName JS function:
@@ -1014,6 +1030,8 @@ pub async fn luna_download_material(
     material_id: Option<String>,
     display_name: Option<String>,
     end_date: Option<String>,
+    course_name: Option<String>,
+    material_title: Option<String>,
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
 
@@ -1093,7 +1111,9 @@ pub async fn luna_download_material(
         return Err("ダウンロードされたファイルが空です".into());
     }
 
-    save_to_downloads(&file_name, &bytes)
+    // Extract session label (e.g. "第1回") from material title if available
+    let session_label = material_title.as_deref().and_then(extract_session_label);
+    save_to_downloads(&file_name, &bytes, course_name.as_deref(), session_label.as_deref())
 }
 
 /// Resolve an HTML-type material to its actual external URL.

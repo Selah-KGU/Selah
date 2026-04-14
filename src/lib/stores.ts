@@ -592,11 +592,13 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
         return data;
       });
     });
-    // Store outer promise immediately so refreshCache deduplicates against it
-    inflight.set(key, dbSwr.finally(() => {
-      // Only delete if inflight still points to us (bg refresh may have replaced it)
-      if (inflight.get(key) === dbSwr) inflight.delete(key);
-    }));
+    // Store outer promise immediately so refreshCache deduplicates against it.
+    // Must capture the .finally() promise in a variable so the === check works
+    // (.finally() creates a new promise object, different from dbSwr).
+    const inflightEntry = dbSwr.finally(() => {
+      if (inflight.get(key) === inflightEntry) inflight.delete(key);
+    });
+    inflight.set(key, inflightEntry);
     return dbSwr;
   }
 

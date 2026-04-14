@@ -51,7 +51,7 @@ impl Default for AiConfig {
             api_key: String::new(),
             model: "gpt-5.4-nano".into(),
             base_url: "https://api.openai.com/v1".into(),
-            max_tokens: 4096,
+            max_tokens: 16384,
             temperature: 0.7,
             reply_language: "ja".into(),
             spring_start: String::new(),
@@ -337,7 +337,7 @@ pub fn get_ai_config() -> AiConfig {
 pub fn save_ai_config(mut config: AiConfig) -> Result<(), String> {
     // Clamp values to valid ranges
     config.temperature = config.temperature.clamp(0.0, 2.0);
-    config.max_tokens = config.max_tokens.clamp(1, 65536);
+    config.max_tokens = config.max_tokens.clamp(8192, 32768);
     config.api_key = config.api_key.trim().to_string();
     config.base_url = config.base_url.trim().to_string();
     config.model = config.model.trim().to_string();
