@@ -177,9 +177,9 @@ async fn luna_download(http: &reqwest::Client, path: &str) -> Result<Vec<u8>, St
 }
 
 /// Save bytes to the download folder with conflict avoidance (appends " (N)" if the file exists).
-/// If course_name/session_label are provided and classify_by_course is enabled, saves into subfolders.
-fn save_to_downloads(filename: &str, bytes: &[u8], course_name: Option<&str>, session_label: Option<&str>) -> Result<String, String> {
-    let downloads = crate::commands::resolve_download_dir(course_name, session_label);
+/// If course_name is provided and classify_by_course is enabled, saves into a course subfolder.
+fn save_to_downloads(filename: &str, bytes: &[u8], course_name: Option<&str>) -> Result<String, String> {
+    let downloads = crate::commands::resolve_download_dir(course_name);
     let _ = std::fs::create_dir_all(&downloads);
     let save_path = downloads.join(filename);
 
@@ -215,15 +215,10 @@ fn save_to_downloads(filename: &str, bytes: &[u8], course_name: Option<&str>, se
     std::fs::write(&final_path, bytes)
         .map_err(|e| format!("ファイル保存失敗: {}", e))?;
 
-    Ok(final_path.to_string_lossy().to_string())
-}
+    let path_str = final_path.to_string_lossy().to_string();
+    crate::commands::record_download(filename, &path_str, course_name, "luna", bytes.len() as u64);
 
-/// Extract a session label like "第1回" from a material title (e.g. "第1回 イントロダクション").
-fn extract_session_label(title: &str) -> Option<String> {
-    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"第\s*(\d+)\s*回").unwrap()
-    });
-    RE.captures(title).map(|caps| format!("第{}回", &caps[1]))
+    Ok(path_str)
 }
 
 /// Escape HTML special characters to prevent XSS in server-side rendered content
@@ -972,11 +967,11 @@ pub async fn luna_download_file(
     url: String,
     filename: String,
     _page_path: Option<String>,
-    object_name: Option<String>,
+    _object_name: Option<String>,
     download_action: Option<String>,
     download_params: Option<Vec<(String, String)>>,
     course_name: Option<String>,
-    detail_title: Option<String>,
+    _detail_title: Option<String>,
 ) -> Result<String, String> {
     // For external URLs (SharePoint etc.), just return the URL for the frontend to open
     if url.starts_with("http") {
@@ -987,32 +982,24 @@ pub async fn luna_download_file(
 
     // Mode 2: Structured attachment — GET form submit (mirrors browser form.submit())
     // Luna JS modifies the form action to: {action}/{makeDownFileName(name)}
-    // then submits as GET with form fields as query params (no _cid in this form)
+    // then submits as GET with form fields as query params.
+    // download_params contains ALL query fields (static + per-file dynamic, merged by parser)
     let bytes = if url.is_empty() {
         let action = download_action.as_deref().unwrap_or("");
-        let obj = object_name.as_deref().unwrap_or("");
 
         if action.is_empty() {
             return Err("ダウンロードURLが見つかりません".into());
         }
 
-        // Build query string matching browser's GET form submission
-        // Form fields: reportId, idnumber (from download_params) + objectName + downloadFileName + downloadMode
+        // Build query string from pre-merged form fields
         let mut params: Vec<String> = Vec::new();
-        if let Some(ref fixed) = download_params {
-            for (k, v) in fixed {
+        if let Some(ref fields) = download_params {
+            for (k, v) in fields {
                 params.push(format!("{}={}", form_encode(k), form_encode(v)));
             }
         }
-        // downloadFileName form field value = raw filename (browser form-encodes it)
-        params.push(format!("downloadFileName={}", form_encode(&filename)));
-        if !obj.is_empty() {
-            params.push(format!("objectName={}", form_encode(obj)));
-        }
-        // downloadMode is empty string in the form
-        params.push("downloadMode=".to_string());
 
-        // Action URL path includes makeDownFileName(filename) — this is set by JS before submit
+        // Action URL path includes makeDownFileName(filename) — set by JS before submit
         let path_name = make_down_file_name(&filename);
         let download_url = format!("{}/{}?{}", action, path_name, params.join("&"));
 
@@ -1039,8 +1026,7 @@ pub async fn luna_download_file(
         }
     }
 
-    let session_label = detail_title.as_deref().and_then(extract_session_label);
-    save_to_downloads(&filename, &bytes, course_name.as_deref(), session_label.as_deref())
+    save_to_downloads(&filename, &bytes, course_name.as_deref())
 }
 
 /// Replicate Luna's CommonUtil.makeDownFileName JS function:
@@ -1086,7 +1072,7 @@ pub async fn luna_download_material(
     display_name: Option<String>,
     end_date: Option<String>,
     course_name: Option<String>,
-    material_title: Option<String>,
+    _material_title: Option<String>,
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
 
@@ -1166,9 +1152,7 @@ pub async fn luna_download_material(
         return Err("ダウンロードされたファイルが空です".into());
     }
 
-    // Extract session label (e.g. "第1回") from material title if available
-    let session_label = material_title.as_deref().and_then(extract_session_label);
-    save_to_downloads(&file_name, &bytes, course_name.as_deref(), session_label.as_deref())
+    save_to_downloads(&file_name, &bytes, course_name.as_deref())
 }
 
 /// Resolve an HTML-type material to its actual external URL.

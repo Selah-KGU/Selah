@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ダウンロード</title>
+<style>
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f8f8fa;
+    --bg-input: rgba(255, 255, 255, 0.9);
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-tertiary: #aeaeb2;
+    --border: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.12);
+    --accent: #002855;
+    --accent-hover: #003d80;
+    --blue: #007aff;
+    --green: #34c759;
+    --red: #ff3b30;
+    --orange: #ff9500;
+    --bg-hover: rgba(0, 0, 0, 0.04);
+    --bg-active: rgba(0, 40, 85, 0.08);
+    --shadow-card: 0 0.5px 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.04);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg-primary: #1c1c1e;
+      --bg-secondary: #2c2c2e;
+      --bg-input: rgba(58, 58, 60, 0.55);
+      --text-primary: #f5f5f7;
+      --text-secondary: #98989d;
+      --text-tertiary: #636366;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.12);
+      --accent: #4a90d9;
+      --accent-hover: #6aa8f0;
+      --blue: #0a84ff;
+      --green: #30d158;
+      --red: #ff453a;
+      --orange: #ff9f0a;
+      --bg-hover: rgba(255, 255, 255, 0.06);
+      --bg-active: rgba(74, 144, 217, 0.12);
+      --shadow-card: 0 0.5px 1px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.15);
+      color-scheme: dark;
+    }
+  }
+  [data-theme="dark"] {
+    --bg-primary: #1c1c1e;
+    --bg-secondary: #2c2c2e;
+    --bg-input: rgba(58, 58, 60, 0.55);
+    --text-primary: #f5f5f7;
+    --text-secondary: #98989d;
+    --text-tertiary: #636366;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.12);
+    --accent: #4a90d9;
+    --accent-hover: #6aa8f0;
+    --blue: #0a84ff;
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+    --bg-hover: rgba(255, 255, 255, 0.06);
+    --bg-active: rgba(74, 144, 217, 0.12);
+    --shadow-card: 0 0.5px 1px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.15);
+    color-scheme: dark;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Noto Sans JP", sans-serif;
+    font-size: 13px; line-height: 1.47; color: var(--text-primary); background: var(--bg-primary);
+    -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  .layout { display: flex; flex: 1; overflow: hidden; }
+  .sidebar {
+    width: 180px; flex-shrink: 0; padding: 12px 8px;
+    border-right: 0.5px solid var(--border); display: flex; flex-direction: column; gap: 1px;
+    background: var(--bg-primary); overflow-y: auto;
+  }
+  .sidebar-section { margin-bottom: 12px; }
+  .sidebar-label {
+    font-size: 10px; font-weight: 600; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 6px 10px 4px; user-select: none;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 12px; color: var(--text-secondary);
+    transition: background 0.12s, color 0.12s;
+    -webkit-app-region: no-drag; border: none; background: none;
+    width: 100%; text-align: left;
+  }
+  .nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .nav-item.active { background: var(--bg-active); color: var(--accent); font-weight: 600; }
+  .nav-icon {
+    width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; opacity: 0.7;
+  }
+  .nav-item.active .nav-icon { opacity: 1; }
+  .nav-count {
+    margin-left: auto; font-size: 10px; font-weight: 600;
+    color: var(--text-tertiary); min-width: 18px; text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Main content ── */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Toolbar ── */
+  .toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px; border-bottom: 0.5px solid var(--border);
+    background: var(--bg-primary); flex-shrink: 0;
+  }
+  .search-box {
+    flex: 1; display: flex; align-items: center; gap: 6px;
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px;
+    transition: border-color 0.15s;
+  }
+  .search-box:focus-within { border-color: var(--accent); }
+  .search-box svg { color: var(--text-tertiary); flex-shrink: 0; }
+  .search-input {
+    flex: 1; border: none; background: none; outline: none;
+    font-size: 12px; color: var(--text-primary);
+    font-family: inherit;
+  }
+  .search-input::placeholder { color: var(--text-tertiary); }
+  .toolbar-btn {
+    display: flex; align-items: center; justify-content: center;
+    padding: 6px 10px; gap: 4px; border-radius: 8px;
+    font-size: 11px; font-weight: 500;
+    color: var(--text-secondary); background: var(--bg-secondary);
+    border: 1px solid var(--border); cursor: pointer;
+    transition: background 0.12s, color 0.12s; white-space: nowrap;
+  }
+  .toolbar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .toolbar-btn.danger { color: var(--red); }
+  .toolbar-btn.danger:hover { background: color-mix(in srgb, var(--red) 8%, transparent); }
+
+  /* ── File list ── */
+  .file-list {
+    flex: 1; overflow-y: auto; padding: 8px 12px;
+  }
+  .group { margin-bottom: 16px; }
+  .group-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; margin-bottom: 4px;
+    font-size: 11px; font-weight: 600; color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+  }
+  .group-header-name { flex: 1; }
+  .group-count { font-size: 10px; color: var(--text-tertiary); font-weight: 500; }
+
+  .file-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 8px; border-radius: 8px;
+    transition: background 0.1s; cursor: default;
+  }
+  .file-row:hover { background: var(--bg-hover); }
+
+  .file-icon {
+    width: 32px; height: 32px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .file-info { flex: 1; min-width: 0; }
+  .file-name {
+    font-size: 12px; font-weight: 500; color: var(--text-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer; transition: color 0.15s;
+  }
+  .file-name:hover { color: var(--accent); }
+  .file-meta {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; color: var(--text-tertiary); margin-top: 1px;
+  }
+  .file-meta-tag {
+    padding: 1px 5px; border-radius: 4px; font-size: 9px; font-weight: 600;
+    background: var(--bg-secondary); color: var(--text-secondary); text-transform: uppercase;
+  }
+  .file-actions {
+    display: flex; align-items: center; gap: 2px;
+    opacity: 0; transition: opacity 0.15s; flex-shrink: 0;
+  }
+  .file-row:hover .file-actions { opacity: 1; }
+  .action-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 6px;
+    color: var(--text-tertiary); background: none; border: none;
+    cursor: pointer; padding: 0; transition: color 0.15s, background 0.15s;
+  }
+  .action-btn:hover { color: var(--text-primary); background: var(--bg-secondary); }
+  .action-btn.remove:hover { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+
+  .file-row.missing { opacity: 0.5; }
+  .file-row.missing .file-name { text-decoration: line-through; cursor: default; }
+  .file-row.missing .file-name:hover { color: var(--text-primary); }
+  .missing-badge {
+    font-size: 9px; font-weight: 600; color: var(--red);
+    background: color-mix(in srgb, var(--red) 10%, transparent);
+    padding: 1px 5px; border-radius: 4px; white-space: nowrap;
+  }
+
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; gap: 8px; color: var(--text-tertiary);
+  }
+  .empty-state svg { opacity: 0.3; }
+  .empty-state-text { font-size: 13px; }
+
+  .loading-state {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%;
+  }
+  .spinner {
+    width: 24px; height: 24px;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  .scan-spinner {
+    display: inline-block; width: 10px; height: 10px;
+    border: 1.5px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle;
+  }
+
+  /* ── Status bar ── */
+  .status-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 16px; border-top: 0.5px solid var(--border);
+    font-size: 10px; color: var(--text-tertiary); flex-shrink: 0;
+    background: var(--bg-primary);
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">表示</div>
+      <button class="nav-item active" data-view="all" onclick="switchView('all')">
+        <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l4 4 4-4"/><line x1="12" y1="8" x2="12" y2="16"/></svg></span>
+        すべて
+        <span class="nav-count" id="count-all">0</span>
+      </button>
+    </div>
+    <div class="sidebar-section" id="section-courses">
+      <div class="sidebar-label">コース</div>
+    </div>
+    <div class="sidebar-section" id="section-types">
+      <div class="sidebar-label">ファイル形式</div>
+    </div>
+    <div class="sidebar-section" id="section-sources">
+      <div class="sidebar-label">ソース</div>
+    </div>
+  </div>
+  <div class="main">
+    <div class="toolbar">
+      <div class="search-box">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input class="search-input" type="text" placeholder="ファイル名やコース名で検索…" id="searchInput" oninput="applyFilters()">
+      </div>
+      <button class="toolbar-btn" onclick="scanDir()" id="scanBtn" title="ダウンロードフォルダをスキャンして未登録ファイルを検出">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        フォルダをスキャン
+      </button>
+      <button class="toolbar-btn danger" onclick="clearHistory()" id="clearBtn" style="display:none">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        履歴をクリア
+      </button>
+    </div>
+    <div class="file-list" id="fileList">
+      <div class="loading-state"><div class="spinner"></div></div>
+    </div>
+    <div class="status-bar">
+      <span id="statusText">読み込み中…</span>
+      <span id="statusSize"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── Theme ──
+  function syncTheme() {
+    try {
+      var t = localStorage.getItem('selah-theme');
+      if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+    } catch(e) {}
+  }
+  syncTheme();
+
+  var invoke = window.__TAURI__?.core?.invoke;
+
+  // ── State ──
+  var allRecords = [];
+  var currentView = 'all';      // 'all' | 'course:xxx' | 'type:xxx' | 'source:xxx'
+  var searchQuery = '';
+
+  // ── File type colors & labels ──
+  var FILE_TYPE_MAP = {
+    pdf:  { color: '#e74c3c', label: 'PDF' },
+    doc:  { color: '#2b5797', label: 'DOC' },
+    docx: { color: '#2b5797', label: 'DOC' },
+    xls:  { color: '#217346', label: 'XLS' },
+    xlsx: { color: '#217346', label: 'XLS' },
+    ppt:  { color: '#d04423', label: 'PPT' },
+    pptx: { color: '#d04423', label: 'PPT' },
+    zip:  { color: '#f39c12', label: 'ZIP' },
+    '7z': { color: '#f39c12', label: '7Z' },
+    rar:  { color: '#f39c12', label: 'RAR' },
+    png:  { color: '#8e44ad', label: 'PNG' },
+    jpg:  { color: '#8e44ad', label: 'JPG' },
+    jpeg: { color: '#8e44ad', label: 'JPG' },
+    gif:  { color: '#8e44ad', label: 'GIF' },
+    mp4:  { color: '#e67e22', label: 'MP4' },
+    mp3:  { color: '#e67e22', label: 'MP3' },
+    txt:  { color: '#7f8c8d', label: 'TXT' },
+    csv:  { color: '#27ae60', label: 'CSV' },
+    html: { color: '#e44d26', label: 'HTML' },
+    htm:  { color: '#e44d26', label: 'HTML' },
+  };
+
+  var SOURCE_LABELS = {
+    luna: 'Luna LMS',
+    mail: 'メール',
+    kwic: 'KWIC',
+    scan: 'スキャン',
+  };
+
+  function getExt(filename) {
+    var parts = filename.split('.');
+    return parts.length > 1 ? parts.pop().toLowerCase() : '';
+  }
+
+  function getTypeInfo(filename) {
+    var ext = getExt(filename);
+    return FILE_TYPE_MAP[ext] || { color: '#95a5a6', label: ext.toUpperCase() || 'FILE' };
+  }
+
+  function formatSize(bytes) {
+    if (!bytes) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var now = new Date();
+    var diff = Math.floor((now.getTime() - ts) / 1000);
+    if (diff < 60) return 'たった今';
+    if (diff < 3600) return Math.floor(diff / 60) + '分前';
+    if (diff < 86400) return Math.floor(diff / 3600) + '時間前';
+    var y = d.getFullYear(), m = d.getMonth() + 1, dd = d.getDate();
+    var h = String(d.getHours()).padStart(2, '0'), mi = String(d.getMinutes()).padStart(2, '0');
+    if (y === now.getFullYear()) return m + '/' + dd + ' ' + h + ':' + mi;
+    return y + '/' + m + '/' + dd;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // ── Data loading ──
+  async function loadDownloads() {
+    if (!invoke) return;
+    try {
+      allRecords = await invoke('scan_download_dir');
+    } catch(e) {
+      console.error('Failed to load downloads:', e);
+      allRecords = [];
+    }
+    buildSidebar();
+    applyFilters();
+  }
+
+  // ── Sidebar building ──
+  function buildSidebar() {
+    // Count total
+    document.getElementById('count-all').textContent = allRecords.length;
+
+    // Group by course
+    var courses = {};
+    var types = {};
+    var sources = {};
+    allRecords.forEach(function(r) {
+      var c = r.course_name || '未分類';
+      courses[c] = (courses[c] || 0) + 1;
+      var ext = getExt(r.filename) || 'other';
+      types[ext] = (types[ext] || 0) + 1;
+      var s = r.source || 'other';
+      sources[s] = (sources[s] || 0) + 1;
+    });
+
+    // Courses
+    var courseSection = document.getElementById('section-courses');
+    courseSection.innerHTML = '<div class="sidebar-label">コース</div>';
+    Object.keys(courses).sort().forEach(function(name) {
+      var btn = document.createElement('button');
+      btn.className = 'nav-item' + (currentView === 'course:' + name ? ' active' : '');
+      btn.setAttribute('data-view', 'course:' + name);
+      btn.onclick = function() { switchView('course:' + name); };
+      btn.innerHTML = '<span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15z"/></svg></span>'
+        + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</span>'
+        + '<span class="nav-count">' + courses[name] + '</span>';
+      courseSection.appendChild(btn);
+    });
+
+    // File types
+    var typeSection = document.getElementById('section-types');
+    typeSection.innerHTML = '<div class="sidebar-label">ファイル形式</div>';
+    Object.keys(types).sort().forEach(function(ext) {
+      var info = FILE_TYPE_MAP[ext] || { color: '#95a5a6', label: ext.toUpperCase() };
+      var btn = document.createElement('button');
+      btn.className = 'nav-item' + (currentView === 'type:' + ext ? ' active' : '');
+      btn.setAttribute('data-view', 'type:' + ext);
+      btn.onclick = function() { switchView('type:' + ext); };
+      btn.innerHTML = '<span class="nav-icon" style="color:' + info.color + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>'
+        + escapeHtml(info.label)
+        + '<span class="nav-count">' + types[ext] + '</span>';
+      typeSection.appendChild(btn);
+    });
+
+    // Sources
+    var sourceSection = document.getElementById('section-sources');
+    sourceSection.innerHTML = '<div class="sidebar-label">ソース</div>';
+    Object.keys(sources).sort().forEach(function(src) {
+      var label = SOURCE_LABELS[src] || src;
+      var btn = document.createElement('button');
+      btn.className = 'nav-item' + (currentView === 'source:' + src ? ' active' : '');
+      btn.setAttribute('data-view', 'source:' + src);
+      btn.onclick = function() { switchView('source:' + src); };
+      btn.innerHTML = '<span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>'
+        + escapeHtml(label)
+        + '<span class="nav-count">' + sources[src] + '</span>';
+      sourceSection.appendChild(btn);
+    });
+  }
+
+  function switchView(view) {
+    currentView = view;
+    // Update active state
+    document.querySelectorAll('.nav-item').forEach(function(el) {
+      el.classList.toggle('active', el.getAttribute('data-view') === view);
+    });
+    applyFilters();
+  }
+
+  // ── Filtering ──
+  function applyFilters() {
+    searchQuery = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+    var filtered = allRecords.filter(function(r) {
+      // View filter
+      if (currentView !== 'all') {
+        if (currentView.startsWith('course:')) {
+          var course = currentView.slice(7);
+          var rCourse = r.course_name || '未分類';
+          if (rCourse !== course) return false;
+        } else if (currentView.startsWith('type:')) {
+          var ext = currentView.slice(5);
+          if ((getExt(r.filename) || 'other') !== ext) return false;
+        } else if (currentView.startsWith('source:')) {
+          var src = currentView.slice(7);
+          if ((r.source || 'other') !== src) return false;
+        }
+      }
+      // Search filter
+      if (searchQuery) {
+        var haystack = (r.filename + ' ' + r.course_name + ' ' + (SOURCE_LABELS[r.source] || r.source)).toLowerCase();
+        if (haystack.indexOf(searchQuery) === -1) return false;
+      }
+      return true;
+    });
+
+    renderFiles(filtered);
+    updateStatus(filtered);
+    document.getElementById('clearBtn').style.display = allRecords.length > 0 ? '' : 'none';
+  }
+
+  // ── Rendering ──
+  function renderFiles(records) {
+    var container = document.getElementById('fileList');
+    if (records.length === 0) {
+      if (allRecords.length === 0) {
+        container.innerHTML = '<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l4 4 4-4"/><line x1="12" y1="8" x2="12" y2="16"/></svg><div class="empty-state-text">ダウンロード履歴はありません</div></div>';
+      } else {
+        container.innerHTML = '<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><div class="empty-state-text">条件に一致するファイルがありません</div></div>';
+      }
+      return;
+    }
+
+    // Group by view context
+    var grouped;
+    if (currentView === 'all' && !searchQuery) {
+      // Group by date
+      grouped = groupByDate(records);
+    } else if (currentView.startsWith('course:')) {
+      // Already filtered by course, group by type
+      grouped = groupByType(records);
+    } else if (currentView.startsWith('type:')) {
+      // Already filtered by type, group by course
+      grouped = groupByCourse(records);
+    } else {
+      // Group by course
+      grouped = groupByCourse(records);
+    }
+
+    var html = '';
+    grouped.forEach(function(g) {
+      html += '<div class="group">';
+      html += '<div class="group-header"><span class="group-header-name">' + escapeHtml(g.label) + '</span><span class="group-count">' + g.items.length + '件</span></div>';
+      g.items.forEach(function(r) {
+        html += renderFileRow(r);
+      });
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function groupByDate(records) {
+    var now = new Date();
+    var todayStr = now.toDateString();
+    var yesterday = new Date(now.getTime() - 86400000).toDateString();
+    var groups = { 'today': [], 'yesterday': [], 'thisWeek': [], 'older': [] };
+    records.forEach(function(r) {
+      var d = new Date(r.downloaded_at);
+      var ds = d.toDateString();
+      if (ds === todayStr) groups.today.push(r);
+      else if (ds === yesterday) groups.yesterday.push(r);
+      else if (now.getTime() - r.downloaded_at < 7 * 86400000) groups.thisWeek.push(r);
+      else groups.older.push(r);
+    });
+    var result = [];
+    if (groups.today.length) result.push({ label: '今日', items: groups.today });
+    if (groups.yesterday.length) result.push({ label: '昨日', items: groups.yesterday });
+    if (groups.thisWeek.length) result.push({ label: '今週', items: groups.thisWeek });
+    if (groups.older.length) result.push({ label: 'それ以前', items: groups.older });
+    return result;
+  }
+
+  function groupByCourse(records) {
+    var map = {};
+    var order = [];
+    records.forEach(function(r) {
+      var c = r.course_name || '未分類';
+      if (!map[c]) { map[c] = []; order.push(c); }
+      map[c].push(r);
+    });
+    return order.map(function(name) { return { label: name, items: map[name] }; });
+  }
+
+  function groupByType(records) {
+    var map = {};
+    var order = [];
+    records.forEach(function(r) {
+      var ext = getExt(r.filename) || 'other';
+      var info = FILE_TYPE_MAP[ext] || { label: ext.toUpperCase() || 'OTHER' };
+      if (!map[ext]) { map[ext] = []; order.push(ext); }
+      map[ext].push(r);
+    });
+    return order.map(function(ext) {
+      var info = FILE_TYPE_MAP[ext] || { label: ext.toUpperCase() || 'OTHER' };
+      return { label: info.label, items: map[ext] };
+    });
+  }
+
+  function renderFileRow(r) {
+    var info = getTypeInfo(r.filename);
+    var ext = getExt(r.filename);
+    var source = SOURCE_LABELS[r.source] || r.source || '';
+    var missing = r.file_exists === false;
+    var rowClass = 'file-row' + (missing ? ' missing' : '');
+    return '<div class="' + rowClass + '" data-id="' + escapeHtml(r.id) + '">'
+      + '<div class="file-icon" style="background:' + info.color + '">' + escapeHtml(info.label) + '</div>'
+      + '<div class="file-info">'
+      + (missing
+        ? '<div class="file-name">' + escapeHtml(r.filename) + '</div>'
+        : '<div class="file-name" onclick="openFile(\'' + escapeAttr(r.path) + '\')" title="クリックして開く: ' + escapeHtml(r.filename) + '">' + escapeHtml(r.filename) + '</div>')
+      + '<div class="file-meta">'
+      + (missing ? '<span class="missing-badge">ファイルなし</span>' : '')
+      + (r.course_name ? '<span>' + escapeHtml(r.course_name) + '</span><span>·</span>' : '')
+      + '<span>' + formatSize(r.size_bytes) + '</span>'
+      + '<span>·</span><span>' + formatTime(r.downloaded_at) + '</span>'
+      + (source ? '<span>·</span><span class="file-meta-tag">' + escapeHtml(source) + '</span>' : '')
+      + '</div></div>'
+      + '<div class="file-actions">'
+      + (missing ? '' : '<button class="action-btn" onclick="revealFile(\'' + escapeAttr(r.path) + '\')" title="Finderで表示"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>')
+      + '<button class="action-btn remove" onclick="removeRecord(\'' + escapeAttr(r.id) + '\')" title="履歴から削除"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>'
+      + '</div></div>';
+  }
+
+  function escapeAttr(s) {
+    return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  }
+
+  // ── Actions ──
+  async function openFile(path) {
+    if (!invoke) return;
+    try {
+      await invoke('open_downloaded_file', { path: path });
+    } catch(e) {
+      console.error('Failed to open file:', e);
+    }
+  }
+
+  async function revealFile(path) {
+    if (!invoke) return;
+    try {
+      await invoke('luna_reveal_file', { path: path });
+    } catch(e) {
+      console.error('Failed to reveal file:', e);
+    }
+  }
+
+  async function removeRecord(id) {
+    if (!invoke) return;
+    try {
+      await invoke('remove_download_record', { id: id });
+      allRecords = allRecords.filter(function(r) { return r.id !== id; });
+      buildSidebar();
+      applyFilters();
+    } catch(e) {
+      console.error('Failed to remove record:', e);
+    }
+  }
+
+  async function clearHistory() {
+    if (!invoke) return;
+    try {
+      await invoke('clear_download_history');
+      allRecords = [];
+      buildSidebar();
+      applyFilters();
+    } catch(e) {
+      console.error('Failed to clear history:', e);
+    }
+  }
+
+  async function scanDir() {
+    if (!invoke) return;
+    var btn = document.getElementById('scanBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="scan-spinner"></span> スキャン中…';
+    try {
+      var before = allRecords.length;
+      allRecords = await invoke('scan_download_dir');
+      var added = allRecords.length - before;
+      buildSidebar();
+      applyFilters();
+      if (added > 0) {
+        document.getElementById('statusText').textContent = added + '件の新しいファイルを検出しました';
+      } else {
+        document.getElementById('statusText').textContent = '新しいファイルは見つかりませんでした';
+      }
+    } catch(e) {
+      console.error('Failed to scan:', e);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> フォルダをスキャン';
+    }
+  }
+
+  function updateStatus(filtered) {
+    var total = filtered.reduce(function(sum, r) { return sum + (r.size_bytes || 0); }, 0);
+    var missing = filtered.filter(function(r) { return r.file_exists === false; }).length;
+    var statusParts = [filtered.length + '件のファイル'];
+    if (missing > 0) statusParts.push(missing + '件欠落');
+    document.getElementById('statusText').textContent = statusParts.join(' · ');
+    document.getElementById('statusSize').textContent = total ? '合計 ' + formatSize(total) : '';
+  }
+
+  // ── Init ──
+  document.addEventListener('DOMContentLoaded', function() {
+    loadDownloads();
+  });
+</script>
+</body>
+</html>

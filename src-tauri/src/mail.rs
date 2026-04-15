@@ -490,7 +490,7 @@ impl MailClient {
         );
         let data = self.graph_get_bytes(&url).await?;
 
-        let downloads_dir = crate::commands::resolve_download_dir(None, None);
+        let downloads_dir = crate::commands::resolve_download_dir(None);
 
         // Avoid overwriting: append a counter if file exists
         let mut dest = downloads_dir.join(&safe_name);
@@ -516,6 +516,7 @@ impl MailClient {
             .map_err(|e| format!("ファイル保存失敗: {}", e))?;
 
         let path_str = dest.to_string_lossy().to_string();
+        crate::commands::record_download(&safe_name, &path_str, None, "mail", data.len() as u64);
         log::info!("Attachment saved to: {}", path_str);
         Ok(path_str)
     }

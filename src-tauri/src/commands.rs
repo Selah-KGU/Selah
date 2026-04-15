@@ -2057,6 +2057,28 @@ pub async fn fetch_weather() -> Result<WeatherData, String> {
 
 // ============ Download Config ============
 
+#[tauri::command]
+pub async fn open_downloads_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("downloads") {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "downloads",
+        tauri::WebviewUrl::App("downloads.html".into()),
+    )
+    .title("ダウンロード")
+    .inner_size(780.0, 520.0)
+    .min_inner_size(560.0, 360.0)
+    .resizable(true)
+    .build()
+    .map_err(|e| format!("Failed to open downloads window: {}", e))?;
+
+    Ok(())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DownloadConfig {
@@ -2169,9 +2191,9 @@ fn simplify_course_name(name: &str) -> String {
     if s.is_empty() { name.trim().to_string() } else { s }
 }
 
-/// Resolve the download directory with optional course/session classification.
+/// Resolve the download directory with optional course classification.
 /// Returns the target directory (created if needed) for saving a file.
-pub fn resolve_download_dir(course_name: Option<&str>, session_label: Option<&str>) -> std::path::PathBuf {
+pub fn resolve_download_dir(course_name: Option<&str>) -> std::path::PathBuf {
     let config = load_download_config();
     let base = if config.download_dir.is_empty() {
         dirs::download_dir().unwrap_or_else(std::env::temp_dir)
@@ -2183,16 +2205,248 @@ pub fn resolve_download_dir(course_name: Option<&str>, session_label: Option<&st
         if let Some(course) = course_name {
             let simplified = simplify_course_name(course);
             let safe_course = sanitize_path_component(&simplified);
-            let dir = if let Some(session) = session_label {
-                let safe_session = sanitize_path_component(session);
-                base.join(&safe_course).join(&safe_session)
-            } else {
-                base.join(&safe_course)
-            };
+            let dir = base.join(&safe_course);
             let _ = std::fs::create_dir_all(&dir);
             return dir;
         }
     }
 
     base
+}
+
+// ───────── Download History ─────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadRecord {
+    pub id: String,
+    pub filename: String,
+    pub path: String,
+    pub course_name: String,
+    pub source: String,   // "luna", "mail", etc.
+    pub size_bytes: u64,
+    pub downloaded_at: i64,  // unix millis
+    #[serde(default)]
+    pub file_exists: bool,   // populated at query time, not persisted
+}
+
+fn download_history_path() -> std::path::PathBuf {
+    client::data_dir().join("download_history.json")
+}
+
+pub fn load_download_history() -> Vec<DownloadRecord> {
+    let path = download_history_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(records) = serde_json::from_str(&data) {
+                return records;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn save_download_history(records: &[DownloadRecord]) -> Result<(), String> {
+    let path = download_history_path();
+    let data = serde_json::to_string(records)
+        .map_err(|e| format!("JSON serialization error: {}", e))?;
+    std::fs::write(&path, &data)
+        .map_err(|e| format!("Failed to write download history: {}", e))?;
+    Ok(())
+}
+
+/// Record a new download in the history. Called from save_to_downloads.
+pub fn record_download(filename: &str, path: &str, course_name: Option<&str>, source: &str, size_bytes: u64) {
+    let mut records = load_download_history();
+    let record = DownloadRecord {
+        id: format!("{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()),
+        filename: filename.to_string(),
+        path: path.to_string(),
+        course_name: course_name.unwrap_or("").to_string(),
+        source: source.to_string(),
+        size_bytes,
+        downloaded_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+        file_exists: true,
+    };
+    records.push(record);
+    // Keep at most 500 records
+    if records.len() > 500 {
+        records.drain(0..records.len() - 500);
+    }
+    let _ = save_download_history(&records);
+}
+
+#[tauri::command]
+pub fn list_downloads() -> Vec<DownloadRecord> {
+    let mut records = load_download_history();
+    records.retain(|r| !r.path.is_empty());
+    // Check file existence on disk
+    for r in &mut records {
+        r.file_exists = std::path::Path::new(&r.path).exists();
+    }
+    records.reverse(); // newest first
+    records
+}
+
+/// Scan the download directories for files not in the history and add them.
+/// Returns the updated full list.
+#[tauri::command]
+pub fn scan_download_dir() -> Vec<DownloadRecord> {
+    let config = load_download_config();
+    let base = if config.download_dir.is_empty() {
+        dirs::download_dir().unwrap_or_else(std::env::temp_dir)
+    } else {
+        std::path::PathBuf::from(&config.download_dir)
+    };
+
+    let mut records = load_download_history();
+    // Build set of known paths for O(1) lookup
+    let known_paths: std::collections::HashSet<String> = records.iter()
+        .map(|r| r.path.clone())
+        .collect();
+
+    // Walk the base directory (max 2 levels deep for course subfolders)
+    let mut discovered: Vec<DownloadRecord> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(rec) = try_discover_file(&path, "", &known_paths) {
+                    discovered.push(rec);
+                }
+            } else if path.is_dir() {
+                // Course subfolder
+                let folder_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                    for sub in sub_entries.flatten() {
+                        let sub_path = sub.path();
+                        if sub_path.is_file() {
+                            if let Some(rec) = try_discover_file(&sub_path, &folder_name, &known_paths) {
+                                discovered.push(rec);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !discovered.is_empty() {
+        records.extend(discovered);
+        if records.len() > 500 {
+            records.drain(0..records.len() - 500);
+        }
+        let _ = save_download_history(&records);
+    }
+
+    // Return with file_exists populated
+    records.retain(|r| !r.path.is_empty());
+    for r in &mut records {
+        r.file_exists = std::path::Path::new(&r.path).exists();
+    }
+    records.reverse();
+    records
+}
+
+fn try_discover_file(
+    path: &std::path::Path,
+    course_folder: &str,
+    known: &std::collections::HashSet<String>,
+) -> Option<DownloadRecord> {
+    let path_str = path.to_string_lossy().to_string();
+    if known.contains(&path_str) {
+        return None;
+    }
+    // Skip hidden files and system files
+    let filename = path.file_name()?.to_str()?;
+    if filename.starts_with('.') || filename == "desktop.ini" || filename == "Thumbs.db" {
+        return None;
+    }
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?
+        .duration_since(std::time::UNIX_EPOCH).ok()?
+        .as_millis() as i64;
+
+    Some(DownloadRecord {
+        id: format!("scan_{}", modified),
+        filename: filename.to_string(),
+        path: path_str,
+        course_name: course_folder.to_string(),
+        source: "scan".to_string(),
+        size_bytes: metadata.len(),
+        downloaded_at: modified,
+        file_exists: true,
+    })
+}
+
+#[tauri::command]
+pub fn check_file_downloaded(filename: String, course_name: Option<String>) -> Option<DownloadRecord> {
+    let records = load_download_history();
+    let target = filename.to_lowercase();
+    let mut found: Option<DownloadRecord> = None;
+    for r in records.iter().rev() {
+        let rname = r.filename.to_lowercase();
+        if rname == target {
+            if let Some(ref cn) = course_name {
+                if !cn.is_empty() && !r.course_name.is_empty() && r.course_name != *cn {
+                    continue;
+                }
+            }
+            let mut rec = r.clone();
+            rec.file_exists = std::path::Path::new(&rec.path).exists();
+            if rec.file_exists {
+                return Some(rec);
+            }
+            if found.is_none() {
+                found = Some(rec);
+            }
+        }
+    }
+    found
+}
+
+#[tauri::command]
+pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err("ファイルが見つかりません".into());
+    }
+    // Security: restrict to Downloads or configured download directory
+    let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
+    let sys_downloads = dirs::download_dir().unwrap_or_else(|| {
+        dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(std::env::temp_dir)
+    });
+    let dl_config = load_download_config();
+    let custom_dir = if dl_config.download_dir.is_empty() { None } else {
+        std::path::Path::new(&dl_config.download_dir).canonicalize().ok()
+    };
+    let allowed = canonical.starts_with(&sys_downloads)
+        || custom_dir.as_ref().map_or(false, |d| canonical.starts_with(d));
+    if !allowed {
+        return Err("ダウンロードフォルダ外のファイルは開けません".into());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_path(canonical.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("ファイルを開けませんでした: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_download_record(id: String) -> Result<(), String> {
+    let mut records = load_download_history();
+    records.retain(|r| r.id != id);
+    save_download_history(&records)
+}
+
+#[tauri::command]
+pub fn clear_download_history() -> Result<(), String> {
+    save_download_history(&[])
 }

@@ -120,13 +120,12 @@
   }
 
   .login-logo {
-    height: 36px;
-    margin-bottom: 8px;
+    height: 60px;
     display: inline-flex;
     align-items: center;
   }
   .login-logo img {
-    height: 36px;
+    height: 60px;
     width: auto;
   }
 

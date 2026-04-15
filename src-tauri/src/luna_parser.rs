@@ -839,17 +839,17 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
     // First, find the download form to determine the correct download endpoint
     // Report pages: #reportDownloadForm -> /lms/course/report/submission_download
     // Forum pages: #forumsPostFile -> /lms/course/forums/thread_postfile
-    let download_form_info: Option<(String, Vec<(String, String)>)> = {
+    let download_form_info: Option<(String, Vec<(String, String)>, bool)> = {
         let form_selectors: &[&Selector] = &[&SEL_REPORT_FORM, &SEL_FORUMS_FORM];
         let mut info = None;
         for sel in form_selectors {
             if let Some(form) = doc.select(sel).next() {
                 let action = form.value().attr("action").unwrap_or_default().to_string();
                 if !action.is_empty() {
-                    // Collect ALL hidden input params (including _cid/_csrf which are
-                    // needed for form GET submissions). Skip only the dynamic fields
-                    // that are filled by JS at click time (objectName, downloadFileName,
-                    // downloadMode) — we supply those per-file when building the URL.
+                    let is_forum = form.value().id() == Some("forumsPostFile");
+                    // Collect static hidden input params. Skip the per-file dynamic fields:
+                    // Report: objectName, downloadFileName, downloadMode
+                    // Forum: fileId, fileName
                     let mut params = Vec::new();
                     for input in form.select(&SEL_HIDDEN_INPUT) {
                         let iname = input.value().attr("name").unwrap_or_default();
@@ -858,12 +858,14 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                             && iname != "objectName"
                             && iname != "downloadFileName"
                             && iname != "downloadMode"
+                            && iname != "fileId"
+                            && iname != "fileName"
                         {
                             params.push((iname.to_string(), ival.to_string()));
                         }
                     }
-                    log::debug!("[attachments] download form: action='{}', params={:?}", action, params);
-                    info = Some((action, params));
+                    log::debug!("[attachments] download form: action='{}', is_forum={}, params={:?}", action, is_forum, params);
+                    info = Some((action, params, is_forum));
                     break;
                 }
             }
@@ -885,17 +887,29 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                     })
                     .unwrap_or_default();
 
-                if let Some((ref action, ref fixed_params)) = download_form_info {
+                if let Some((ref action, ref fixed_params, is_forum)) = download_form_info {
                     let link_type = classify_link("", &name);
+                    // Merge static form params with per-file dynamic fields
+                    let mut all_params = fixed_params.clone();
+                    if is_forum {
+                        // Forum: fileId = objectName, fileName = raw filename
+                        all_params.push(("fileId".to_string(), obj_name.clone()));
+                        all_params.push(("fileName".to_string(), name.clone()));
+                    } else {
+                        // Report: downloadFileName = raw filename, objectName, downloadMode = ""
+                        all_params.push(("downloadFileName".to_string(), name.clone()));
+                        all_params.push(("objectName".to_string(), obj_name.clone()));
+                        all_params.push(("downloadMode".to_string(), String::new()));
+                    }
                     log::debug!("[attachments] name='{}', objectName='{}', action='{}', type='{}'",
                         name, obj_name, action, link_type);
                     attachments.push(LunaAttachment {
                         name,
-                        url: String::new(), // URL built at download time with fresh _cid
+                        url: String::new(),
                         link_type,
                         object_name: obj_name,
                         download_action: action.clone(),
-                        download_params: fixed_params.clone(),
+                        download_params: all_params,
                     });
                 } else {
                     log::warn!("[attachments] no download form for '{}', objectName='{}'", name, obj_name);
@@ -1351,6 +1365,10 @@ pub struct LunaSurveyAttachment {
     pub object_name: String,
     #[serde(default)]
     pub url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub download_action: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub download_params: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1983,6 +2001,30 @@ fn parse_surveys(doc: &Html) -> Vec<LunaContentItem> {
 pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
     let doc = Html::parse_document(html);
 
+    // Extract survey download form: #surveysDownFileForm
+    // Form: action=/lms/course/surveys/takefile, method=get
+    // Static fields: _cid, idnumber, contentId
+    // Dynamic per-file: fileId (=objectName), fileName (=raw filename)
+    let survey_dl_form: Option<(String, Vec<(String, String)>)> = {
+        let form_sel = Selector::parse("#surveysDownFileForm").unwrap();
+        if let Some(form) = doc.select(&form_sel).next() {
+            let action = form.value().attr("action").unwrap_or_default().to_string();
+            if !action.is_empty() {
+                let hidden_sel = Selector::parse("input[type=\"hidden\"]").unwrap();
+                let params: Vec<(String, String)> = form.select(&hidden_sel)
+                    .filter_map(|input| {
+                        let name = input.value().attr("name").unwrap_or_default();
+                        let val = input.value().attr("value").unwrap_or_default();
+                        if !val.is_empty() && name != "fileId" && name != "fileName" {
+                            Some((name.to_string(), val.to_string()))
+                        } else { None }
+                    })
+                    .collect();
+                Some((action, params))
+            } else { None }
+        } else { None }
+    };
+
     // Extract header info from .contents-detail.contents-vertical rows
     let mut title = String::new();
     let mut description = String::new();
@@ -2057,7 +2099,18 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
                         .map(|e| e.text().collect::<String>().trim().to_string())
                         .unwrap_or_default();
                     if !file_name.is_empty() {
-                        attachments.push(LunaSurveyAttachment { file_name, object_name, url: String::new() });
+                        let (dl_action, mut dl_params) = if let Some((ref act, ref params)) = survey_dl_form {
+                            (act.clone(), params.clone())
+                        } else {
+                            (String::new(), Vec::new())
+                        };
+                        // Add per-file dynamic fields: fileId = objectName, fileName = raw filename
+                        dl_params.push(("fileId".to_string(), object_name.clone()));
+                        dl_params.push(("fileName".to_string(), file_name.clone()));
+                        attachments.push(LunaSurveyAttachment {
+                            file_name, object_name, url: String::new(),
+                            download_action: dl_action, download_params: dl_params,
+                        });
                     }
                 }
             }

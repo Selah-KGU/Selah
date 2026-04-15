@@ -422,6 +422,9 @@
   }
   .attachment:hover { background:var(--card-bg-hover); box-shadow:var(--card-shadow-hover); border-color:var(--card-border-hover); }
   .attachment span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .attachment.downloaded { color:var(--green, #34c759); }
+  .attachment.downloaded .att-redownload { display:inline; opacity:0.4; font-size:11px; cursor:pointer; margin-left:4px; }
+  .attachment.downloaded .att-redownload:hover { opacity:0.8; }
   .attachment.link-item { color:var(--text-primary); }
   .link-badge { display:inline-block; font-size:10px; font-weight:700; letter-spacing:0.02em; padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; color:#fff; }
   .link-badge.zoom { background:#2d8cff; }
@@ -833,7 +836,11 @@
         var type = b.dataset.type || 'file';
         var att = _detailAttachments[parseInt(b.dataset.attIdx)] || {};
         if (type === 'file') {
-          b.addEventListener('click', function() { downloadAttachment(att, b); });
+          b.addEventListener('click', function(e) {
+            if (e.target && e.target.classList && e.target.classList.contains('att-redownload')) return;
+            downloadAttachment(att, b);
+          });
+          checkAndMarkDownloaded(att, b);
         } else {
           b.addEventListener('click', function() { openExternalLink(att.url || '', att.name || ''); });
         }
@@ -1117,11 +1124,14 @@
       c.innerHTML = h;
       // Attachment download
       c.querySelectorAll('.survey-att').forEach(function(b) {
-        b.addEventListener('click', function() {
-          var sa = data.attachments[parseInt(b.dataset.survAttIdx)];
-          if (!sa) return;
-          downloadAttachment({ url: sa.url || '', name: sa.file_name, object_name: sa.object_name || '' }, b);
+        var sa = data.attachments[parseInt(b.dataset.survAttIdx)];
+        if (!sa) return;
+        var attObj = { url: sa.url || '', name: sa.file_name, object_name: sa.object_name || '', download_action: sa.download_action || '', download_params: sa.download_params || null };
+        b.addEventListener('click', function(e) {
+          if (e.target && e.target.classList && e.target.classList.contains('att-redownload')) return;
+          downloadAttachment(attObj, b);
         });
+        checkAndMarkDownloaded(attObj, b);
       });
       // Submit handler
       var submitBtn = document.getElementById('surveySubmitBtn');
@@ -1690,7 +1700,32 @@
         btn.innerHTML = orig; btn.disabled = false;
       } catch(e) { btn.innerHTML = orig; btn.disabled = false; showStatus('\u30ea\u30f3\u30af\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f: ' + String(e)); }
     }
+    async function checkAndMarkDownloaded(att, btn) {
+      var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
+      var name = att.name || att.file_name || '';
+      if (!name) return;
+      try {
+        var rec = await invoke('check_file_downloaded', { filename: name, courseName: _currentCourseName || null });
+        if (rec && rec.file_exists) {
+          markAsDownloaded(btn, name, rec.path, att);
+        }
+      } catch(e) { /* ignore */ }
+    }
     async function downloadAttachment(att, btn) {
+      var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
+      var name = att.name || att.file_name || '';
+      // If already marked as downloaded, open file directly
+      if (btn && btn._downloadedPath) {
+        try {
+          await invoke('open_downloaded_file', { path: btn._downloadedPath });
+        } catch(e) {
+          showStatus('\u30d5\u30a1\u30a4\u30eb\u3092\u958b\u3051\u307e\u305b\u3093: ' + String(e));
+        }
+        return;
+      }
+      await forceDownloadAttachment(att, btn);
+    }
+    async function forceDownloadAttachment(att, btn) {
       var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
       var name = att.name || att.file_name || '';
       var orig = btn ? btn.innerHTML : null;
@@ -1710,13 +1745,27 @@
           await invoke('open_external_url', { url: result });
           if (btn) { btn.innerHTML = orig; btn.disabled = false; }
         } else {
-          if (btn) btn.innerHTML = '<span>' + ICONS.done + ' ' + escapeHtml(name) + '</span>';
+          markAsDownloaded(btn, name, result, att);
           await invoke('luna_reveal_file', { path: result });
         }
       } catch(e) {
         if (btn) { btn.innerHTML = orig; btn.disabled = false; }
         showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e));
       }
+    }
+    function markAsDownloaded(btn, name, path, att) {
+      if (!btn) return;
+      btn.classList.add('downloaded');
+      btn._downloadedPath = path;
+      btn.disabled = false;
+      btn.innerHTML = '<span>' + ICONS.done + ' ' + escapeHtml(name) + '</span><span class="att-redownload" title="\u518d\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9" style="flex:none">' + ICONS.download + '</span>';
+      btn.querySelector('.att-redownload').addEventListener('click', function(e) {
+        e.stopPropagation();
+        btn.classList.remove('downloaded');
+        delete btn._downloadedPath;
+        btn.innerHTML = '<span>' + ICONS.clip + ' ' + escapeHtml(name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span>';
+        forceDownloadAttachment(att, btn);
+      });
     }
     async function openExternalLink(url, name) {
       var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;

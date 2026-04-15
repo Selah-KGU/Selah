@@ -81,6 +81,10 @@
       return next;
     });
   }
+
+  function openDownloadsWindow() {
+    invoke("open_downloads_window").catch(console.error);
+  }
 </script>
 
 <div class="titlebar" data-tauri-drag-region>
@@ -98,6 +102,9 @@
       {:else}
         <Icon name="sun" size={14} />
       {/if}
+    </button>
+    <button class="tb-btn" onclick={openDownloadsWindow} title="ダウンロード" aria-label="ダウンロード">
+      <Icon name="arrow.down.circle" size={14} />
     </button>
     <button class="tb-btn" onclick={() => openSettingsWindow()} title="設定" aria-label="設定">
       <Icon name="gear" size={14} />
