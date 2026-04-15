@@ -2205,12 +2205,22 @@ fn simplify_course_name(name: &str) -> String {
     if s.is_empty() { name.trim().to_string() } else { s }
 }
 
+/// Default download base directory: ~/Documents/Selah (created if needed).
+pub fn default_download_dir() -> std::path::PathBuf {
+    let doc = dirs::document_dir().unwrap_or_else(|| {
+        dirs::home_dir().map(|h| h.join("Documents")).unwrap_or_else(std::env::temp_dir)
+    });
+    let dir = doc.join("Selah");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Resolve the download directory with optional course classification.
 /// Returns the target directory (created if needed) for saving a file.
 pub fn resolve_download_dir(course_name: Option<&str>) -> std::path::PathBuf {
     let config = load_download_config();
     let base = if config.download_dir.is_empty() {
-        dirs::download_dir().unwrap_or_else(std::env::temp_dir)
+        default_download_dir()
     } else {
         std::path::PathBuf::from(&config.download_dir)
     };

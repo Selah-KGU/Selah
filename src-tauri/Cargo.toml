@@ -1,6 +1,6 @@
 [package]
 name = "selah-app"
-version = "0.8.0"
+version = "0.8.1"
 description = "Selah - 新月の下で、知性を繋ぐ。すべての関学生に。"
 authors = ["mirai-mamori"]
 license = "MIT"

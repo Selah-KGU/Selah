@@ -405,14 +405,16 @@ pub async fn luna_reveal_file(app: tauri::AppHandle, path: String) -> Result<(),
     // Restrict to files under the user's Downloads or configured download directory
     let p = std::path::Path::new(&path);
     let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
-    let sys_downloads = dirs::download_dir().unwrap_or_else(|| {
-        dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(std::env::temp_dir)
-    });
+    let sys_downloads = crate::commands::default_download_dir();
     let dl_config = crate::commands::load_download_config();
     let custom_dir = if dl_config.download_dir.is_empty() { None } else {
         std::path::Path::new(&dl_config.download_dir).canonicalize().ok()
     };
+    let sys_dl = dirs::download_dir().unwrap_or_else(|| {
+        dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(std::env::temp_dir)
+    });
     let allowed = canonical.starts_with(&sys_downloads)
+        || canonical.starts_with(&sys_dl)
         || custom_dir.as_ref().map_or(false, |d| canonical.starts_with(d));
     if !allowed {
         return Err("ダウンロードフォルダ外のファイルは表示できません".into());
