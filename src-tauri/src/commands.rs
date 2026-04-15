@@ -738,12 +738,12 @@ pub async fn sync_calendar(
         let _ = (&entries, &week_label);
         return Err("Apple Calendar は macOS でのみ利用可能です".into());
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(target_os = "macos", not(debug_assertions)))]
     {
         let _ = (&entries, &week_label);
         return Err("Calendar.app 連携は開発ビルドのみ対応です。Google カレンダーをご利用ください。".into());
     }
-    #[cfg(debug_assertions)]
+    #[cfg(all(target_os = "macos", debug_assertions))]
     {
     let (base_year, base_month, base_day) = parse_week_start(&week_label)?;
 
@@ -838,9 +838,9 @@ cal.events().length;
 pub async fn get_calendar_info() -> Result<serde_json::Value, String> {
     #[cfg(not(target_os = "macos"))]
     { return Ok(serde_json::json!({ "exists": false, "count": 0 })); }
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(target_os = "macos", not(debug_assertions)))]
     { return Ok(serde_json::json!({ "exists": false, "count": 0 })); }
-    #[cfg(debug_assertions)]
+    #[cfg(all(target_os = "macos", debug_assertions))]
     {
     let script = r#"
 var Calendar = Application("Calendar");
@@ -880,12 +880,12 @@ pub async fn clear_calendar(delete_calendar: bool) -> Result<String, String> {
         let _ = delete_calendar;
         return Err("Apple Calendar は macOS でのみ利用可能です".into());
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(target_os = "macos", not(debug_assertions)))]
     {
         let _ = delete_calendar;
         return Err("Calendar.app 連携は開発ビルドのみ対応です".into());
     }
-    #[cfg(debug_assertions)]
+    #[cfg(all(target_os = "macos", debug_assertions))]
     {
     let script = if delete_calendar {
         r#"
