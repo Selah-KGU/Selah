@@ -1528,11 +1528,23 @@ fn parse_ai_schedule_response(
     let json_str = extract_json_from_response(response);
 
     #[derive(Deserialize)]
+    #[serde(default)]
     struct AiResponse {
         current_week: Vec<AiScheduleItem>,
         next_week: Vec<AiScheduleItem>,
         weekly_summary: Option<String>,
         cross_week_insights: Option<String>,
+    }
+
+    impl Default for AiResponse {
+        fn default() -> Self {
+            Self {
+                current_week: Vec::new(),
+                next_week: Vec::new(),
+                weekly_summary: None,
+                cross_week_insights: None,
+            }
+        }
     }
 
     let parsed: AiResponse = serde_json::from_str(json_str)
@@ -1542,6 +1554,10 @@ fn parse_ai_schedule_response(
             serde_json::from_str::<AiResponse>(&repaired)
         })
         .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(response, 200)))?;
+
+    if parsed.next_week.is_empty() && !next_week_label.is_empty() {
+        log::warn!("ai schedule: next_week is empty — AI response may have been truncated");
+    }
 
     Ok(AiScheduleResult {
         current_week_label: current_week_label.to_string(),

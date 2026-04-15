@@ -3,7 +3,7 @@
   import { authState } from "./stores";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
-  import kgLogoRaw from "../assets/kg-logo.svg?raw";
+  import selahLogoUrl from "../assets/logo.png";
 
   let unlisten1: (() => void) | null = null;
   let unlisten2: (() => void) | null = null;
@@ -56,7 +56,7 @@
 <div class="login-container">
   <div class="login-card">
     <div class="login-header">
-      <span class="login-logo" aria-label="関西学院大学">{@html kgLogoRaw}</span>
+      <span class="login-logo" aria-label="Selah"><img src={selahLogoUrl} alt="Selah" /></span>
     </div>
 
     <div class="login-body">
@@ -120,23 +120,14 @@
   }
 
   .login-logo {
-    height: 28px;
+    height: 36px;
     margin-bottom: 8px;
     display: inline-flex;
     align-items: center;
-    color: #231f20;
   }
-  .login-logo :global(svg) {
-    height: 28px;
+  .login-logo img {
+    height: 36px;
     width: auto;
-  }
-  :global([data-theme="dark"]) .login-logo {
-    color: var(--text-primary);
-  }
-  @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-theme="light"])) .login-logo {
-      color: var(--text-primary);
-    }
   }
 
   .login-body {

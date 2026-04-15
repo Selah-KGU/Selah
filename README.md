@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src-tauri/icons/128x128@2x.png" width="128" height="128" alt="Selah">
+  <img src="static/logo.png" width="128" height="128" alt="Selah">
 </p>
 
 <h1 align="center">Selah</h1>
@@ -187,6 +187,16 @@ npm run tauri build -- --target x86_64-pc-windows-msvc
 - 認証情報はローカルマシン上でのみ処理され、第三者サーバーには送信されません。
 - 大学側のシステム変更により、予告なく動作しなくなる可能性があります。
 - 利用は自己責任でお願いします。
+
+## キャラクター
+
+<p align="center">
+  <img src="selah-character.png" width="360" alt="Selah キャラクター設定">
+</p>
+
+<p align="center">
+  <strong>Selah</strong> — アプリのマスコットキャラクター。
+</p>
 
 ## ライセンス
 

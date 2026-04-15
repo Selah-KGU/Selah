@@ -5,7 +5,7 @@
   import { emit } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "./Icon.svelte";
-  import kgLogoRaw from "../assets/kg-logo.svg?raw";
+  import selahLogoUrl from "../assets/logo.png";
 
   let showProfile = $state(false);
   let profile = $state<StudentInfo | null>(null);
@@ -85,7 +85,11 @@
 
 <div class="titlebar" data-tauri-drag-region>
   <div class="titlebar-left" data-tauri-drag-region>
-    <span class="logo" aria-label="関西学院大学">{@html kgLogoRaw}</span>
+    <span class="logo" aria-label="Selah"><img src={selahLogoUrl} alt="Selah" /></span>
+    <div class="brand">
+      <span class="brand-name">Selah</span>
+      <span class="brand-tagline">新月の下で、知性を繋ぐ</span>
+    </div>
   </div>
   <div class="titlebar-right">
     <button class="tb-btn" onclick={toggleTheme} title="テーマ切替" aria-label="テーマ切替">
@@ -297,23 +301,33 @@
   }
 
   .logo {
-    height: 18px;
-    opacity: 0.85;
+    height: 28px;
     display: flex;
     align-items: center;
-    color: #231f20;
   }
-  .logo :global(svg) {
-    height: 24px;
+  .logo img {
+    height: 28px;
     width: auto;
   }
-  :global([data-theme="dark"]) .logo {
-    color: var(--text-primary);
+
+  .brand {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    user-select: none;
   }
-  @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-theme="light"])) .logo {
-      color: var(--text-primary);
-    }
+  .brand-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: 0.5px;
+    line-height: 1;
+  }
+  .brand-tagline {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    letter-spacing: 0.3px;
+    line-height: 1;
   }
 
   .titlebar-right {

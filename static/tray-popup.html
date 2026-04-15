@@ -125,17 +125,11 @@
     align-items: center;
     flex-shrink: 0;
     padding: 0;
-    color: #231f20;
   }
-  .brand-logo svg {
+  .brand-logo img {
     height: 20px;
     width: auto;
     display: block;
-  }
-  @media (prefers-color-scheme: dark) {
-    .brand-logo {
-      color: var(--text-primary);
-    }
   }
   .header-student {
     font-size: 11px;
@@ -659,7 +653,7 @@
 <div class="container">
   <!-- Header -->
   <div class="header">
-    <span class="brand-logo" aria-label="関西学院大学" id="brand-logo"></span>
+    <span class="brand-logo" aria-label="Selah" id="brand-logo"><img id="brand-logo-img" alt="Selah"></span>
     <span class="header-student" id="student-meta">未ログイン</span>
   </div>
 
@@ -1132,11 +1126,8 @@ document.getElementById("content").addEventListener("click", (e) => {
   }
 });
 
-// Inline SVG logo so currentColor works for dark mode
-fetch('kg-logo.svg')
-  .then(r => { if (!r.ok) throw r.status; return r.text(); })
-  .then(svg => { document.getElementById('brand-logo').innerHTML = svg; })
-  .catch(() => {});
+// Set brand logo
+(function(){ document.getElementById('brand-logo-img').src='logo.png'; })();
 
 // Initial load
 loadAndRender();
