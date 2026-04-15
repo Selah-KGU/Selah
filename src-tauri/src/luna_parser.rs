@@ -52,6 +52,14 @@ sel!(SEL_THREAD_AUTHOR, ".theme-top-thread-author");
 sel!(SEL_THREAD_DATE,   ".theme-top-thread-createdate");
 sel!(SEL_THREAD_STATUS, ".theme-top-thread-postzyoukyou");
 
+// ── Thread post selectors ──
+sel!(SEL_THREAD_POST_BLOCK, "#threadPostListArea .clearfix");
+sel!(SEL_POST_CONTENTS_TEXT, ".postContentsText");
+sel!(SEL_POST_DATE,          ".postDate");
+sel!(SEL_POST_USER,          ".postUser");
+sel!(SEL_POST_ID,            ".postId");
+sel!(SEL_MSG_BLOCK,          ".discussion-message-block");
+
 // ── Detail page selectors ──
 sel!(SEL_DL_CMT,        ".downloadFile, .cmtInfoFileName");
 sel!(SEL_REPORT_FORM,   "#reportDownloadForm");
@@ -562,9 +570,51 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
     let description = extract_named_quill_text(html, "headerContents")
         .unwrap_or_default();
 
-    // Posts are loaded via AJAX, so initial page is empty
-    // We return the thread info for now
-    let posts = Vec::new();
+    // Parse posts from #threadPostList (embedded in the page)
+    let mut posts = Vec::new();
+    for block in doc.select(&SEL_THREAD_POST_BLOCK) {
+        let content = block.select(&SEL_POST_CONTENTS_TEXT).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        let date = block.select(&SEL_POST_DATE).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        let raw_user = block.select(&SEL_POST_USER).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        // Format: "氏名:名前" → extract the name after ":"
+        let author = raw_user.split(':').nth(1)
+            .unwrap_or(&raw_user)
+            .trim()
+            .to_string();
+        let post_id = block.select(&SEL_POST_ID).next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        // Check if teacher post (has board-discussion-teacher-color-left)
+        let is_teacher = block.select(&SEL_MSG_BLOCK).next()
+            .map(|e| e.html().contains("board-discussion-teacher-color"))
+            .unwrap_or(false);
+        let is_self = block.select(&SEL_MSG_BLOCK).next()
+            .map(|e| e.value().classes().any(|c| c == "discussion-self"))
+            .unwrap_or(false);
+        let mut status = String::new();
+        if is_teacher { status.push_str("teacher"); }
+        if is_self {
+            if !status.is_empty() { status.push(','); }
+            status.push_str("self");
+        }
+
+        if !content.is_empty() || !author.is_empty() {
+            posts.push(LunaDiscussionPost {
+                title: String::new(),
+                author,
+                date,
+                content,
+                status,
+                thread_id: post_id,
+            });
+        }
+    }
 
     let display_title = if !thread_title.is_empty() {
         thread_title

@@ -450,6 +450,26 @@
   .back-btn svg { transform:rotate(90deg); width:12px; height:12px; }
   .status { font-size:12px; color:var(--text-tertiary); margin-top:16px; text-align:center; }
 
+  /* Thread Posts */
+  .post-list { margin-top:16px; }
+  .post-list-header { font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:10px; padding-bottom:6px; border-bottom:0.5px solid var(--border); }
+  .post-bubble { background:var(--card-bg); border:0.5px solid var(--card-border); border-radius:var(--inner-radius); padding:10px 14px; margin-bottom:8px; box-shadow:var(--card-shadow); }
+  .post-header { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
+  .post-author { font-size:12px; font-weight:600; color:var(--text-secondary); }
+  .post-date { font-size:11px; color:var(--text-tertiary); margin-left:auto; }
+  .post-body { font-size:13px; color:var(--text-primary); line-height:1.7; white-space:pre-wrap; word-break:break-word; }
+  .post-badge { display:inline-block; font-size:10px; font-weight:700; padding:1px 5px; border-radius:4px; color:#fff; vertical-align:middle; }
+  .post-badge.teacher { background:var(--green, #34c759); }
+  .post-badge.self { background:var(--accent); }
+  .post-reply-btn { font-size:11px; color:var(--accent); background:none; border:none; cursor:pointer; padding:2px 4px; font-family:inherit; opacity:0.7; }
+  .post-reply-btn:hover { opacity:1; text-decoration:underline; }
+  .post-reply-form { margin-top:8px; padding-top:8px; border-top:0.5px solid var(--border); }
+  .post-reply-form textarea { width:100%; box-sizing:border-box; font-size:12px; padding:6px 8px; border:0.5px solid var(--border); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); font-family:inherit; resize:vertical; }
+  .post-reply-form .post-reply-actions { display:flex; justify-content:flex-end; gap:6px; margin-top:6px; }
+  .post-reply-form button { font-size:11px; padding:4px 10px; border-radius:6px; border:none; cursor:pointer; font-family:inherit; }
+  .post-reply-form .post-reply-send { background:var(--accent); color:#fff; font-weight:600; }
+  .post-reply-form .post-reply-cancel { background:var(--bg-tertiary); color:var(--text-secondary); }
+
   /* KG Detail Collapsible */
   .kg-toggle {
     display:flex; align-items:center; justify-content:space-between; width:100%;
@@ -964,6 +984,8 @@
       h += '</div>';
       if (post.content) h += '<div class="section"><div class="section-body rich-text">' + renderRichText(post.content) + '</div></div>';
       var tid = post.thread_id || '';
+      // Posts placeholder
+      h += '<div id="threadPostsArea"><div class="loading-text" style="text-align:center;padding:20px;color:var(--text-tertiary);font-size:13px">\u8aad\u307f\u8fbc\u307f\u4e2d...</div></div>';
       if (tid && idnumber && forumId) {
         h += '<div class="reply-section"><h3>\u8fd4\u4fe1</h3>';
         h += '<textarea id="replyContent" class="text-input" rows="4" placeholder="\u8fd4\u4fe1\u5185\u5bb9\u3092\u5165\u529b..."></textarea>';
@@ -974,22 +996,114 @@
       document.getElementById('backToList').addEventListener('click', function() {
         renderDiscussion(discData);
       });
-      var replyBtn = document.getElementById('replyBtn'), replyArea = document.getElementById('replyContent');
-      if (replyBtn && tid) {
+      // Fetch thread posts
+      if (tid && idnumber && forumId) {
         var tUrl = '/lms/course/forums/thread?idnumber=' + idnumber + '&forumId=' + forumId + '&threadId=' + tid + '&screen=2';
-        replyBtn.addEventListener('click', async function() {
+        (async function() {
           var inv = window.__TAURI__?.core?.invoke;
-          if (!inv || !replyArea.value.trim()) return;
-          replyBtn.disabled = true; replyBtn.textContent = '\u9001\u4fe1\u4e2d...';
+          if (!inv) return;
           try {
-            var result = await inv('luna_reply_discussion', { url: tUrl, content: replyArea.value.trim() });
-            replyArea.value = '';
-            replyBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
-            setTimeout(function() { replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false; }, 2000);
+            var threadData = await inv('luna_fetch_thread_posts', { url: tUrl });
+            renderThreadPosts(document.getElementById('threadPostsArea'), threadData, tUrl);
           } catch(e) {
-            alert('\u8fd4\u4fe1\u30a8\u30e9\u30fc: ' + String(e));
-            replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
+            var area = document.getElementById('threadPostsArea');
+            if (area) area.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-tertiary);font-size:12px">\u6295\u7a3f\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f</div>';
           }
+        })();
+        var replyBtn = document.getElementById('replyBtn'), replyArea = document.getElementById('replyContent');
+        if (replyBtn) {
+          replyBtn.addEventListener('click', async function() {
+            var inv = window.__TAURI__?.core?.invoke;
+            if (!inv || !replyArea.value.trim()) return;
+            replyBtn.disabled = true; replyBtn.textContent = '\u9001\u4fe1\u4e2d...';
+            try {
+              var result = await inv('luna_reply_discussion', { url: tUrl, content: replyArea.value.trim(), parentPostId: null });
+              replyArea.value = '';
+              replyBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
+              // Refresh posts after reply
+              setTimeout(async function() {
+                replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
+                try {
+                  var threadData = await inv('luna_fetch_thread_posts', { url: tUrl });
+                  renderThreadPosts(document.getElementById('threadPostsArea'), threadData, tUrl);
+                } catch(e2) {}
+              }, 1500);
+            } catch(e) {
+              alert('\u8fd4\u4fe1\u30a8\u30e9\u30fc: ' + String(e));
+              replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
+            }
+          });
+        }
+      } else {
+        var area = document.getElementById('threadPostsArea');
+        if (area) area.innerHTML = '';
+      }
+    }
+
+    function renderThreadPosts(container, threadData, threadUrl) {
+      if (!container) return;
+      var posts = (threadData && threadData.posts) || [];
+      if (!posts.length) {
+        container.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-tertiary);font-size:12px">\u307e\u3060\u6295\u7a3f\u304c\u3042\u308a\u307e\u305b\u3093</div>';
+        return;
+      }
+      var h = '<div class="post-list">';
+      h += '<div class="post-list-header">\u6295\u7a3f (' + posts.length + ')</div>';
+      for (var i = 0; i < posts.length; i++) {
+        var p = posts[i];
+        var flags = (p.status || '').split(',');
+        var isTeacher = flags.indexOf('teacher') >= 0;
+        var isSelf = flags.indexOf('self') >= 0;
+        h += '<div class="post-bubble" data-post-idx="' + i + '">';
+        h += '<div class="post-header">';
+        if (isTeacher) h += '<span class="post-badge teacher">\u6559\u54e1</span>';
+        if (isSelf) h += '<span class="post-badge self">\u81ea\u5206</span>';
+        h += '<span class="post-author">' + escapeHtml(p.author || '') + '</span>';
+        h += '<span class="post-date">' + escapeHtml(p.date || '') + '</span>';
+        if (threadUrl && p.thread_id) h += '<button class="post-reply-btn" data-post-id="' + escapeHtml(p.thread_id) + '">\u8fd4\u4fe1</button>';
+        h += '</div>';
+        h += '<div class="post-body">' + renderRichText(p.content || '') + '</div>';
+        h += '</div>';
+      }
+      h += '</div>';
+      container.innerHTML = h;
+      // Wire per-post reply buttons
+      if (threadUrl) {
+        container.querySelectorAll('.post-reply-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var bubble = btn.closest('.post-bubble');
+            if (bubble.querySelector('.post-reply-form')) return; // already open
+            var postId = btn.dataset.postId || '';
+            var form = document.createElement('div');
+            form.className = 'post-reply-form';
+            form.innerHTML = '<textarea rows="2" placeholder="\u8fd4\u4fe1\u5185\u5bb9\u3092\u5165\u529b..."></textarea>'
+              + '<div class="post-reply-actions"><button class="post-reply-cancel">\u30ad\u30e3\u30f3\u30bb\u30eb</button><button class="post-reply-send">\u9001\u4fe1</button></div>';
+            bubble.appendChild(form);
+            form.querySelector('textarea').focus();
+            form.querySelector('.post-reply-cancel').addEventListener('click', function() { form.remove(); });
+            form.querySelector('.post-reply-send').addEventListener('click', async function() {
+              var inv = window.__TAURI__?.core?.invoke;
+              var txt = form.querySelector('textarea').value.trim();
+              if (!inv || !txt) return;
+              var sendBtn = form.querySelector('.post-reply-send');
+              sendBtn.disabled = true; sendBtn.textContent = '\u9001\u4fe1\u4e2d...';
+              try {
+                await inv('luna_reply_discussion', { url: threadUrl, content: txt, parentPostId: postId || null });
+                form.innerHTML = '<div style="font-size:12px;color:var(--green,#34c759);padding:4px 0">\u2713 \u8fd4\u4fe1\u3057\u307e\u3057\u305f</div>';
+                // Refresh posts
+                setTimeout(async function() {
+                  try {
+                    var refreshed = await inv('luna_fetch_thread_posts', { url: threadUrl });
+                    renderThreadPosts(container, refreshed, threadUrl);
+                  } catch(e2) {}
+                }, 1500);
+              } catch(e) {
+                alert('\u8fd4\u4fe1\u30a8\u30e9\u30fc: ' + String(e));
+                sendBtn.textContent = '\u9001\u4fe1'; sendBtn.disabled = false;
+              }
+            });
+          });
         });
       }
     }
@@ -1033,20 +1147,37 @@
         }
         h += '</div>';
       }
+      // Show posts if available from initial parse
+      if (data.posts && data.posts.length) {
+        h += '<div id="threadPostsArea"></div>';
+      } else {
+        h += '<div id="threadPostsArea"><div class="loading-text" style="text-align:center;padding:20px;color:var(--text-tertiary);font-size:13px">\u8aad\u307f\u8fbc\u307f\u4e2d...</div></div>';
+      }
       h += '<div class="reply-section"><h3>\u8fd4\u4fe1</h3>';
       h += '<textarea id="replyContent" class="text-input" rows="4" placeholder="\u8fd4\u4fe1\u5185\u5bb9\u3092\u5165\u529b..."></textarea>';
       h += '<div class="reply-actions"><button id="replyBtn" class="btn primary">\u9001\u4fe1</button></div></div></div>';
       c.innerHTML = h;
+      // Render posts
+      if (data.posts && data.posts.length) {
+        renderThreadPosts(document.getElementById('threadPostsArea'), data, threadUrl);
+      }
       var replyBtn = document.getElementById('replyBtn'), replyContent = document.getElementById('replyContent');
       replyBtn.addEventListener('click', async function() {
         var inv = window.__TAURI__?.core?.invoke;
         if (!inv || !replyContent.value.trim()) return;
         replyBtn.disabled = true; replyBtn.textContent = '\u9001\u4fe1\u4e2d...';
         try {
-          var result = await inv('luna_reply_discussion', { url: threadUrl, content: replyContent.value.trim() });
+          var result = await inv('luna_reply_discussion', { url: threadUrl, content: replyContent.value.trim(), parentPostId: null });
           replyContent.value = '';
           replyBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
-          setTimeout(function() { replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false; }, 2000);
+          // Refresh posts after reply
+          setTimeout(async function() {
+            replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
+            try {
+              var threadData = await inv('luna_fetch_thread_posts', { url: threadUrl });
+              renderThreadPosts(document.getElementById('threadPostsArea'), threadData, threadUrl);
+            } catch(e2) {}
+          }, 1500);
         } catch(e) {
           var st = c.querySelector('.status') || Object.assign(document.createElement('div'), { className: 'status' });
           st.textContent = '\u6295\u7a3f\u30a8\u30e9\u30fc: ' + String(e); st.style.color = 'var(--red)'; c.appendChild(st);
@@ -1780,6 +1911,54 @@
       document.getElementById('content').appendChild(st);
     }
 
+    // KWIC Portal Detail
+    function renderKwicDetail(data) {
+      var c = document.getElementById('content');
+      if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+      var h = '<div class="detail-wrap">';
+      h += '<div class="course-label">KWIC \u30dd\u30fc\u30bf\u30eb</div>';
+      if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
+      if (data.date || data.sender) {
+        h += '<div class="meta-table"><div class="meta-row">';
+        if (data.date) h += '<span class="meta-key">\u65e5\u4ed8</span><span class="meta-value">' + escapeHtml(data.date) + '</span>';
+        h += '</div>';
+        if (data.sender) {
+          h += '<div class="meta-row"><span class="meta-key">\u9001\u4fe1\u8005</span><span class="meta-value">' + escapeHtml(data.sender) + '</span></div>';
+        }
+        h += '</div>';
+      }
+      if (data.body_html) {
+        var sanitized = data.body_html
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '')
+          .replace(/<object[^>]*>[\s\S]*?<\/object>/gi, '')
+          .replace(/<embed[^>]*>/gi, '')
+          .replace(/<link[^>]*>/gi, '')
+          .replace(/\son\w+\s*=/gi, ' data-removed=')
+          .replace(/javascript\s*:/gi, 'blocked:');
+        h += '<div class="section"><div class="section-body rich-text">' + sanitized + '</div></div>';
+      }
+      if (data.attachments && data.attachments.length) {
+        h += '<div class="attachments"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
+        for (var i = 0; i < data.attachments.length; i++) {
+          var att = data.attachments[i];
+          h += '<button class="attachment kwic-att" data-url="' + escapeHtml(att.url || '') + '">';
+          h += '<span>' + ICONS.clip + ' ' + escapeHtml(att.name || '') + '</span><span style="flex:none;opacity:0.5">' + ICONS.external + '</span></button>';
+        }
+        h += '</div>';
+      }
+      h += '</div>';
+      c.innerHTML = h;
+      c.querySelectorAll('.kwic-att').forEach(function(b) {
+        b.addEventListener('click', function() {
+          var url = b.dataset.url;
+          var name = b.textContent.trim();
+          var inv = window.__TAURI__?.core?.invoke;
+          if (inv && url) inv('kwic_open_link', { url: url, title: name });
+        });
+      });
+    }
+
     // Router
     document.addEventListener('DOMContentLoaded', async function() {
       var params = new URLSearchParams(window.location.search);
@@ -1935,6 +2114,15 @@
           _currentPagePath = path;
           if (params.get('courseName')) _currentCourseName = params.get('courseName');
           renderSurveyDetail(await invoke('luna_fetch_survey_detail', { path: path }));
+        } else if (mode === 'kwic') {
+          var kwicId = params.get('informationId') || '';
+          if (!kwicId) { renderDetail({ error: '\u901a\u77e5ID\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          renderKwicDetail(await invoke('kwic_fetch_detail', {
+            informationId: kwicId,
+            informationType: params.get('informationType') || '',
+            personCategoryCd: params.get('personCategoryCd') || '',
+            categoryCd: params.get('categoryCd') || '',
+          }));
         } else {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
           _currentPagePath = path;

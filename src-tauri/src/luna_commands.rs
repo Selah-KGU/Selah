@@ -1716,6 +1716,7 @@ pub async fn luna_reply_discussion(
     state: State<'_, AppState>,
     url: String,
     content: String,
+    parent_post_id: Option<String>,
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
 
@@ -1780,7 +1781,7 @@ pub async fn luna_reply_discussion(
         .text("postContents", content.clone())
         .text("postSendFlag", "false")
         .text("postId", "")
-        .text("parentPostId", "")
+        .text("parentPostId", parent_post_id.unwrap_or_default())
         .text("editFlag", "1")
         .text("editAuthority", "");
 
