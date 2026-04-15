@@ -587,10 +587,12 @@ async fn enrich_schedule_inner(
                     // Parse full course detail fields + delivery mode from syllabus
                     let detail = parser::parse_course_detail(&detail_html);
                     let delivery_mode = parser::detect_delivery_mode_from_detail(&detail_html);
+                    let textbooks = parser::parse_textbooks(&detail_html);
                     let detail_row = KgcCourseDetailRow {
                         kgc_code: kgc_code.clone(),
                         fields: detail.fields,
                         delivery_mode,
+                        textbooks,
                     };
                     if let Err(e) = db.upsert_kgc_course_detail(&detail_row) {
                         log::warn!("Failed to save detail for {}: {}", kgc_code, e);

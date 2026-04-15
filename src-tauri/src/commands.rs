@@ -1009,7 +1009,7 @@ pub async fn open_detail_window(
 
     let encoded_path = urlencoding::encode(&path);
     let encoded_name = urlencoding::encode(&course_name);
-    let url_str = format!("detail.html?path={}&name={}", encoded_path, encoded_name);
+    let url_str = format!("luna-detail.html?mode=kgc&path={}&name={}", encoded_path, encoded_name);
 
     tauri::WebviewWindowBuilder::new(
         &app,
@@ -1666,7 +1666,7 @@ pub async fn open_syllabus_detail(
     // Open detail window — pass label in URL so the window can retrieve its own data
     let encoded_name = urlencoding::encode(&course_name);
     let encoded_label = urlencoding::encode(&label);
-    let url_str = format!("detail.html?syllabus=true&name={}&wlabel={}", encoded_name, encoded_label);
+    let url_str = format!("luna-detail.html?mode=syllabus&name={}&wlabel={}", encoded_name, encoded_label);
 
     tauri::WebviewWindowBuilder::new(
         &app,
@@ -1691,6 +1691,20 @@ pub async fn get_syllabus_detail(
 ) -> Result<crate::parser::CourseDetail, String> {
     let mut map = state.0.lock().map_err(|e| e.to_string())?;
     map.remove(&label).ok_or("詳細データがありません".into())
+}
+
+/// Get cached KGC syllabus fields for a course (textbook, references, etc.)
+#[tauri::command]
+pub async fn get_kgc_syllabus_fields(
+    db: State<'_, crate::db::Database>,
+    kgc_code: String,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(db.get_kgc_course_detail(&kgc_code)?.map(|d| {
+        serde_json::json!({
+            "fields": d.fields,
+            "textbooks": d.textbooks,
+        })
+    }))
 }
 
 static STRUTS_TOKEN_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#).expect("valid regex"));

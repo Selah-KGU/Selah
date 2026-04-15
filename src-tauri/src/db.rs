@@ -53,6 +53,7 @@ pub struct KgcCourseDetailRow {
     pub kgc_code: String,
     pub fields: Vec<(String, String)>,  // (label, value) pairs
     pub delivery_mode: String,          // detected from detail page
+    pub textbooks: Vec<crate::parser::TextbookEntry>,
 }
 
 /// Raw KGC course entry stored in DB.
@@ -253,6 +254,7 @@ impl Database {
                 kgc_code        TEXT PRIMARY KEY,
                 fields_json     TEXT NOT NULL DEFAULT '[]',
                 delivery_mode   TEXT NOT NULL DEFAULT '',
+                textbooks_json  TEXT NOT NULL DEFAULT '[]',
                 updated_at      INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS ai_schedule_cache (
@@ -292,6 +294,13 @@ impl Database {
         let _ = conn.execute_batch("
             DROP TABLE IF EXISTS courses;
         ");
+
+        // Migration: add textbooks_json column to existing kgc_course_details tables
+        let _ = conn.execute_batch("ALTER TABLE kgc_course_details ADD COLUMN textbooks_json TEXT NOT NULL DEFAULT '[]'");
+
+        // Force re-fetch for rows that still have empty textbooks (parser was updated)
+        let _ = conn.execute_batch("UPDATE kgc_course_details SET updated_at = 0 WHERE textbooks_json = '[]'");
+
         Ok(())
     }
 
@@ -481,11 +490,13 @@ impl Database {
         let now = epoch_secs();
         let fields_json = serde_json::to_string(&detail.fields)
             .map_err(|e| format!("serialize fields: {}", e))?;
+        let textbooks_json = serde_json::to_string(&detail.textbooks)
+            .map_err(|e| format!("serialize textbooks: {}", e))?;
         conn.execute(
-            "INSERT INTO kgc_course_details (kgc_code, fields_json, delivery_mode, updated_at)
-             VALUES (?1,?2,?3,?4)
-             ON CONFLICT(kgc_code) DO UPDATE SET fields_json=?2, delivery_mode=?3, updated_at=?4",
-            params![detail.kgc_code, fields_json, detail.delivery_mode, now],
+            "INSERT INTO kgc_course_details (kgc_code, fields_json, delivery_mode, textbooks_json, updated_at)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(kgc_code) DO UPDATE SET fields_json=?2, delivery_mode=?3, textbooks_json=?4, updated_at=?5",
+            params![detail.kgc_code, fields_json, detail.delivery_mode, textbooks_json, now],
         ).map_err(|e| format!("DB upsert detail: {}", e))?;
         Ok(())
     }
@@ -496,16 +507,35 @@ impl Database {
         Self::query_all_kgc_course_details(&conn)
     }
 
+    pub fn get_kgc_course_detail(&self, kgc_code: &str) -> Result<Option<KgcCourseDetailRow>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT kgc_code, fields_json, delivery_mode, COALESCE(textbooks_json, '[]') FROM kgc_course_details WHERE kgc_code = ?1"
+        ).map_err(|e| format!("DB query: {}", e))?;
+        let mut rows = stmt.query_map(params![kgc_code], |row| {
+            let kgc_code: String = row.get(0)?;
+            let fields_json: String = row.get(1)?;
+            let delivery_mode: String = row.get(2)?;
+            let textbooks_json: String = row.get(3)?;
+            let fields: Vec<(String, String)> = serde_json::from_str(&fields_json).unwrap_or_default();
+            let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
+            Ok(KgcCourseDetailRow { kgc_code, fields, delivery_mode, textbooks })
+        }).map_err(|e| format!("DB map: {}", e))?;
+        Ok(rows.next().and_then(|r| r.ok()))
+    }
+
     fn query_all_kgc_course_details(conn: &Connection) -> Result<Vec<KgcCourseDetailRow>, String> {
         let mut stmt = conn.prepare(
-            "SELECT kgc_code, fields_json, delivery_mode FROM kgc_course_details"
+            "SELECT kgc_code, fields_json, delivery_mode, COALESCE(textbooks_json, '[]') FROM kgc_course_details"
         ).map_err(|e| format!("DB query: {}", e))?;
         let rows = stmt.query_map([], |row| {
             let kgc_code: String = row.get(0)?;
             let fields_json: String = row.get(1)?;
             let delivery_mode: String = row.get(2)?;
+            let textbooks_json: String = row.get(3)?;
             let fields: Vec<(String, String)> = serde_json::from_str(&fields_json).unwrap_or_default();
-            Ok(KgcCourseDetailRow { kgc_code, fields, delivery_mode })
+            let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
+            Ok(KgcCourseDetailRow { kgc_code, fields, delivery_mode, textbooks })
         }).map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }

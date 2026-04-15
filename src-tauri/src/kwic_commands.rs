@@ -401,7 +401,7 @@ pub async fn kwic_open_detail_window(
     let encoded_cat = urlencoding::encode(&category_cd);
     let encoded_title = urlencoding::encode(&title);
     let url_str = format!(
-        "kwic-detail.html?informationId={}&informationType={}&personCategoryCd={}&categoryCd={}&title={}",
+        "luna-detail.html?mode=kwic&informationId={}&informationType={}&personCategoryCd={}&categoryCd={}&title={}",
         encoded_id, encoded_type, encoded_person, encoded_cat, encoded_title,
     );
 

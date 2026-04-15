@@ -193,6 +193,7 @@ pub fn run() {
             commands::toggle_syllabus_bookmark,
             commands::open_syllabus_detail,
             commands::get_syllabus_detail,
+            commands::get_kgc_syllabus_fields,
             commands::sync_calendar,
             commands::get_calendar_info,
             commands::clear_calendar,

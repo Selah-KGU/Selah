@@ -1121,6 +1121,7 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
     let doc = Html::parse_document(html);
 
     let candidates = ["table.output", "table.form", "table.tbl", "table"];
+    let textbook_skip = ["教科書", "参考書", "参考文献", "Reference books", "Required texts"];
     for selector_str in &candidates {
         let Ok(table_sel) = Selector::parse(selector_str) else { continue };
         let mut fields = Vec::new();
@@ -1130,6 +1131,8 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
                 let tds: Vec<_> = tr.select(&SEL_TD).collect();
                 for (ti, th) in ths.iter().enumerate() {
                     let label = th.text().collect::<String>().trim().to_string();
+                    // Skip textbook rows — handled by parse_textbooks()
+                    if textbook_skip.iter().any(|kw| label.contains(kw)) { continue; }
                     let value = tds.get(ti)
                         .map(|td| td.text().collect::<String>().trim().to_string())
                         .unwrap_or_default();
@@ -1145,6 +1148,145 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
     }
 
     CourseDetail { fields: Vec::new() }
+}
+
+/// Structured textbook/reference entry from syllabus detail page.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TextbookEntry {
+    pub category: String,   // "教科書" or "参考書"
+    pub author: String,
+    pub title: String,
+    pub publisher: String,
+    pub year: String,
+    pub isbn: String,
+    pub text: String,       // plain-text fallback (for simple format)
+}
+
+/// Parse structured textbook tables from a syllabus detail page.
+/// Handles two formats:
+/// 1. Structured table with columns: 著者名, タイトル, 発行所, 出版年, ISBN
+/// 2. Simple th/td pair with plain text description
+pub fn parse_textbooks(html: &str) -> Vec<TextbookEntry> {
+    let doc = Html::parse_document(html);
+    let mut entries = Vec::new();
+    let textbook_keywords = ["教科書", "参考書", "参考文献", "Reference books", "Required texts"];
+
+    let candidates = ["table.output", "table.form", "table.tbl", "table"];
+    for sel_str in &candidates {
+        let Ok(table_sel) = Selector::parse(sel_str) else { continue };
+        let mut found_any = false;
+        for table in doc.select(&table_sel) {
+            let rows: Vec<_> = table.select(&SEL_TR).collect();
+            if rows.is_empty() { continue; }
+
+            // Check if any th in this table matches textbook keywords
+            let mut category = String::new();
+            let mut is_structured = false;
+
+            for tr in &rows {
+                let ths: Vec<_> = tr.select(&SEL_TH).collect();
+                for th in &ths {
+                    let th_text = th.text().collect::<String>();
+                    let th_trimmed = th_text.trim();
+                    for kw in &textbook_keywords {
+                        if th_trimmed.contains(kw) {
+                            // Determine category
+                            if th_trimmed.contains("参考") {
+                                category = "参考書".to_string();
+                            } else {
+                                category = "教科書".to_string();
+                            }
+
+                            // Check for rowspan (structured format has rowspan="2"+)
+                            if let Some(rs) = th.value().attr("rowspan") {
+                                if rs.parse::<i32>().unwrap_or(0) >= 2 {
+                                    is_structured = true;
+                                }
+                            }
+
+                            // Also check if there are header-like tds (著者名, タイトル etc.)
+                            let tds: Vec<_> = tr.select(&SEL_TD).collect();
+                            if tds.len() >= 3 {
+                                let first_td = tds[0].text().collect::<String>();
+                                if first_td.contains("著者") || first_td.contains("Author") || first_td.contains("タイトル") {
+                                    is_structured = true;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if !category.is_empty() { break; }
+                }
+                if !category.is_empty() { break; }
+            }
+
+            if category.is_empty() { continue; }
+            found_any = true;
+
+            if is_structured {
+                // Parse structured rows: skip header rows (those with <th> or bgcolor header tds)
+                for tr in &rows {
+                    let ths: Vec<_> = tr.select(&SEL_TH).collect();
+                    if !ths.is_empty() { continue; } // skip header rows
+
+                    let tds: Vec<_> = tr.select(&SEL_TD).collect();
+                    if tds.is_empty() { continue; }
+
+                    // Check if this is a header row (bgcolor tds)
+                    if let Some(bg) = tds[0].value().attr("bgcolor") {
+                        if !bg.is_empty() { continue; }
+                    }
+                    let first_text = tds[0].text().collect::<String>();
+                    if first_text.trim().contains("著者") || first_text.trim().contains("Author") { continue; }
+
+                    // Data row: author, title, publisher, year, isbn
+                    let get_td = |i: usize| -> String {
+                        tds.get(i)
+                            .map(|td| td.text().collect::<String>().trim().to_string())
+                            .unwrap_or_default()
+                    };
+                    let author = get_td(0);
+                    let title = get_td(1);
+                    let publisher = get_td(2);
+                    let year = get_td(3).trim().replace(" ", "");
+                    let isbn = get_td(4);
+
+                    if author.is_empty() && title.is_empty() { continue; }
+
+                    entries.push(TextbookEntry {
+                        category: category.clone(),
+                        author, title, publisher, year, isbn,
+                        text: String::new(),
+                    });
+                }
+            } else {
+                // Simple format: th has keyword, td has plain text
+                for tr in &rows {
+                    let ths: Vec<_> = tr.select(&SEL_TH).collect();
+                    let tds: Vec<_> = tr.select(&SEL_TD).collect();
+                    for (ti, th) in ths.iter().enumerate() {
+                        let th_text = th.text().collect::<String>();
+                        let is_textbook = textbook_keywords.iter().any(|kw| th_text.contains(kw));
+                        if !is_textbook { continue; }
+                        let value = tds.get(ti)
+                            .map(|td| td.text().collect::<String>().trim().to_string())
+                            .unwrap_or_default();
+                        if value.is_empty() { continue; }
+                        let cat = if th_text.contains("参考") { "参考書" } else { "教科書" };
+                        entries.push(TextbookEntry {
+                            category: cat.to_string(),
+                            author: String::new(), title: String::new(),
+                            publisher: String::new(), year: String::new(), isbn: String::new(),
+                            text: value,
+                        });
+                    }
+                }
+            }
+        }
+        if found_any { break; }
+    }
+
+    entries
 }
 
 // ============ 授業計画 Structured Parser ============
@@ -1379,3 +1521,4 @@ mod session_plan_tests {
         assert_eq!(expand_session_range("1-3", &num_re), vec![1, 2, 3]);
     }
 }
+
