@@ -240,7 +240,7 @@ fn is_safe_param(s: &str) -> bool {
 }
 
 /// application/x-www-form-urlencoded: space -> +, encode other special chars.
-fn form_encode(s: &str) -> String {
+pub(crate) fn form_encode(s: &str) -> String {
     let mut result = String::new();
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() || "-._~".contains(ch) {
@@ -270,6 +270,7 @@ pub async fn luna_open_detail_window(
     idnumber: Option<String>,
     info_id: Option<String>,
     kgc_path: Option<String>,
+    course_name: Option<String>,
 ) -> Result<(), String> {
     let existing = app.webview_windows().keys()
         .filter(|k| k.starts_with("luna-detail-")).count();
@@ -323,14 +324,21 @@ pub async fn luna_open_detail_window(
             if let Some(info) = &info_id {
                 parts.push_str(&format!("&reportId={}", urlencoding::encode(info)));
             }
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
             parts
         }
         Some("survey") | Some("questionnaire") => {
-            format!(
+            let mut parts = format!(
                 "luna-detail.html?mode=survey&path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
-            )
+            );
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
+            parts
         }
         Some("thread") => {
             format!(
@@ -358,7 +366,11 @@ pub async fn luna_open_detail_window(
             )
         }
         _ => {
-            format!("luna-detail.html?path={}&title={}", urlencoding::encode(&path), urlencoding::encode(&title))
+            let mut parts = format!("luna-detail.html?path={}&title={}", urlencoding::encode(&path), urlencoding::encode(&title));
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
+            parts
         }
     };
 
@@ -947,27 +959,69 @@ pub async fn luna_fetch_course_detail(
     Ok(result)
 }
 
-/// Download a Luna file attachment to the Downloads folder and return the saved path
+/// Download a Luna file attachment to the Downloads folder and return the saved path.
+///
+/// Two modes:
+///   1. `url` is non-empty (legacy or direct link): download from URL directly
+///   2. `url` is empty but `download_action`/`object_name` provided:
+///      re-fetch the detail page via `page_path` to get fresh `_cid` token,
+///      then construct the proper form-based download URL.
 #[tauri::command]
 pub async fn luna_download_file(
     state: State<'_, AppState>,
     url: String,
     filename: String,
+    _page_path: Option<String>,
+    object_name: Option<String>,
+    download_action: Option<String>,
+    download_params: Option<Vec<(String, String)>>,
+    course_name: Option<String>,
+    detail_title: Option<String>,
 ) -> Result<String, String> {
     // For external URLs (SharePoint etc.), just return the URL for the frontend to open
     if url.starts_with("http") {
         return Ok(url);
     }
 
-    if url.is_empty() {
-        return Err("ダウンロードURLが見つかりません".into());
-    }
-
     let http = luna_http(&state).await?;
 
-    log::info!("Attachment download: url='{}', filename='{}'", url, filename);
+    // Mode 2: Structured attachment — GET form submit (mirrors browser form.submit())
+    // Luna JS modifies the form action to: {action}/{makeDownFileName(name)}
+    // then submits as GET with form fields as query params (no _cid in this form)
+    let bytes = if url.is_empty() {
+        let action = download_action.as_deref().unwrap_or("");
+        let obj = object_name.as_deref().unwrap_or("");
 
-    let bytes = luna_download(&http, &url).await?;
+        if action.is_empty() {
+            return Err("ダウンロードURLが見つかりません".into());
+        }
+
+        // Build query string matching browser's GET form submission
+        // Form fields: reportId, idnumber (from download_params) + objectName + downloadFileName + downloadMode
+        let mut params: Vec<String> = Vec::new();
+        if let Some(ref fixed) = download_params {
+            for (k, v) in fixed {
+                params.push(format!("{}={}", form_encode(k), form_encode(v)));
+            }
+        }
+        // downloadFileName form field value = raw filename (browser form-encodes it)
+        params.push(format!("downloadFileName={}", form_encode(&filename)));
+        if !obj.is_empty() {
+            params.push(format!("objectName={}", form_encode(obj)));
+        }
+        // downloadMode is empty string in the form
+        params.push("downloadMode=".to_string());
+
+        // Action URL path includes makeDownFileName(filename) — this is set by JS before submit
+        let path_name = make_down_file_name(&filename);
+        let download_url = format!("{}/{}?{}", action, path_name, params.join("&"));
+
+        log::info!("Attachment GET: url='{}'", download_url);
+        luna_download(&http, &download_url).await?
+    } else {
+        log::info!("Attachment GET download: url='{}', filename='{}'", url, filename);
+        luna_download(&http, &url).await?
+    };
 
     log::info!("Attachment downloaded {} bytes for '{}'", bytes.len(), filename);
 
@@ -985,12 +1039,13 @@ pub async fn luna_download_file(
         }
     }
 
-    save_to_downloads(&filename, &bytes, None, None)
+    let session_label = detail_title.as_deref().and_then(extract_session_label);
+    save_to_downloads(&filename, &bytes, course_name.as_deref(), session_label.as_deref())
 }
 
 /// Replicate Luna's CommonUtil.makeDownFileName JS function:
 /// replace fullwidth/halfwidth spaces with _, collapse multiple _, then encodeURI
-fn make_down_file_name(file_name: &str) -> String {
+pub(crate) fn make_down_file_name(file_name: &str) -> String {
     // Replace fullwidth space (U+3000) and regular space with _
     let mut result = file_name.replace(['\u{3000}', ' '], "_");
     // Collapse multiple underscores

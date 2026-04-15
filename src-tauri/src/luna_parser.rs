@@ -375,6 +375,14 @@ pub struct LunaAttachment {
     pub url: String,
     #[serde(default)]
     pub link_type: String,  // "file", "external", "video", "zoom", "panopto", "web"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub object_name: String,
+    /// Form action path for download (e.g. /lms/course/report/submission_download)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub download_action: String,
+    /// Fixed form params (reportId, idnumber, etc.) serialized as key=value pairs
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub download_params: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -864,11 +872,12 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
     };
 
     // Pattern 1: .downloadFile elements (siblings of .objectName in same parent div)
+    // Store objectName + form info so the download command can re-fetch _cid tokens
     {
         for el in doc.select(&SEL_DOWNLOAD_FILE) {
             let name = el.text().collect::<String>().trim().to_string();
             if !name.is_empty() {
-                let object_name = el.parent()
+                let obj_name = el.parent()
                     .and_then(scraper::ElementRef::wrap)
                     .and_then(|parent_el| {
                         parent_el.select(&SEL_OBJECT_NAME).next()
@@ -876,28 +885,20 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                     })
                     .unwrap_or_default();
 
-                // Build URL replicating the browser's form GET submission:
-                //   {action}?{hidden_params}&objectName=...&downloadFileName=...&downloadMode=0
-                let url = if let Some((ref action, ref fixed_params)) = download_form_info {
-                    let mut params: Vec<String> = fixed_params.iter()
-                        .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
-                        .collect();
-                    if !object_name.is_empty() {
-                        params.push(format!("objectName={}", urlencoding::encode(&object_name)));
-                    }
-                    params.push(format!("downloadFileName={}", urlencoding::encode(&name)));
-                    params.push("downloadMode=0".to_string());
-                    format!("{}?{}", action, params.join("&"))
+                if let Some((ref action, ref fixed_params)) = download_form_info {
+                    let link_type = classify_link("", &name);
+                    log::debug!("[attachments] name='{}', objectName='{}', action='{}', type='{}'",
+                        name, obj_name, action, link_type);
+                    attachments.push(LunaAttachment {
+                        name,
+                        url: String::new(), // URL built at download time with fresh _cid
+                        link_type,
+                        object_name: obj_name,
+                        download_action: action.clone(),
+                        download_params: fixed_params.clone(),
+                    });
                 } else {
-                    // No download form found — can't construct a proper download URL
-                    log::warn!("[attachments] no download form for '{}', objectName='{}'", name, object_name);
-                    String::new()
-                };
-
-                let link_type = classify_link(&url, &name);
-                log::debug!("[attachments] name='{}', url='{}', type='{}'", name, url, link_type);
-                if !url.is_empty() {
-                    attachments.push(LunaAttachment { name, url, link_type });
+                    log::warn!("[attachments] no download form for '{}', objectName='{}'", name, obj_name);
                 }
             }
         }
@@ -912,7 +913,7 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 let url = a.value().attr("href").unwrap_or_default().to_string();
                 if !name.is_empty() && !url.is_empty() && !url.contains("javascript:") {
                     let link_type = classify_link(&url, &name);
-                    attachments.push(LunaAttachment { name, url, link_type });
+                    attachments.push(LunaAttachment { name, url, link_type, object_name: String::new(), download_action: String::new(), download_params: Vec::new() });
                 }
             }
         }
@@ -932,7 +933,7 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                     "panopto" => "Panopto 録画".to_string(),
                     _ => "外部リンク".to_string(),
                 };
-                attachments.push(LunaAttachment { name: display_name, url, link_type });
+                attachments.push(LunaAttachment { name: display_name, url, link_type, object_name: String::new(), download_action: String::new(), download_params: Vec::new() });
             }
         }
     }
@@ -973,7 +974,7 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
             {
                 let display = if name.is_empty() { url.clone() } else { name };
                 let link_type = classify_link(&url, &display);
-                attachments.push(LunaAttachment { name: display, url, link_type });
+                attachments.push(LunaAttachment { name: display, url, link_type, object_name: String::new(), download_action: String::new(), download_params: Vec::new() });
             }
         }
     }
@@ -1348,6 +1349,8 @@ pub struct LunaSurveyDetail {
 pub struct LunaSurveyAttachment {
     pub file_name: String,
     pub object_name: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2054,7 +2057,7 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
                         .map(|e| e.text().collect::<String>().trim().to_string())
                         .unwrap_or_default();
                     if !file_name.is_empty() {
-                        attachments.push(LunaSurveyAttachment { file_name, object_name });
+                        attachments.push(LunaSurveyAttachment { file_name, object_name, url: String::new() });
                     }
                 }
             }
@@ -2131,6 +2134,40 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
             let value = input.value().attr("value").unwrap_or_default();
             if !name.is_empty() {
                 form_fields.push((name.to_string(), value.to_string()));
+            }
+        }
+    }
+
+    // Store download form info in attachments for the download command to use with fresh _cid
+    {
+        let form_selectors = [
+            Selector::parse("#questionnaireDownloadForm").unwrap(),
+            Selector::parse("form[action*='download']").unwrap(),
+            Selector::parse("#reportDownloadForm").unwrap(),
+            Selector::parse("#forumsPostFile").unwrap(),
+        ];
+        for sel in &form_selectors {
+            if let Some(form) = doc.select(sel).next() {
+                let action = form.value().attr("action").unwrap_or_default().to_string();
+                if !action.is_empty() {
+                    let mut params = Vec::new();
+                    for input in form.select(&SEL_HIDDEN_INPUT) {
+                        let iname = input.value().attr("name").unwrap_or_default();
+                        let ival = input.value().attr("value").unwrap_or_default();
+                        if !ival.is_empty()
+                            && iname != "objectName"
+                            && iname != "downloadFileName"
+                            && iname != "downloadMode"
+                        {
+                            params.push((iname.to_string(), ival.to_string()));
+                        }
+                    }
+                    for att in &mut attachments {
+                        att.url = action.clone();
+                    }
+                    log::debug!("[survey attachments] action='{}', params={:?}", action, params);
+                    break;
+                }
             }
         }
     }

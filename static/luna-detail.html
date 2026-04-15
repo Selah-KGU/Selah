@@ -764,7 +764,11 @@
     }
 
     // Generic Detail
+    var _detailAttachments = []; // stored for click handlers
     function renderDetail(data) {
+      _detailAttachments = data.attachments || [];
+      if (data.course_name) _currentCourseName = data.course_name;
+      if (data.title) _currentDetailTitle = data.title;
       var c = document.getElementById('content');
       if (data.error) { c.innerHTML = '<div class="error">' + escapeHtml(data.error) + '</div>'; return; }
       var h = '<div class="detail-wrap">';
@@ -796,7 +800,8 @@
           h += '<div class="attachments"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
           for (var k = 0; k < fileAtts.length; k++) {
             var a = fileAtts[k];
-            h += '<button class="attachment" data-url="' + escapeHtml(a.url) + '" data-name="' + escapeHtml(a.name) + '" data-type="file">';
+            var ai = data.attachments.indexOf(a);
+            h += '<button class="attachment" data-att-idx="' + ai + '" data-type="file">';
             h += '<span>' + ICONS.clip + ' ' + escapeHtml(a.name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
           }
           h += '</div>';
@@ -805,6 +810,7 @@
           h += '<div class="attachments"><h4>\u30ea\u30f3\u30af</h4>';
           for (var k = 0; k < linkAtts.length; k++) {
             var a = linkAtts[k];
+            var ai = data.attachments.indexOf(a);
             var icon = ICONS.external, badge = '';
             var lt = a.link_type || 'web';
             if (lt === 'zoom') { badge = '<span class="link-badge zoom">Zoom</span>'; }
@@ -813,7 +819,7 @@
             else if (lt === 'cloud') { badge = '<span class="link-badge cloud">Cloud</span>'; }
             else if (lt === 'google') { badge = '<span class="link-badge google">Google</span>'; }
             else if (lt === 'teams') { badge = '<span class="link-badge teams">Teams</span>'; }
-            h += '<button class="attachment link-item" data-url="' + escapeHtml(a.url) + '" data-name="' + escapeHtml(a.name) + '" data-type="' + lt + '">';
+            h += '<button class="attachment link-item" data-att-idx="' + ai + '" data-type="' + lt + '">';
             h += '<span>' + icon + ' ' + badge + escapeHtml(a.name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.external + '</span></button>';
           }
           h += '</div>';
@@ -825,10 +831,11 @@
       c.innerHTML = h;
       c.querySelectorAll('.attachment').forEach(function(b) {
         var type = b.dataset.type || 'file';
+        var att = _detailAttachments[parseInt(b.dataset.attIdx)] || {};
         if (type === 'file') {
-          b.addEventListener('click', function() { downloadAttachment(b.dataset.url, b.dataset.name); });
+          b.addEventListener('click', function() { downloadAttachment(att, b); });
         } else {
-          b.addEventListener('click', function() { openExternalLink(b.dataset.url, b.dataset.name); });
+          b.addEventListener('click', function() { openExternalLink(att.url || '', att.name || ''); });
         }
       });
     }
@@ -1064,7 +1071,7 @@
         h += '<div class="attachments" style="margin:12px 24px 0"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
         for (var k = 0; k < data.attachments.length; k++) {
           var att = data.attachments[k];
-          h += '<button class="attachment survey-att" data-obj="' + escapeHtml(att.object_name) + '" data-name="' + escapeHtml(att.file_name) + '">';
+          h += '<button class="attachment survey-att" data-surv-att-idx="' + k + '">';
           h += '<span>' + ICONS.clip + ' ' + escapeHtml(att.file_name) + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
         }
         h += '</div>';
@@ -1111,8 +1118,9 @@
       // Attachment download
       c.querySelectorAll('.survey-att').forEach(function(b) {
         b.addEventListener('click', function() {
-          var inv = window.__TAURI__?.core?.invoke; if (!inv) return;
-          inv('luna_download_file', { objectName: b.dataset.obj, fileName: b.dataset.name });
+          var sa = data.attachments[parseInt(b.dataset.survAttIdx)];
+          if (!sa) return;
+          downloadAttachment({ url: sa.url || '', name: sa.file_name, object_name: sa.object_name || '' }, b);
         });
       });
       // Submit handler
@@ -1557,7 +1565,7 @@
           if (!item || !item.url) return;
           var up = new URLSearchParams(item.url.split('?')[1] || '');
           var reportId = up.get('reportId') || '';
-          invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'report', idnumber: idnumber || null, infoId: reportId || null });
+          invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'report', idnumber: idnumber || null, infoId: reportId || null, courseName: _currentCourseName || null });
         });
       });
 
@@ -1580,7 +1588,7 @@
       c.querySelectorAll('[data-surv-idx]').forEach(function(b) {
         b.addEventListener('click', function() {
           var item = data.surveys[parseInt(b.dataset.survIdx)];
-          if (item?.url) invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'survey' });
+          if (item?.url) invoke('luna_open_detail_window', { path: item.url, title: item.title, mode: 'survey', courseName: _currentCourseName || null });
         });
       });
 
@@ -1662,6 +1670,8 @@
 
     // Download helpers
     var _currentCourseName = null;
+    var _currentDetailTitle = null;
+    var _currentPagePath = null; // detail page path for attachment downloads
     async function downloadMaterial(idnumber, file, btn, materialTitle) {
       var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
       var orig = btn.innerHTML; btn.innerHTML = '<span>\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u4e2d...</span>'; btn.disabled = true;
@@ -1680,13 +1690,33 @@
         btn.innerHTML = orig; btn.disabled = false;
       } catch(e) { btn.innerHTML = orig; btn.disabled = false; showStatus('\u30ea\u30f3\u30af\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f: ' + String(e)); }
     }
-    async function downloadAttachment(url, name) {
+    async function downloadAttachment(att, btn) {
       var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
+      var name = att.name || att.file_name || '';
+      var orig = btn ? btn.innerHTML : null;
+      if (btn) { btn.innerHTML = '<span>' + ICONS.clip + ' \u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u4e2d...</span>'; btn.disabled = true; }
       try {
-        var result = await invoke('luna_download_file', { url: url, filename: name });
-        if (result.startsWith('http')) await invoke('open_external_url', { url: result });
-        else await invoke('luna_reveal_file', { path: result });
-      } catch(e) { showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e)); }
+        var result = await invoke('luna_download_file', {
+          url: att.url || '',
+          filename: name,
+          pagePath: _currentPagePath || null,
+          objectName: att.object_name || null,
+          downloadAction: att.download_action || null,
+          downloadParams: att.download_params || null,
+          courseName: _currentCourseName || null,
+          detailTitle: _currentDetailTitle || null
+        });
+        if (result.startsWith('http')) {
+          await invoke('open_external_url', { url: result });
+          if (btn) { btn.innerHTML = orig; btn.disabled = false; }
+        } else {
+          if (btn) btn.innerHTML = '<span>' + ICONS.done + ' ' + escapeHtml(name) + '</span>';
+          await invoke('luna_reveal_file', { path: result });
+        }
+      } catch(e) {
+        if (btn) { btn.innerHTML = orig; btn.disabled = false; }
+        showStatus('\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9\u30a8\u30e9\u30fc: ' + String(e));
+      }
     }
     async function openExternalLink(url, name) {
       var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
@@ -1723,6 +1753,8 @@
           renderDetail(await invoke('luna_fetch_announcement_detail', { idnumber: idn2, infoId: infoId }));
         } else if (mode === 'report') {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          _currentPagePath = path;
+          if (params.get('courseName')) _currentCourseName = params.get('courseName');
           var reportData = await invoke('luna_fetch_detail', { path: path });
           renderDetail(reportData);
           // Add file submit UI if idnumber and reportId are available
@@ -1851,9 +1883,13 @@
           renderThreadDetail(await invoke('luna_fetch_thread_posts', { url: path }), path);
         } else if (mode === 'survey') {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          _currentPagePath = path;
+          if (params.get('courseName')) _currentCourseName = params.get('courseName');
           renderSurveyDetail(await invoke('luna_fetch_survey_detail', { path: path }));
         } else {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+          _currentPagePath = path;
+          if (params.get('courseName')) _currentCourseName = params.get('courseName');
           renderDetail(await invoke('luna_fetch_detail', { path: path }));
         }
       } catch(e) { renderDetail({ error: String(e) }); }

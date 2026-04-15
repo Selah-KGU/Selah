@@ -1114,7 +1114,7 @@ export function startBackgroundPolling() {
   // Initial volatile poll after a short delay (let views mount first)
   initialPollTimeout = setTimeout(doPoll, 10_000);
   pollTimer = setInterval(() => {
-    if (document.visibilityState === "visible") doPoll();
+    doPoll();
   }, POLL_INTERVAL);
   // Stable data: initial fetch after views mount, then refresh every 12 hours
   stablePollInitTimeout = setTimeout(doStablePoll, 15_000);
