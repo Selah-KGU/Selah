@@ -233,6 +233,10 @@
     box-shadow: var(--glass-highlight);
   }
 
+  :global(body.platform-windows) .sidebar {
+    padding-top: 10px;
+  }
+
   .sidebar-scroll {
     padding: 4px 8px 12px;
     display: flex;
@@ -246,6 +250,10 @@
     height: 12px;
     flex-shrink: 0;
     -webkit-app-region: drag;
+  }
+
+  :global(body.platform-windows) .sidebar-drag-area {
+    height: 6px;
   }
 
   .section-label {

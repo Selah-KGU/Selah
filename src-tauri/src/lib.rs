@@ -90,7 +90,21 @@ fn save_data_cache(db: tauri::State<'_, db::Database>, key: String, json: String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Another instance tried to launch — show & focus the existing main window
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }));
+    }
+
+    builder
         .setup(|app| {
             app.handle().plugin(tauri_plugin_notification::init())?;
             app.handle().plugin(tauri_plugin_opener::init())?;
@@ -145,6 +159,11 @@ pub fn run() {
 
             // Hide main window on close instead of quitting (keep in tray)
             if let Some(win) = app.get_webview_window("main") {
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = win.set_decorations(false);
+                }
+
                 let app_handle = app.handle().clone();
                 win.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {

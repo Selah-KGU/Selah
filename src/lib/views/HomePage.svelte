@@ -1174,14 +1174,14 @@ suggestionsのルール：
       <span class="arrow">›</span>
     </button>
     {#if loading && !timetableData}
-      <div class="scroll-row">
+      <div class="scroll-row" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
         <div class="card-skel"></div>
         <div class="card-skel"></div>
       </div>
     {:else if upcomingDays.length === 0 && urgentTodos.length === 0}
       <p class="empty-text">直近の予定はありません</p>
     {:else}
-      <div class="scroll-row">
+      <div class="scroll-row" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
         {#each upcomingDays as day}
           <div class="tile tile-schedule">
             <span class="tile-tag">{day.label}</span>
