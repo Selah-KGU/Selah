@@ -914,7 +914,7 @@
 
     <!-- Grid timetable -->
     <div class="grid-outer">
-      <div class="grid-wrap">
+      <div class="grid-wrap" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
         <div class="timetable">
           <!-- Header row -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->

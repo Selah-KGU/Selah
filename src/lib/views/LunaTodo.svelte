@@ -189,7 +189,7 @@
   </div>
 
   {#if pending.length > 1 && courses.length > 1}
-    <div class="filters">
+    <div class="filters" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
       <button class="chip" class:active={selectedCourse === "all"} onclick={() => selectedCourse = "all"}>
         すべて
       </button>

@@ -4,8 +4,16 @@
   import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData } from "./api";
   import { emit } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import Icon from "./Icon.svelte";
   import selahLogoUrl from "../assets/logo.png";
+
+  const isWindows = navigator.userAgent.includes('Windows');
+  const appWindow = getCurrentWindow();
+
+  function minimizeWindow() { appWindow.minimize(); }
+  function toggleMaximize() { appWindow.toggleMaximize(); }
+  function closeWindow() { appWindow.close(); }
 
   let showProfile = $state(false);
   let profile = $state<StudentInfo | null>(null);
@@ -150,6 +158,19 @@
       <span class="titlebar-status" title="セッション復元中…">
         <span class="titlebar-status-spinner"></span>
       </span>
+    {/if}
+    {#if isWindows}
+      <div class="window-controls">
+        <button class="win-ctrl" onclick={minimizeWindow} title="最小化">
+          <svg width="10" height="1" viewBox="0 0 10 1"><line x1="0" y1="0.5" x2="10" y2="0.5" stroke="currentColor" stroke-width="1"/></svg>
+        </button>
+        <button class="win-ctrl" onclick={toggleMaximize} title="最大化">
+          <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" stroke-width="1" fill="none"/></svg>
+        </button>
+        <button class="win-ctrl win-close" onclick={closeWindow} title="閉じる">
+          <svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.2"/><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
+      </div>
     {/if}
   </div>
 </div>
@@ -342,6 +363,37 @@
     align-items: center;
     gap: 6px;
     -webkit-app-region: no-drag;
+  }
+
+  .window-controls {
+    display: flex;
+    align-items: center;
+    margin-left: 4px;
+  }
+
+  .win-ctrl {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    border-radius: 4px;
+  }
+
+  .win-ctrl:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .win-ctrl.win-close:hover {
+    background: #e81123;
+    color: #fff;
   }
 
   .user-badge {
