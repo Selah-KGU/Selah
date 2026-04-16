@@ -2,6 +2,9 @@ use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
+/// Five content lists returned from the contents page (materials, reports, examinations, discussions, surveys)
+pub type ContentsPageResult = (Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>);
+
 macro_rules! sel {
     ($name:ident, $s:expr) => {
         static $name: LazyLock<Selector> = LazyLock::new(|| Selector::parse($s).unwrap());
@@ -889,6 +892,7 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
     // First, find the download form to determine the correct download endpoint
     // Report pages: #reportDownloadForm -> /lms/course/report/submission_download
     // Forum pages: #forumsPostFile -> /lms/course/forums/thread_postfile
+    #[allow(clippy::type_complexity)]
     let download_form_info: Option<(String, Vec<(String, String)>, bool)> = {
         let form_selectors: &[&Selector] = &[&SEL_REPORT_FORM, &SEL_FORUMS_FORM];
         let mut info = None;
@@ -1698,13 +1702,13 @@ fn extract_onclick_tag(onclick: &str) -> String {
 
 /// Parse the contents top page (/lms/contents?idnumber=XXX)
 /// Extracts materials, reports, examinations, discussions
-pub fn parse_luna_contents_page(html: &str) -> (Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>) {
+pub fn parse_luna_contents_page(html: &str) -> ContentsPageResult {
     let doc = Html::parse_document(html);
     let materials = parse_materials(&doc);
     let reports = parse_reports(&doc);
-    let examinations = parse_examinations(&doc);
-    let discussions = parse_discussions(&doc);
-    let surveys = parse_surveys(&doc);
+    let examinations = parse_content_list(&doc, &SEL_EXAM_LIST, &SEL_EXAM_NAME, &SEL_EXAM_NAME_FB, &SEL_EXAM_PERIOD, &SEL_EXAM_STATUS, "examination");
+    let discussions = parse_content_list(&doc, &SEL_DISC_LIST, &SEL_DISC_NAME, &SEL_DISC_NAME_FB, &SEL_DISC_PERIOD, &SEL_DISC_STATUS, "discussion");
+    let surveys = parse_content_list(&doc, &SEL_SURVEY_LIST, &SEL_SURV_NAME, &SEL_SURV_NAME_FB, &SEL_SURV_PERIOD, &SEL_SURV_STATUS, "survey");
     (materials, reports, examinations, discussions, surveys)
 }
 
@@ -1907,12 +1911,19 @@ fn parse_reports(doc: &Html) -> Vec<LunaContentItem> {
     items
 }
 
-fn parse_examinations(doc: &Html) -> Vec<LunaContentItem> {
+fn parse_content_list(
+    doc: &Html,
+    list_sel: &Selector,
+    name_sel: &Selector,
+    name_fb_sel: &Selector,
+    period_sel: &Selector,
+    status_sel: &Selector,
+    item_type: &str,
+) -> Vec<LunaContentItem> {
     let mut items = Vec::new();
 
-    for row in doc.select(&SEL_EXAM_LIST) {
-        // Try primary selector, then fallback
-        let (title, mut url) = if let Some(a) = row.select(&SEL_EXAM_NAME).next() {
+    for row in doc.select(list_sel) {
+        let (title, mut url) = if let Some(a) = row.select(name_sel).next() {
             let t = a.text().collect::<String>().trim().to_string();
             let u = a.value().attr("href").unwrap_or_default().to_string();
             (t, u)
@@ -1920,54 +1931,7 @@ fn parse_examinations(doc: &Html) -> Vec<LunaContentItem> {
             let t = a.text().collect::<String>().trim().to_string();
             let u = a.value().attr("href").unwrap_or_default().to_string();
             (t, u)
-        } else if let Some(el) = row.select(&SEL_EXAM_NAME_FB).next() {
-            let t = el.text().collect::<String>().trim().to_string();
-            (t, String::new())
-        } else {
-            continue;
-        };
-
-        if title.is_empty() { continue; }
-
-        // If href is empty or "#", try extracting URL from onclick
-        if url.is_empty() || url == "#" || url == "javascript:void(0)" {
-            url = extract_url_from_row(&row);
-        }
-
-        let period = row.select(&SEL_EXAM_PERIOD).next()
-            .map(|e| e.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        let status = row.select(&SEL_EXAM_STATUS).next()
-            .map(|e| e.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        items.push(LunaContentItem {
-            title,
-            url,
-            period,
-            status,
-            description: String::new(),
-            item_type: "examination".to_string(),
-            files: Vec::new(),
-        });
-    }
-    items
-}
-
-fn parse_discussions(doc: &Html) -> Vec<LunaContentItem> {
-    let mut items = Vec::new();
-
-    for row in doc.select(&SEL_DISC_LIST) {
-        let (title, mut url) = if let Some(a) = row.select(&SEL_DISC_NAME).next() {
-            let t = a.text().collect::<String>().trim().to_string();
-            let u = a.value().attr("href").unwrap_or_default().to_string();
-            (t, u)
-        } else if let Some(a) = row.select(&SEL_LINK_TXT).next() {
-            let t = a.text().collect::<String>().trim().to_string();
-            let u = a.value().attr("href").unwrap_or_default().to_string();
-            (t, u)
-        } else if let Some(el) = row.select(&SEL_DISC_NAME_FB).next() {
+        } else if let Some(el) = row.select(name_fb_sel).next() {
             let t = el.text().collect::<String>().trim().to_string();
             (t, String::new())
         } else {
@@ -1980,57 +1944,11 @@ fn parse_discussions(doc: &Html) -> Vec<LunaContentItem> {
             url = extract_url_from_row(&row);
         }
 
-        let period = row.select(&SEL_DISC_PERIOD).next()
+        let period = row.select(period_sel).next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let status = row.select(&SEL_DISC_STATUS).next()
-            .map(|e| e.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        items.push(LunaContentItem {
-            title,
-            url,
-            period,
-            status,
-            description: String::new(),
-            item_type: "discussion".to_string(),
-            files: Vec::new(),
-        });
-    }
-    items
-}
-
-fn parse_surveys(doc: &Html) -> Vec<LunaContentItem> {
-    let mut items = Vec::new();
-
-    for row in doc.select(&SEL_SURVEY_LIST) {
-        let (title, mut url) = if let Some(a) = row.select(&SEL_SURV_NAME).next() {
-            let t = a.text().collect::<String>().trim().to_string();
-            let u = a.value().attr("href").unwrap_or_default().to_string();
-            (t, u)
-        } else if let Some(a) = row.select(&SEL_LINK_TXT).next() {
-            let t = a.text().collect::<String>().trim().to_string();
-            let u = a.value().attr("href").unwrap_or_default().to_string();
-            (t, u)
-        } else if let Some(el) = row.select(&SEL_SURV_NAME_FB).next() {
-            let t = el.text().collect::<String>().trim().to_string();
-            (t, String::new())
-        } else {
-            continue;
-        };
-
-        if title.is_empty() { continue; }
-
-        if url.is_empty() || url == "#" || url == "javascript:void(0)" {
-            url = extract_url_from_row(&row);
-        }
-
-        let period = row.select(&SEL_SURV_PERIOD).next()
-            .map(|e| e.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        let status = row.select(&SEL_SURV_STATUS).next()
+        let status = row.select(status_sel).next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
@@ -2040,7 +1958,7 @@ fn parse_surveys(doc: &Html) -> Vec<LunaContentItem> {
             period,
             status,
             description: String::new(),
-            item_type: "survey".to_string(),
+            item_type: item_type.to_string(),
             files: Vec::new(),
         });
     }
@@ -2330,7 +2248,7 @@ fn extract_selected_value(doc: &Html, selector: &str) -> (String, String) {
         None => return (String::new(), String::new()),
     };
     let option_sel = &*SEL_OPT_SELECTED;
-    match select_el.select(&option_sel).next() {
+    match select_el.select(option_sel).next() {
         Some(opt) => {
             let value = opt.value().attr("value").unwrap_or_default().to_string();
             let label = opt.text().collect::<String>().trim().to_string();
@@ -2350,7 +2268,7 @@ fn extract_select_options(doc: &Html, selector: &str) -> Vec<SelectOption> {
         None => return Vec::new(),
     };
     let option_sel = &*SEL_OPTION;
-    select_el.select(&option_sel).map(|opt| {
+    select_el.select(option_sel).map(|opt| {
         SelectOption {
             value: opt.value().attr("value").unwrap_or_default().to_string(),
             label: opt.text().collect::<String>().trim().to_string(),

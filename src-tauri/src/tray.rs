@@ -205,7 +205,7 @@ pub struct TrayPopupData {
 #[tauri::command]
 pub async fn get_tray_popup_data(
     db: tauri::State<'_, crate::db::Database>,
-    state: tauri::State<'_, crate::AppState>,
+    kgc: tauri::State<'_, crate::KgcState>,
 ) -> Result<TrayPopupData, String> {
     // Read timetable entries from the cached schedule_data
     let entries: Vec<TrayClassEntry> = db.get_data_cache("schedule_data").ok()
@@ -217,7 +217,7 @@ pub async fn get_tray_popup_data(
                     arr.as_array().map(|items| {
                         items.iter().filter_map(|item| {
                             let day_num = item.get("day")?.as_i64()? as i32;
-                            if day_num < 1 || day_num > 6 { return None; }
+                            if !(1..=6).contains(&day_num) { return None; }
                             let day_str = config::DAY_SHORT[day_num as usize];
                             Some(TrayClassEntry {
                                 day: day_str.to_string(),
@@ -239,7 +239,7 @@ pub async fn get_tray_popup_data(
         .unwrap_or_default();
 
     let (student_id, student_name) = {
-        let client = state.client.lock().await;
+        let client = kgc.client.lock().await;
         if let Some(session) = &client.session {
             (session.student_id.clone(), session.display_name.clone())
         } else {

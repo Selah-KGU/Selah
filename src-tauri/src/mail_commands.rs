@@ -3,7 +3,7 @@ use tauri::{Emitter, Manager, State};
 
 use crate::config;
 use crate::mail::{self, MailMessage, MailDetail, MailProfile, MailConfig, MailAttachment};
-use crate::AppState;
+use crate::MailState;
 
 /// Decode JWT payload without signature verification (we trust Microsoft's token)
 fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
@@ -35,8 +35,8 @@ pub struct MailSessionStatus {
 
 /// Check if mail is authenticated
 #[tauri::command]
-pub async fn mail_check_session(state: State<'_, AppState>) -> Result<MailSessionStatus, String> {
-    let mail = state.mail.lock().await;
+pub async fn mail_check_session(state: State<'_, MailState>) -> Result<MailSessionStatus, String> {
+    let mail = state.client.lock().await;
     let authenticated = mail.is_authenticated();
     let mut email = String::new();
     let mut display_name = String::new();
@@ -68,7 +68,7 @@ pub async fn mail_check_session(state: State<'_, AppState>) -> Result<MailSessio
 #[tauri::command]
 pub async fn mail_open_login(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, MailState>,
 ) -> Result<(), String> {
     log::info!("Opening Microsoft mail login webview");
 
@@ -79,7 +79,7 @@ pub async fn mail_open_login(
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1);
 
     let auth_url = {
-        let mail = state.mail.lock().await;
+        let mail = state.client.lock().await;
         mail.auth_url()
     };
     let parsed_url: url::Url = auth_url.parse()
@@ -115,8 +115,8 @@ pub async fn mail_open_login(
     tokio::spawn(async move {
         match rx.recv().await {
             Some(code) => {
-                let app_state = app_clone.state::<AppState>();
-                let mut mail = app_state.mail.lock().await;
+                let app_state = app_clone.state::<MailState>();
+                let mut mail = app_state.client.lock().await;
                 match mail.exchange_code(&code).await {
                     Ok(()) => {
                         log::info!("Microsoft mail login successful");
@@ -153,8 +153,8 @@ pub async fn mail_open_login(
 
 /// Logout from Microsoft mail
 #[tauri::command]
-pub async fn mail_logout(state: State<'_, AppState>) -> Result<(), String> {
-    let mut mail = state.mail.lock().await;
+pub async fn mail_logout(state: State<'_, MailState>) -> Result<(), String> {
+    let mut mail = state.client.lock().await;
     mail.clear_token();
     log::info!("Microsoft mail logged out");
     Ok(())
@@ -163,12 +163,12 @@ pub async fn mail_logout(state: State<'_, AppState>) -> Result<(), String> {
 /// Fetch user's mail profile
 #[tauri::command]
 pub async fn mail_fetch_profile(
-    state: State<'_, AppState>,
+    state: State<'_, MailState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<MailProfile, String> {
     // Phase 1: short lock – auth check + token preparation
     let prep = {
-        let mut mail = state.mail.lock().await;
+        let mut mail = state.client.lock().await;
         if !mail.is_authenticated() {
             if let Ok(Some((json, _))) = db.get_data_cache("mail_profile") {
                 if let Ok(cached) = serde_json::from_str(&json) {
@@ -188,7 +188,7 @@ pub async fn mail_fetch_profile(
         Ok(body) => body,
         Err((_, true)) => {
             // 401: re-lock and retry with full auth refresh
-            let mut mail = state.mail.lock().await;
+            let mut mail = state.client.lock().await;
             match mail.fetch_profile().await {
                 Ok(data) => {
                     if let Ok(json) = serde_json::to_string(&data) {
@@ -229,7 +229,7 @@ pub async fn mail_fetch_profile(
 /// Fetch inbox messages
 #[tauri::command]
 pub async fn mail_fetch_inbox(
-    state: State<'_, AppState>,
+    state: State<'_, MailState>,
     db: State<'_, crate::db::Database>,
     top: Option<u32>,
     skip: Option<u32>,
@@ -239,7 +239,7 @@ pub async fn mail_fetch_inbox(
 
     // Phase 1: short lock
     let prep = {
-        let mut mail = state.mail.lock().await;
+        let mut mail = state.client.lock().await;
         if !mail.is_authenticated() {
             if let Ok(Some((json, _))) = db.get_data_cache("mail_inbox") {
                 if let Ok(cached) = serde_json::from_str(&json) {
@@ -261,7 +261,7 @@ pub async fn mail_fetch_inbox(
     let body = match mail::graph_get_lockfree(&http, &url, &token).await {
         Ok(body) => body,
         Err((_, true)) => {
-            let mut mail = state.mail.lock().await;
+            let mut mail = state.client.lock().await;
             match mail.fetch_inbox(top_val, skip_val).await {
                 Ok(data) => {
                     if skip_val == 0 {
@@ -310,7 +310,7 @@ pub async fn mail_fetch_inbox(
 /// Fetch a single message detail
 #[tauri::command]
 pub async fn mail_fetch_message(
-    state: State<'_, AppState>,
+    state: State<'_, MailState>,
     db: State<'_, crate::db::Database>,
     message_id: String,
 ) -> Result<MailDetail, String> {
@@ -319,7 +319,7 @@ pub async fn mail_fetch_message(
 
     // Phase 1: short lock – auth check, mark_as_read (fast PATCH), prepare token
     let prep = {
-        let mut mail = state.mail.lock().await;
+        let mut mail = state.client.lock().await;
         if !mail.is_authenticated() {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
@@ -345,7 +345,7 @@ pub async fn mail_fetch_message(
     let body = match mail::graph_get_lockfree(&http, &url, &token).await {
         Ok(body) => body,
         Err((_, true)) => {
-            let mut mail = state.mail.lock().await;
+            let mut mail = state.client.lock().await;
             match mail.fetch_message(&message_id).await {
                 Ok(data) => {
                     if let Ok(json) = serde_json::to_string(&data) {
@@ -385,18 +385,18 @@ pub async fn mail_fetch_message(
 
 /// Get mail config
 #[tauri::command]
-pub async fn mail_get_config(state: State<'_, AppState>) -> Result<MailConfig, String> {
-    let mail = state.mail.lock().await;
+pub async fn mail_get_config(state: State<'_, MailState>) -> Result<MailConfig, String> {
+    let mail = state.client.lock().await;
     Ok(mail.config.clone())
 }
 
 /// Save mail config (client_id). Clears existing token if client_id changed.
 #[tauri::command]
 pub async fn mail_save_config(
-    state: State<'_, AppState>,
+    state: State<'_, MailState>,
     config: MailConfig,
 ) -> Result<(), String> {
-    let mut mail = state.mail.lock().await;
+    let mut mail = state.client.lock().await;
     let old_id = mail.config.effective_client_id().to_string();
     let new_id = config.effective_client_id().to_string();
     // If client_id changed, invalidate existing token (it was issued for the old app)
@@ -413,10 +413,10 @@ pub async fn mail_save_config(
 /// Fetch attachment metadata list for a message
 #[tauri::command]
 pub async fn mail_fetch_attachments(
-    state: State<'_, AppState>,
+    state: State<'_, MailState>,
     message_id: String,
 ) -> Result<Vec<MailAttachment>, String> {
-    let mut mail = state.mail.lock().await;
+    let mut mail = state.client.lock().await;
     if !mail.is_authenticated() {
         return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
     }
@@ -426,12 +426,12 @@ pub async fn mail_fetch_attachments(
 /// Download a single attachment to the Downloads folder and open it
 #[tauri::command]
 pub async fn mail_download_attachment(
-    state: State<'_, AppState>,
+    state: State<'_, MailState>,
     message_id: String,
     attachment_id: String,
     file_name: String,
 ) -> Result<String, String> {
-    let mut mail = state.mail.lock().await;
+    let mut mail = state.client.lock().await;
     if !mail.is_authenticated() {
         return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
     }

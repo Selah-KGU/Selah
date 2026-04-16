@@ -5,6 +5,7 @@ pub(crate) mod config;
 mod commands;
 mod cookie_bridge;
 mod db;
+pub(crate) mod keychain;
 mod kwic_client;
 mod kwic_commands;
 mod luna_client;
@@ -24,12 +25,11 @@ mod webview_toolbar;
 use tokio::sync::Mutex;
 use tauri::Manager;
 
-pub struct AppState {
+// ── Decoupled per-service states (independent locking, zero cross-service contention) ──
+
+/// KG-Course (KGC) service state.
+pub struct KgcState {
     pub client: Mutex<client::KgcClient>,
-    pub luna: Mutex<luna_client::LunaClient>,
-    pub kwic: Mutex<kwic_client::KwicClient>,
-    pub mail: Mutex<mail::MailClient>,
-    pub gcal: Mutex<google_calendar::GoogleCalendarClient>,
     /// Serializes KGC HTTP requests to prevent Struts token races.
     ///
     /// Struts 1 stores ONE token per HTTP session (server-side). Any KGC page
@@ -37,7 +37,27 @@ pub struct AppState {
     /// token. When multiple KGC requests execute concurrently (e.g. background
     /// polling + syllabus enrichment), the token extracted from page A is
     /// invalidated by page B's load, causing all subsequent form POSTs to fail.
-    pub kgc_gate: Mutex<()>,
+    pub gate: Mutex<()>,
+}
+
+/// Luna LMS service state.
+pub struct LunaState {
+    pub client: Mutex<luna_client::LunaClient>,
+}
+
+/// KWIC Portal service state.
+pub struct KwicState {
+    pub client: Mutex<kwic_client::KwicClient>,
+}
+
+/// Microsoft 365 Mail service state.
+pub struct MailState {
+    pub client: Mutex<mail::MailClient>,
+}
+
+/// Google Calendar service state.
+pub struct GCalState {
+    pub client: Mutex<google_calendar::GoogleCalendarClient>,
 }
 
 /// Shared theme state so child webviews can read the current theme.
@@ -90,6 +110,7 @@ fn save_data_cache(db: tauri::State<'_, db::Database>, key: String, json: String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
 
     #[cfg(target_os = "windows")]
@@ -133,14 +154,11 @@ pub fn run() {
             mail_client.try_restore_token();
             let mut gcal_client = google_calendar::GoogleCalendarClient::new();
             gcal_client.try_restore_token();
-            app.manage(AppState {
-                client: Mutex::new(kgc),
-                luna: Mutex::new(luna),
-                kwic: Mutex::new(kwic),
-                mail: Mutex::new(mail_client),
-                gcal: Mutex::new(gcal_client),
-                kgc_gate: Mutex::new(()),
-            });
+            app.manage(KgcState { client: Mutex::new(kgc), gate: Mutex::new(()) });
+            app.manage(LunaState { client: Mutex::new(luna) });
+            app.manage(KwicState { client: Mutex::new(kwic) });
+            app.manage(MailState { client: Mutex::new(mail_client) });
+            app.manage(GCalState { client: Mutex::new(gcal_client) });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
             app.manage(ThemeState(std::sync::Mutex::new("system".to_string())));
 
@@ -310,24 +328,28 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 // Persist all session cookies on exit so they survive restarts.
                 // Use try_lock to avoid deadlock if another task holds the lock.
-                let state = app.state::<AppState>();
-                match state.client.try_lock() {
+                let kgc = app.state::<KgcState>();
+                match kgc.client.try_lock() {
                     Ok(c) => c.save_session(),
                     Err(_) => log::warn!("Exit: KGC mutex held, session not saved"),
                 };
-                match state.luna.try_lock() {
+                let luna = app.state::<LunaState>();
+                match luna.client.try_lock() {
                     Ok(l) => l.save_session(),
                     Err(_) => log::warn!("Exit: Luna mutex held, session not saved"),
                 };
-                match state.kwic.try_lock() {
+                let kwic = app.state::<KwicState>();
+                match kwic.client.try_lock() {
                     Ok(k) => k.save_session(),
                     Err(_) => log::warn!("Exit: KWIC mutex held, session not saved"),
                 };
-                match state.mail.try_lock() {
+                let mail = app.state::<MailState>();
+                match mail.client.try_lock() {
                     Ok(m) => m.save_token(),
                     Err(_) => log::warn!("Exit: Mail mutex held, token not saved"),
                 };
-                match state.gcal.try_lock() {
+                let gcal = app.state::<GCalState>();
+                match gcal.client.try_lock() {
                     Ok(g) => g.save_token(),
                     Err(_) => log::warn!("Exit: GCal mutex held, token not saved"),
                 };

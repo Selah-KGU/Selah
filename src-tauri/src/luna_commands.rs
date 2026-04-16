@@ -1,5 +1,5 @@
 use tauri::{State, Manager};
-use crate::AppState;
+use crate::LunaState;
 use crate::config;
 use crate::client;
 use crate::luna_client;
@@ -26,8 +26,8 @@ sel!(SEL_REPORT_FORM,   "form#reportSubmissionForm");
 sel!(SEL_HIDDEN_INPUT,  "input[type='hidden']");
 
 /// Briefly lock Luna client, check auth and clone http. Releases lock immediately.
-async fn luna_http(state: &AppState) -> Result<reqwest::Client, String> {
-    let luna = state.luna.lock().await;
+async fn luna_http(state: &LunaState) -> Result<reqwest::Client, String> {
+    let luna = state.client.lock().await;
     if !luna.authenticated {
         return Err(luna_client::LUNA_AUTH_REQUIRED_MSG.into());
     }
@@ -110,6 +110,39 @@ async fn luna_post_multipart_with_cid(http: &reqwest::Client, path: &str, cid: &
         http, builder, config::LUNA_BASE,
         luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
     ).await
+}
+
+/// Fetch a Luna page, parse it, and cache with fallback.
+async fn luna_fetch_cached<T: serde::Serialize + serde::de::DeserializeOwned>(
+    state: &State<'_, LunaState>,
+    db: &State<'_, crate::db::Database>,
+    path: &str,
+    cache_key: &str,
+    parse: fn(&str) -> T,
+) -> Result<T, String> {
+    let try_cache = |e: String| -> Result<T, String> {
+        if let Ok(Some((json, _))) = db.get_data_cache(cache_key) {
+            if let Ok(cached) = serde_json::from_str(&json) {
+                log::info!("{}: cache fallback ({})", cache_key, e);
+                return Ok(cached);
+            }
+        }
+        Err(e)
+    };
+    let http = match luna_http(state).await {
+        Ok(h) => h,
+        Err(e) => return try_cache(e),
+    };
+    match luna_get(&http, path).await {
+        Ok(html) => {
+            let data = parse(&html);
+            if let Ok(json) = serde_json::to_string(&data) {
+                let _ = db.save_data_cache(cache_key, &json);
+            }
+            Ok(data)
+        }
+        Err(e) => try_cache(e),
+    }
 }
 
 /// Luna download: download a file without holding the lock. Returns bytes.
@@ -254,6 +287,7 @@ pub(crate) fn form_encode(s: &str) -> String {
 }
 
 /// Open a Luna detail page in a separate native window
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn luna_open_detail_window(
     app: tauri::AppHandle,
@@ -393,7 +427,7 @@ pub async fn luna_open_detail_window(
 
 /// Launch an LTI tool (Zoom, Panopto, etc.) and open the final URL in app webview
 #[tauri::command]
-pub async fn luna_launch_lti(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub async fn luna_launch_lti(app: tauri::AppHandle, state: State<'_, LunaState>, path: String) -> Result<(), String> {
     let http = luna_http(&state).await?;
     let final_url = luna_client::launch_lti(&http, &path).await?;
     crate::commands::open_external_url(app, final_url, None).await
@@ -415,7 +449,7 @@ pub async fn luna_reveal_file(app: tauri::AppHandle, path: String) -> Result<(),
     });
     let allowed = canonical.starts_with(&sys_downloads)
         || canonical.starts_with(&sys_dl)
-        || custom_dir.as_ref().map_or(false, |d| canonical.starts_with(d));
+        || custom_dir.as_ref().is_some_and(|d| canonical.starts_with(d));
     if !allowed {
         return Err("ダウンロードフォルダ外のファイルは表示できません".into());
     }
@@ -428,7 +462,7 @@ pub async fn luna_reveal_file(app: tauri::AppHandle, path: String) -> Result<(),
 /// Fetch a Luna page (generic)
 #[tauri::command]
 pub async fn luna_fetch_page(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     path: String,
 ) -> Result<String, String> {
     // Only allow known Luna paths
@@ -446,10 +480,10 @@ pub async fn luna_fetch_page(
 /// Check if Luna session is valid
 #[tauri::command]
 pub async fn luna_check_session(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
 ) -> Result<bool, String> {
     let (http, authenticated) = {
-        let luna = state.luna.lock().await;
+        let luna = state.client.lock().await;
         (luna.http.clone(), luna.authenticated)
     };
     if !authenticated {
@@ -462,12 +496,12 @@ pub async fn luna_check_session(
         crate::luna_client::LUNA_SESSION_EXPIRED_MSG, crate::luna_client::is_luna_session_expired,
     ).await {
         Ok(_) => {
-            let luna = state.luna.lock().await;
+            let luna = state.client.lock().await;
             luna.save_session();
             Ok(true)
         }
         Err(e) if e == crate::luna_client::LUNA_SESSION_EXPIRED_MSG => {
-            let mut luna = state.luna.lock().await;
+            let mut luna = state.client.lock().await;
             luna.authenticated = false;
             Ok(false)
         }
@@ -478,81 +512,25 @@ pub async fn luna_check_session(
 /// Fetch parsed TODO list
 #[tauri::command]
 pub async fn luna_fetch_todo(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<Vec<luna_parser::LunaTodoItem>, String> {
-    match luna_http(&state).await {
-        Ok(http) => match luna_get(&http, "/lms/todo").await {
-            Ok(html) => {
-                let data = luna_parser::parse_luna_todo(&html);
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let _ = db.save_data_cache("luna_todo", &json);
-                }
-                Ok(data)
-            }
-            Err(e) => {
-                if let Ok(Some((json, _))) = db.get_data_cache("luna_todo") {
-                    if let Ok(cached) = serde_json::from_str(&json) {
-                        log::info!("luna_todo: cache fallback ({})", e);
-                        return Ok(cached);
-                    }
-                }
-                Err(e)
-            }
-        },
-        Err(e) => {
-            if let Ok(Some((json, _))) = db.get_data_cache("luna_todo") {
-                if let Ok(cached) = serde_json::from_str(&json) {
-                    log::info!("luna_todo: cache fallback ({})", e);
-                    return Ok(cached);
-                }
-            }
-            Err(e)
-        }
-    }
+    luna_fetch_cached(&state, &db, "/lms/todo", "luna_todo", luna_parser::parse_luna_todo).await
 }
 
 /// Fetch parsed notifications
 #[tauri::command]
 pub async fn luna_fetch_updates(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<Vec<luna_parser::LunaNotification>, String> {
-    match luna_http(&state).await {
-        Ok(http) => match luna_get(&http, "/updateinfo").await {
-            Ok(html) => {
-                let data = luna_parser::parse_luna_notifications(&html);
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let _ = db.save_data_cache("luna_updates", &json);
-                }
-                Ok(data)
-            }
-            Err(e) => {
-                if let Ok(Some((json, _))) = db.get_data_cache("luna_updates") {
-                    if let Ok(cached) = serde_json::from_str(&json) {
-                        log::info!("luna_updates: cache fallback ({})", e);
-                        return Ok(cached);
-                    }
-                }
-                Err(e)
-            }
-        },
-        Err(e) => {
-            if let Ok(Some((json, _))) = db.get_data_cache("luna_updates") {
-                if let Ok(cached) = serde_json::from_str(&json) {
-                    log::info!("luna_updates: cache fallback ({})", e);
-                    return Ok(cached);
-                }
-            }
-            Err(e)
-        }
-    }
+    luna_fetch_cached(&state, &db, "/updateinfo", "luna_updates", luna_parser::parse_luna_notifications).await
 }
 
 /// Fetch course content page
 #[tauri::command]
 pub async fn luna_fetch_course_content(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     idnumber: String,
 ) -> Result<String, String> {
     if !is_safe_param(&idnumber) {
@@ -566,7 +544,7 @@ pub async fn luna_fetch_course_content(
 /// Fetch and parse a Luna detail page (any path)
 #[tauri::command]
 pub async fn luna_fetch_detail(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
     path: String,
 ) -> Result<luna_parser::LunaDetailPage, String> {
@@ -616,7 +594,7 @@ pub async fn luna_fetch_detail(
 /// Fetch announcement detail from Luna course page
 #[tauri::command]
 pub async fn luna_fetch_announcement_detail(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
     idnumber: String,
     info_id: String,
@@ -669,7 +647,7 @@ pub async fn luna_fetch_announcement_detail(
 /// Fetch and parse a Luna survey detail page
 #[tauri::command]
 pub async fn luna_fetch_survey_detail(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
     path: String,
 ) -> Result<luna_parser::LunaSurveyDetail, String> {
@@ -718,7 +696,7 @@ pub async fn luna_fetch_survey_detail(
 /// Submit survey answers to Luna
 #[tauri::command]
 pub async fn luna_submit_survey(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     form_fields: Vec<(String, String)>,
     answers: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
@@ -765,7 +743,7 @@ pub async fn luna_submit_survey(
 /// Flow: GET send page -> parse hidden form -> POST submit (up to 2 rounds)
 #[tauri::command]
 pub async fn luna_submit_attendance(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     idnumber: String,
     attendance_id: String,
     one_time_pass: Option<String>,
@@ -852,7 +830,7 @@ pub async fn luna_submit_attendance(
 /// Fetch and parse course top page (/lms/course?idnumber=XXX)
 #[tauri::command]
 pub async fn luna_fetch_course_detail(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
     idnumber: String,
 ) -> Result<luna_parser::LunaCourseContents, String> {
@@ -963,9 +941,10 @@ pub async fn luna_fetch_course_detail(
 ///   2. `url` is empty but `download_action`/`object_name` provided:
 ///      re-fetch the detail page via `page_path` to get fresh `_cid` token,
 ///      then construct the proper form-based download URL.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn luna_download_file(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     url: String,
     filename: String,
     _page_path: Option<String>,
@@ -1062,9 +1041,10 @@ pub(crate) fn make_down_file_name(file_name: &str) -> String {
 }
 
 /// Download a Luna material file (requires tempfile preparation + form-based download)
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn luna_download_material(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     idnumber: String,
     file_name: String,
     object_name: String,
@@ -1159,9 +1139,10 @@ pub async fn luna_download_material(
 
 /// Resolve an HTML-type material to its actual external URL.
 /// Same tempfile+sethtmlfiledown flow as download, but parses the HTML for the link.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn luna_resolve_material_link(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     idnumber: String,
     file_name: String,
     object_name: String,
@@ -1235,7 +1216,7 @@ pub async fn luna_resolve_material_link(
     let doc = scraper::Html::parse_document(&html);
 
     // meta refresh
-    if let Some(meta) = doc.select(&*SEL_META_REFRESH).next() {
+    if let Some(meta) = doc.select(&SEL_META_REFRESH).next() {
         if let Some(content) = meta.value().attr("content") {
             if let Some(idx) = content.to_lowercase().find("url=") {
                 let url = content[idx + 4..].trim().trim_matches(|c| c == '\'' || c == '"');
@@ -1247,7 +1228,7 @@ pub async fn luna_resolve_material_link(
     }
 
     // iframe src
-    if let Some(iframe) = doc.select(&*SEL_IFRAME_SRC).next() {
+    if let Some(iframe) = doc.select(&SEL_IFRAME_SRC).next() {
         if let Some(src) = iframe.value().attr("src") {
             if src.starts_with("http") {
                 return Ok(src.to_string());
@@ -1256,13 +1237,13 @@ pub async fn luna_resolve_material_link(
     }
 
     // window.location or location.href in script
-    for script in doc.select(&*SEL_SCRIPT) {
+    for script in doc.select(&SEL_SCRIPT) {
         let text = script.text().collect::<String>();
         for pattern in &["window.location.href", "window.location", "location.href", "window.open("] {
             if let Some(idx) = text.find(pattern) {
                 let after = &text[idx + pattern.len()..];
                 // Find URL in quotes after = or (
-                let start = after.find(|c: char| c == '\'' || c == '"');
+                let start = after.find(['\'', '"']);
                 if let Some(s) = start {
                     let quote = after.as_bytes()[s] as char;
                     if let Some(e) = after[s + 1..].find(quote) {
@@ -1277,7 +1258,7 @@ pub async fn luna_resolve_material_link(
     }
 
     // <a> with external href
-    for a in doc.select(&*SEL_A_HREF) {
+    for a in doc.select(&SEL_A_HREF) {
         if let Some(href) = a.value().attr("href") {
             if href.starts_with("http") && !href.contains("luna.kwansei.ac.jp") {
                 return Ok(href.to_string());
@@ -1286,7 +1267,7 @@ pub async fn luna_resolve_material_link(
     }
 
     // Fallback: if the HTML body itself looks like a plain URL
-    let body_text = doc.select(&*SEL_BODY).next()
+    let body_text = doc.select(&SEL_BODY).next()
         .map(|b| b.text().collect::<String>().trim().to_string())
         .unwrap_or_default();
     if body_text.starts_with("http") && !body_text.contains(' ') {
@@ -1300,7 +1281,7 @@ pub async fn luna_resolve_material_link(
 /// Returns "text", "file", or "both"
 #[tauri::command]
 pub async fn luna_check_report_type(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     idnumber: String,
     report_id: String,
 ) -> Result<String, String> {
@@ -1334,7 +1315,7 @@ pub async fn luna_check_report_type(
 ///       3) POST /lms/course/report/submission → confirm
 #[tauri::command]
 pub async fn luna_submit_report(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     idnumber: String,
     report_id: String,
     file_name: String,
@@ -1473,11 +1454,11 @@ pub async fn luna_submit_report(
         let mut action = String::new();
         let mut fields: Vec<(String, String)> = Vec::new();
 
-        if let Some(form_el) = confirm_doc.select(&*SEL_REPORT_FORM).next() {
+        if let Some(form_el) = confirm_doc.select(&SEL_REPORT_FORM).next() {
             if let Some(a) = form_el.value().attr("action") {
                 action = a.to_string();
             }
-            for input_el in form_el.select(&*SEL_HIDDEN_INPUT) {
+            for input_el in form_el.select(&SEL_HIDDEN_INPUT) {
                 let name = input_el.value().attr("name").unwrap_or_default();
                 let value = input_el.value().attr("value").unwrap_or_default();
                 if !name.is_empty() {
@@ -1493,7 +1474,7 @@ pub async fn luna_submit_report(
 
         // Fallback: find form by action
         if action.is_empty() {
-            for form_el in confirm_doc.select(&*SEL_FORM) {
+            for form_el in confirm_doc.select(&SEL_FORM) {
                 if let Some(a) = form_el.value().attr("action") {
                     if a.contains("/report/submission") && !a.contains("download") {
                         action = a.to_string();
@@ -1627,7 +1608,7 @@ pub async fn luna_submit_report(
 ///       3) POST confirmation form → register
 #[tauri::command]
 pub async fn luna_submit_report_text(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     idnumber: String,
     report_id: String,
     submission_text: String,
@@ -1721,9 +1702,9 @@ pub async fn luna_submit_report_text(
         let mut action = String::new();
         let mut fields: Vec<(String, String)> = Vec::new();
 
-        if let Some(form_el) = confirm_doc.select(&*SEL_REPORT_FORM).next()
+        if let Some(form_el) = confirm_doc.select(&SEL_REPORT_FORM).next()
             .or_else(|| {
-                confirm_doc.select(&*SEL_FORM).find(|f| {
+                confirm_doc.select(&SEL_FORM).find(|f| {
                     f.value().attr("action")
                         .map(|a| a.contains("/report/submission") && !a.contains("download"))
                         .unwrap_or(false)
@@ -1733,7 +1714,7 @@ pub async fn luna_submit_report_text(
             if let Some(a) = form_el.value().attr("action") {
                 action = a.to_string();
             }
-            for input_el in form_el.select(&*SEL_HIDDEN_INPUT) {
+            for input_el in form_el.select(&SEL_HIDDEN_INPUT) {
                 let name = input_el.value().attr("name").unwrap_or_default();
                 let value = input_el.value().attr("value").unwrap_or_default();
                 if !name.is_empty() {
@@ -1780,7 +1761,7 @@ pub async fn luna_submit_report_text(
     let step3_status = raw_resp3.status();
     log::info!("Text report step 3: status={}", step3_status);
 
-    let register_resp = if step3_status.is_redirection() {
+    let _register_resp = if step3_status.is_redirection() {
         if let Some(loc) = raw_resp3.headers().get("location").and_then(|v| v.to_str().ok()) {
             let next_url = if loc.starts_with('/') {
                 format!("{}{}", config::LUNA_BASE, loc)
@@ -1801,20 +1782,16 @@ pub async fn luna_submit_report_text(
     #[cfg(debug_assertions)]
     {
         let dump_path2 = std::env::temp_dir().join("luna_report_text_result.html");
-        let _ = std::fs::write(&dump_path2, &register_resp);
+        let _ = std::fs::write(&dump_path2, &_register_resp);
     }
 
-    if register_resp.contains("提出が完了") || register_resp.contains("完了しました") {
-        Ok("テキストを提出しました".into())
-    } else {
-        Ok("テキストを提出しました".into())
-    }
+    Ok("テキストを提出しました".into())
 }
 
 /// Fetch discussion thread detail (posts list) from Luna
 #[tauri::command]
 pub async fn luna_fetch_discussion_detail(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
@@ -1865,7 +1842,7 @@ pub async fn luna_fetch_discussion_detail(
 ///       2) POST /lms/course/forums/setthread with _method=put and Quill fields
 #[tauri::command]
 pub async fn luna_post_discussion(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     url: String,
     title: String,
     content: String,
@@ -1937,7 +1914,7 @@ pub async fn luna_post_discussion(
 ///       2) POST /lms/course/forums/thread (multipart) with Quill fields
 #[tauri::command]
 pub async fn luna_reply_discussion(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     url: String,
     content: String,
     parent_post_id: Option<String>,
@@ -2023,7 +2000,7 @@ pub async fn luna_reply_discussion(
 /// The thread page has a #threadPostList area loaded via form submit
 #[tauri::command]
 pub async fn luna_fetch_thread_posts(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
@@ -2109,19 +2086,20 @@ fn extract_input_value(html: &str, name: &str) -> Option<String> {
 
 /// Extract first matching form action + fields (hidden/text/textarea/select).
 fn extract_form_fields(html: &str, action_hint: &str) -> Option<(String, Vec<(String, String)>)> {
+    sel!(SEL_INPUT_NAME,    "input[name]");
+    sel!(SEL_TEXTAREA_NAME, "textarea[name]");
+    sel!(SEL_SELECT_NAME,   "select[name]");
+    sel!(SEL_OPT_SELECTED,  "option[selected]");
+    sel!(SEL_OPTION,        "option");
+
     let doc = scraper::Html::parse_document(html);
-    let sel_input = scraper::Selector::parse("input[name]").ok()?;
-    let sel_textarea = scraper::Selector::parse("textarea[name]").ok()?;
-    let sel_select = scraper::Selector::parse("select[name]").ok()?;
-    let sel_opt_selected = scraper::Selector::parse("option[selected]").ok()?;
-    let sel_option = scraper::Selector::parse("option").ok()?;
 
     let mut fallback: Option<(String, Vec<(String, String)>)> = None;
-    for form in doc.select(&*SEL_FORM) {
+    for form in doc.select(&SEL_FORM) {
         let action = form.value().attr("action").unwrap_or_default().to_string();
         let mut fields = Vec::new();
 
-        for input in form.select(&sel_input) {
+        for input in form.select(&SEL_INPUT_NAME) {
             let name = input.value().attr("name").unwrap_or_default();
             let typ = input.value().attr("type").unwrap_or("text").to_ascii_lowercase();
             if (typ == "checkbox" || typ == "radio") && input.value().attr("checked").is_none() {
@@ -2133,20 +2111,20 @@ fn extract_form_fields(html: &str, action_hint: &str) -> Option<(String, Vec<(St
             }
         }
 
-        for ta in form.select(&sel_textarea) {
+        for ta in form.select(&SEL_TEXTAREA_NAME) {
             let name = ta.value().attr("name").unwrap_or_default();
             if !name.is_empty() {
                 fields.push((name.to_string(), ta.text().collect::<String>()));
             }
         }
 
-        for se in form.select(&sel_select) {
+        for se in form.select(&SEL_SELECT_NAME) {
             let name = se.value().attr("name").unwrap_or_default();
             if name.is_empty() {
                 continue;
             }
-            let value = se.select(&sel_opt_selected).next()
-                .or_else(|| se.select(&sel_option).next())
+            let value = se.select(&SEL_OPT_SELECTED).next()
+                .or_else(|| se.select(&SEL_OPTION).next())
                 .and_then(|o| o.value().attr("value"))
                 .unwrap_or_default()
                 .to_string();

@@ -306,6 +306,7 @@ impl Database {
 
     // ── KGC courses ──
 
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_kgc_course(
         &self,
         kgc_code: &str,
@@ -442,18 +443,22 @@ impl Database {
     // ── Session plans ──
 
     pub fn upsert_session_plans(&self, kgc_code: &str, plans: &[SessionPlanRow]) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let mut conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let now = epoch_secs();
-        let mut stmt = conn.prepare(
-            "INSERT INTO session_plans (kgc_code, session_num, th_header, topic, delivery_mode, study_outside, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(kgc_code, session_num) DO UPDATE SET th_header=?3, topic=?4, delivery_mode=?5, study_outside=?6, updated_at=?7"
-        ).map_err(|e| format!("DB prepare: {}", e))?;
-        for p in plans {
-            stmt.execute(
-                params![kgc_code, p.session_num, p.th_header, p.topic, p.delivery_mode, p.study_outside, now],
-            ).map_err(|e| format!("DB upsert plan: {}", e))?;
+        let tx = conn.transaction().map_err(|e| format!("DB begin: {}", e))?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO session_plans (kgc_code, session_num, th_header, topic, delivery_mode, study_outside, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)
+                 ON CONFLICT(kgc_code, session_num) DO UPDATE SET th_header=?3, topic=?4, delivery_mode=?5, study_outside=?6, updated_at=?7"
+            ).map_err(|e| format!("DB prepare: {}", e))?;
+            for p in plans {
+                stmt.execute(
+                    params![kgc_code, p.session_num, p.th_header, p.topic, p.delivery_mode, p.study_outside, now],
+                ).map_err(|e| format!("DB upsert plan: {}", e))?;
+            }
         }
+        tx.commit().map_err(|e| format!("DB commit: {}", e))?;
         Ok(())
     }
 
@@ -675,6 +680,7 @@ impl Database {
 
     pub fn get_snapshot_state(&self) -> Result<Option<SnapshotState>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        #[allow(clippy::type_complexity)]
         let result: Option<(String, String, String, String, String, String, String, i64)> = conn.query_row(
             "SELECT current_week_label, next_week_label, luna_year, luna_term, luna_communities_json, luna_year_options_json, luna_term_options_json, updated_at FROM schedule_snapshot_state WHERE id = 1",
             [],

@@ -1,26 +1,26 @@
 use tauri::{Emitter, Manager, State};
 
 use crate::google_calendar::{CalendarSyncEntry, GoogleCalConfig, GoogleCalStatus};
-use crate::AppState;
+use crate::GCalState;
 
 #[tauri::command]
-pub async fn gcal_check_session(state: State<'_, AppState>) -> Result<GoogleCalStatus, String> {
-    let gcal = state.gcal.lock().await;
+pub async fn gcal_check_session(state: State<'_, GCalState>) -> Result<GoogleCalStatus, String> {
+    let gcal = state.client.lock().await;
     Ok(gcal.status())
 }
 
 #[tauri::command]
-pub async fn gcal_get_config(state: State<'_, AppState>) -> Result<GoogleCalConfig, String> {
-    let gcal = state.gcal.lock().await;
+pub async fn gcal_get_config(state: State<'_, GCalState>) -> Result<GoogleCalConfig, String> {
+    let gcal = state.client.lock().await;
     Ok(gcal.config.clone())
 }
 
 #[tauri::command]
 pub async fn gcal_save_config(
-    state: State<'_, AppState>,
+    state: State<'_, GCalState>,
     config: GoogleCalConfig,
 ) -> Result<(), String> {
-    let mut gcal = state.gcal.lock().await;
+    let mut gcal = state.client.lock().await;
     crate::google_calendar::save_config(&config)?;
     gcal.config = config;
     Ok(())
@@ -29,7 +29,7 @@ pub async fn gcal_save_config(
 #[tauri::command]
 pub async fn gcal_open_login(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, GCalState>,
 ) -> Result<(), String> {
     log::info!("Opening Google Calendar login via system browser");
 
@@ -40,7 +40,7 @@ pub async fn gcal_open_login(
         .map_err(|e| format!("ポート取得失敗: {}", e))?.port();
 
     let auth_url = {
-        let mut gcal = state.gcal.lock().await;
+        let mut gcal = state.client.lock().await;
         gcal.auth_url(port)?
     };
     let app_clone = app.clone();
@@ -76,8 +76,8 @@ pub async fn gcal_open_login(
 
         match code {
             Ok(Ok((auth_code, stream))) => {
-                let app_state = app_clone.state::<AppState>();
-                let mut gcal = app_state.gcal.lock().await;
+                let app_state = app_clone.state::<GCalState>();
+                let mut gcal = app_state.client.lock().await;
                 match gcal.exchange_code(&auth_code).await {
                     Ok(()) => {
                         log::info!("Google Calendar login successful");
@@ -184,8 +184,8 @@ h1{{font-size:20px;margin:0 0 8px;color:#ff3b30}}p{{font-size:14px;color:#86868b
 }
 
 #[tauri::command]
-pub async fn gcal_disconnect(state: State<'_, AppState>) -> Result<(), String> {
-    let mut gcal = state.gcal.lock().await;
+pub async fn gcal_disconnect(state: State<'_, GCalState>) -> Result<(), String> {
+    let mut gcal = state.client.lock().await;
     gcal.disconnect();
     log::info!("Google Calendar disconnected");
     Ok(())
@@ -194,19 +194,19 @@ pub async fn gcal_disconnect(state: State<'_, AppState>) -> Result<(), String> {
 /// Sync this week's timetable to Google Calendar
 #[tauri::command]
 pub async fn gcal_sync_timetable(
-    state: State<'_, AppState>,
+    state: State<'_, GCalState>,
     entries: Vec<CalendarSyncEntry>,
     week_label: String,
 ) -> Result<String, String> {
-    let mut gcal = state.gcal.lock().await;
+    let mut gcal = state.client.lock().await;
     gcal.sync_timetable(entries, week_label).await
 }
 
 #[tauri::command]
 pub async fn gcal_clear_calendar(
-    state: State<'_, AppState>,
+    state: State<'_, GCalState>,
     delete_calendar: bool,
 ) -> Result<String, String> {
-    let mut gcal = state.gcal.lock().await;
+    let mut gcal = state.client.lock().await;
     gcal.clear_calendar(delete_calendar).await
 }

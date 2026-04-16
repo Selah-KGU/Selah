@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri::{Emitter, Manager};
+#[cfg(debug_assertions)]
 use std::time::Instant;
 use std::sync::LazyLock;
 use std::sync::Arc;
@@ -13,10 +14,10 @@ use regex::Regex;
 
 use crate::auth;
 use crate::parser;
-use crate::AppState;
+use crate::{KgcState, LunaState, KwicState};
 
 /// Briefly lock KGC client, check auth and clone http. Releases lock immediately.
-async fn kgc_http(state: &AppState) -> Result<reqwest::Client, String> {
+async fn kgc_http(state: &KgcState) -> Result<reqwest::Client, String> {
     let client = state.client.lock().await;
     if !client.is_authenticated() {
         return Err(config::KGC_AUTH_REQUIRED_MSG.into());
@@ -45,8 +46,8 @@ pub(crate) async fn kgc_post(http: &reqwest::Client, path: &str, params: &[(Stri
 }
 
 /// KGC fetch with gate + auth check, returning raw HTML (no early-return on error).
-async fn kgc_try_fetch(state: &AppState, path: &str) -> Result<String, String> {
-    let _kgc_gate = state.kgc_gate.lock().await;
+async fn kgc_try_fetch(state: &KgcState, path: &str) -> Result<String, String> {
+    let _kgc_gate = state.gate.lock().await;
     let (http, is_auth) = {
         let client = state.client.lock().await;
         (client.http.clone(), client.is_authenticated())
@@ -129,7 +130,6 @@ pub struct SessionStatus {
 #[tauri::command]
 pub async fn open_login_window(
     app: tauri::AppHandle,
-    _state: State<'_, AppState>,
 ) -> Result<(), String> {
     let kgc_entry = format!("{}/uniasv2/UnSSOLoginControl2", config::KG_COURSE_BASE);
     log::info!("Cookie Bridge: opening login webview to {}", &kgc_entry);
@@ -186,9 +186,9 @@ pub async fn open_login_window(
                 log::info!("Cookie Bridge: Phase 1 - KG-Course SAML complete, extracting cookies...");
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
 
-                let app_state = app_clone.state::<AppState>();
+                let kgc_state = app_clone.state::<KgcState>();
                 // Extract and inject cookies
-                let cookie_store = app_state.client.lock().await.cookie_store.clone();
+                let cookie_store = kgc_state.client.lock().await.cookie_store.clone();
                 let inject_result = cookie_bridge::extract_and_inject(
                     &app_clone,
                     "kg-course.kwansei.ac.jp",
@@ -205,7 +205,7 @@ pub async fn open_login_window(
                 }
 
                 // Verify session without holding mutex across network call
-                let http = app_state.client.lock().await.http.clone();
+                let http = kgc_state.client.lock().await.http.clone();
                 let verify_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
                 match client::fetch_page_with(&http, &verify_url).await {
                     Ok(html) => {
@@ -218,7 +218,7 @@ pub async fn open_login_window(
                             faculty: info.faculty,
                             department: info.department,
                         };
-                        let mut client = app_state.client.lock().await;
+                        let mut client = kgc_state.client.lock().await;
                         client.session = Some(session.clone());
                         client.save_session();
                         drop(client);
@@ -226,7 +226,7 @@ pub async fn open_login_window(
                     }
                     Err(e) => {
                         log::warn!("Cookie Bridge: KGC session verification failed: {}", e);
-                        let mut client = app_state.client.lock().await;
+                        let mut client = kgc_state.client.lock().await;
                         client.clear_session();
                         drop(client);
                         let _ = app_clone.emit("login-error", &e);
@@ -274,8 +274,8 @@ pub async fn open_login_window(
             match tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv()).await {
                 Ok(Some(_host)) => {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let app_state = app_clone.state::<AppState>();
-                    let cookie_store = app_state.luna.lock().await.cookie_store.clone();
+                    let luna_state = app_clone.state::<LunaState>();
+                    let cookie_store = luna_state.client.lock().await.cookie_store.clone();
                     let result = cookie_bridge::extract_and_inject(
                         &app_clone,
                         "luna.kwansei.ac.jp",
@@ -285,14 +285,14 @@ pub async fn open_login_window(
                     match result {
                         Ok(()) => {
                             // Verify session against server before marking authenticated
-                            let http = app_state.luna.lock().await.http.clone();
+                            let http = luna_state.client.lock().await.http.clone();
                             let verify_url = format!("{}/lms/timetable", config::LUNA_BASE);
                             match client::fetch_with_redirect(
                                 &http, &verify_url, config::LUNA_BASE,
                                 luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
                             ).await {
                                 Ok(_) => {
-                                    let mut luna = app_state.luna.lock().await;
+                                    let mut luna = luna_state.client.lock().await;
                                     luna.authenticated = true;
                                     luna.save_session();
                                     drop(luna);
@@ -339,8 +339,8 @@ pub async fn open_login_window(
             match tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv()).await {
                 Ok(Some(_host)) => {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let app_state = app_clone.state::<AppState>();
-                    let cookie_store = app_state.kwic.lock().await.cookie_store.clone();
+                    let kwic_state = app_clone.state::<KwicState>();
+                    let cookie_store = kwic_state.client.lock().await.cookie_store.clone();
                     let result = cookie_bridge::extract_and_inject(
                         &app_clone,
                         "kwic.kwansei.ac.jp",
@@ -350,14 +350,14 @@ pub async fn open_login_window(
                     match result {
                         Ok(()) => {
                             // Verify session against server before marking authenticated
-                            let http = app_state.kwic.lock().await.http.clone();
+                            let http = kwic_state.client.lock().await.http.clone();
                             let verify_url = format!("{}/portal/home", config::KWIC_BASE);
                             match client::fetch_with_redirect(
                                 &http, &verify_url, config::KWIC_BASE,
                                 kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
                             ).await {
                                 Ok(_) => {
-                                    let mut kwic = app_state.kwic.lock().await;
+                                    let mut kwic = kwic_state.client.lock().await;
                                     kwic.authenticated = true;
                                     kwic.save_session();
                                     drop(kwic);
@@ -396,14 +396,19 @@ pub async fn open_login_window(
 }
 
 #[tauri::command]
-pub async fn logout(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn logout(
+    app: tauri::AppHandle,
+    state: State<'_, KgcState>,
+    luna_state: State<'_, LunaState>,
+    kwic_state: State<'_, KwicState>,
+) -> Result<(), String> {
     let mut client = state.client.lock().await;
     client.clear_session();
     drop(client);
-    let mut luna = state.luna.lock().await;
+    let mut luna = luna_state.client.lock().await;
     luna.clear();
     drop(luna);
-    let mut kwic = state.kwic.lock().await;
+    let mut kwic = kwic_state.client.lock().await;
     kwic.clear();
     drop(kwic);
     let _ = app.emit("logout", ());
@@ -412,10 +417,10 @@ pub async fn logout(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
 
 #[tauri::command]
 pub async fn check_session(
-    state: State<'_, AppState>,
+    state: State<'_, KgcState>,
 ) -> Result<SessionStatus, String> {
     log::info!("check_session: called");
-    let _kgc_gate = state.kgc_gate.lock().await;
+    let _kgc_gate = state.gate.lock().await;
     // Single lock: try restore if needed, then clone snapshot
     let (http, session_snapshot) = {
         let mut client = state.client.lock().await;
@@ -536,7 +541,7 @@ pub async fn check_session(
 /// Validate the session by actually hitting the server.
 /// Returns valid=false if session has expired on the server.
 #[tauri::command]
-pub async fn validate_session(state: State<'_, AppState>) -> Result<SessionStatus, String> {
+pub async fn validate_session(state: State<'_, KgcState>) -> Result<SessionStatus, String> {
     // Clone what we need, then release the lock before network I/O
     let (http, is_auth, session_snapshot) = {
         let client = state.client.lock().await;
@@ -606,38 +611,38 @@ pub async fn validate_session(state: State<'_, AppState>) -> Result<SessionStatu
 }
 
 #[tauri::command]
-pub async fn fetch_grades(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::GradesData, String> {
+pub async fn fetch_grades(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::GradesData, String> {
     kgc_fetch_cached!(state, db, "grades", "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "kgc-grades.html")
 }
 
 #[tauri::command]
-pub async fn fetch_cancellations(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::CancellationsData, String> {
+pub async fn fetch_cancellations(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::CancellationsData, String> {
     kgc_fetch_cached!(state, db, "cancellations", "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "kgc-cancellations.html")
 }
 
 #[tauri::command]
-pub async fn fetch_makeup_classes(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::MakeupData, String> {
+pub async fn fetch_makeup_classes(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::MakeupData, String> {
     kgc_fetch_cached!(state, db, "makeup", "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "kgc-makeup.html")
 }
 
 #[tauri::command]
-pub async fn fetch_room_changes(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::RoomChangesData, String> {
+pub async fn fetch_room_changes(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::RoomChangesData, String> {
     kgc_fetch_cached!(state, db, "rooms", "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "kgc-roomchanges.html")
 }
 
 #[tauri::command]
-pub async fn fetch_registration(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::RegistrationData, String> {
+pub async fn fetch_registration(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::RegistrationData, String> {
     kgc_fetch_cached!(state, db, "registration", "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "kgc-registration.html")
 }
 
 #[tauri::command]
-pub async fn fetch_exam_timetable(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::ExamTimetableData, String> {
+pub async fn fetch_exam_timetable(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::ExamTimetableData, String> {
     kgc_fetch_cached!(state, db, "exam_timetable", "/uniasv2/ARF010PVL01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0102019", parser::parse_exam_timetable)
 }
 
 #[tauri::command]
 pub async fn fetch_notifications(
-    state: State<'_, AppState>,
+    state: State<'_, KgcState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<parser::NotificationsData, String> {
     kgc_fetch_cached!(state, db, "notifications", "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
@@ -952,18 +957,18 @@ count + "";
 }
 
 #[tauri::command]
-pub async fn fetch_page(state: State<'_, AppState>, path: String) -> Result<String, String> {
+pub async fn fetch_page(state: State<'_, KgcState>, path: String) -> Result<String, String> {
     // Only allow paths under the university system
     if !path.starts_with("/uniasv2/") {
         return Err("許可されていないパスです".into());
     }
-    let _kgc_gate = state.kgc_gate.lock().await;
+    let _kgc_gate = state.gate.lock().await;
     let http = kgc_http(&state).await?;
     kgc_get(&http, &path).await
 }
 
 #[tauri::command]
-pub async fn fetch_course_detail(state: State<'_, AppState>, db: State<'_, crate::db::Database>, path: String) -> Result<parser::CourseDetail, String> {
+pub async fn fetch_course_detail(state: State<'_, KgcState>, db: State<'_, crate::db::Database>, path: String) -> Result<parser::CourseDetail, String> {
     if !path.starts_with("/uniasv2/") {
         return Err("許可されていないパスです".into());
     }
@@ -1153,7 +1158,7 @@ pub async fn open_registration_window(
 }
 
 #[tauri::command]
-pub async fn fetch_student_profile(state: State<'_, AppState>, db: State<'_, crate::db::Database>) -> Result<parser::StudentInfo, String> {
+pub async fn fetch_student_profile(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::StudentInfo, String> {
     let (http, is_auth) = {
         let client = state.client.lock().await;
         (client.http.clone(), client.is_authenticated())
@@ -1220,8 +1225,9 @@ pub struct DebugInfo {
     pub arch: String,
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
-pub async fn debug_info(state: State<'_, AppState>) -> Result<DebugInfo, String> {
+pub async fn debug_info(state: State<'_, KgcState>) -> Result<DebugInfo, String> {
     let client = state.client.lock().await;
     let (auth_status, username) = if let Some(session) = &client.session {
         ("authenticated".to_string(), session.username.clone())
@@ -1250,6 +1256,7 @@ pub struct PingResult {
     pub error: String,
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn debug_ping(target: String) -> Result<PingResult, String> {
     // Restrict to known university hosts
@@ -1297,8 +1304,21 @@ pub async fn debug_ping(target: String) -> Result<PingResult, String> {
     }
 }
 
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+pub async fn debug_info() -> Result<DebugInfo, String> {
+    Err("debug commands are not available in release builds".into())
+}
+
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+pub async fn debug_ping() -> Result<PingResult, String> {
+    Err("debug commands are not available in release builds".into())
+}
+
 // ============ Syllabus ============
 
+#[cfg(debug_assertions)]
 fn chrono_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1315,9 +1335,9 @@ fn chrono_now() -> String {
 #[tauri::command]
 pub async fn search_syllabus(
     params: crate::syllabus::SyllabusSearchParams,
-    kgc_state: State<'_, AppState>,
+    kgc_state: State<'_, KgcState>,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
-    let _kgc_gate = kgc_state.kgc_gate.lock().await;
+    let _kgc_gate = kgc_state.gate.lock().await;
     let http = kgc_http(kgc_state.inner()).await?;
 
     let search_html = kgc_get(&http,
@@ -1412,10 +1432,10 @@ pub async fn search_syllabus(
 
 #[tauri::command]
 pub async fn fetch_syllabus_favorites(
-    kgc_state: State<'_, AppState>,
+    kgc_state: State<'_, KgcState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
-    let _kgc_gate = kgc_state.kgc_gate.lock().await;
+    let _kgc_gate = kgc_state.gate.lock().await;
     let http = match kgc_http(kgc_state.inner()).await {
         Ok(h) => h,
         Err(e) => {
@@ -1542,10 +1562,10 @@ pub(crate) async fn find_syllabus_results_by_class_code(
 
 #[tauri::command]
 pub async fn toggle_syllabus_bookmark(
-    kgc_state: State<'_, AppState>,
+    kgc_state: State<'_, KgcState>,
     class_code: String,
 ) -> Result<bool, String> {
-    let _kgc_gate = kgc_state.kgc_gate.lock().await;
+    let _kgc_gate = kgc_state.gate.lock().await;
     let http = kgc_http(kgc_state.inner()).await?;
 
     let html = find_syllabus_results_by_class_code(&http, &class_code).await?;
@@ -1589,11 +1609,11 @@ pub async fn toggle_syllabus_bookmark(
 #[tauri::command]
 pub async fn open_syllabus_detail(
     app: tauri::AppHandle,
-    kgc_state: State<'_, AppState>,
+    kgc_state: State<'_, KgcState>,
     class_code: String,
     course_name: String,
 ) -> Result<(), String> {
-    let _kgc_gate = kgc_state.kgc_gate.lock().await;
+    let _kgc_gate = kgc_state.gate.lock().await;
     let http = kgc_http(kgc_state.inner()).await?;
 
     // Search by class_code across terms to find the course
@@ -1804,20 +1824,28 @@ pub struct SessionStates {
 
 /// Returns in-memory auth state for all services.
 #[tauri::command]
-pub async fn get_session_states(state: State<'_, AppState>) -> Result<SessionStates, String> {
+pub async fn get_session_states(
+    state: State<'_, KgcState>,
+    luna_state: State<'_, LunaState>,
+    kwic_state: State<'_, KwicState>,
+) -> Result<SessionStates, String> {
     let kgc = state.client.lock().await.is_authenticated();
-    let luna = state.luna.lock().await.authenticated;
-    let kwic = state.kwic.lock().await.authenticated;
+    let luna = luna_state.client.lock().await.authenticated;
+    let kwic = kwic_state.client.lock().await.authenticated;
     Ok(SessionStates { kgc, luna, kwic })
 }
 
 /// Return seconds until soonest cookie expiry across all services.
 /// Returns null/None if no time-limited cookies exist.
 #[tauri::command]
-pub async fn get_session_expiry(state: State<'_, AppState>) -> Result<Option<i64>, String> {
+pub async fn get_session_expiry(
+    state: State<'_, KgcState>,
+    luna_state: State<'_, LunaState>,
+    kwic_state: State<'_, KwicState>,
+) -> Result<Option<i64>, String> {
     let kgc_exp = state.client.lock().await.soonest_cookie_expiry_secs();
-    let luna_exp = client::soonest_cookie_expiry(&state.luna.lock().await.cookie_store);
-    let kwic_exp = client::soonest_cookie_expiry(&state.kwic.lock().await.cookie_store);
+    let luna_exp = client::soonest_cookie_expiry(&luna_state.client.lock().await.cookie_store);
+    let kwic_exp = client::soonest_cookie_expiry(&kwic_state.client.lock().await.cookie_store);
     let min = [kgc_exp, luna_exp, kwic_exp]
         .into_iter()
         .flatten()
@@ -1829,10 +1857,11 @@ pub async fn get_session_expiry(state: State<'_, AppState>) -> Result<Option<i64
 /// Uses the Cookie Bridge approach: navigate to the SP's login entry, let the
 /// webview's persisted Okta cookies auto-authenticate, then extract session cookies.
 /// Returns true on success, false when Okta has also expired.
-
+///
 /// Shared helper for headless SAML refresh (Luna / KWIC pattern).
 /// Handles: headless window -> cookie injection -> verify with redirect detection.
 /// Returns `Ok(true)` on verified success, `Ok(false)` if Okta expired, `Err` on failure.
+#[allow(clippy::too_many_arguments)]
 async fn headless_saml_refresh(
     app: &tauri::AppHandle,
     label: &str,
@@ -1875,10 +1904,10 @@ async fn headless_saml_refresh(
 
 async fn headless_kgc_refresh(
     app: &tauri::AppHandle,
-    state: &AppState,
+    state: &KgcState,
 ) -> Result<bool, String> {
     log::info!("headless_kgc_refresh: starting (Cookie Bridge)");
-    let _kgc_gate = state.kgc_gate.lock().await;
+    let _kgc_gate = state.gate.lock().await;
 
     let entry_url = format!("{}/uniasv2/UnSSOLoginControl2", config::KG_COURSE_BASE);
     let win = match cookie_bridge::headless_saml_window(
@@ -1931,9 +1960,9 @@ async fn headless_kgc_refresh(
 /// Attempt a silent (headless) Luna session refresh via an invisible WebView.
 async fn headless_luna_refresh(
     app: &tauri::AppHandle,
-    state: &AppState,
+    state: &LunaState,
 ) -> Result<bool, String> {
-    let luna = state.luna.lock().await;
+    let luna = state.client.lock().await;
     let cookie_store = luna.cookie_store.clone();
     let http = luna.http.clone();
     drop(luna);
@@ -1945,7 +1974,7 @@ async fn headless_luna_refresh(
         luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
     ).await?;
     if ok {
-        let mut luna = state.luna.lock().await;
+        let mut luna = state.client.lock().await;
         luna.authenticated = true;
         luna.save_session();
     }
@@ -1955,9 +1984,9 @@ async fn headless_luna_refresh(
 /// Attempt a silent (headless) KWIC Portal session refresh via an invisible WebView.
 async fn headless_kwic_refresh(
     app: &tauri::AppHandle,
-    state: &AppState,
+    state: &KwicState,
 ) -> Result<bool, String> {
-    let kwic = state.kwic.lock().await;
+    let kwic = state.client.lock().await;
     let cookie_store = kwic.cookie_store.clone();
     let http = kwic.http.clone();
     drop(kwic);
@@ -1969,7 +1998,7 @@ async fn headless_kwic_refresh(
         kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
     ).await?;
     if ok {
-        let mut kwic = state.kwic.lock().await;
+        let mut kwic = state.client.lock().await;
         kwic.authenticated = true;
         kwic.save_session();
     }
@@ -1986,22 +2015,23 @@ async fn headless_kwic_refresh(
 #[tauri::command]
 pub async fn sync_session(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    kgc_state: State<'_, KgcState>,
+    luna_state: State<'_, LunaState>,
+    kwic_state: State<'_, KwicState>,
     service: String,
 ) -> Result<bool, String> {
     log::info!("sync_session: service={}", service);
-    let s = state.inner();
     match service.as_str() {
-        "kgc" => headless_kgc_refresh(&app, s).await,
-        "luna" => headless_luna_refresh(&app, s).await,
-        "kwic" => headless_kwic_refresh(&app, s).await,
+        "kgc" => headless_kgc_refresh(&app, kgc_state.inner()).await,
+        "luna" => headless_luna_refresh(&app, luna_state.inner()).await,
+        "kwic" => headless_kwic_refresh(&app, kwic_state.inner()).await,
         "all" => {
             // All three services share Okta SSO — refresh independently in parallel.
             // Any success proves Okta is alive; don't let one failure block others.
             let (kgc_res, luna_res, kwic_res) = tokio::join!(
-                headless_kgc_refresh(&app, s),
-                headless_luna_refresh(&app, s),
-                headless_kwic_refresh(&app, s),
+                headless_kgc_refresh(&app, kgc_state.inner()),
+                headless_luna_refresh(&app, luna_state.inner()),
+                headless_kwic_refresh(&app, kwic_state.inner()),
             );
             let kgc_ok = kgc_res.unwrap_or(false);
             let luna_ok = luna_res.unwrap_or(false);
@@ -2453,7 +2483,7 @@ pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), S
         std::path::Path::new(&dl_config.download_dir).canonicalize().ok()
     };
     let allowed = canonical.starts_with(&sys_downloads)
-        || custom_dir.as_ref().map_or(false, |d| canonical.starts_with(d));
+        || custom_dir.as_ref().is_some_and(|d| canonical.starts_with(d));
     if !allowed {
         return Err("ダウンロードフォルダ外のファイルは開けません".into());
     }

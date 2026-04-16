@@ -17,7 +17,7 @@ use crate::db::epoch_secs;
 use crate::luna_client;
 use crate::luna_parser;
 use crate::parser;
-use crate::AppState;
+use crate::{KgcState, LunaState};
 
 const AI_CACHE_MAX_AGE: i64 = 12 * 3600; // 12 hours
 
@@ -89,16 +89,17 @@ pub async fn get_schedule_snapshot(
 /// User-triggered from timetable page. Avoids parallel requests that break login state.
 #[tauri::command]
 pub async fn sync_schedule_data(
-    state: State<'_, AppState>,
+    kgc: State<'_, KgcState>,
+    luna_state: State<'_, LunaState>,
     db: State<'_, Database>,
 ) -> Result<ScheduleResponse, String> {
     // Serialize all KGC requests — Struts 1 stores one token per session; any
     // concurrent KGC page load (background polling) invalidates pending tokens.
-    let _kgc_gate = state.kgc_gate.lock().await;
+    let _kgc_gate = kgc.gate.lock().await;
 
     // ── Step 1: KGC current week (serial) ──
     let kgc_http = {
-        let client = state.client.lock().await;
+        let client = kgc.client.lock().await;
         if !client.is_authenticated() {
             return Err(config::KGC_AUTH_REQUIRED_MSG.into());
         }
@@ -143,7 +144,7 @@ pub async fn sync_schedule_data(
     // ── Step 3: Luna timetable (serial, after KGC) ──
     let (communities, year_opts, term_opts, year, term) = {
         let luna_http = {
-            let luna = state.luna.lock().await;
+            let luna = luna_state.client.lock().await;
             if luna.authenticated { Some(luna.http.clone()) } else { None }
         };
         if let Some(http) = luna_http {
@@ -190,7 +191,7 @@ pub async fn sync_schedule_data(
     db.save_snapshot_state(&snap)?;
 
     // ── Step 5: Enrichment (serial — KGC syllabus details, then Luna counts) ──
-    if let Err(e) = enrich_schedule_inner(&state, &db).await {
+    if let Err(e) = enrich_schedule_inner(&kgc, &luna_state, &db).await {
         log::warn!("sync_schedule_data: enrichment failed: {}", e);
     }
 
@@ -399,7 +400,7 @@ async fn batch_fetch_syllabi(
 /// Background enrichment: fetch KGC syllabus pages for session plans + Luna counts.
 #[tauri::command]
 pub async fn enrich_schedule(
-    state: State<'_, AppState>,
+    state: State<'_, KgcState>, luna_state: State<'_, LunaState>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
     // Prevent concurrent runs — Struts tokens conflict when two enrichments hit KGC simultaneously
@@ -407,8 +408,8 @@ pub async fn enrich_schedule(
         log::info!("enrich_schedule: skipped (already running)");
         return Ok(());
     }
-    let _kgc_gate = state.kgc_gate.lock().await;
-    let result = enrich_schedule_inner(&state, &db).await;
+    let _kgc_gate = state.gate.lock().await;
+    let result = enrich_schedule_inner(&state, &luna_state, &db).await;
     ENRICHMENT_RUNNING.store(false, Ordering::SeqCst);
     result
 }
@@ -417,7 +418,7 @@ pub async fn enrich_schedule(
 /// Only fetches counts for courses whose cached data is older than the DB threshold (3h).
 #[tauri::command]
 pub async fn refresh_luna_counts(
-    state: State<'_, AppState>,
+    state: State<'_, LunaState>,
     db: State<'_, Database>,
 ) -> Result<i32, String> {
     let luna_targets = db.luna_ids_needing_counts()?;
@@ -427,7 +428,7 @@ pub async fn refresh_luna_counts(
     }
 
     let luna_http = {
-        let luna = state.luna.lock().await;
+        let luna = state.client.lock().await;
         if !luna.authenticated {
             return Err("Luna not authenticated".into());
         }
@@ -543,7 +544,7 @@ pub async fn refresh_luna_counts(
 }
 
 async fn enrich_schedule_inner(
-    state: &AppState,
+    kgc: &KgcState, luna: &LunaState,
     db: &Database,
 ) -> Result<(), String> {
     // Session plans from KGC syllabus pages (not timetable detail pages)
@@ -551,7 +552,7 @@ async fn enrich_schedule_inner(
     log::info!("enrich_schedule: {} courses need plans", plan_targets.len());
     if !plan_targets.is_empty() {
         let kgc_http = {
-            let client = state.client.lock().await;
+            let client = kgc.client.lock().await;
             if !client.is_authenticated() { return Ok(()); }
             client.http.clone()
         };
@@ -607,7 +608,7 @@ async fn enrich_schedule_inner(
     let luna_targets = db.luna_ids_needing_counts()?;
     if !luna_targets.is_empty() {
         let luna_http = {
-            let luna = state.luna.lock().await;
+            let luna = luna.client.lock().await;
             if !luna.authenticated { return Ok(()); }
             luna.http.clone()
         };
@@ -949,7 +950,7 @@ fn build_todo_ai_prompt(
     if !config.spring_start.is_empty() {
         if let Ok(spring) = chrono::NaiveDate::parse_from_str(&config.spring_start, "%Y-%m-%d") {
             let days_since = (today_date - spring).num_days();
-            if days_since >= 0 && days_since < 150 {
+            if (0..150).contains(&days_since) {
                 let week = (days_since / 7 + 1) as i32;
                 current_week = week;
                 text.push_str(&format!("春学期 第{}週目（全15週）\n", week));
@@ -959,7 +960,7 @@ fn build_todo_ai_prompt(
     if !config.fall_start.is_empty() {
         if let Ok(fall) = chrono::NaiveDate::parse_from_str(&config.fall_start, "%Y-%m-%d") {
             let days_since = (today_date - fall).num_days();
-            if days_since >= 0 && days_since < 150 {
+            if (0..150).contains(&days_since) {
                 let week = (days_since / 7 + 1) as i32;
                 current_week = week;
                 text.push_str(&format!("秋学期 第{}週目（全15週）\n", week));
@@ -1333,7 +1334,7 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
             if let Ok(spring) = chrono::NaiveDate::parse_from_str(&config.spring_start, "%Y-%m-%d") {
                 semester_lines.push(format!("- 春学期開始: {}", config.spring_start));
                 let days_since = (current_date - spring).num_days();
-                if days_since >= 0 && days_since < 150 {
+                if (0..150).contains(&days_since) {
                     semester_lines.push(format!("- ★ 現在は春学期 第{}週目", days_since / 7 + 1));
                 }
             }
@@ -1342,7 +1343,7 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
             if let Ok(fall) = chrono::NaiveDate::parse_from_str(&config.fall_start, "%Y-%m-%d") {
                 semester_lines.push(format!("- 秋学期開始: {}", config.fall_start));
                 let days_since = (current_date - fall).num_days();
-                if days_since >= 0 && days_since < 150 {
+                if (0..150).contains(&days_since) {
                     semester_lines.push(format!("- ★ 現在は秋学期 第{}週目", days_since / 7 + 1));
                 }
             }
@@ -1531,6 +1532,7 @@ fn parse_ai_schedule_response(
 
     #[derive(Deserialize)]
     #[serde(default)]
+    #[derive(Default)]
     struct AiResponse {
         current_week: Vec<AiScheduleItem>,
         next_week: Vec<AiScheduleItem>,
@@ -1538,16 +1540,7 @@ fn parse_ai_schedule_response(
         cross_week_insights: Option<String>,
     }
 
-    impl Default for AiResponse {
-        fn default() -> Self {
-            Self {
-                current_week: Vec::new(),
-                next_week: Vec::new(),
-                weekly_summary: None,
-                cross_week_insights: None,
-            }
-        }
-    }
+    
 
     let parsed: AiResponse = serde_json::from_str(json_str)
         .or_else(|_| {

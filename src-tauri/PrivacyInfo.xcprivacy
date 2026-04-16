@@ -10,25 +10,26 @@
     <array/>
     <key>NSPrivacyAccessedAPITypes</key>
     <array>
-        <!-- UserDefaults (used by Tauri for window state persistence and theme settings) -->
+        <!-- UserDefaults: Tauri window state, theme, and user preferences (app functionality) -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
             <key>NSPrivacyAccessedAPITypeReasons</key>
             <array>
-                <string>CA92.1</string>
+                <string>1C8F.1</string>
             </array>
         </dict>
-        <!-- File timestamp APIs (used for cache freshness and session expiry checks) -->
+        <!-- File timestamp APIs: cache freshness checks for timetable/grade data -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
             <key>NSPrivacyAccessedAPITypeReasons</key>
             <array>
                 <string>DDA9.1</string>
+                <string>C617.1</string>
             </array>
         </dict>
-        <!-- Disk space APIs (Tauri/WebKit runtime may query available disk space) -->
+        <!-- Disk space APIs: Tauri/WebKit runtime internals -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
@@ -37,7 +38,7 @@
                 <string>E174.1</string>
             </array>
         </dict>
-        <!-- System boot time APIs (Tauri/WebKit runtime may access for scheduling) -->
+        <!-- System boot time APIs: Tauri/WebKit runtime internals -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategorySystemBootTime</string>

@@ -1,11 +1,11 @@
 [package]
 name = "selah-app"
-version = "0.8.2"
+version = "0.8.3"
 description = "Selah - 新月の下で、知性を繋ぐ。すべての関学生に。"
 authors = ["mirai-mamori"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.80.0"
 
 [lib]
 name = "app_lib"
@@ -30,16 +30,17 @@ urlencoding = "2.1.3"
 dirs = "6"
 cookie_store = "0.21"
 reqwest_cookie_store = "0.8"
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
-rand = "0.8"
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 sha2 = "0.10"
 tauri-plugin-notification = "2.3.3"
 notify-rust = "4"
-time = "0.3.41"
+time = { version = "0.3.41", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-opener = "2.5.3"
 rfd = "0.15"
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
@@ -53,6 +54,7 @@ windows-core = "0.61"
 tauri-plugin-single-instance = "2"
 
 [profile.release]
+opt-level = "s"
 lto = true
 strip = true
 codegen-units = 1

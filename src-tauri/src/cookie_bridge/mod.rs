@@ -135,7 +135,7 @@ const OKTA_HOSTS: &[&str] = &["sso.kwansei.ac.jp", "idp.kwansei.ac.jp", "sts.kwa
 
 fn is_okta_login_page(url: &url::Url) -> bool {
     let host = url.host_str().unwrap_or("");
-    OKTA_HOSTS.iter().any(|h| host == *h)
+    OKTA_HOSTS.contains(&host)
 }
 
 pub async fn headless_saml_window(

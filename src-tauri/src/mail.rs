@@ -173,26 +173,33 @@ impl MailClient {
         Self { http, token: None, config: load_config() }
     }
 
-    /// Try to load saved token from disk
+    /// Try to load saved token — keychain first, then migrate from legacy JSON file
     pub fn try_restore_token(&mut self) {
+        // Prefer keychain
+        if let Some(json) = crate::keychain::get_secret("ms_mail_token") {
+            if let Ok(token) = serde_json::from_str::<TokenData>(&json) {
+                log::info!("Restored Microsoft mail token from keychain");
+                self.token = Some(token);
+                return;
+            }
+        }
+        // Legacy file migration
         let path = token_path();
         if let Ok(data) = std::fs::read_to_string(&path) {
             if let Ok(token) = serde_json::from_str::<TokenData>(&data) {
-                log::info!("Restored Microsoft mail token from disk");
+                log::info!("Migrating Microsoft mail token from file to keychain");
                 self.token = Some(token);
+                self.save_token(); // persist into keychain
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
 
     pub fn save_token(&self) {
         if let Some(ref token) = self.token {
-            let path = token_path();
-            if let Ok(json) = serde_json::to_string_pretty(token) {
-                if let Err(e) = std::fs::write(&path, json) {
-                    log::warn!("Failed to save mail token: {}", e);
-                } else {
-                    #[cfg(unix)]
-                    { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
+            if let Ok(json) = serde_json::to_string(token) {
+                if let Err(e) = crate::keychain::set_secret("ms_mail_token", &json) {
+                    log::warn!("Failed to save mail token to keychain: {}", e);
                 }
             }
         }
@@ -200,7 +207,8 @@ impl MailClient {
 
     pub fn clear_token(&mut self) {
         self.token = None;
-        let _ = std::fs::remove_file(token_path());
+        crate::keychain::delete_secret("ms_mail_token");
+        let _ = std::fs::remove_file(token_path()); // clean up legacy file too
     }
 
     pub fn is_authenticated(&self) -> bool {

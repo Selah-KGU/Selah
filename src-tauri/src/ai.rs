@@ -155,24 +155,49 @@ pub fn load_ai_config() -> AiConfig {
 
 fn load_config() -> AiConfig {
     let path = config_path();
-    if path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str(&data) {
-                return cfg;
-            }
+    let mut cfg: AiConfig = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|d| serde_json::from_str(&d).ok())
+            .unwrap_or_default()
+    } else {
+        AiConfig::default()
+    };
+
+    // Migration: move api_key from JSON file to OS keychain
+    if !cfg.api_key.is_empty() {
+        if crate::keychain::set_secret("ai_api_key", &cfg.api_key).is_ok() {
+            let key = std::mem::take(&mut cfg.api_key);
+            let _ = save_config_to_disk(&cfg);
+            cfg.api_key = key; // keep in memory for this session
         }
+    } else if let Some(key) = crate::keychain::get_secret("ai_api_key") {
+        cfg.api_key = key;
     }
-    AiConfig::default()
+
+    cfg
 }
 
 fn save_config(config: &AiConfig) -> Result<(), String> {
+    // Store api_key in OS keychain, never on disk
+    if !config.api_key.is_empty() {
+        crate::keychain::set_secret("ai_api_key", &config.api_key)?;
+    } else {
+        crate::keychain::delete_secret("ai_api_key");
+    }
+
+    let mut disk_cfg = config.clone();
+    disk_cfg.api_key = String::new(); // strip secret from JSON
+    save_config_to_disk(&disk_cfg)
+}
+
+fn save_config_to_disk(config: &AiConfig) -> Result<(), String> {
     let path = config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
     std::fs::write(&path, &data)
         .map_err(|e| format!("Failed to write config: {}", e))?;
 
-    // Restrict file permissions to owner-only (0600) — API key inside
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

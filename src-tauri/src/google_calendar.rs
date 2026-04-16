@@ -58,15 +58,43 @@ fn config_path() -> PathBuf { crate::client::data_dir().join(CONFIG_FILE) }
 
 pub fn load_config() -> GoogleCalConfig {
     let path = config_path();
-    if path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str(&data) { return cfg; }
+    let mut cfg: GoogleCalConfig = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|d| serde_json::from_str(&d).ok())
+            .unwrap_or_default()
+    } else {
+        GoogleCalConfig::default()
+    };
+
+    // Migration: move client_secret from JSON to keychain
+    if !cfg.client_secret.is_empty() {
+        if crate::keychain::set_secret("gcal_client_secret", &cfg.client_secret).is_ok() {
+            let secret = std::mem::take(&mut cfg.client_secret);
+            let _ = save_config_to_disk(&cfg);
+            cfg.client_secret = secret;
         }
+    } else if let Some(secret) = crate::keychain::get_secret("gcal_client_secret") {
+        cfg.client_secret = secret;
     }
-    GoogleCalConfig::default()
+
+    cfg
 }
 
 pub fn save_config(config: &GoogleCalConfig) -> Result<(), String> {
+    // Store client_secret in keychain, never on disk
+    if !config.client_secret.is_empty() {
+        crate::keychain::set_secret("gcal_client_secret", &config.client_secret)?;
+    } else {
+        crate::keychain::delete_secret("gcal_client_secret");
+    }
+
+    let mut disk_cfg = config.clone();
+    disk_cfg.client_secret = String::new();
+    save_config_to_disk(&disk_cfg)
+}
+
+fn save_config_to_disk(config: &GoogleCalConfig) -> Result<(), String> {
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("設定の保存に失敗: {}", e))?;
     let path = config_path();
@@ -160,28 +188,40 @@ impl GoogleCalendarClient {
     }
 
     pub fn try_restore_token(&mut self) {
-        if let Ok(data) = std::fs::read_to_string(token_path()) {
-            if let Ok(token) = serde_json::from_str::<TokenData>(&data) {
-                log::info!("Restored Google Calendar token from disk");
+        // Prefer keychain
+        if let Some(json) = crate::keychain::get_secret("gcal_token") {
+            if let Ok(token) = serde_json::from_str::<TokenData>(&json) {
+                log::info!("Restored Google Calendar token from keychain");
                 self.token = Some(token);
+                return;
+            }
+        }
+        // Legacy file migration
+        let path = token_path();
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(token) = serde_json::from_str::<TokenData>(&data) {
+                log::info!("Migrating Google Calendar token from file to keychain");
+                self.token = Some(token);
+                self.save_token();
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
 
     pub fn save_token(&self) {
         if let Some(ref token) = self.token {
-            if let Ok(json) = serde_json::to_string_pretty(token) {
-                let path = token_path();
-                let _ = std::fs::write(&path, json);
-                #[cfg(unix)]
-                { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
+            if let Ok(json) = serde_json::to_string(token) {
+                if let Err(e) = crate::keychain::set_secret("gcal_token", &json) {
+                    log::warn!("Failed to save Google Calendar token to keychain: {}", e);
+                }
             }
         }
     }
 
     pub fn clear_token(&mut self) {
         self.token = None;
-        let _ = std::fs::remove_file(token_path());
+        crate::keychain::delete_secret("gcal_token");
+        let _ = std::fs::remove_file(token_path()); // clean up legacy file
     }
 
     pub fn is_authenticated(&self) -> bool { self.token.is_some() }
