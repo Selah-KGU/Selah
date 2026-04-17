@@ -13,6 +13,7 @@ mod luna_commands;
 mod luna_parser;
 mod mail;
 mod mail_commands;
+mod embedded_keys;
 mod read_state;
 mod google_calendar;
 mod google_commands;

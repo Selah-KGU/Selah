@@ -406,7 +406,7 @@ pub async fn mail_save_config(
     }
     mail.config = config.clone();
     crate::mail::save_config(&config)?;
-    log::info!("Mail config saved (client_id: {})", if new_id == crate::mail::DEFAULT_CLIENT_ID_STR { "default" } else { &new_id });
+    log::info!("Mail config saved (client_id: {})", if config.client_id.trim().is_empty() { "default" } else { &new_id });
     Ok(())
 }
 

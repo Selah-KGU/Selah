@@ -231,6 +231,27 @@
   .session-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
   .session-dot.ok { background: var(--green); }
   .session-dot.ng { background: var(--red); }
+  details { border-radius: 8px; }
+  details > summary {
+    font-size: 11px; color: var(--text-secondary); cursor: pointer;
+    padding: 6px 8px; border-radius: 8px; list-style: none;
+    display: flex; align-items: center; gap: 6px;
+    transition: background 0.15s, color 0.15s;
+    -webkit-user-select: none; user-select: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::marker { display: none; content: ''; }
+  details > summary::before {
+    content: ''; display: inline-block; width: 0; height: 0;
+    border-left: 4px solid var(--text-tertiary);
+    border-top: 3px solid transparent;
+    border-bottom: 3px solid transparent;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+  }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details > summary:hover { background: var(--bg-hover); color: var(--text-primary); }
+  details > .card-label:first-of-type { margin-top: 8px; }
   @keyframes dev-shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-3px)} 75%{transform:translateX(3px)} }
   @keyframes dev-reveal { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
 </style>
@@ -444,18 +465,11 @@
       </div>
       <div class="hero-text">
         <h2 class="panel-title">メール設定</h2>
-        <p class="panel-desc">Microsoft 365 メール連携の設定を管理します。大学の管理者がサードパーティアプリを制限している場合は、独自の Azure AD クライアント ID を設定してください。</p>
+        <p class="panel-desc">Microsoft 365 メール連携の設定を管理します。</p>
       </div>
     </div>
     <div class="card-label">Microsoft Azure AD</div>
     <div class="card">
-      <div class="row">
-        <span class="row-label">クライアント ID</span>
-        <div class="row-input">
-          <input type="text" id="mailClientId" placeholder="空欄 = デフォルト" spellcheck="false" style="font-family:monospace;font-size:11px;">
-          <div class="hint">Azure Portal で登録したアプリケーション (クライアント) ID を入力してください。空欄の場合はデフォルト値が使用されます。</div>
-        </div>
-      </div>
       <div class="row">
         <span class="row-label">アカウント</span>
         <div class="row-input">
@@ -468,16 +482,29 @@
       <button class="btn-test" id="mailLogoutBtn" onclick="mailLogout()" style="background:rgba(255,59,48,0.08);color:var(--red);border-color:rgba(255,59,48,0.2);">ログアウト</button>
       <span id="mailStatus" class="hint" style="margin-left:4px;"></span>
     </div>
-    <div class="card-label" style="margin-top:20px;">独自クライアント ID の取得方法</div>
-    <div class="card" style="padding:12px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
-      <ol style="margin:0;padding-left:18px;">
-        <li><a href="https://portal.azure.com" style="color:var(--blue);" onclick="event.preventDefault();invoke('open_external_url',{url:'https://portal.azure.com'}).catch(console.error)">portal.azure.com</a> でアプリを登録</li>
-        <li>サポートされるアカウントの種類: 「任意の組織ディレクトリ内のアカウント」</li>
-        <li>リダイレクト URI: 「パブリッククライアント」→ <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">http://localhost</code></li>
-        <li>API のアクセス許可: Microsoft Graph → <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">Mail.Read</code></li>
-        <li>認証 → 「パブリッククライアントフローを許可する」を「はい」に</li>
-      </ol>
-    </div>
+    <details style="margin-top:12px;">
+      <summary>独自クライアント ID を使用する（上級者向け）</summary>
+      <div class="card-label" style="margin-top:8px;">Azure AD クライアント ID</div>
+      <div class="card">
+        <div class="row">
+          <span class="row-label">クライアント ID</span>
+          <div class="row-input">
+            <input type="text" id="mailClientId" placeholder="空欄 = デフォルト" spellcheck="false" style="font-family:monospace;font-size:11px;">
+            <div class="hint">Azure Portal で登録したアプリケーション (クライアント) ID を入力してください。空欄の場合はデフォルト値が使用されます。</div>
+          </div>
+        </div>
+      </div>
+      <div class="card-label" style="margin-top:12px;">独自クライアント ID の取得方法</div>
+      <div class="card" style="padding:12px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+        <ol style="margin:0;padding-left:18px;">
+          <li><a href="https://portal.azure.com" style="color:var(--blue);" onclick="event.preventDefault();invoke('open_external_url',{url:'https://portal.azure.com'}).catch(console.error)">portal.azure.com</a> でアプリを登録</li>
+          <li>サポートされるアカウントの種類: 「任意の組織ディレクトリ内のアカウント」</li>
+          <li>リダイレクト URI: 「パブリッククライアント」→ <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">http://localhost</code></li>
+          <li>API のアクセス許可: Microsoft Graph → <code style="font-size:10px;background:var(--bg-hover);padding:1px 4px;border-radius:3px;">Mail.Read</code></li>
+          <li>認証 → 「パブリッククライアントフローを許可する」を「はい」に</li>
+        </ol>
+      </div>
+    </details>
   </div>
   <div class="panel" id="panel-calendar">
     <div class="hero-card">
@@ -587,7 +614,9 @@
       </div>
     </div>
 
-    <div class="card-label" style="margin-top:16px;">Google Calendar API 設定</div>
+    <details style="margin-top:12px;">
+      <summary>独自の Google Calendar API クレデンシャルを使用する（上級者向け）</summary>
+    <div class="card-label" style="margin-top:8px;">Google Calendar API 設定</div>
     <div class="card">
       <div class="row">
         <span class="row-label">クライアント ID</span>
@@ -603,7 +632,7 @@
       </div>
     </div>
     <details style="margin-top:8px;">
-      <summary style="font-size:11px;color:var(--text-secondary);cursor:pointer;padding:4px 2px;">Google Cloud Console での設定手順</summary>
+      <summary>Google Cloud Console での設定手順</summary>
       <div class="card" style="margin-top:6px;padding:10px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
         <ol style="margin:0;padding-left:18px;">
           <li><a href="https://console.cloud.google.com" style="color:var(--blue);" onclick="event.preventDefault()">console.cloud.google.com</a> で新しいプロジェクトを作成</li>
@@ -613,6 +642,7 @@
           <li>「OAuth 同意画面」でテストユーザーに自分のメールアドレスを追加</li>
         </ol>
       </div>
+    </details>
     </details>
   </div>
   <div class="panel" id="panel-notification">
@@ -1149,13 +1179,8 @@
 
   async function gcalLogin() {
     var st = document.getElementById('gcalStatus');
-    if (!$gcalClientId.value.trim()) {
-      if (st) { st.style.color = 'var(--red)'; st.textContent = 'クライアント ID を入力してください'; }
-      setTimeout(function(){ if (st) st.textContent = ''; }, 4000);
-      return;
-    }
     try {
-      // Save config first, then open login
+      // Save config first (empty = use built-in default on Rust side), then open login
       await invoke('gcal_save_config', { config: { client_id: $gcalClientId.value.trim(), client_secret: $gcalClientSecret.value.trim() } });
       await invoke('gcal_open_login');
       if (st) { st.style.color = 'var(--text-secondary)'; st.textContent = 'ブラウザで認証中...'; }

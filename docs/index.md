@@ -47,8 +47,8 @@ features:
   --vp-c-brand-3: #1B2D5B;
   --vp-c-brand-soft: rgba(27, 45, 91, 0.14);
   --vp-home-hero-name-color: #1B2D5B;
-  --vp-home-hero-image-background-image: linear-gradient(-45deg, #FFD43Baa 50%, #1B2D5Baa 50%);
-  --vp-home-hero-image-filter: blur(44px);
+  --vp-home-hero-image-background-image: radial-gradient(ellipse 80% 60% at 0% 20%, #FFD43Baa, transparent), radial-gradient(ellipse 70% 50% at 90% 10%, #1B2D5B66, transparent), radial-gradient(ellipse 60% 80% at 50% 90%, #FFD43B55, transparent), radial-gradient(ellipse 90% 70% at 100% 70%, #1B2D5Baa, transparent);
+  --vp-home-hero-image-filter: blur(56px);
   --vp-button-brand-bg: #1B2D5B;
   --vp-button-brand-hover-bg: #243A6E;
   --vp-button-brand-active-bg: #142247;
@@ -60,7 +60,7 @@ features:
   --vp-c-brand-3: #FFD43B;
   --vp-c-brand-soft: rgba(255, 212, 59, 0.14);
   --vp-home-hero-name-color: #FFD43B;
-  --vp-home-hero-image-background-image: linear-gradient(-45deg, #FFD43Baa 50%, #4A6FA5aa 50%);
+  --vp-home-hero-image-background-image: radial-gradient(ellipse 80% 60% at 0% 20%, #FFD43Baa, transparent), radial-gradient(ellipse 70% 50% at 85% 5%, #4A6FA566, transparent), radial-gradient(ellipse 60% 80% at 45% 95%, #FFD43B55, transparent), radial-gradient(ellipse 90% 70% at 100% 65%, #4A6FA5aa, transparent);
   --vp-button-brand-bg: #FFD43B;
   --vp-button-brand-hover-bg: #FFE066;
   --vp-button-brand-active-bg: #FCC419;

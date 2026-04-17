@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use crate::config;
 
-pub const DEFAULT_CLIENT_ID_STR: &str = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
+fn default_ms_client_id() -> String {
+    crate::embedded_keys::decode(&[0x4A, 0x00, 0x59, 0x07, 0x51, 0x19, 0x09, 0x14, 0x44, 0x06, 0x15, 0x53, 0x04, 0x1F, 0x02, 0x16, 0x52, 0x5F, 0x4C, 0x0A, 0x15, 0x09, 0x12, 0x44, 0x55, 0x1E, 0x01, 0x06, 0x06, 0x55, 0x41, 0x5C, 0x08, 0x56, 0x5D, 0x1E])
+}
+
 const MS_REDIRECT_URI: &str = "http://localhost";
 const MS_SCOPES: &str = "Mail.ReadWrite offline_access";
 
@@ -23,11 +26,11 @@ pub struct MailConfig {
 
 impl MailConfig {
     /// Returns the effective client_id (user-configured or default)
-    pub fn effective_client_id(&self) -> &str {
+    pub fn effective_client_id(&self) -> String {
         if self.client_id.trim().is_empty() {
-            DEFAULT_CLIENT_ID_STR
+            default_ms_client_id()
         } else {
-            self.client_id.trim()
+            self.client_id.trim().to_string()
         }
     }
 }
