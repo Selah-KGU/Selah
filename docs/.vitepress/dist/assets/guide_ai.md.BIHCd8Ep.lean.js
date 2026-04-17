@@ -1,0 +1,1 @@
+import{_ as t,o as i,c as e,ag as l}from"./chunks/framework.DNt_9s2P.js";const u=JSON.parse('{"title":"AI 機能","description":"","frontmatter":{},"headers":[],"relativePath":"guide/ai.md","filePath":"guide/ai.md"}'),o={name:"guide/ai.md"};function r(n,a,d,s,h,p){return i(),e("div",null,[...a[0]||(a[0]=[l("",18)])])}const A=t(o,[["render",r]]);export{u as __pageData,A as default};

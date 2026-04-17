@@ -1,0 +1,77 @@
+---
+layout: home
+
+hero:
+  name: Selah
+  text: 新月の下で、知性を繋ぐ。
+  tagline: すべての関学生のための統合キャンパスデスクトップアプリ
+  image:
+    src: /logo.png
+    alt: Selah
+  actions:
+    - theme: brand
+      text: ダウンロード
+      link: https://github.com/mirai-mamori/Selah/releases/latest
+    - theme: alt
+      text: 機能を見る
+      link: /guide/features
+    - theme: alt
+      text: GitHub
+      link: https://github.com/mirai-mamori/Selah
+
+features:
+  - icon: "\U0001F3E0"
+    title: ダッシュボード
+    details: 現在・次の授業、お知らせ、締切間近の課題、天気情報をひと目で確認。
+  - icon: "\U0001F4C5"
+    title: 時間割
+    details: KWIC と Luna のデータを統合したグリッド表示。Apple / Google カレンダーへの自動同期にも対応。
+  - icon: "\U0001F4DD"
+    title: TODO / 課題管理
+    details: Luna の課題をまとめて管理。レポート提出や掲示板投稿もアプリから直接可能。
+  - icon: "\U0001F4E7"
+    title: メール
+    details: 大学 Microsoft 365 メールの受信トレイ閲覧。ブラウザ不要。
+  - icon: "\U0001F4CA"
+    title: 成績照会
+    details: 系列ごとの必要単位・修得単位をテーブルで確認。
+  - icon: "\U0001F916"
+    title: AI アシスタント
+    details: OpenAI / Gemini による履修分析・学習計画・通知サマリーを生成。
+---
+
+<style>
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(120deg, #6366f1, #8b5cf6);
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #6366f1aa 50%, #8b5cf6aa 50%);
+  --vp-home-hero-image-filter: blur(44px);
+}
+</style>
+
+## Selah とは
+
+Selah は関西学院大学の教務システム **KWIC**、学習管理システム **Luna (LMS)**、大学の **Microsoft 365 メール**を統合し、ネイティブデスクトップアプリとして提供する非公式クライアントです。
+
+ブラウザを開かずに、授業・課題・成績・お知らせ・メールをすばやく確認できます。
+
+::: warning 注意
+Selah は関西学院大学の非公式デスクトップクライアントです。大学との提携・承認はありません。
+:::
+
+### 対応プラットフォーム
+
+| OS | バージョン |
+|---|---|
+| macOS | 11 Big Sur 以降 |
+| Windows | 10 / 11 |
+
+### 技術スタック
+
+| レイヤー | 技術 |
+|---|---|
+| フレームワーク | Tauri 2 |
+| フロントエンド | Svelte 5 + TypeScript |
+| バックエンド | Rust |
+| ローカル DB | SQLite (WAL) |
+| AI | OpenAI / Google Gemini API |
