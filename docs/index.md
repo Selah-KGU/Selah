@@ -42,10 +42,29 @@ features:
 
 <style>
 :root {
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: -webkit-linear-gradient(120deg, #6366f1, #8b5cf6);
-  --vp-home-hero-image-background-image: linear-gradient(-45deg, #6366f1aa 50%, #8b5cf6aa 50%);
+  --vp-c-brand-1: #1B2D5B;
+  --vp-c-brand-2: #243A6E;
+  --vp-c-brand-3: #1B2D5B;
+  --vp-c-brand-soft: rgba(27, 45, 91, 0.14);
+  --vp-home-hero-name-color: #1B2D5B;
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #FFD43Baa 50%, #1B2D5Baa 50%);
   --vp-home-hero-image-filter: blur(44px);
+  --vp-button-brand-bg: #1B2D5B;
+  --vp-button-brand-hover-bg: #243A6E;
+  --vp-button-brand-active-bg: #142247;
+}
+
+.dark {
+  --vp-c-brand-1: #FFD43B;
+  --vp-c-brand-2: #FFE066;
+  --vp-c-brand-3: #FFD43B;
+  --vp-c-brand-soft: rgba(255, 212, 59, 0.14);
+  --vp-home-hero-name-color: #FFD43B;
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #FFD43Baa 50%, #4A6FA5aa 50%);
+  --vp-button-brand-bg: #FFD43B;
+  --vp-button-brand-hover-bg: #FFE066;
+  --vp-button-brand-active-bg: #FCC419;
+  --vp-button-brand-text: #1B2D5B;
 }
 </style>
 
