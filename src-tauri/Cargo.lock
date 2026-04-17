@@ -4066,7 +4066,7 @@ dependencies = [
 
 [[package]]
 name = "selah-app"
-version = "0.8.4"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "block2",
