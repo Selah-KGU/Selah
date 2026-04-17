@@ -27,40 +27,31 @@ pub fn delete_secret(key: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Release macOS: Data Protection Keychain via security-framework v3
-// Uses kSecUseDataProtectionKeychain = true so items go into the modern
-// data-protection keychain (no ACL, no per-access prompts in sandboxed apps).
+// Release macOS: SecItem API via security-framework v3
+// Unlike the legacy SecKeychainAddGenericPassword (used by keyring crate),
+// SecItemAdd/SecItemCopyMatching/SecItemUpdate bind ACL to the code signing
+// identity, so a properly signed app won't get repeated keychain prompts.
 // ---------------------------------------------------------------------------
 
 #[cfg(all(not(debug_assertions), target_os = "macos"))]
 const SERVICE: &str = "com.kgu.selah";
 
 #[cfg(all(not(debug_assertions), target_os = "macos"))]
-fn make_options(key: &str) -> security_framework::passwords::PasswordOptions {
-    let mut opts = security_framework::passwords::PasswordOptions::new_generic_password(SERVICE, key);
-    opts.use_protected_keychain();
-    opts
-}
-
-#[cfg(all(not(debug_assertions), target_os = "macos"))]
 pub fn set_secret(key: &str, value: &str) -> Result<(), String> {
-    let opts = make_options(key);
-    security_framework::passwords::set_generic_password_options(value.as_bytes(), opts)
+    security_framework::passwords::set_generic_password(SERVICE, key, value.as_bytes())
         .map_err(|e| format!("Keychain set error: {}", e))
 }
 
 #[cfg(all(not(debug_assertions), target_os = "macos"))]
 pub fn get_secret(key: &str) -> Option<String> {
-    let opts = make_options(key);
-    security_framework::passwords::generic_password(opts)
+    security_framework::passwords::get_generic_password(SERVICE, key)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 #[cfg(all(not(debug_assertions), target_os = "macos"))]
 pub fn delete_secret(key: &str) {
-    let opts = make_options(key);
-    let _ = security_framework::passwords::delete_generic_password_options(opts);
+    let _ = security_framework::passwords::delete_generic_password(SERVICE, key);
 }
 
 // ---------------------------------------------------------------------------
