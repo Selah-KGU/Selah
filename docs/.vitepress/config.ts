@@ -20,6 +20,13 @@ export default defineConfig({
           { text: 'リリースノート', link: 'https://github.com/mirai-mamori/Selah/releases' },
         ],
       },
+      {
+        text: '法的情報',
+        items: [
+          { text: 'プライバシーポリシー', link: '/privacy' },
+          { text: '利用規約', link: '/terms' },
+        ],
+      },
     ],
     sidebar: {
       '/guide/': [
@@ -56,7 +63,7 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/mirai-mamori/Selah' },
     ],
     footer: {
-      message: 'MIT License でリリースされています。',
+      message: '<a href="/privacy">プライバシーポリシー</a> | <a href="/terms">利用規約</a> | MIT License',
       copyright: 'Copyright 2025 mirai-mamori',
     },
     search: {

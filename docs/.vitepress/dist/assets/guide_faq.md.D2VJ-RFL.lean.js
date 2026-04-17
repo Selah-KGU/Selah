@@ -1,1 +1,0 @@
-import{_ as e,o as l,c as i,ag as r}from"./chunks/framework.DNt_9s2P.js";const q=JSON.parse('{"title":"FAQ","description":"","frontmatter":{},"headers":[],"relativePath":"guide/faq.md","filePath":"guide/faq.md"}'),t={name:"guide/faq.md"};function o(h,a,n,d,s,c){return l(),i("div",null,[...a[0]||(a[0]=[r("",17)])])}const f=e(t,[["render",o]]);export{q as __pageData,f as default};
