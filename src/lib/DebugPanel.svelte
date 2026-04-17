@@ -361,6 +361,23 @@
             <p class="muted">読み込み中...</p>
           {/if}
 
+          <h4>テスト通知</h4>
+          <div class="info-grid">
+            <div class="info-row">
+              <span class="info-key">メッセージ</span>
+              <span class="info-val" style="flex:1;gap:6px;">
+                <input
+                  type="text"
+                  class="notif-input"
+                  bind:value={notifTestMsg}
+                  placeholder="テスト通知メッセージ"
+                  onkeydown={(e) => e.key === "Enter" && sendTestNotification()}
+                />
+                <button class="sm-btn" onclick={sendTestNotification}>送信</button>
+              </span>
+            </div>
+          </div>
+
           <h4>フロントエンド</h4>
           <div class="info-grid">
             <div class="info-row"><span class="info-key">URL</span><span class="info-val mono truncate">{typeof window !== "undefined" ? window.location.href : "-"}</span></div>
@@ -743,6 +760,16 @@
     animation: task-pulse 1s ease-in-out infinite;
   }
   .task-running { color: var(--orange, #ff9500); font-size: 11px; }
+
+  /* Notification test input */
+  .notif-input {
+    flex: 1; border: 0.5px solid var(--border); background: var(--bg-primary);
+    border-radius: 4px; padding: 3px 6px; font-size: 11px;
+    color: var(--text-primary); outline: none;
+    transition: border-color 0.2s;
+  }
+  .notif-input:focus { border-color: var(--blue); }
+
   @keyframes task-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }

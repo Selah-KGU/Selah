@@ -19,6 +19,11 @@ import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, 
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
+/** Check if demo mode is active (no async import needed — just reads localStorage). */
+function _isDemo(): boolean {
+  try { return localStorage.getItem("selah-demo-mode") === "1"; } catch { return false; }
+}
+
 // Global listeners — app-lifetime, no cleanup needed
 listen("luna-login-success", () => {
   lunaAuthState.set({ authenticated: true });
@@ -749,6 +754,7 @@ interface MailProfile {
 }
 
 export async function mailCheckSession(): Promise<MailSessionStatus> {
+  if (_isDemo()) return { authenticated: true, email: "taro@kwansei.ac.jp", display_name: "\u95A2\u5B66 \u592A\u90CE" };
   return invoke<MailSessionStatus>("mail_check_session");
 }
 
@@ -757,6 +763,7 @@ export async function mailOpenLogin(): Promise<void> {
 }
 
 export async function mailFetchProfile(): Promise<MailProfile> {
+  if (_isDemo()) return { displayName: "\u95A2\u5B66 \u592A\u90CE", mail: "taro@kwansei.ac.jp", userPrincipalName: "taro@kwansei.ac.jp" };
   return invoke<MailProfile>("mail_fetch_profile");
 }
 
@@ -765,10 +772,26 @@ export async function mailFetchInbox(top?: number, skip?: number): Promise<MailM
 }
 
 export async function mailFetchMessage(messageId: string): Promise<MailDetail> {
+  if (_isDemo()) {
+    const { demoMailInbox } = await import("./demo");
+    const msg = demoMailInbox().find(m => m.id === messageId);
+    return {
+      id: messageId,
+      subject: msg?.subject ?? null,
+      body: { contentType: "text", content: msg?.bodyPreview ?? "(\u6F14\u793A\u30C7\u30FC\u30BF)" },
+      from: msg?.from ?? null,
+      receivedDateTime: msg?.receivedDateTime ?? null,
+      isRead: true,
+      hasAttachments: msg?.hasAttachments ?? false,
+      toRecipients: [{ emailAddress: { name: "\u95A2\u5B66 \u592A\u90CE", address: "taro@kwansei.ac.jp" } }],
+      ccRecipients: [],
+    };
+  }
   return withSessionGuard(() => invoke<MailDetail>("mail_fetch_message", { messageId }));
 }
 
 export async function mailFetchAttachments(messageId: string): Promise<MailAttachment[]> {
+  if (_isDemo()) return [];
   return withSessionGuard(() => invoke<MailAttachment[]>("mail_fetch_attachments", { messageId }));
 }
 
@@ -794,6 +817,7 @@ interface GcalSyncEntry {
 }
 
 export async function gcalCheckSession(): Promise<GcalStatus> {
+  if (_isDemo()) return { authenticated: false, calendar_exists: false, synced_events: 0, calendar_id: "" };
   return invoke<GcalStatus>("gcal_check_session");
 }
 
@@ -826,10 +850,20 @@ export async function syncCalendar(entries: GcalSyncEntry[], weekLabel: string):
 }
 
 export async function getDataCache(key: string): Promise<string | null> {
+  if (_isDemo()) {
+    const DEMO_DB_MAP: Record<string, () => any> = {
+      exam_timetable: () => import("./demo").then(m => m.demoExams()),
+      syllabus_favorites: () => import("./demo").then(m => ({ entries: [], total_count: 0, current_page: 1, total_pages: 0 })),
+    };
+    const gen = DEMO_DB_MAP[key];
+    if (gen) return JSON.stringify(await gen());
+    return null;
+  }
   return invoke<string | null>("get_data_cache", { key });
 }
 
 export async function saveDataCache(key: string, json: string): Promise<void> {
+  if (_isDemo()) return;
   return invoke("save_data_cache", { key, json });
 }
 
@@ -840,6 +874,17 @@ export async function openLoginWindow(): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
+  // Demo mode: just clear demo state, no real invoke
+  const { deactivateDemo, isDemoMode } = await import("./demo");
+  if (isDemoMode()) {
+    deactivateDemo();
+    sessionExpired.set(false);
+    for (const svc of Object.values(serviceRegistry)) svc.onReset();
+    invalidateCache();
+    try { localStorage.removeItem(EVER_AUTH_KEY); } catch {}
+    return;
+  }
+
   stopBackgroundPolling();
   await invoke("logout");
   // Clear sessionExpired FIRST so kgc.onReset actually wipes authState
@@ -861,10 +906,15 @@ export async function validateSession(): Promise<SessionStatus> {
 // ── AI-driven schedule (DB-backed, KGC+Luna raw + AI analysis) ──
 
 export async function getScheduleSnapshot(): Promise<ScheduleResponse> {
+  if (_isDemo()) {
+    const { demoScheduleData } = await import("./demo");
+    return demoScheduleData();
+  }
   return invoke<ScheduleResponse>("get_schedule_snapshot");
 }
 
 export async function syncScheduleData(): Promise<ScheduleResponse> {
+  if (_isDemo()) return getScheduleSnapshot();
   return withSessionGuard(() => invoke<ScheduleResponse>("sync_schedule_data"));
 }
 
@@ -873,6 +923,7 @@ export async function enrichSchedule(): Promise<void> {
 }
 
 export async function refreshLunaCounts(): Promise<number> {
+  if (_isDemo()) return 0;
   return invoke<number>("refresh_luna_counts");
 }
 
@@ -947,6 +998,7 @@ export async function openSyllabusDetail(classCode: string, courseName: string):
 // ---------- AI API ----------
 
 export async function getAiConfig(): Promise<AiConfig> {
+  if (_isDemo()) return { api_key: "", model: "", provider: "openai", base_url: "", max_tokens: 0, temperature: 0, reply_language: "", ai_refresh_interval: 0 };
   return invoke<AiConfig>("get_ai_config");
 }
 
@@ -1109,6 +1161,9 @@ function registerAllTasks() {
 }
 
 export function startBackgroundPolling() {
+  // Demo mode: no real polling
+  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") return;
+
   stopBackgroundPolling();
   registerAllTasks();
   // Initial volatile poll after a short delay (let views mount first)
@@ -1264,7 +1319,7 @@ function getRefreshSequence(): RefreshStep[] {
 }
 
 export async function refreshAllData(): Promise<void> {
-  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
+  if (_isDemo() || !get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
 
   const sequence = getRefreshSequence();
   // Filter out guarded items that aren't available

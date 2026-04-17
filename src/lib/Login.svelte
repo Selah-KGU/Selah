@@ -1,6 +1,7 @@
 <script lang="ts">
   import { openLoginWindow, setAuthFromSession, startBackgroundPolling } from "./api";
   import { authState } from "./stores";
+  import { activateDemo, populateDemoCache } from "./demo";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
   import selahLogoUrl from "../assets/logo.png";
@@ -8,6 +9,36 @@
   let unlisten1: (() => void) | null = null;
   let unlisten2: (() => void) | null = null;
   let unlisten3: (() => void) | null = null;
+
+  // Demo mode: 7 taps on logo within 3 seconds
+  let logoTapCount = 0;
+  let logoTapTimer: ReturnType<typeof setTimeout> | null = null;
+  const DEMO_TAPS = 7;
+  const DEMO_TAP_WINDOW = 3000;
+  let showDemoConfirm = $state(false);
+
+  function handleLogoClick() {
+    logoTapCount++;
+    if (logoTapTimer) clearTimeout(logoTapTimer);
+    logoTapTimer = setTimeout(() => { logoTapCount = 0; }, DEMO_TAP_WINDOW);
+
+    if (logoTapCount >= DEMO_TAPS) {
+      logoTapCount = 0;
+      if (logoTapTimer) { clearTimeout(logoTapTimer); logoTapTimer = null; }
+      showDemoConfirm = true;
+    }
+  }
+
+  function confirmDemo() {
+    showDemoConfirm = false;
+    populateDemoCache();
+    activateDemo();
+    startBackgroundPolling();
+  }
+
+  function cancelDemo() {
+    showDemoConfirm = false;
+  }
 
   onMount(async () => {
     unlisten1 = await listen<{ username: string; display_name: string; student_id: string; faculty: string; department: string }>(
@@ -56,7 +87,7 @@
 <div class="login-container">
   <div class="login-card">
     <div class="login-header">
-      <span class="login-logo" aria-label="Selah"><img src={selahLogoUrl} alt="Selah" /></span>
+      <span class="login-logo" aria-label="Selah" onclick={handleLogoClick} role="button" tabindex="-1"><img src={selahLogoUrl} alt="Selah" /></span>
     </div>
 
     <div class="login-body">
@@ -93,6 +124,19 @@
     </div>
   </div>
 </div>
+
+{#if showDemoConfirm}
+<div class="demo-overlay" onclick={cancelDemo} onkeydown={()=>{}} role="presentation">
+  <div class="demo-dialog" onclick={(e)=>e.stopPropagation()} onkeydown={()=>{}} role="dialog" aria-modal="true">
+    <div class="demo-dialog-title">演示モード</div>
+    <div class="demo-dialog-body">テストデータで演示モードに入ります。実際のログインは行われません。</div>
+    <div class="demo-dialog-actions">
+      <button class="demo-btn demo-btn-cancel" onclick={cancelDemo}>キャンセル</button>
+      <button class="demo-btn demo-btn-confirm" onclick={confirmDemo}>演示モードに入る</button>
+    </div>
+  </div>
+</div>
+{/if}
 
 <style>
   .login-container {
@@ -189,5 +233,62 @@
   .login-footer p {
     font-size: 11px;
     color: var(--text-tertiary);
+  }
+
+  .demo-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    animation: fade-in 0.15s ease;
+  }
+  .demo-dialog {
+    width: 320px;
+    background: rgba(255, 255, 255, 1);
+    border-radius: 14px;
+    border: 0.5px solid var(--border-strong);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+  }
+  .demo-dialog-title {
+    font-size: 15px;
+    font-weight: 600;
+    text-align: center;
+    padding: 20px 20px 4px;
+    color: var(--text-primary);
+  }
+  .demo-dialog-body {
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 8px 24px 20px;
+    line-height: 1.6;
+  }
+  .demo-dialog-actions {
+    display: flex;
+    border-top: 0.5px solid var(--border);
+  }
+  .demo-btn {
+    flex: 1;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: var(--accent);
+  }
+  .demo-btn:hover {
+    background: var(--bg-hover);
+  }
+  .demo-btn-cancel {
+    color: var(--text-secondary);
+    border-right: 0.5px solid var(--border);
+  }
+  .demo-btn-confirm {
+    font-weight: 600;
   }
 </style>

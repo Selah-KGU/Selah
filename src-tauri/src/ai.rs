@@ -144,6 +144,36 @@ struct GeminiPartResponse {
 
 // ============ Config persistence ============
 
+/// URL of the key distribution server.
+/// Change this to your own deployment URL.
+const KEY_SERVER_URL: &str = "https://your-server.example.com/index.php";
+
+/// Cached remote key (fetched once per app session)
+static REMOTE_KEY: std::sync::OnceLock<Option<RemoteKeyConfig>> = std::sync::OnceLock::new();
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteKeyConfig {
+    api_key: String,
+    model: String,
+    base_url: String,
+    provider: String,
+}
+
+/// Try to fetch the default AI key from the remote server (cached per session).
+fn get_remote_key() -> Option<RemoteKeyConfig> {
+    REMOTE_KEY.get_or_init(|| {
+        let resp = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .ok()?
+            .get(KEY_SERVER_URL)
+            .send()
+            .ok()?;
+        if !resp.status().is_success() { return None; }
+        resp.json::<RemoteKeyConfig>().ok()
+    }).clone()
+}
+
 fn config_path() -> PathBuf {
     crate::client::data_dir().join("ai_config.json")
 }
@@ -222,13 +252,29 @@ async fn chat_completion(
     config: &AiConfig,
     messages: Vec<ChatMessage>,
 ) -> Result<String, String> {
-    if config.api_key.is_empty() {
-        return Err("APIキーが設定されていません。設定画面でAPIキーを入力してください。".into());
+    // If user has their own key, use it directly
+    if !config.api_key.is_empty() {
+        return match config.provider.as_str() {
+            "gemini" => call_gemini(config, messages).await,
+            _ => call_openai(config, messages).await,
+        };
     }
 
-    match config.provider.as_str() {
-        "gemini" => call_gemini(config, messages).await,
-        _ => call_openai(config, messages).await, // "openai" and "custom" both use OpenAI format
+    // No local key — try the remote default key
+    let remote = get_remote_key()
+        .ok_or("APIキーが設定されていません。設定画面でAPIキーを入力してください。")?;
+
+    let fallback = AiConfig {
+        provider: remote.provider.clone(),
+        api_key: remote.api_key.clone(),
+        model: remote.model.clone(),
+        base_url: remote.base_url.clone(),
+        ..config.clone()
+    };
+
+    match fallback.provider.as_str() {
+        "gemini" => call_gemini(&fallback, messages).await,
+        _ => call_openai(&fallback, messages).await,
     }
 }
 
@@ -357,7 +403,17 @@ fn truncate_error(body: &str) -> String {
 
 #[tauri::command]
 pub fn get_ai_config() -> AiConfig {
-    load_config()
+    let mut cfg = load_config();
+    // If no local key but remote key available, populate fields so frontend sees AI as enabled
+    if cfg.api_key.is_empty() {
+        if let Some(remote) = get_remote_key() {
+            cfg.api_key = "(server)".into(); // sentinel — never sent to provider
+            cfg.model = remote.model;
+            cfg.base_url = remote.base_url;
+            cfg.provider = remote.provider;
+        }
+    }
+    cfg
 }
 
 #[tauri::command]

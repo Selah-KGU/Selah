@@ -3,9 +3,10 @@
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
   import DebugPanel from "./lib/DebugPanel.svelte";
-  import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, debugVisible, registerTask, updateTask } from "./lib/stores";
+  import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, debugVisible, registerTask, updateTask, invalidateCache } from "./lib/stores";
   import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
+  import { restoreDemo, isDemoMode } from "./lib/demo";
   import { listen } from "@tauri-apps/api/event";
   import { get } from "svelte/store";
   import { onMount, onDestroy } from "svelte";
@@ -21,6 +22,7 @@
   const VALIDATE_COOLDOWN = 60_000; // 60 seconds minimum between validations
   let intervalId: ReturnType<typeof setInterval> | null = null;
   let unlistenDebugToggle: (() => void) | null = null;
+  let unlistenLogout: (() => void) | null = null;
 
   // Backoff: track consecutive sync failures per service to avoid spamming headless WebViews
   const syncFailures: Record<string, { count: number; backoffUntil: number }> = {
@@ -46,6 +48,24 @@
     unlistenDebugToggle = await listen("toggle-debug", () => {
       debugVisible.update(v => !v);
     });
+
+    // Handle logout triggered from settings window (or other windows)
+    unlistenLogout = await listen("logout", async () => {
+      const { deactivateDemo, isDemoMode: checkDemo } = await import("./lib/demo");
+      if (checkDemo()) deactivateDemo();
+      stopBackgroundPolling();
+      sessionExpired.set(false);
+      for (const svc of Object.values(serviceRegistry)) svc.onReset();
+      invalidateCache();
+      try { localStorage.removeItem("selah-ever-auth"); } catch {}
+      everLoggedIn = false;
+    });
+
+    // Demo mode: restore from previous session, skip real network calls
+    if (restoreDemo()) {
+      restoring = false;
+      return;
+    }
 
     try {
       // Restore all service sessions (KGC + Luna + future)
@@ -88,6 +108,7 @@
 
   onDestroy(() => {
     unlistenDebugToggle?.();
+    unlistenLogout?.();
     stopTrayStatus();
     stopBackgroundPolling();
     if (intervalId) clearInterval(intervalId);
@@ -101,6 +122,7 @@
   }
 
   async function doValidate() {
+    if (isDemoMode()) return;
     // Allow validation when session is expired (need to attempt recovery)
     if ((!get(authState).authenticated && !get(sessionExpired)) || validating || get(reloginInProgress)) return;
     const now = Date.now();

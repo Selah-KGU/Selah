@@ -324,65 +324,7 @@
       </div>
       <div class="hero-text">
         <h2 class="panel-title">AI 設定</h2>
-        <p class="panel-desc">AI 分析機能で使用するプロバイダー、モデル、API キーなどの接続設定を管理します。OpenAI、Google Gemini、または OpenAI 互換の任意のエンドポイントに対応しています。</p>
-      </div>
-    </div>
-    <div class="card-label">プロバイダー</div>
-    <div class="card">
-      <div class="row">
-        <span class="row-label">サービス</span>
-        <div class="row-input">
-          <select id="provider" onchange="onProviderChange()">
-            <option value="openai">OpenAI</option>
-            <option value="gemini">Google Gemini</option>
-            <option value="custom">カスタム (OpenAI 互換)</option>
-          </select>
-        </div>
-      </div>
-      <div class="row">
-        <span class="row-label">API キー</span>
-        <div class="row-input">
-          <div class="key-row">
-            <input type="password" id="apiKey" placeholder="sk-... / AIza..." autocomplete="off" spellcheck="false">
-            <button class="btn-test" id="testBtn" onclick="testConnection()">テスト</button>
-          </div>
-          <div class="hint" id="providerHint">OpenAI APIキーは platform.openai.com で取得できます。</div>
-        </div>
-      </div>
-    </div>
-    <div class="card-label">モデル</div>
-    <div class="card">
-      <div class="row">
-        <span class="row-label">モデル名</span>
-        <div class="row-input">
-          <input type="text" id="model" placeholder="gpt-5.4-nano" spellcheck="false">
-          <div class="presets" id="modelPresets"></div>
-        </div>
-      </div>
-      <div class="row" id="baseUrlRow">
-        <span class="row-label">ベース URL</span>
-        <div class="row-input">
-          <input type="text" id="baseUrl" placeholder="https://api.openai.com/v1" spellcheck="false">
-          <div class="hint">OpenAI 互換 API のエンドポイント</div>
-        </div>
-      </div>
-      <div class="row">
-        <span class="row-label">最大トークン</span>
-        <div class="row-input">
-          <div class="range-row">
-            <input type="range" id="maxTokens" min="8192" max="32768" step="1024">
-            <span class="range-val" id="maxTokensVal">16384</span>
-          </div>
-        </div>
-      </div>
-      <div class="row">
-        <span class="row-label">Temperature</span>
-        <div class="row-input">
-          <div class="range-row">
-            <input type="range" id="temperature" min="0" max="2" step="0.1">
-            <span class="range-val" id="temperatureVal">0.7</span>
-          </div>
-        </div>
+        <p class="panel-desc">AI 分析機能の設定を管理します。デフォルトではサーバーから提供される無料モデルが使用されます。</p>
       </div>
     </div>
     <div class="card-label">回答設定</div>
@@ -418,6 +360,67 @@
         </div>
       </div>
     </div>
+    <details style="margin-top:12px;">
+      <summary>詳細設定（自分の API キーを使用する場合）</summary>
+        <div class="card-label">プロバイダー</div>
+        <div class="card">
+          <div class="row">
+            <span class="row-label">サービス</span>
+            <div class="row-input">
+              <select id="provider" onchange="onProviderChange()">
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="custom">カスタム (OpenAI 互換)</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">API キー</span>
+            <div class="row-input">
+              <div class="key-row">
+                <input type="password" id="apiKey" placeholder="未設定（サーバー提供のキーを使用中）" autocomplete="off" spellcheck="false">
+                <button class="btn-test" id="testBtn" onclick="testConnection()">テスト</button>
+              </div>
+              <div class="hint" id="providerHint">独自のAPIキーを設定すると、サーバーのデフォルトキーの代わりに使用されます。</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-label">モデル</div>
+        <div class="card">
+          <div class="row">
+            <span class="row-label">モデル名</span>
+            <div class="row-input">
+              <input type="text" id="model" placeholder="gpt-5.4-nano" spellcheck="false">
+              <div class="presets" id="modelPresets"></div>
+            </div>
+          </div>
+          <div class="row" id="baseUrlRow">
+            <span class="row-label">ベース URL</span>
+            <div class="row-input">
+              <input type="text" id="baseUrl" placeholder="https://api.openai.com/v1" spellcheck="false">
+              <div class="hint">OpenAI 互換 API のエンドポイント</div>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">最大トークン</span>
+            <div class="row-input">
+              <div class="range-row">
+                <input type="range" id="maxTokens" min="8192" max="32768" step="1024">
+                <span class="range-val" id="maxTokensVal">16384</span>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">Temperature</span>
+            <div class="row-input">
+              <div class="range-row">
+                <input type="range" id="temperature" min="0" max="2" step="0.1">
+                <span class="range-val" id="temperatureVal">0.7</span>
+              </div>
+            </div>
+          </div>
+        </div>
+    </details>
   </div>
   <div class="panel" id="panel-session">
     <div class="hero-card">
@@ -653,7 +656,7 @@
       </div>
       <div class="hero-text">
         <h2 class="panel-title">通知</h2>
-        <p class="panel-desc">通知権限の確認やテスト通知の送信ができます。</p>
+        <p class="panel-desc">通知権限の確認ができます。</p>
       </div>
     </div>
     <div class="card-label">通知設定</div>
@@ -664,16 +667,7 @@
           <div class="session-indicator" id="notif-perm-status">未確認</div>
         </div>
       </div>
-      <div class="row">
-        <span class="row-label">テスト送信</span>
-        <div class="row-input">
-          <div class="key-row">
-            <input type="text" id="notifMsg" placeholder="テスト通知メッセージ" value="Selah テスト通知">
-            <button class="btn-test" id="notifSendBtn" onclick="sendTestNotification()">送信</button>
-          </div>
-          <div id="notifStatus" class="hint"></div>
-        </div>
-      </div>
+
     </div>
   </div>
   <div class="panel" id="panel-download">
@@ -687,7 +681,7 @@
       </div>
       <div class="hero-text">
         <h2 class="panel-title">ダウンロード</h2>
-        <p class="panel-desc">ファイルの保存先と自動分類の設定を管理します。コース名と授業回数でフォルダを自動作成し、教材を整理できます。</p>
+        <p class="panel-desc">ファイルの保存先と自動分類の設定を管理します。コース名でフォルダを自動作成し、教材を整理できます。</p>
       </div>
     </div>
     <div class="card-label">保存先</div>
@@ -712,7 +706,7 @@
             <option value="true">有効</option>
             <option value="false">無効</option>
           </select>
-          <div class="hint">有効にすると、ダウンロードされた教材を「コース名 / 第N回」のフォルダに自動分類します。</div>
+          <div class="hint">有効にすると、ダウンロードされた教材をコース名のフォルダに自動分類します。</div>
         </div>
       </div>
     </div>
@@ -721,13 +715,10 @@
       <div id="downloadPreview">
         <div>Downloads/</div>
         <div style="padding-left:16px;">基礎数学 I/</div>
-        <div style="padding-left:32px;">第1回/</div>
-        <div style="padding-left:48px;">lecture01.pdf</div>
-        <div style="padding-left:32px;">第5回/</div>
-        <div style="padding-left:48px;">exercise05.pdf</div>
+        <div style="padding-left:32px;">lecture01.pdf</div>
+        <div style="padding-left:32px;">exercise05.pdf</div>
         <div style="padding-left:16px;">英語 IIA/</div>
-        <div style="padding-left:32px;">第3回/</div>
-        <div style="padding-left:48px;">handout.docx</div>
+        <div style="padding-left:32px;">handout.docx</div>
       </div>
     </div>
     <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
@@ -755,6 +746,11 @@
       </div>
       <div class="about-copy">© 2026 mirai-mamori. All rights reserved.</div>
     </div>
+    <div class="card" style="margin-top:10px;padding:0;">
+      <div class="about-row" style="cursor:pointer;justify-content:center;" onclick="logoutFromSettings()">
+        <span style="color:var(--red);font-weight:500;">ログアウトしてログイン画面へ戻る</span>
+      </div>
+    </div>
     <div class="card" id="devCard" style="margin-top:10px;display:none;">
       <div class="about-row" style="cursor:pointer" onclick="openDebug()">
         <span class="al">デバッグコンソール</span>
@@ -779,6 +775,13 @@
   var invoke=window.__TAURI__.core.invoke;
 
   async function openDebug(){try{await invoke("toggle_debug_panel")}catch(e){console.error("toggle_debug_panel failed:",e)}}
+
+  async function logoutFromSettings(){
+    try{
+      await invoke("logout");
+      window.__TAURI__.window.getCurrentWindow().close().catch(function(){});
+    }catch(e){console.error("logout failed:",e)}
+  }
 
   var versionTapCount=0,versionTapTimer=null,devModeActive=false;
   function handleVersionTap(){
@@ -814,7 +817,7 @@
   function escapeHtml(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
   function showStatus(msg,type){var safe=escapeHtml(msg);if(type==="loading"){$status.innerHTML='<div class="status loading"><span class="spinner"></span>'+safe+"</div>"}else{$status.innerHTML='<div class="status '+type+'">'+safe+"</div>"}if(type!=="loading")setTimeout(function(){$status.innerHTML=""},4000)}
 
-  async function loadSettings(){try{var c=await invoke("get_ai_config");$provider.value=c.provider||"openai";$apiKey.value=c.api_key||"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||16384;$maxTokensVal.textContent=c.max_tokens||16384;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"2026-04-03";document.getElementById("fallStart").value=c.fall_start||"2026-09-21";document.getElementById("aiRefreshInterval").value=String(c.ai_refresh_interval!=null?c.ai_refresh_interval:360);onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
+  async function loadSettings(){try{var c=await invoke("get_ai_config");$provider.value=c.provider||"openai";$apiKey.value=(c.api_key&&c.api_key!=="(server)")?c.api_key:"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||16384;$maxTokensVal.textContent=c.max_tokens||16384;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"2026-04-03";document.getElementById("fallStart").value=c.fall_start||"2026-09-21";document.getElementById("aiRefreshInterval").value=String(c.ai_refresh_interval!=null?c.ai_refresh_interval:360);onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
 
   function getConfig(){return{provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value,spring_start:document.getElementById("springStart").value,fall_start:document.getElementById("fallStart").value,ai_refresh_interval:parseInt(document.getElementById("aiRefreshInterval").value)||0}}
 
@@ -938,22 +941,7 @@
     }
   }
 
-  async function sendTestNotification() {
-    var msg = document.getElementById('notifMsg').value || 'Selah テスト通知';
-    var btn = document.getElementById('notifSendBtn');
-    var st = document.getElementById('notifStatus');
-    btn.disabled = true;
-    if (st) { st.style.color = 'var(--text-secondary)'; st.textContent = '送信中...'; }
-    try {
-      await invoke('test_notification', { title: 'Selah', body: msg });
-      if (st) { st.style.color = 'var(--green)'; st.textContent = '通知を送信しました（通知センターを確認してください）'; }
-    } catch (e) {
-      if (st) { st.style.color = 'var(--red)'; st.textContent = '送信失敗: ' + e; }
-    } finally {
-      btn.disabled = false;
-      setTimeout(function(){ if (st) st.textContent = ''; }, 5000);
-    }
-  }
+
 
   // Load about version
   (async function(){

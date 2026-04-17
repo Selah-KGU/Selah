@@ -347,13 +347,19 @@ export function notifKey(title: string, date: string): string {
 
 /** Load read IDs from DB into the store. Call once on app init. */
 export async function loadReadIds(): Promise<void> {
+  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
+    readIdsStore.set({ kgc: [], luna: [], kwic: [] });
+    return;
+  }
   const data = await invoke<ReadIdsData>("get_read_notifications");
   readIdsStore.set(data);
 }
 
 /** Mark a single notification as read. DB-first, then update store. */
 export async function markRead(source: string, id: string): Promise<void> {
-  await invoke<void>("mark_notification_read", { source, id });
+  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") !== "1") {
+    await invoke<void>("mark_notification_read", { source, id });
+  }
   readIdsStore.update(store => {
     const key = source as keyof ReadIdsData;
     if (store[key].includes(id)) return store;
@@ -363,7 +369,9 @@ export async function markRead(source: string, id: string): Promise<void> {
 
 /** Mark multiple notifications as read. DB-first, then update store. */
 export async function markBatchRead(source: string, ids: string[]): Promise<void> {
-  await invoke<void>("mark_batch_notification_read", { source, ids });
+  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") !== "1") {
+    await invoke<void>("mark_batch_notification_read", { source, ids });
+  }
   readIdsStore.update(store => {
     const key = source as keyof ReadIdsData;
     const existing = new Set(store[key]);
@@ -545,6 +553,15 @@ function notifySwr(key: string, data: any) {
  * Components should subscribe via onCacheUpdate() for live refreshes.
  */
 export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: number): Promise<T> {
+  // Demo mode: always serve from cache, never hit network
+  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
+    const entry = cache.get(key);
+    if (entry) return Promise.resolve(entry.data as T);
+    const disk = loadDiskCache(key);
+    if (disk) { cache.set(key, disk); return Promise.resolve(disk.data as T); }
+    return Promise.reject(new Error(`[Demo] No cached data for "${key}"`));
+  }
+
   const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
   const entry = cache.get(key);
   if (entry && Date.now() - entry.ts < effectiveTtl) {

@@ -1,6 +1,6 @@
 [package]
 name = "selah-app"
-version = "0.8.3"
+version = "0.8.4"
 description = "Selah - 新月の下で、知性を繋ぐ。すべての関学生に。"
 authors = ["mirai-mamori"]
 license = "MIT"
@@ -20,7 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.3", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-log = "2"
-reqwest = { version = "0.12", features = ["cookies", "json", "native-tls", "multipart"] }
+reqwest = { version = "0.12", features = ["cookies", "json", "native-tls", "multipart", "blocking"] }
 tokio = { version = "1", features = ["sync", "time", "macros"] }
 scraper = "0.22"
 regex = "1"
