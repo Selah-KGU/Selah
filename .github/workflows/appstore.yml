@@ -1,0 +1,141 @@
+name: App Store Upload
+
+# Manual trigger only — each upload consumes an App Store build number.
+on:
+  workflow_dispatch:
+
+jobs:
+  appstore:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # ── Set up keychain with all three secrets ───────────────────────────
+      - name: Import certificates and provisioning profile
+        env:
+          APPLE_DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE }}
+          APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Create a temporary keychain
+          KEYCHAIN_PATH="$RUNNER_TEMP/appstore.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import Apple Distribution cert
+          echo "$APPLE_DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" \
+            -P "$APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # Import 3rd Party Mac Developer Installer cert
+          echo "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/installer.p12" \
+            -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # Allow codesign and productbuild to use the keychain without prompts
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign:,productbuild: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add to search list
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          # Decode provisioning profile
+          echo "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Selah.provisionprofile"
+
+          # Clean quarantine xattrs
+          xattr -c "$RUNNER_TEMP/Selah.provisionprofile"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "PROVISIONING_PROFILE_PATH=$RUNNER_TEMP/Selah.provisionprofile" >> "$GITHUB_ENV"
+
+      # ── Build unsigned app (we'll sign ourselves) ────────────────────────
+      - name: Build Tauri app (universal, App Store entitlements)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_DISTRIBUTION_SIGNING_IDENTITY }}
+        run: |
+          npm run tauri build -- --target universal-apple-darwin
+
+      # ── Post-process for App Store: embed profile, PrivacyInfo, bump build number, re-sign ──
+      - name: Package for App Store
+        env:
+          APPLE_DISTRIBUTION_SIGNING_IDENTITY: ${{ secrets.APPLE_DISTRIBUTION_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app"
+          VERSION=$(node -p "require('./package.json').version")
+
+          # Embed provisioning profile
+          cp "$PROVISIONING_PROFILE_PATH" "$APP_PATH/Contents/embedded.provisionprofile"
+
+          # Copy PrivacyInfo
+          cp src-tauri/PrivacyInfo.xcprivacy "$APP_PATH/Contents/Resources/PrivacyInfo.xcprivacy"
+
+          # Bump CFBundleVersion using GitHub run_number (keeps user-facing version stable)
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
+
+          # Strip all xattrs to avoid quarantine issues
+          xattr -cr "$APP_PATH"
+
+          # Re-sign with App Store entitlements (the default Entitlements.plist with sandbox)
+          codesign --force --deep \
+            --sign "$APPLE_DISTRIBUTION_SIGNING_IDENTITY" \
+            --entitlements src-tauri/Entitlements.plist \
+            "$APP_PATH"
+
+          codesign --verify --deep --strict "$APP_PATH"
+
+          # Build the .pkg
+          PKG_PATH="$RUNNER_TEMP/Selah_${VERSION}_build${BUILD_NUMBER}.pkg"
+          productbuild --component "$APP_PATH" /Applications \
+            --sign "$APPLE_INSTALLER_SIGNING_IDENTITY" \
+            "$PKG_PATH"
+          xattr -c "$PKG_PATH"
+
+          echo "PKG_PATH=$PKG_PATH" >> "$GITHUB_ENV"
+          echo "Built: $PKG_PATH"
+
+      # ── Upload to App Store Connect ──────────────────────────────────────
+      - name: Upload to App Store Connect
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          xcrun altool --upload-app \
+            -f "$PKG_PATH" \
+            -t macos \
+            -u "$APPLE_ID" \
+            -p "$APPLE_PASSWORD"
+
+      # ── Cleanup keychain ─────────────────────────────────────────────────
+      - name: Delete temporary keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
