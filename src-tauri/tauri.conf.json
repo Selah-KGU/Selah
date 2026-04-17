@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Selah",
-  "version": "0.8.4",
+  "version": "1.0.0",
   "identifier": "com.kgu.selah",
   "build": {
     "frontendDist": "../dist",
@@ -52,10 +52,6 @@
     "copyright": "Copyright 2025-2026 mirai-mamori. All rights reserved.",
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "files": {
-        "PrivacyInfo.xcprivacy": "PrivacyInfo.xcprivacy",
-        "Entitlements.plist": "Entitlements.plist"
-      },
       "entitlements": "Entitlements.plist"
     },
     "windows": {
