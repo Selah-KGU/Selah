@@ -5,7 +5,6 @@
   import type { TaskInfo } from "./stores";
   import Icon from "./Icon.svelte";
   import { fetchPage, triggerRelogin } from "./api";
-  import { nativeNotify } from "./notify";
 
   interface DebugInfo {
     app_version: string;
@@ -264,7 +263,7 @@
 
   async function sendTestNotification() {
     try {
-      await nativeNotify("Selah", notifTestMsg);
+      await invoke("debug_test_notification", { title: "Selah", body: notifTestMsg });
       addLog("info", `テスト通知送信: "${notifTestMsg}"`);
     } catch (e: any) {
       addLog("error", `通知送信失敗: ${e}`);

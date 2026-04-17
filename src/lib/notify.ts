@@ -5,6 +5,22 @@ export async function nativeNotify(title: string, body?: string) {
   await invoke("test_notification", { title, body: body ?? "" });
 }
 
+interface NotificationConfig {
+  notify_important: boolean;
+  notify_faculty: boolean;
+  notify_class: boolean;
+  notify_other: boolean;
+  notify_mail: boolean;
+}
+
+async function getNotifConfig(): Promise<NotificationConfig> {
+  try {
+    return await invoke("get_notification_config") as NotificationConfig;
+  } catch {
+    return { notify_important: true, notify_faculty: true, notify_class: true, notify_other: true, notify_mail: true };
+  }
+}
+
 // Per-source mutex to prevent concurrent notify calls from sending duplicate pushes
 const locks = new Map<string, Promise<void>>();
 function withLock(source: string, fn: () => Promise<void>): Promise<void> {
@@ -63,6 +79,7 @@ export interface LunaNotif {
 export function notifyNewKgc(entries: KgcNotif[]): Promise<void> {
   if (!entries.length) return Promise.resolve();
   return withLock("kgc", async () => {
+    const cfg = await getNotifConfig();
     const seen = await getSeenIds("kgc");
     const newEntries = entries.filter((e) => !seen.has(e.id));
     if (!newEntries.length) {
@@ -70,6 +87,11 @@ export function notifyNewKgc(entries: KgcNotif[]): Promise<void> {
         for (const e of entries) seen.add(e.id);
         await saveSeenIds("kgc", seen);
       }
+      return;
+    }
+    if (!cfg.notify_class) {
+      for (const e of newEntries) seen.add(e.id);
+      await saveSeenIds("kgc", seen);
       return;
     }
     const granted = await ensurePermission();
@@ -89,6 +111,7 @@ export function notifyNewKgc(entries: KgcNotif[]): Promise<void> {
 export function notifyNewLuna(items: LunaNotif[]): Promise<void> {
   if (!items.length) return Promise.resolve();
   return withLock("luna", async () => {
+    const cfg = await getNotifConfig();
     const seen = await getSeenIds("luna");
     const makeKey = (n: LunaNotif) => `${n.date}|${n.course_info}|${n.content}`;
     const newItems = items.filter((n) => !seen.has(makeKey(n)));
@@ -97,6 +120,11 @@ export function notifyNewLuna(items: LunaNotif[]): Promise<void> {
         for (const n of items) seen.add(makeKey(n));
         await saveSeenIds("luna", seen);
       }
+      return;
+    }
+    if (!cfg.notify_class) {
+      for (const n of newItems) seen.add(makeKey(n));
+      await saveSeenIds("luna", seen);
       return;
     }
     const granted = await ensurePermission();
@@ -120,10 +148,19 @@ export interface KwicNotif {
   important: boolean;
 }
 
+/** Map KWIC category to notification config key */
+function kwicCategoryAllowed(category: string, cfg: NotificationConfig): boolean {
+  if (category === "呼出し・重要なお知らせ") return cfg.notify_important;
+  if (category === "学部・研究科からのお知らせ") return cfg.notify_faculty;
+  // "その他" and any unknown categories
+  return cfg.notify_other;
+}
+
 /** Check KWIC Portal notifications for new items and send native notifications */
 export function notifyNewKwic(items: KwicNotif[]): Promise<void> {
   if (!items.length) return Promise.resolve();
   return withLock("kwic", async () => {
+    const cfg = await getNotifConfig();
     const seen = await getSeenIds("kwic");
     const newItems = items.filter((n) => n.id && !seen.has(n.id));
     if (!newItems.length) {
@@ -136,10 +173,12 @@ export function notifyNewKwic(items: KwicNotif[]): Promise<void> {
     const granted = await ensurePermission();
     if (!granted) return;
     for (const n of newItems) {
-      nativeNotify(
-        n.category ? `[${n.category}] ${n.title}` : n.title,
-        n.date,
-      ).catch(console.warn);
+      if (kwicCategoryAllowed(n.category, cfg)) {
+        nativeNotify(
+          n.category ? `[${n.category}] ${n.title}` : n.title,
+          n.date,
+        ).catch(console.warn);
+      }
       seen.add(n.id);
     }
     await saveSeenIds("kwic", seen);
@@ -157,6 +196,7 @@ interface MailNotif {
 export function notifyNewMail(items: MailNotif[]): Promise<void> {
   if (!items.length) return Promise.resolve();
   return withLock("mail", async () => {
+    const cfg = await getNotifConfig();
     const seen = await getSeenIds("mail");
     const newItems = items.filter((n) => n.id && !seen.has(n.id) && !n.isRead);
     if (!newItems.length) {
@@ -164,6 +204,11 @@ export function notifyNewMail(items: MailNotif[]): Promise<void> {
         for (const n of items) if (n.id) seen.add(n.id);
         await saveSeenIds("mail", seen);
       }
+      return;
+    }
+    if (!cfg.notify_mail) {
+      for (const n of newItems) seen.add(n.id);
+      await saveSeenIds("mail", seen);
       return;
     }
     const granted = await ensurePermission();

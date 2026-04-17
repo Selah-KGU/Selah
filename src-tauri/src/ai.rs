@@ -507,7 +507,7 @@ pub fn send_native_notification(app: &tauri::AppHandle, title: &str, body: &str)
         n.body(body);
         n.auto_icon();
         let n = n; // move into spawn
-        tauri::async_runtime::spawn(async move {
+        std::thread::spawn(move || {
             if let Err(e) = n.show() {
                 log::warn!("notify-rust show failed: {}", e);
             }
@@ -520,6 +520,39 @@ pub fn send_native_notification(app: &tauri::AppHandle, title: &str, body: &str)
         app.notification().builder().title(title).body(body).show()
             .map(|_| "Notification sent".to_string())
             .map_err(|e| format!("Notification unavailable: {}", e))
+    }
+}
+
+/// Debug-only test notification that bypasses notify-rust.
+/// Uses osascript on macOS for reliable delivery even in dev mode.
+#[tauri::command]
+pub async fn debug_test_notification(title: String, body: String) -> Result<String, String> {
+    log::info!("debug_test_notification: title={}, body={}", title, body);
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::spawn(move || {
+            let script = format!(
+                "display notification \"{}\" with title \"{}\"",
+                body.replace('\\', "\\\\").replace('"', "\\\""),
+                title.replace('\\', "\\\\").replace('"', "\\\""),
+            );
+            match std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output()
+            {
+                Ok(out) if !out.status.success() => {
+                    log::warn!("osascript notification failed: {}", String::from_utf8_lossy(&out.stderr));
+                }
+                Err(e) => log::warn!("osascript spawn failed: {}", e),
+                _ => {}
+            }
+        });
+        Ok("Notification sent".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("debug_test_notification: use test_notification on non-macOS".to_string())
     }
 }
 

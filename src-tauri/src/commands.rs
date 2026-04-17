@@ -2197,6 +2197,65 @@ pub async fn select_download_dir() -> Result<String, String> {
     }
 }
 
+// ─── Notification Config ───────────────────────────────────────
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationConfig {
+    pub notify_important: bool,
+    pub notify_faculty: bool,
+    pub notify_class: bool,
+    pub notify_other: bool,
+    pub notify_mail: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            notify_important: true,
+            notify_faculty: true,
+            notify_class: true,
+            notify_other: true,
+            notify_mail: true,
+        }
+    }
+}
+
+fn notification_config_path() -> std::path::PathBuf {
+    client::data_dir().join("notification_config.json")
+}
+
+pub fn load_notification_config() -> NotificationConfig {
+    let path = notification_config_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str(&data) {
+                return cfg;
+            }
+        }
+    }
+    NotificationConfig::default()
+}
+
+fn save_notification_config_to_disk(config: &NotificationConfig) -> Result<(), String> {
+    let path = notification_config_path();
+    let data = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("JSON serialization error: {}", e))?;
+    std::fs::write(&path, &data)
+        .map_err(|e| format!("Failed to write notification config: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_notification_config() -> NotificationConfig {
+    load_notification_config()
+}
+
+#[tauri::command]
+pub fn save_notification_config(config: NotificationConfig) -> Result<(), String> {
+    save_notification_config_to_disk(&config)
+}
+
 /// Sanitize a string to be safe as a directory/file name component.
 fn sanitize_path_component(name: &str) -> String {
     let s: String = name.chars().map(|c| match c {
