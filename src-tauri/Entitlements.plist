@@ -4,10 +4,6 @@
 <dict>
     <key>com.apple.security.app-sandbox</key>
     <true/>
-    <key>com.apple.application-identifier</key>
-    <string>$(AppIdentifierPrefix)com.kgu.selah</string>
-    <key>com.apple.developer.team-identifier</key>
-    <string>$(DEVELOPMENT_TEAM)</string>
     <key>com.apple.security.network.client</key>
     <true/>
     <!-- Required for OAuth2 loopback redirect (Google Calendar login) -->
@@ -19,10 +15,6 @@
     <!-- User-selected download directory via file dialog -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
-    <key>keychain-access-groups</key>
-    <array>
-        <string>$(AppIdentifierPrefix)com.kgu.selah</string>
-    </array>
     <!-- Hardened Runtime: required for Tauri WebView JIT -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
