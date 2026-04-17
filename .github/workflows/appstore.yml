@@ -82,12 +82,15 @@ jobs:
         run: |
           npm run tauri build -- --target universal-apple-darwin
 
+      # ── Compute monotonically increasing build number (UTC timestamp) ────
+      - name: Compute build number
+        run: echo "BUILD_NUMBER=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+
       # ── Post-process for App Store: embed profile, PrivacyInfo, bump build number, re-sign ──
       - name: Package for App Store
         env:
           APPLE_DISTRIBUTION_SIGNING_IDENTITY: ${{ secrets.APPLE_DISTRIBUTION_SIGNING_IDENTITY }}
           APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
-          BUILD_NUMBER: ${{ github.run_number }}
         run: |
           APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app"
           VERSION=$(node -p "require('./package.json').version")
