@@ -254,6 +254,21 @@
   details > .card-label:first-of-type { margin-top: 8px; }
   @keyframes dev-shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-3px)} 75%{transform:translateX(3px)} }
   @keyframes dev-reveal { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+  .model-row {
+    padding: 10px 14px; border-top: 0.5px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .model-row:first-child { border-top: none; }
+  .model-radio { width: 14px; height: 14px; accent-color: var(--blue); cursor: pointer; flex-shrink: 0; }
+  .model-info { flex: 1; min-width: 0; }
+  .model-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+  .model-meta { font-size: 10px; color: var(--text-secondary); margin-top: 1px; }
+  .model-badge {
+    font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+    background: rgba(0, 122, 255, 0.1); color: var(--blue); white-space: nowrap;
+  }
+  .model-badge.downloaded { background: rgba(52, 199, 89, 0.1); color: var(--green); }
+  .model-actions { display: flex; gap: 4px; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -324,7 +339,7 @@
       </div>
       <div class="hero-text">
         <h2 class="panel-title">AI 設定</h2>
-        <p class="panel-desc">AIが週間スケジュール生成、課題の優先度分析・学習計画作成、お知らせの要約・重要度判定を行います。回答言語・自動更新間隔のほか、APIプロバイダーやモデルも自由に設定できます。</p>
+        <p class="panel-desc">ローカルモデルまたは外部 API を使って、時間割・課題・お知らせを分析します。ローカル利用時はモデルの選択・ダウンロード・推論テストのみを設定します。</p>
       </div>
     </div>
     <div class="card-label">AI 機能</div>
@@ -339,13 +354,93 @@
           <div class="hint" id="aiEnabledHint">有効にすると、時間割・課題・お知らせなどのAI分析機能が利用できます。</div>
         </div>
       </div>
-      <div id="aiDisclaimer" class="row" style="display:none;">
-        <div style="padding:8px 12px;background:var(--bg-secondary,#f5f5f7);border-radius:8px;font-size:11.5px;line-height:1.6;color:var(--text-secondary,#666);">
-          デフォルトでは OpenRouter が提供する無料モデルを使用します。AI分析に必要な最低限のデータ（時間割・課題・お知らせ等）が第三者（OpenRouter 経由の AI プロバイダー）に送信されます。これを望まない場合は、下の「詳細設定」から自分の API キーとエンドポイントを設定してください。
+      <div class="row">
+        <span class="row-label">推論方法</span>
+        <div class="row-input">
+          <select id="aiProvider" onchange="onProviderSwitch()">
+            <option value="local">ローカルモデル</option>
+            <option value="openai">OpenAI API</option>
+            <option value="gemini">Google Gemini API</option>
+          </select>
+          <div class="hint" id="providerSwitchHint">ローカルモデルはデバイス上で実行されます。設定対象はモデルの選択・ダウンロード・推論テストのみです。</div>
         </div>
       </div>
     </div>
     <div id="aiSettingsBody">
+    <!-- Local Model Section -->
+    <div id="localModelSection">
+      <div class="card-label">ローカルモデル</div>
+      <div class="card" id="modelListCard">
+        <!-- Populated by JS -->
+      </div>
+      <div id="downloadProgressArea" style="display:none;margin-top:8px;">
+        <div class="card" style="padding:10px 14px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span id="downloadModelName" style="font-size:12px;font-weight:600;"></span>
+            <span id="downloadPercent" style="font-size:11px;color:var(--text-secondary);"></span>
+            <button class="btn-test" onclick="cancelDownload()" style="margin-left:auto;color:var(--red);border-color:rgba(255,59,48,0.3);">中止</button>
+          </div>
+          <div style="height:4px;background:var(--border-strong);border-radius:2px;overflow:hidden;">
+            <div id="downloadBar" style="height:100%;background:var(--blue);border-radius:2px;width:0%;transition:width 0.2s;"></div>
+          </div>
+          <div id="downloadSize" style="font-size:10px;color:var(--text-tertiary);margin-top:3px;"></div>
+        </div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+        <button class="btn-test" id="localTestBtn" onclick="testLocalModel()">推論テスト</button>
+        <span id="localTestStatus" style="font-size:11px;color:var(--text-secondary);"></span>
+      </div>
+    </div>
+    <!-- API Provider Section -->
+    <div id="apiProviderSection" style="display:none;">
+      <div class="card-label">API モデル設定</div>
+      <div class="card">
+        <div class="row">
+          <span class="row-label">API キー</span>
+          <div class="row-input">
+            <div class="key-row">
+              <input type="password" id="apiKey" placeholder="APIキーを入力" autocomplete="off" spellcheck="false">
+              <button class="btn-test" id="testBtn" onclick="testConnection()">テスト</button>
+            </div>
+            <div class="hint" id="providerHint"></div>
+          </div>
+        </div>
+        <div class="row">
+          <span class="row-label">モデル名</span>
+          <div class="row-input">
+            <input type="text" id="model" placeholder="gpt-5.4-nano" spellcheck="false">
+            <div class="presets" id="modelPresets"></div>
+          </div>
+        </div>
+        <div class="row" id="baseUrlRow">
+          <span class="row-label">ベース URL</span>
+          <div class="row-input">
+            <input type="text" id="baseUrl" placeholder="https://api.openai.com/v1" spellcheck="false">
+            <div class="hint">OpenAI 互換 API のエンドポイント</div>
+          </div>
+        </div>
+        <div class="row">
+          <span class="row-label">最大トークン</span>
+          <div class="row-input">
+            <div class="range-row">
+              <input type="number" id="maxTokens" min="0" step="1024" placeholder="0">
+              <span class="range-val" id="maxTokensVal">0</span>
+            </div>
+            <div class="hint">API モデル用の出力上限です。ローカルモデルでは使用しません。</div>
+          </div>
+        </div>
+        <div class="row">
+          <span class="row-label">Temperature</span>
+          <div class="row-input">
+            <div class="range-row">
+              <input type="range" id="temperature" min="0" max="2" step="0.1">
+              <span class="range-val" id="temperatureVal">0.7</span>
+            </div>
+            <div class="hint">API モデル用のサンプリング設定です。ローカルモデルでは使用しません。</div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="card-label">回答設定</div>
     <div class="card">
       <div class="row">
@@ -379,67 +474,6 @@
         </div>
       </div>
     </div>
-    <details style="margin-top:12px;">
-      <summary>詳細設定（自分の API キーを使用する場合）</summary>
-        <div class="card-label">プロバイダー</div>
-        <div class="card">
-          <div class="row">
-            <span class="row-label">サービス</span>
-            <div class="row-input">
-              <select id="provider" onchange="onProviderChange()">
-                <option value="openai">OpenAI</option>
-                <option value="gemini">Google Gemini</option>
-                <option value="custom">カスタム (OpenAI 互換)</option>
-              </select>
-            </div>
-          </div>
-          <div class="row">
-            <span class="row-label">API キー</span>
-            <div class="row-input">
-              <div class="key-row">
-                <input type="password" id="apiKey" placeholder="未設定（サーバー提供のキーを使用中）" autocomplete="off" spellcheck="false">
-                <button class="btn-test" id="testBtn" onclick="testConnection()">テスト</button>
-              </div>
-              <div class="hint" id="providerHint">独自のAPIキーを設定すると、サーバーのデフォルトキーの代わりに使用されます。</div>
-            </div>
-          </div>
-        </div>
-        <div class="card-label">モデル</div>
-        <div class="card">
-          <div class="row">
-            <span class="row-label">モデル名</span>
-            <div class="row-input">
-              <input type="text" id="model" placeholder="gpt-5.4-nano" spellcheck="false">
-              <div class="presets" id="modelPresets"></div>
-            </div>
-          </div>
-          <div class="row" id="baseUrlRow">
-            <span class="row-label">ベース URL</span>
-            <div class="row-input">
-              <input type="text" id="baseUrl" placeholder="https://api.openai.com/v1" spellcheck="false">
-              <div class="hint">OpenAI 互換 API のエンドポイント</div>
-            </div>
-          </div>
-          <div class="row">
-            <span class="row-label">最大トークン</span>
-            <div class="row-input">
-              <div class="range-row">
-                <input type="range" id="maxTokens" min="8192" max="32768" step="1024">
-                <span class="range-val" id="maxTokensVal">16384</span>
-              </div>
-            </div>
-          </div>
-          <div class="row">
-            <span class="row-label">Temperature</span>
-            <div class="row-input">
-              <div class="range-row">
-                <input type="range" id="temperature" min="0" max="2" step="0.1">
-                <span class="range-val" id="temperatureVal">0.7</span>
-              </div>
-            </div>
-          </div>
-        </div>
-    </details>
     </div>
   </div>
   <div class="panel" id="panel-session">
@@ -872,17 +906,6 @@
     }catch(e){console.error("logout failed:",e)}
   }
 
-  async function deleteAllData(){
-    if(!confirm("すべてのローカルデータ（データベース、設定ファイル、Cookie、キーチェーンの秘密情報など）を完全に削除します。\n\nこの操作は取り消せません。続行しますか？")){return}
-    try{
-      await invoke("delete_all_local_data");
-      localStorage.clear();
-      window.__TAURI__.window.getCurrentWindow().close().catch(function(){});
-    }catch(e){
-      console.error("delete_all_local_data failed:",e);
-    }
-  }
-
   function startDeleteAllData(){
     document.getElementById("deleteConfirmCard").style.display="block";
   }
@@ -919,31 +942,192 @@
     versionTapTimer=setTimeout(function(){versionTapCount=0},1500);
   }
 
-  var MODEL_PRESETS={openai:["gpt-5.4","gpt-5.4-mini","gpt-5.4-nano"],gemini:["gemini-3.1-pro-preview","gemini-3-flash-preview"],custom:["gpt-5.4-nano","gpt-5.4-mini"]};
-  var PROVIDER_HINTS={openai:"OpenAI API キーは platform.openai.com で取得できます。",gemini:"Google AI Studio (aistudio.google.com) で API キーを取得できます。",custom:"OpenAI 互換のエンドポイント URL と API キーを設定してください。"};
-  var DEFAULT_URLS={openai:"https://api.openai.com/v1",gemini:"",custom:""};
-  var DEFAULT_MODELS={openai:"gpt-5.4-nano",gemini:"gemini-3-flash-preview",custom:"gpt-5.4-nano"};
+  var MODEL_PRESETS={openai:["gpt-5.4","gpt-5.4-mini","gpt-5.4-nano"],gemini:["gemini-3.1-pro-preview","gemini-3-flash-preview"]};
+  var PROVIDER_HINTS={openai:"OpenAI API キーは platform.openai.com で取得できます。",gemini:"Google AI Studio (aistudio.google.com) で API キーを取得できます。"};
+  var DEFAULT_URLS={openai:"https://api.openai.com/v1",gemini:""};
+  var DEFAULT_MODELS={openai:"gpt-5.4-nano",gemini:"gemini-3-flash-preview"};
 
-  var $provider=document.getElementById("provider"),$apiKey=document.getElementById("apiKey"),$model=document.getElementById("model"),$baseUrl=document.getElementById("baseUrl"),$maxTokens=document.getElementById("maxTokens"),$temperature=document.getElementById("temperature"),$maxTokensVal=document.getElementById("maxTokensVal"),$temperatureVal=document.getElementById("temperatureVal"),$modelPresets=document.getElementById("modelPresets"),$baseUrlRow=document.getElementById("baseUrlRow"),$providerHint=document.getElementById("providerHint"),$status=document.getElementById("status"),$replyLanguage=document.getElementById("replyLanguage"),$aiEnabled=document.getElementById("aiEnabled"),$aiSettingsBody=document.getElementById("aiSettingsBody"),$aiDisclaimer=document.getElementById("aiDisclaimer");
+  var $aiProvider=document.getElementById("aiProvider"),$apiKey=document.getElementById("apiKey"),$model=document.getElementById("model"),$baseUrl=document.getElementById("baseUrl"),$maxTokens=document.getElementById("maxTokens"),$temperature=document.getElementById("temperature"),$maxTokensVal=document.getElementById("maxTokensVal"),$temperatureVal=document.getElementById("temperatureVal"),$modelPresets=document.getElementById("modelPresets"),$baseUrlRow=document.getElementById("baseUrlRow"),$providerHint=document.getElementById("providerHint"),$status=document.getElementById("status"),$replyLanguage=document.getElementById("replyLanguage"),$aiEnabled=document.getElementById("aiEnabled"),$aiSettingsBody=document.getElementById("aiSettingsBody");
+  var $localModelSection=document.getElementById("localModelSection"),$apiProviderSection=document.getElementById("apiProviderSection"),$modelListCard=document.getElementById("modelListCard");
+  var $downloadProgressArea=document.getElementById("downloadProgressArea"),$downloadBar=document.getElementById("downloadBar"),$downloadPercent=document.getElementById("downloadPercent"),$downloadModelName=document.getElementById("downloadModelName"),$downloadSize=document.getElementById("downloadSize");
 
-  function onAiEnabledChange(){var on=$aiEnabled.value==="true";$aiSettingsBody.style.display=on?"":"none";$aiDisclaimer.style.display=on?"":"none"}
+  var _selectedLocalModel = "qwen3.5-2b";
+  var _modelList = [];
+  var _downloading = false;
+
+  function friendlyError(e){
+    var s=String(e);
+    if(s.includes("rate limit")||s.includes("429")||s.includes("Too Many"))return"リクエスト上限に達しました。しばらく待ってから再試行してください。";
+    if(s.includes("401")||s.includes("Unauthorized")||s.includes("invalid_api_key"))return"APIキーが無効です。";
+    if(s.includes("403")||s.includes("Forbidden"))return"アクセスが拒否されました。";
+    if(s.includes("timeout")||s.includes("timed out"))return"接続がタイムアウトしました。";
+    if(s.includes("network")||s.includes("dns")||s.includes("ECONNREFUSED"))return"ネットワークエラー。接続を確認してください。";
+    if(s.includes("model_not_found")||s.includes("does not exist"))return"指定されたモデルが見つかりません。";
+    var m=s.match(/API error \(\d+\):\s*(.*)/);
+    if(m)return m[1];
+    return s.length>120?s.substring(0,120)+"...":s;
+  }
+
+  function onProviderSwitch(){
+    var p=$aiProvider.value;
+    var isLocal=p==="local";
+    $localModelSection.style.display=isLocal?"":"none";
+    $apiProviderSection.style.display=isLocal?"none":"";
+    document.getElementById("providerSwitchHint").textContent=isLocal?"ローカルモデルはデバイス上で実行されます。設定対象はモデルの選択・ダウンロード・推論テストのみです。":"API 利用時のみ、キー・モデル名・ベース URL・max tokens・temperature が有効です。";
+    if(!isLocal)updateApiProvider(p);
+  }
+
+  function updateApiProvider(p){
+    $baseUrlRow.style.display=p==="gemini"?"none":"flex";
+    $providerHint.textContent=PROVIDER_HINTS[p]||"";
+    renderPresets(p);
+    var c=$model.value;var pr=MODEL_PRESETS[p]||[];
+    if(!c||!pr.includes(c))$model.value=DEFAULT_MODELS[p]||"";
+    if(p==="openai")$baseUrl.value=$baseUrl.value||DEFAULT_URLS.openai;
+  }
+
+  function onAiEnabledChange(){
+    var on=$aiEnabled.value==="true";
+    $aiSettingsBody.style.display=on?"":"none";
+  }
   $aiEnabled.addEventListener("change",onAiEnabledChange);
 
-  $maxTokens.addEventListener("input",function(){$maxTokensVal.textContent=$maxTokens.value});
+  $maxTokens.addEventListener("input",function(){$maxTokensVal.textContent=$maxTokens.value||"0"});
   $temperature.addEventListener("input",function(){$temperatureVal.textContent=parseFloat($temperature.value).toFixed(1)});
 
-  function onProviderChange(){var p=$provider.value;$baseUrlRow.style.display=p==="gemini"?"none":"flex";$providerHint.textContent=PROVIDER_HINTS[p]||"";renderPresets(p);var c=$model.value;var pr=MODEL_PRESETS[p]||[];if(!c||!pr.includes(c))$model.value=DEFAULT_MODELS[p]||"";if(p==="openai")$baseUrl.value=$baseUrl.value||DEFAULT_URLS.openai}
   function renderPresets(pv){var pr=MODEL_PRESETS[pv]||[];$modelPresets.innerHTML=pr.map(function(m){return'<button class="preset" onclick="document.getElementById(\'model\').value=\''+m+'\'">'+m+"</button>"}).join("")}
   function escapeHtml(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
   function showStatus(msg,type){var safe=escapeHtml(msg);if(type==="loading"){$status.innerHTML='<div class="status loading"><span class="spinner"></span>'+safe+"</div>"}else{$status.innerHTML='<div class="status '+type+'">'+safe+"</div>"}if(type!=="loading")setTimeout(function(){$status.innerHTML=""},4000)}
 
-  async function loadSettings(){try{var c=await invoke("get_ai_config");$aiEnabled.value=c.ai_enabled!==false?"true":"false";onAiEnabledChange();$provider.value=c.provider||"openai";$apiKey.value=(c.api_key&&c.api_key!=="(server)")?c.api_key:"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||16384;$maxTokensVal.textContent=c.max_tokens||16384;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"2026-04-03";document.getElementById("fallStart").value=c.fall_start||"2026-09-21";document.getElementById("aiRefreshInterval").value=String(c.ai_refresh_interval!=null?c.ai_refresh_interval:360);onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
+  async function loadModelList(){
+    try{
+      _modelList=await invoke("list_local_models");
+      renderModelList();
+    }catch(e){console.error("Failed to load models:",e)}
+  }
 
-  function getConfig(){return{ai_enabled:$aiEnabled.value==="true",provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value,spring_start:document.getElementById("springStart").value,fall_start:document.getElementById("fallStart").value,ai_refresh_interval:parseInt(document.getElementById("aiRefreshInterval").value)||0}}
+  function renderModelList(){
+    var html="";
+    _modelList.forEach(function(m){
+      var isSelected=m.id===_selectedLocalModel;
+      var badge=m.downloaded?'<span class="model-badge downloaded">DL済み</span>':'<span class="model-badge">'+m.file_size_mb+'MB</span>';
+      var modelNote='';
+      if(m.id==='qwen3.5-2b'){
+        modelNote='<div class="model-meta" style="color:color-mix(in srgb, var(--text-primary) 74%, var(--red) 26%);font-weight:500;">標準: ホームのお知らせAI要約 / 時間割のAI日程分析は利用不可</div>';
+      }else if(m.id==='qwen3.5-4b'){
+        modelNote='<div class="model-meta" style="color:color-mix(in srgb, var(--text-primary) 78%, var(--green) 22%);font-weight:500;">高品質: すべてのAI分析機能を利用可能</div>';
+      }
+      var actions='';
+      if(!m.downloaded){
+        actions='<button class="btn-test" onclick="startDownload(\''+m.id+'\')">ダウンロード</button>';
+      }else{
+        actions='<button class="btn-test" onclick="deleteModel(\''+m.id+'\')" style="color:var(--red);border-color:rgba(255,59,48,0.3);">削除</button>';
+      }
+      html+='<div class="model-row">';
+      html+='<input type="radio" class="model-radio" name="localModel" value="'+m.id+'"'+(isSelected?' checked':'')+' onchange="_selectedLocalModel=this.value">';
+      html+='<div class="model-info"><div class="model-name">'+escapeHtml(m.name)+'</div>';
+      html+='<div class="model-meta">'+escapeHtml(m.size_label)+'</div>'+modelNote+'</div>';
+      html+=badge;
+      html+='<div class="model-actions">'+actions+'</div>';
+      html+='</div>';
+    });
+    $modelListCard.innerHTML=html||'<div style="padding:14px;font-size:12px;color:var(--text-secondary);">モデル情報を読み込み中...</div>';
+  }
 
-  async function saveSettings(){var btn=document.getElementById("saveBtn");try{btn.disabled=true;if(activePanel==="ai"){await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="mail"){await invoke("mail_save_config",{config:{client_id:$mailClientId.value.trim()}});checkMailSession()}else if(activePanel==="calendar"){await invoke("gcal_save_config",{config:{client_id:$gcalClientId.value.trim(),client_secret:$gcalClientSecret.value.trim()}});await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="download"){await invoke("save_download_config",{config:{download_dir:document.getElementById("downloadDir").value,classify_by_course:document.getElementById("classifyByCourse").value==="true"}})}else if(activePanel==="notification"){await invoke("save_notification_config",{config:{notify_important:document.getElementById("notifImportant").value==="true",notify_faculty:document.getElementById("notifFaculty").value==="true",notify_class:document.getElementById("notifClass").value==="true",notify_other:document.getElementById("notifOther").value==="true",notify_mail:document.getElementById("notifMail").value==="true"}})}showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{btn.disabled=false}}
+  async function startDownload(modelId){
+    if(_downloading)return;
+    _downloading=true;
+    var m=_modelList.find(function(x){return x.id===modelId});
+    if(!m)return;
+    $downloadModelName.textContent=m.name;
+    $downloadPercent.textContent="0%";
+    $downloadBar.style.width="0%";
+    $downloadSize.textContent="";
+    $downloadProgressArea.style.display="";
+    try{
+      await invoke("download_local_model",{modelId:modelId});
+      showStatus(m.name+" のダウンロードが完了しました","success");
+      await loadModelList();
+      _selectedLocalModel=modelId;
+      renderModelList();
+    }catch(e){
+      if(String(e)==="cancelled"){showStatus("ダウンロードを中止しました","error")}
+      else{showStatus("ダウンロードエラー: "+friendlyError(e),"error")}
+    }finally{
+      _downloading=false;
+      $downloadProgressArea.style.display="none";
+    }
+  }
 
-  async function testConnection(){var btn=document.getElementById("testBtn");btn.disabled=true;showStatus("接続をテスト中...","loading");try{await invoke("save_ai_config",{config:getConfig()});var r=await invoke("ai_test_connection");showStatus("接続成功: "+r.substring(0,80),"success")}catch(e){showStatus("接続失敗: "+e,"error")}finally{btn.disabled=false}}
+  function cancelDownload(){invoke("cancel_model_download")}
+
+  async function deleteModel(modelId){
+    if(!confirm("このモデルを削除しますか？"))return;
+    try{
+      await invoke("delete_local_model",{modelId:modelId});
+      showStatus("モデルを削除しました","success");
+      await loadModelList();
+    }catch(e){showStatus("削除エラー: "+e,"error")}
+  }
+
+  // Listen for download progress events
+  if(window.__TAURI__&&window.__TAURI__.event){
+    window.__TAURI__.event.listen("model-download-progress",function(ev){
+      var d=ev.payload;
+      if(d.percent!=null){
+        $downloadBar.style.width=d.percent+"%";
+        $downloadPercent.textContent=d.percent+"%";
+      }
+      if(d.downloaded!=null&&d.total){
+        var dl=(d.downloaded/1048576).toFixed(1);
+        var tt=(d.total/1048576).toFixed(1);
+        $downloadSize.textContent=dl+" / "+tt+" MB";
+      }
+    });
+  }
+
+  async function loadSettings(){
+    try{
+      var c=await invoke("get_ai_config");
+      $aiEnabled.value=c.ai_enabled!==false?"true":"false";
+      $aiProvider.value=c.provider||"local";
+      _selectedLocalModel=c.local_model||"qwen3.5-2b";
+      $apiKey.value=c.api_key||"";
+      $model.value=c.model||"";
+      $baseUrl.value=c.base_url||"";
+      $maxTokens.value=c.max_tokens!=null?String(c.max_tokens):"0";
+      $maxTokensVal.textContent=c.max_tokens!=null?String(c.max_tokens):"0";
+      $temperature.value=c.temperature!=null?c.temperature:0.7;
+      $temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);
+      $replyLanguage.value=c.reply_language||"ja";
+      document.getElementById("aiRefreshInterval").value=String(c.ai_refresh_interval!=null?c.ai_refresh_interval:360);
+      onProviderSwitch();
+      onAiEnabledChange();
+      await loadModelList();
+    }catch(e){console.error("Failed to load config:",e);onAiEnabledChange()}
+  }
+
+  function getConfig(){
+    var p=$aiProvider.value;
+    return{
+      ai_enabled:$aiEnabled.value==="true",
+      provider:p,
+      local_model:_selectedLocalModel,
+      api_key:p==="local"?"":$apiKey.value,
+      model:p==="local"?"":$model.value,
+      base_url:p==="local"?"":$baseUrl.value,
+      max_tokens:parseInt($maxTokens.value)||0,
+      temperature:parseFloat($temperature.value),
+      reply_language:$replyLanguage.value,
+      ai_refresh_interval:parseInt(document.getElementById("aiRefreshInterval").value)||0
+    }
+  }
+
+  async function saveSettings(){var btn=document.getElementById("saveBtn");try{btn.disabled=true;if(activePanel==="ai"){await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="mail"){await invoke("mail_save_config",{config:{client_id:$mailClientId.value.trim()}});checkMailSession()}else if(activePanel==="calendar"){var cc=getCalendarConfig();await invoke("save_calendar_config",{config:cc});await invoke("gcal_save_config",{config:{client_id:$gcalClientId.value.trim(),client_secret:$gcalClientSecret.value.trim()}});localStorage.setItem("selah-syscal-enabled",cc.syscal_enabled?"true":"false");localStorage.setItem("selah-auto-sync",cc.syscal_auto_sync?"true":"false");localStorage.setItem("selah-gcal-auto-sync",cc.gcal_auto_sync?"true":"false");localStorage.setItem("selah-cal-sync-interval",String(cc.cal_sync_interval||12))}else if(activePanel==="download"){await invoke("save_download_config",{config:{download_dir:document.getElementById("downloadDir").value,classify_by_course:document.getElementById("classifyByCourse").value==="true"}})}else if(activePanel==="notification"){await invoke("save_notification_config",{config:{notify_important:document.getElementById("notifImportant").value==="true",notify_faculty:document.getElementById("notifFaculty").value==="true",notify_class:document.getElementById("notifClass").value==="true",notify_other:document.getElementById("notifOther").value==="true",notify_mail:document.getElementById("notifMail").value==="true"}})}showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{btn.disabled=false}}
+
+  async function testConnection(){var btn=document.getElementById("testBtn");btn.disabled=true;showStatus("接続をテスト中...","loading");try{await invoke("save_ai_config",{config:getConfig()});var r=await invoke("ai_test_connection");showStatus("接続成功: "+r.substring(0,80),"success")}catch(e){showStatus(friendlyError(e),"error")}finally{btn.disabled=false}}
+
+  async function testLocalModel(){var btn=document.getElementById("localTestBtn");var st=document.getElementById("localTestStatus");btn.disabled=true;st.style.color="var(--text-secondary)";st.textContent="モデルを読み込み中...";try{await invoke("save_ai_config",{config:getConfig()});var r=await invoke("ai_test_connection");st.style.color="#4caf50";st.textContent="成功: "+r.substring(0,80)}catch(e){st.style.color="#f44336";st.textContent="エラー: "+(typeof e==="string"?e:e.message||JSON.stringify(e))}finally{btn.disabled=false}}
 
   loadSettings();
 
@@ -1138,28 +1322,37 @@
   recheckSessions();
   checkNotifPermission();
 
-  // ---- System Calendar (Calendar.app) ----
+  // ---- Calendar Config (unified) ----
   var $sysCalAutoSyncSel = document.getElementById('sysCalAutoSync');
   var $sysCalEnabledSel = document.getElementById('sysCalEnabled');
   var $calSyncIntervalSel = document.getElementById('calSyncInterval');
 
-  function loadSysCalConfig() {
-    var enabled = localStorage.getItem('selah-syscal-enabled') === 'true';
-    $sysCalEnabledSel.value = enabled ? 'true' : 'false';
-    var autoSync = localStorage.getItem('selah-auto-sync') === 'true';
-    $sysCalAutoSyncSel.value = autoSync ? 'true' : 'false';
-    var interval = localStorage.getItem('selah-cal-sync-interval') || '12';
-    $calSyncIntervalSel.value = interval;
+  function getCalendarConfig(){return{spring_start:document.getElementById("springStart").value,fall_start:document.getElementById("fallStart").value,syscal_enabled:$sysCalEnabledSel.value==="true",syscal_auto_sync:$sysCalAutoSyncSel.value==="true",gcal_auto_sync:$gcalAutoSyncSel.value==="true",cal_sync_interval:parseInt($calSyncIntervalSel.value)||12}}
+
+  async function loadCalendarConfig() {
+    try {
+      var c = await invoke('get_calendar_config');
+      document.getElementById('springStart').value = c.spring_start || '2026-04-03';
+      document.getElementById('fallStart').value = c.fall_start || '2026-09-21';
+      $sysCalEnabledSel.value = c.syscal_enabled ? 'true' : 'false';
+      $sysCalAutoSyncSel.value = c.syscal_auto_sync ? 'true' : 'false';
+      $calSyncIntervalSel.value = String(c.cal_sync_interval || 12);
+      $gcalAutoSyncSel.value = c.gcal_auto_sync ? 'true' : 'false';
+      // Sync to localStorage for main window to read
+      localStorage.setItem('selah-syscal-enabled', c.syscal_enabled ? 'true' : 'false');
+      localStorage.setItem('selah-auto-sync', c.syscal_auto_sync ? 'true' : 'false');
+      localStorage.setItem('selah-gcal-auto-sync', c.gcal_auto_sync ? 'true' : 'false');
+      localStorage.setItem('selah-cal-sync-interval', String(c.cal_sync_interval || 12));
+    } catch (e) { console.error('Failed to load calendar config:', e); }
     updateSysCalRows();
-    if (enabled) { checkSysCalStatus(); }
+    if ($sysCalEnabledSel.value === 'true') { checkSysCalStatus(); }
   }
 
   function onCalSyncIntervalChange() {
-    localStorage.setItem('selah-cal-sync-interval', $calSyncIntervalSel.value);
+    // no-op: saved on panel save
   }
 
   function onSysCalEnabledChange() {
-    localStorage.setItem('selah-syscal-enabled', $sysCalEnabledSel.value);
     updateSysCalRows();
   }
 
@@ -1174,7 +1367,7 @@
   }
 
   function onSysCalAutoSyncChange() {
-    localStorage.setItem('selah-auto-sync', $sysCalAutoSyncSel.value);
+    // no-op: saved on panel save
   }
 
   async function checkSysCalStatus() {
@@ -1231,9 +1424,8 @@
   var isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
   if (!isMac) {
     document.querySelectorAll('.syscal-row').forEach(function(el) { el.style.display = 'none'; });
-    localStorage.setItem('selah-syscal-enabled', 'false');
   }
-  loadSysCalConfig();
+  loadCalendarConfig();
 
   // ---- Google Calendar Config ----
   var $gcalClientId = document.getElementById('gcalClientId');
@@ -1246,9 +1438,6 @@
       $gcalClientId.value = cfg.client_id || '';
       $gcalClientSecret.value = cfg.client_secret || '';
     } catch (e) { console.error('Failed to load gcal config:', e); }
-    // Load auto-sync preference from localStorage
-    var autoSync = localStorage.getItem('selah-gcal-auto-sync') === 'true';
-    $gcalAutoSyncSel.value = autoSync ? 'true' : 'false';
     checkGcalSession();
     // Auto-save config on input change
     var saveTimer = null;
@@ -1263,7 +1452,7 @@
   }
 
   function onGcalAutoSyncChange() {
-    localStorage.setItem('selah-gcal-auto-sync', $gcalAutoSyncSel.value);
+    // no-op: saved on panel save
   }
 
   async function checkGcalSession() {

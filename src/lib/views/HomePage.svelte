@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached, aiNotifStore } from "../stores";
+  import { get } from "svelte/store";
+  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
   import type { NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
-  import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, aiChat, fetchWeather } from "../api";
+  import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, fetchWeather } from "../api";
   import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
   import type { LunaTodoItem, LunaNotification, ScheduleResponse, KgcCourseRow, LunaCourseRow } from "../types";
   import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
@@ -87,12 +88,17 @@
   let subportalError = $state("");
 
   // AI smart notification state
+  let aiConfigEnabled = $state(false);
   let aiEnabled = $state(false);
+  let aiNotifBlocked2b = $state(false);
   let aiNotifResult = $state<AiNotifResult | null>(null);
   let aiNotifLoading = $state(false);
   let aiNotifError = $state("");
   let aiNotifSources = $state<UnifiedNotif[]>([]);
   let aiReplyLanguage = $state("");
+  let aiProvider = $state("");
+  /** AI notifs are usable: enabled, ready, and not blocked by 2B */
+  let aiNotifUsable = $derived(aiConfigEnabled && aiEnabled && !aiNotifBlocked2b);
 
   async function openSubportal(item: { url: string; title: string }) {
     // Extract tagCd from URL like /portal/subportal?tagCd=1
@@ -423,7 +429,10 @@
       return;
     }
     // Re-check AI config in case user just configured it in settings
-    if (!aiEnabled) checkAiConfig();
+    if (!aiEnabled) {
+      resetAiReady();
+      checkAiConfig();
+    }
     // Immediately refresh clock so now/next updates on tab focus
     tickClock();
     // Resume visual cycling
@@ -488,7 +497,7 @@
 
   // When AI scheduler signals a refresh (store set to null), re-run AI notif analysis
   const unsubAiNotif = aiNotifStore.subscribe((val) => {
-    if (val === null && aiEnabled && !aiNotifLoading) {
+    if (val === null && aiEnabled && !aiNotifLoading && !get(sessionExpired)) {
       fetchAiNotifs();
     }
   });
@@ -570,10 +579,15 @@
 
   async function checkAiConfig() {
     try {
+      if (get(sessionExpired)) return;
       const cfg = await getAiConfig();
-      aiEnabled = cfg.ai_enabled !== false && !!(cfg.api_key && cfg.api_key.trim());
+      aiConfigEnabled = cfg.ai_enabled !== false;
+      const ready = await isAiReady();
+      aiEnabled = ready;
+      aiNotifBlocked2b = await isLocalStandard2b();
       aiReplyLanguage = cfg.reply_language || "";
-      if (aiEnabled) await loadAiNotifs(false);
+      aiProvider = cfg.provider || "";
+      if (aiEnabled && !aiNotifBlocked2b) await loadAiNotifs(false);
     } catch { aiEnabled = false; }
   }
 
@@ -595,7 +609,54 @@
     await fetchAiNotifs();
   }
 
+  function buildLocalSystemPrompt(nowStr: string, lang: string): string {
+    let p = `あなたは関西学院大学の学生向けパーソナル通知アシスタントです。
+学生のプロフィール（学部・キャンパス・履修科目・課題状況）と通知一覧を受け取り、今この学生にとって重要な情報をJSON形式で出力します。
+
+現在の日時: ${nowStr}
+この日時がすべての判断の基準です。
+
+# キャンパスと学部
+- 西宮上ケ原（NUC）：神学部、文学部、社会学部、法学部、経済学部、商学部、人間福祉学部、国際学部、教育学部
+- 神戸三田（KSC）：総合政策学部、理学部、工学部、生命環境学部、建築学部
+NUCとKSCは約40km離れており、別キャンパスの通知は基本無関係です。
+
+# 判定基準
+各通知について以下を判定してください：
+- 日程が現在より前 → 終了済み → 除外
+- 学生の所属キャンパス・学部と無関係 → 除外
+- 各通知は独立です。似たタイトルでも各通知の「内容:」から個別に日程を読み取ること
+- 「内容:」がない通知はタイトルと日付で判断
+
+# 出力ルール
+
+summary（80〜150字）:
+- 除外した通知には言及しない
+- 課題の締切は「あとN日」と残り日数を書く
+- 具体的な情報（教室名・時間・場所）を引用する
+
+important（最大5件）:
+- 除外した通知は入れない
+- indexは通知一覧の番号（1始まり）と一致させる
+- 優先: 履修科目関連 > 学部関連 > キャンパス内イベント > 全学共通
+
+suggestions（最大3件、各10〜20字）:
+- 通知の繰り返しではなく、一歩踏み込んだ行動提案を書く
+- カジュアルな口調（丁寧語・命令形は使わない）
+- 終了済みイベントのsuggestionsは書かない
+- 良い例:「レポートは構成だけ先に書いとくといいよ」
+- 悪い例:「〇〇のクイズ、あと3日」（これはsummaryの内容）
+
+# 出力形式
+以下のJSONのみ出力。JSON以外のテキスト・説明・前置きは絶対に書かないでください。
+
+{"summary":"...","important":[{"title":"20字以内","reason":"15字以内","index":番号}],"suggestions":["..."]}`;
+    if (lang) p += `\n\nsummary, title, reason, suggestionsは${lang}で書くこと。`;
+    return p;
+  }
+
   async function fetchAiNotifs() {
+    if (get(sessionExpired)) return;
     aiNotifLoading = true;
     aiNotifError = "";
     try {
@@ -625,19 +686,21 @@
         }
       }
 
-      // Fetch detail content for KWIC and Luna notifications (up to 10 each)
+      // Fetch detail content for KWIC and Luna notifications
+      // Local: limit to 5 each to reduce prompt size; Cloud: up to 10 each
+      const detailLimit = aiProvider === "local" ? 5 : 10;
       const kwicItems: { idx: number; item: { id: string; information_type: string; person_category_cd: string; category_cd: string } }[] = [];
       const lunaItems: { idx: number; url: string }[] = [];
       let idx = kgcNotifs.length;
       for (const n of lunaNotifs) {
-        if (n.url && lunaItems.length < 10) lunaItems.push({ idx, url: n.url });
+        if (n.url && lunaItems.length < detailLimit) lunaItems.push({ idx, url: n.url });
         idx++;
       }
       if (kwicHome) {
         for (const sec of kwicHome.sections) {
           if (sec.title === "メインリンク" || sec.title === "注目コンテンツ") continue;
           for (const item of sec.items) {
-            if (item.id && kwicItems.length < 10) {
+            if (item.id && kwicItems.length < detailLimit) {
               kwicItems.push({ idx, item: { id: item.id, information_type: item.information_type, person_category_cd: item.person_category_cd, category_cd: item.category_cd } });
             }
             idx++;
@@ -646,12 +709,13 @@
       }
 
       // Parallel fetch of notification body content
+      const bodyMaxLen = aiProvider === "local" ? 150 : 300;
       const detailPromises: Promise<void>[] = [];
       for (const { idx: i, item } of kwicItems) {
         detailPromises.push(
           kwicFetchDetail(item as KwicPortalNotification)
             .then(d => {
-              const body = truncate(stripHtml(d.body_html), 300);
+              const body = truncate(stripHtml(d.body_html), bodyMaxLen);
               if (body) allNotifs[i].body = body;
             })
             .catch(e => console.warn(`[AI] KWIC detail fetch failed for idx=${i}:`, e))
@@ -662,7 +726,7 @@
           lunaInvoke<{ title: string; course_name: string; sections: { heading: string; body: string }[]; attachments: { name: string; url: string }[]; meta: Record<string, string> }>("luna_fetch_detail", { path: url })
             .then(d => {
               const text = d.sections.map(s => (s.heading ? s.heading + ": " : "") + stripHtml(s.body || "")).join(" ");
-              const body = truncate(text, 300);
+              const body = truncate(text, bodyMaxLen);
               if (body) allNotifs[i].body = body;
             })
             .catch(e => console.warn(`[AI] Luna detail fetch failed for idx=${i}:`, e))
@@ -702,14 +766,14 @@
       }
       aiNotifSources = unifiedLookup;
 
-      const notifText = allNotifs
-        .map((n, i) => {
-          let line = `${i + 1}. [${n.source}] ${n.date} | ${n.category} | ${n.title}`;
+      // Helper: format a slice of notifications into numbered text
+      const fmtNotifs = (notifs: typeof allNotifs, offset: number) =>
+        notifs.map((n, i) => {
+          let line = `${offset + i + 1}. [${n.source}] ${n.date} | ${n.category} | ${n.title}`;
           if (n.extra) line += ` (${n.extra})`;
           if (n.body) line += `\n   内容: ${n.body}`;
           return line;
-        })
-        .join("\n");
+        }).join("\n");
 
       // Build student context with campus mapping
       let studentCtx = `学生ID: ${$authState.studentId}`;
@@ -750,8 +814,13 @@
       const dateStr = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日（${dayNames[today.getDay()]}）`;
       const timeStr = `${today.getHours()}:${String(today.getMinutes()).padStart(2, "0")}`;
       const nowStr = `${dateStr} ${timeStr}`;
+      const baseCtx = `現在日時: ${nowStr}\n${studentCtx}${timetableCtx}${todoCtx}`;
 
-      const systemPrompt = `あなたは関西学院大学の学生向けパーソナル通知アシスタントです。
+      const isLocal = aiProvider === "local";
+
+      const systemPrompt = isLocal
+        ? buildLocalSystemPrompt(nowStr, aiReplyLanguage)
+        : `あなたは関西学院大学の学生向けパーソナル通知アシスタントです。
 学生のプロフィール（学部・キャンパス・履修科目・課題状況）と通知一覧を受け取り、今この学生にとって重要な情報を分析します。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -862,22 +931,30 @@ suggestionsのルール：
   "suggestions": ["10〜20字の行動提案"]
 }${aiReplyLanguage ? `\n\n# 言語指定\nsummary, important内のtitle/reason, suggestionsの中身は必ず${aiReplyLanguage}で書くこと。_checkは日本語のままでよい。` : ""}`;
 
-      const userMsg = `現在日時: ${nowStr}\n${studentCtx}${timetableCtx}${todoCtx}\n\n通知一覧（${allNotifs.length}件）:\n${notifText}`;
-      console.log("[AI] User message length:", userMsg.length, "Body-enriched notifs:", allNotifs.filter(n => n.body).length);
+      // Helper: strip <think>...</think> blocks from local model responses
+      const sanitizeAiResponse = (text: string): string => {
+        let s = text.replace(/<think[\s\S]*?<\/think>/gi, "");
+        s = s.replace(/<think>/gi, "").replace(/<\/think>/gi, "");
+        return s.trim();
+      };
 
-      const messages: AiChatMessage[] = [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMsg },
-      ];
+      // Helper: parse AI JSON response
+      const parseAiResponse = (raw: string): AiNotifResult => {
+        const cleaned = sanitizeAiResponse(raw);
+        const m = cleaned.match(/\{[\s\S]*\}/);
+        if (!m) throw new Error("AI応答の解析に失敗しました");
+        const parsed = JSON.parse(m[0]);
+        delete parsed._check;
+        return parsed;
+      };
 
-      const raw = await aiChat(messages);
-      // Extract JSON from response
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("AI応答の解析に失敗しました");
-      const parsed = JSON.parse(jsonMatch[0]);
-      // Strip _check (reasoning trace) before storing
-      delete parsed._check;
-      const result: AiNotifResult = parsed;
+      const fullNotifText = fmtNotifs(allNotifs, 0);
+      const fullUserMsg = `${baseCtx}\n\n通知一覧（${allNotifs.length}件）:\n${fullNotifText}`;
+
+      let result: AiNotifResult;
+      console.log("[AI] Single request: provider=%s, user msg %d chars, body-enriched %d", aiProvider, fullUserMsg.length, allNotifs.filter(n => n.body).length);
+      const raw = await aiChat([{ role: "system", content: systemPrompt }, { role: "user", content: fullUserMsg }]);
+      result = parseAiResponse(raw);
 
       aiNotifResult = result;
       localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result, sources: aiNotifSources }));
@@ -894,9 +971,14 @@ suggestionsのルール：
     // Re-read config in case settings changed
     try {
       const cfg = await getAiConfig();
-      aiEnabled = cfg.ai_enabled !== false && !!(cfg.api_key && cfg.api_key.trim());
+      aiConfigEnabled = cfg.ai_enabled !== false;
+      const ready = await isAiReady();
+      aiEnabled = ready;
+      aiNotifBlocked2b = await isLocalStandard2b();
       aiReplyLanguage = cfg.reply_language || "";
+      aiProvider = cfg.provider || "";
     } catch { /* keep existing */ }
+    if (aiNotifBlocked2b) return;
     await loadAiNotifs(true);
   }
 
@@ -1017,17 +1099,26 @@ suggestionsのルール：
 
   <!-- ===== Recent Notifications ===== -->
   <section class="section">
-    <button class="section-head" onclick={() => navigate("notifications")}>
-      <span>お知らせ</span>
-      <span class="arrow">›</span>
-    </button>
+    <div class="section-head-row">
+      <button class="section-head" onclick={() => navigate("notifications")}>
+        <span>お知らせ</span>
+        <span class="arrow">›</span>
+      </button>
+      {#if aiNotifUsable && aiNotifError && !aiNotifLoading}
+        <button class="ai-fail-pill" onclick={refreshAiNotifs} title={aiNotifError}>
+          <span class="ai-fail-dot"></span>
+          <span>AI要約失敗: {aiNotifError.length > 20 ? aiNotifError.slice(0, 20) + '...' : aiNotifError}</span>
+          <span class="ai-fail-retry">再試行</span>
+        </button>
+      {/if}
+    </div>
     {#if loading && !aiNotifLoading && recentNotifs.length === 0}
       <div class="notif-cards">
         <div class="notif-skel"><div class="skel-text" style="width:36px;height:12px"></div><div class="skel-text" style="width:80%;height:14px;margin-top:8px"></div></div>
         <div class="notif-skel"><div class="skel-text" style="width:36px;height:12px"></div><div class="skel-text" style="width:65%;height:14px;margin-top:8px"></div></div>
         <div class="notif-skel"><div class="skel-text" style="width:36px;height:12px"></div><div class="skel-text" style="width:72%;height:14px;margin-top:8px"></div></div>
       </div>
-    {:else if aiEnabled}
+    {:else if aiNotifUsable}
       <!-- AI Smart Notifications -->
       {#if aiNotifLoading}
         <div class="ai-loading-box">
@@ -1047,10 +1138,6 @@ suggestionsのルール：
           </div>
         </div>
       {:else if aiNotifError}
-        <div class="ai-error">
-          <span>AI分析に失敗しました</span>
-          <button class="ai-retry-btn" onclick={refreshAiNotifs}>再試行</button>
-        </div>
         <!-- Fallback to normal notifs -->
         <div class="notif-cards">
           {#each recentNotifs as n}
@@ -1092,6 +1179,11 @@ suggestionsのルール：
             </div>
           {/if}
         </div>
+      {:else}
+        <button class="ai-trigger-box" onclick={refreshAiNotifs}>
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke-linejoin="round" stroke-width="1"/></svg>
+          <span>AI 分析を実行</span>
+        </button>
       {/if}
     {:else if recentNotifs.length > 0}
       <div class="notif-cards">
@@ -1174,14 +1266,14 @@ suggestionsのルール：
       <span class="arrow">›</span>
     </button>
     {#if loading && !timetableData}
-      <div class="scroll-row" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
+      <div class="scroll-row">
         <div class="card-skel"></div>
         <div class="card-skel"></div>
       </div>
     {:else if upcomingDays.length === 0 && urgentTodos.length === 0}
       <p class="empty-text">直近の予定はありません</p>
     {:else}
-      <div class="scroll-row" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
+      <div class="scroll-row">
         {#each upcomingDays as day}
           <div class="tile tile-schedule">
             <span class="tile-tag">{day.label}</span>
@@ -1470,24 +1562,64 @@ suggestionsのルール：
     100% { background-position: -200% 0; }
   }
 
-  .ai-error {
+  .section-head-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12px;
-    color: var(--red, #e53e3e);
-    margin-bottom: 8px;
   }
 
-  .ai-retry-btn {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 6px;
-    border: 1px solid var(--glass-border);
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    cursor: pointer;
+  .ai-fail-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
     font-family: inherit;
+    padding: 2px 8px 2px 6px;
+    border-radius: 20px;
+    border: none;
+    background: color-mix(in srgb, var(--red, #e53e3e) 12%, transparent);
+    color: var(--red, #e53e3e);
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .ai-fail-pill:hover {
+    background: color-mix(in srgb, var(--red, #e53e3e) 20%, transparent);
+  }
+  .ai-fail-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--red, #e53e3e);
+    flex-shrink: 0;
+  }
+  .ai-fail-retry {
+    margin-left: 2px;
+    padding-left: 4px;
+    border-left: 1px solid color-mix(in srgb, var(--red, #e53e3e) 30%, transparent);
+    opacity: 0.8;
+  }
+
+  .ai-trigger-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px dashed var(--border-strong, rgba(0,0,0,0.12));
+    background: none;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .ai-trigger-box:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 5%, transparent);
   }
 
   .ai-notif-box {
@@ -1673,9 +1805,11 @@ suggestionsのルール：
     scroll-snap-type: x proximity;
     -webkit-overflow-scrolling: touch;
     padding-bottom: 4px;
-    /* hide scrollbar */
     scrollbar-width: none;
+    cursor: grab;
   }
+
+  .scroll-row:active { cursor: grabbing; }
 
   .scroll-row::-webkit-scrollbar { display: none; }
 

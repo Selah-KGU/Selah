@@ -15,7 +15,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
@@ -60,6 +60,15 @@ listen("gcal-login-error", () => {
 
 listen("mail-login-error", () => {
   mailAuthState.set({ authenticated: false, email: "", displayName: "" });
+});
+
+// Refresh AI readiness whenever AI config/model state changes from any window.
+listen("ai-config-changed", () => {
+  updateAiReadiness().catch(() => {
+    resetAiReady();
+    aiReady.set(false);
+    agentReady.set(false);
+  });
 });
 
 interface SessionStatus {
@@ -937,7 +946,6 @@ export async function aiGenerateSchedule(
     const { demoAiScheduleResult } = await import("./demo");
     return demoAiScheduleResult();
   }
-  if (get(sessionExpired)) throw new Error("セッション未認証のためAI分析をスキップしました");
   return invoke<AiScheduleResult>("ai_generate_schedule", {
     currentWeekLabel,
     nextWeekLabel,
@@ -951,7 +959,6 @@ export async function aiAnalyzeTodo(force: boolean = false): Promise<AiTodoAnaly
     const { demoAiTodoAnalysis } = await import("./demo");
     return demoAiTodoAnalysis();
   }
-  if (get(sessionExpired)) throw new Error("セッション未認証のためAI分析をスキップしました");
   return invoke<AiTodoAnalysis>("ai_analyze_todo", { force });
 }
 
@@ -1010,8 +1017,88 @@ export async function openSyllabusDetail(classCode: string, courseName: string):
 // ---------- AI API ----------
 
 export async function getAiConfig(): Promise<AiConfig> {
-  if (_isDemo()) return { ai_enabled: false, api_key: "demo", model: "demo", provider: "openai", base_url: "", max_tokens: 0, temperature: 0, reply_language: "ja", ai_refresh_interval: 0 };
+  if (_isDemo()) return { ai_enabled: false, api_key: "demo", model: "demo", provider: "local", local_model: "", base_url: "", max_tokens: 0, temperature: 0, reply_language: "ja", ai_refresh_interval: 0 };
   return invoke<AiConfig>("get_ai_config");
+}
+
+/**
+ * Check if AI is actually usable for auto-trigger purposes.
+ * For local provider: check if the selected model is downloaded.
+ * For API providers: trust the user's configuration.
+ */
+let _aiReadyCache: boolean | null = null;
+let _aiReadyPromise: Promise<boolean> | null = null;
+export async function isAiReady(): Promise<boolean> {
+  if (_aiReadyCache !== null) return _aiReadyCache;
+  if (_aiReadyPromise) return _aiReadyPromise;
+  _aiReadyPromise = (async () => {
+    try {
+      const cfg = await getAiConfig();
+      if (!cfg || cfg.ai_enabled === false) {
+        _aiReadyCache = false;
+        return false;
+      }
+      if (cfg.provider === "local") {
+        // Check if the selected model is downloaded
+        const models = await invoke<any[]>("list_local_models");
+        const selected = models.find((m: any) => m.id === cfg.local_model);
+        _aiReadyCache = selected?.downloaded === true;
+        return _aiReadyCache;
+      }
+      // API provider — needs api_key
+      _aiReadyCache = !!(cfg.api_key?.trim());
+      return _aiReadyCache;
+    } catch {
+      _aiReadyCache = false;
+      return false;
+    } finally {
+      _aiReadyPromise = null;
+    }
+  })();
+  return _aiReadyPromise;
+}
+/** Reset the cached AI readiness (e.g. after settings change). */
+export function resetAiReady() { _aiReadyCache = null; }
+
+/**
+ * Recompute AI readiness and push into the reactive stores
+ * (`aiReady` for general AI features, `agentReady` for agent entry).
+ * Call this on app init and whenever AI settings change.
+ */
+export async function updateAiReadiness(): Promise<void> {
+  resetAiReady();
+  try {
+    const cfg = await getAiConfig();
+    if (!cfg || cfg.ai_enabled === false) {
+      aiReady.set(false);
+      agentReady.set(false);
+      return;
+    }
+    if (cfg.provider === "local") {
+      const models = await invoke<any[]>("list_local_models");
+      const selected = models.find((m: any) => m.id === cfg.local_model);
+      const downloaded = selected?.downloaded === true;
+      aiReady.set(downloaded);
+      agentReady.set(downloaded);
+    } else {
+      const hasKey = !!(cfg.api_key?.trim());
+      aiReady.set(hasKey);
+      agentReady.set(hasKey);
+    }
+  } catch {
+    aiReady.set(false);
+    agentReady.set(false);
+  }
+}
+
+/** Returns true when local provider is using the standard 2B model. */
+export async function isLocalStandard2b(): Promise<boolean> {
+  try {
+    const cfg = await getAiConfig();
+    return cfg.provider === "local" && cfg.local_model === "qwen3.5-2b";
+  } catch {
+    return false;
+  }
 }
 
 export async function aiChat(messages: AiChatMessage[]): Promise<string> {
@@ -1020,7 +1107,6 @@ export async function aiChat(messages: AiChatMessage[]): Promise<string> {
     const { demoAiNotifResult } = await import("./demo");
     return JSON.stringify(demoAiNotifResult());
   }
-  if (get(sessionExpired)) throw new Error("セッション未認証のためAI分析をスキップしました");
   return invoke<string>("ai_chat", { messages });
 }
 
@@ -1236,8 +1322,7 @@ function setAiLastRun(ts: number) {
 export async function runAiRefresh(force: boolean = false): Promise<void> {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
 
-  const cfg = await getAiConfig().catch(() => null);
-  if (!cfg || cfg.ai_enabled === false || !cfg.api_key?.trim()) return;
+  if (!await isAiReady()) return;
 
   // AI todo analysis (runs if Luna is authenticated)
   if (get(lunaAuthState).authenticated) {
@@ -1265,8 +1350,9 @@ export async function runAiRefresh(force: boolean = false): Promise<void> {
 async function aiSchedulerTick() {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
   try {
+    if (!await isAiReady()) return;
     const cfg = await getAiConfig();
-    if (!cfg.api_key?.trim() || !cfg.ai_refresh_interval) return;
+    if (!cfg.ai_refresh_interval) return;
     const intervalMs = cfg.ai_refresh_interval * 60 * 1000;
     const lastRun = getAiLastRun();
     if (Date.now() - lastRun < intervalMs) return;
@@ -1348,10 +1434,10 @@ export async function refreshAllData(): Promise<void> {
   }));
   // Add schedule sync as the last item
   initialItems.push({ key: "schedule_sync", label: "時間割同期", platform: "KGC", status: "pending" });
-  // Add AI refresh items
-  const aiCfg = await getAiConfig().catch(() => null);
-  const aiEnabled = !!(aiCfg?.ai_enabled !== false && aiCfg?.api_key?.trim());
-  if (aiEnabled) {
+  // Add AI refresh items (only if AI has been validated to work)
+  const aiReady = await isAiReady();
+  const aiBlocked2b = aiReady && await isLocalStandard2b();
+  if (aiReady && !aiBlocked2b) {
     initialItems.push({ key: "ai_notif", label: "AI 通知分析", platform: "AI", status: "pending" });
     if (get(lunaAuthState).authenticated) {
       initialItems.push({ key: "ai_todo", label: "AI 課題分析", platform: "AI", status: "pending" });
@@ -1392,8 +1478,7 @@ export async function refreshAllData(): Promise<void> {
       setItemStatus("schedule_sync", "error");
     }
     // AI refresh (after all data is fresh)
-    if (aiEnabled) {
-      // AI notification analysis — signal HomePage to re-run with fresh data
+    if (aiReady && !aiBlocked2b) {
       setItemStatus("ai_notif", "running");
       aiNotifStore.set(null); // clear so HomePage knows to generate fresh
       // Brief wait for views to pick up fresh data
@@ -1420,4 +1505,70 @@ export async function refreshAllData(): Promise<void> {
   } finally {
     cacheStatus.update(s => ({ ...s, fullRefreshing: false, refreshingCount: 0 }));
   }
+}
+
+// ── Agent (Selah) ──
+
+export interface AgentConversationSummary {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AgentImagePart {
+  mime: string;
+  data_base64: string;
+}
+
+export interface AgentMessage {
+  id: number;
+  conv_id: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  images?: AgentImagePart[] | null;
+  tool_name?: string | null;
+  tool_result?: unknown;
+  created_at: number;
+}
+
+export type AgentStreamEvent =
+  | { type: "phase"; stage: "planning" | "answering" }
+  | { type: "tool_call"; name: string }
+  | { type: "tool_result"; name: string; preview: string; ok: boolean }
+  | { type: "think"; text: string }
+  | { type: "token"; text: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export async function agentListConversations(): Promise<AgentConversationSummary[]> {
+  return invoke<AgentConversationSummary[]>("agent_list_conversations");
+}
+
+export async function agentCreateConversation(title?: string): Promise<string> {
+  return invoke<string>("agent_create_conversation", { title: title ?? null });
+}
+
+export async function agentLoadMessages(convId: string): Promise<AgentMessage[]> {
+  return invoke<AgentMessage[]>("agent_load_messages", { convId });
+}
+
+export async function agentSend(
+  convId: string,
+  content: string,
+  images: AgentImagePart[] = [],
+): Promise<void> {
+  return invoke("agent_send", { convId, content, images });
+}
+
+export async function agentCancel(convId: string): Promise<void> {
+  return invoke("agent_cancel", { convId });
+}
+
+export async function agentDeleteConversation(convId: string): Promise<void> {
+  return invoke("agent_delete_conversation", { convId });
+}
+
+export async function agentRenameConversation(convId: string, title: string): Promise<void> {
+  return invoke("agent_rename_conversation", { convId, title });
 }

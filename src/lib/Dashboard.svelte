@@ -17,7 +17,9 @@
   import HomePage from "./views/HomePage.svelte";
   import MailView from "./views/MailView.svelte";
   import IctTools from "./views/IctTools.svelte";
+  import AgentChat from "./views/AgentChat.svelte";
   import type { MailMessage, KwicPortalHome } from "./api";
+  import { updateAiReadiness } from "./api";
   import type { LunaNotification } from "./types";
   import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "./notify";
 
@@ -133,6 +135,14 @@
       activeTab.set('timetable');
       aiRefreshRequested.set(true);
     });
+    // Initialize AI readiness stores
+    updateAiReadiness().catch(() => {});
+    // Re-check when AI config changes (e.g. user edits settings)
+    const unlistenAiCfg = await listen('ai-config-changed', () => {
+      updateAiReadiness().catch(() => {});
+    });
+    const _prevDestroy = unlistenRefresh;
+    unlistenRefresh = () => { _prevDestroy?.(); unlistenAiCfg(); };
   });
   onDestroy(() => { if (unlistenRefresh) unlistenRefresh(); unsubMail(); unsubNotif(); unsubLuna(); unsubKwicHome(); });
 </script>
@@ -208,6 +218,11 @@
       {#if visited.has("ict-tools")}
         <div class="view-panel" class:active={$activeTab === "ict-tools"}>
           <IctTools />
+        </div>
+      {/if}
+      {#if visited.has("agent")}
+        <div class="view-panel" class:active={$activeTab === "agent"}>
+          <AgentChat />
         </div>
       {/if}
     </div>

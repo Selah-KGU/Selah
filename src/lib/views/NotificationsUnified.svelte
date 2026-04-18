@@ -302,7 +302,7 @@
   </div>
 
   {#if selectedTab === "授業のお知らせ" && classCourses.length > 1}
-    <div class="filters" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
+    <div class="filters">
       <button class="chip" class:active={selectedCourse === "all"} onclick={() => selectedCourse = "all"}>
         すべて
       </button>
@@ -499,7 +499,9 @@
     margin-bottom: 12px;
     scrollbar-width: none;
     padding-bottom: 2px;
+    cursor: grab;
   }
+  .filters:active { cursor: grabbing; }
   .filters::-webkit-scrollbar { display: none; }
   .chip {
     flex-shrink: 0;

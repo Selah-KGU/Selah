@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { lunaInvoke, aiAnalyzeTodo } from "../api";
-  import { cachedFetch, invalidateCache, onCacheUpdate, lunaAuthState, aiTodoStore } from "../stores";
+  import { cachedFetch, invalidateCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
   import type { LunaTodoItem, AiTodoAnalysis } from "../types";
@@ -10,6 +10,7 @@
   let error = $state("");
   let todoItems = $state<LunaTodoItem[]>([]);
   let selectedCourse = $state("all");
+  let hideOverdue = $state(false);
 
   // AI state
   let aiResult = $state<AiTodoAnalysis | null>(null);
@@ -17,6 +18,9 @@
   let showAiPage = $state(false);
 
   let pending = $derived(todoItems.filter(t => !t.status.includes("提出済")));
+  let hasOverdue = $derived(pending.some(t => urgency(t.deadline) === "overdue"));
+  let overdueCount = $derived(pending.filter(t => urgency(t.deadline) === "overdue").length);
+  let displayCount = $derived(hideOverdue ? pending.length - overdueCount : pending.length);
 
   let courses = $derived(
     [...new Set(pending.map(t => t.course_name))].filter(Boolean).sort()
@@ -31,6 +35,7 @@
 
   let filtered = $derived.by(() => {
     let items = pending;
+    if (hideOverdue) items = items.filter(t => urgency(t.deadline) !== "overdue");
     if (selectedCourse !== "all") items = items.filter(t => t.course_name === selectedCourse);
     return items.slice().sort((a, b) => parseDeadline(a.deadline) - parseDeadline(b.deadline));
   });
@@ -160,12 +165,28 @@
     <div class="title-left">
       <h2>TODO</h2>
       {#if pending.length > 0}
-        <span class="count" class:count-warn={pending.length >= 10}>{pending.length}</span>
+        {#if hasOverdue}
+          <button class="count-btn" class:count-warn={displayCount >= 10} class:hiding={hideOverdue} onclick={() => hideOverdue = !hideOverdue}>
+            {displayCount}
+            <svg class="count-eye" width="11" height="11" viewBox="0 0 16 16" fill="none">
+              {#if hideOverdue}
+                <path d="M3 8c1-2.5 3-4 5-4s4 1.5 5 4c-1 2.5-3 4-5 4s-4-1.5-5-4z" stroke="currentColor" stroke-width="1.4" fill="none"/>
+                <line x1="2" y1="14" x2="14" y2="2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              {:else}
+                <path d="M3 8c1-2.5 3-4 5-4s4 1.5 5 4c-1 2.5-3 4-5 4s-4-1.5-5-4z" stroke="currentColor" stroke-width="1.4" fill="none"/>
+                <circle cx="8" cy="8" r="1.8" stroke="currentColor" stroke-width="1.4" fill="none"/>
+              {/if}
+            </svg>
+          </button>
+        {:else}
+          <span class="count" class:count-warn={pending.length >= 10}>{pending.length}</span>
+        {/if}
       {/if}
     </div>
     <div class="title-actions">
       {#if pending.length > 0}
-        <button class="ai-pill" onclick={enterAiMode} disabled={aiLoading && !aiResult}>
+        <button class="ai-pill" onclick={enterAiMode} disabled={!$aiReady || (aiLoading && !aiResult)}
+          title={!$aiReady ? 'AI 利用不可（設定で有効化）' : 'AI 輔助モード'}>
           <svg class="ai-pill-icon" width="12" height="12" viewBox="0 0 20 20" fill="none" class:spin={aiLoading && !aiResult}>
             {#if aiLoading && !aiResult}
               <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="35 12" stroke-linecap="round"/>
@@ -189,7 +210,7 @@
   </div>
 
   {#if pending.length > 1 && courses.length > 1}
-    <div class="filters" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
+    <div class="filters">
       <button class="chip" class:active={selectedCourse === "all"} onclick={() => selectedCourse = "all"}>
         すべて
       </button>
@@ -304,6 +325,28 @@
   .refresh-btn:disabled { opacity: 0.4; cursor: default; }
   .spin { animation: spin 0.8s linear infinite; }
 
+  /* ── Count button (overdue toggle) ── */
+  .count-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--text-secondary);
+    background: var(--accent-light);
+    border: none;
+    border-radius: 12px;
+    padding: 3px 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .count-btn:hover { opacity: 0.8; }
+  .count-btn.count-warn { color: var(--orange); background: rgba(255, 149, 0, 0.12); }
+  .count-btn.hiding { color: var(--orange); background: rgba(255, 149, 0, 0.08); }
+  .count-eye { flex-shrink: 0; opacity: 0.6; }
+  .count-btn:hover .count-eye { opacity: 1; }
+
   /* ── Filters ── */
   .filters {
     display: flex;
@@ -312,7 +355,9 @@
     margin-bottom: 12px;
     scrollbar-width: none;
     padding-bottom: 2px;
+    cursor: grab;
   }
+  .filters:active { cursor: grabbing; }
   .filters::-webkit-scrollbar { display: none; }
   .chip {
     flex-shrink: 0;

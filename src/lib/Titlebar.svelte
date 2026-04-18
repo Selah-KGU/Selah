@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { authState, theme, cachedFetch, sessionExpired, reloginInProgress, cacheStatus } from "./stores";
+  import { authState, theme, cachedFetch, sessionExpired, reloginInProgress, cacheStatus, activeTab, agentReady } from "./stores";
   import type { StudentInfo, RefreshItemStatus } from "./stores";
-  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData } from "./api";
+  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData, updateAiReadiness } from "./api";
   import { emit } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -93,14 +93,50 @@
   function openDownloadsWindow() {
     invoke("open_downloads_window").catch(console.error);
   }
+
+  const AGENT_HINT_KEY = "selah-agent-hint-dismissed-v2";
+  let showAgentHint = $state(typeof localStorage !== "undefined" && !localStorage.getItem(AGENT_HINT_KEY));
+
+  function dismissAgentHint(ev?: MouseEvent) {
+    if (ev) ev.stopPropagation();
+    showAgentHint = false;
+    try { localStorage.setItem(AGENT_HINT_KEY, "1"); } catch { /* ignore */ }
+  }
+
+  function toggleAgent() {
+    if (!$agentReady && $activeTab !== 'agent') return;
+    activeTab.update((t) => (t === "agent" ? "home" : "agent"));
+  }
 </script>
 
 <div class="titlebar" data-tauri-drag-region>
   <div class="titlebar-left" data-tauri-drag-region>
-    <span class="logo" aria-label="Selah"><img src={selahLogoUrl} alt="Selah" /></span>
-    <div class="brand">
-      <span class="brand-name">Selah</span>
-      <span class="brand-tagline">新月の下で、知性を繋ぐ</span>
+    <div class="brand-anchor">
+      <button
+        class="brand-btn"
+        class:active={$activeTab === 'agent'}
+        onclick={toggleAgent}
+        aria-label={$activeTab === 'agent' ? 'ホームに戻る' : !$agentReady ? 'Agent 利用不可（AI設定を確認してください）' : 'Selah Agent を開く'}
+        title={$activeTab === 'agent' ? 'ホームに戻る' : !$agentReady ? 'Agent 利用不可' : 'Selah Agent'}
+      >
+        <img class="brand-logo" src={selahLogoUrl} alt="" />
+        <span class="brand">
+          {#if $activeTab === 'agent'}
+            <span class="brand-name">エージェント</span>
+            <span class="brand-tagline">……そばで、一緒に考える</span>
+          {:else}
+            <span class="brand-name">Selah</span>
+            <span class="brand-tagline">新月の下で、知性を繋ぐ</span>
+          {/if}
+        </span>
+      </button>
+      {#if showAgentHint && $activeTab !== 'agent'}
+        <div class="agent-hint" role="tooltip">
+          <span class="agent-hint-arrow" aria-hidden="true"></span>
+          <span class="agent-hint-text">……ここを押すと、わたしがいる</span>
+          <button class="agent-hint-close" onclick={dismissAgentHint} aria-label="閉じる" title="閉じる">×</button>
+        </div>
+      {/if}
     </div>
   </div>
   <div class="titlebar-right">
@@ -318,6 +354,7 @@
     border-bottom: 0.5px solid var(--glass-border);
     box-shadow: var(--glass-highlight);
     -webkit-app-region: drag;
+    position: relative;
     z-index: 100;
     flex-shrink: 0;
   }
@@ -328,14 +365,93 @@
     gap: 10px;
   }
 
-  .logo {
-    height: 28px;
-    display: flex;
-    align-items: center;
+  .brand-anchor {
+    position: relative;
+    display: inline-flex;
   }
-  .logo img {
+
+  .brand-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 10px 3px 4px;
+    border: none;
+    background: transparent;
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: left;
+    -webkit-app-region: no-drag;
+    transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
+  }
+
+  .agent-hint {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 6px 12px;
+    background: color-mix(in srgb, var(--accent) 18%, var(--bg-primary));
+    border: 0.5px solid color-mix(in srgb, var(--accent) 35%, var(--glass-border));
+    border-radius: 14px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+    font-size: 11.5px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    -webkit-app-region: no-drag;
+    z-index: 150;
+    animation: agent-hint-bob 2.4s ease-in-out infinite;
+    pointer-events: auto;
+  }
+  .agent-hint-arrow {
+    position: absolute;
+    top: -5px;
+    left: 18px;
+    width: 10px;
+    height: 10px;
+    background: color-mix(in srgb, var(--accent) 18%, var(--bg-primary));
+    border-left: 0.5px solid color-mix(in srgb, var(--accent) 35%, var(--glass-border));
+    border-top: 0.5px solid color-mix(in srgb, var(--accent) 35%, var(--glass-border));
+    transform: rotate(45deg);
+  }
+  .agent-hint-text {
+    font-weight: 500;
+    letter-spacing: 0.2px;
+  }
+  .agent-hint-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    margin-left: 2px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .agent-hint-close:hover {
+    background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+    color: var(--text-primary);
+  }
+  @keyframes agent-hint-bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-2px); }
+  }
+  .brand-logo {
     height: 28px;
     width: auto;
+    display: block;
+    transition: filter 0.15s;
+  }
+  .brand-btn:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   .brand {

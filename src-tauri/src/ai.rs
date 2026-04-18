@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 use tauri::Manager;
+use tauri::Emitter;
 
 /// Shared HTTP client — reuses connection pool across all AI calls.
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
@@ -17,15 +18,14 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 #[serde(default)]
 pub struct AiConfig {
     pub ai_enabled: bool,
-    pub provider: String,    // "openai" | "gemini" | "custom"
+    pub provider: String,    // "local" | "openai" | "gemini"
+    pub local_model: String, // model id from catalog, e.g. "qwen3.5-2b"
     pub api_key: String,
     pub model: String,
     pub base_url: String,
     pub max_tokens: u32,
     pub temperature: f32,
     pub reply_language: String,
-    pub spring_start: String,  // e.g. "2026-04-06" — first day of spring semester
-    pub fall_start: String,    // e.g. "2026-09-21" — first day of fall semester
     /// Auto-refresh interval for AI analysis in minutes (60..1440, 0 = disabled)
     pub ai_refresh_interval: u32,
 }
@@ -36,14 +36,13 @@ impl std::fmt::Debug for AiConfig {
         f.debug_struct("AiConfig")
             .field("ai_enabled", &self.ai_enabled)
             .field("provider", &self.provider)
+            .field("local_model", &self.local_model)
             .field("api_key", &if self.api_key.is_empty() { "(empty)" } else { "(set)" })
             .field("model", &self.model)
             .field("base_url", &self.base_url)
             .field("max_tokens", &self.max_tokens)
             .field("temperature", &self.temperature)
             .field("reply_language", &self.reply_language)
-            .field("spring_start", &self.spring_start)
-            .field("fall_start", &self.fall_start)
             .field("ai_refresh_interval", &self.ai_refresh_interval)
             .finish()
     }
@@ -53,16 +52,15 @@ impl Default for AiConfig {
     fn default() -> Self {
         Self {
             ai_enabled: false,
-            provider: "openai".into(),
+            provider: "local".into(),
+            local_model: "qwen3.5-2b".into(),
             api_key: String::new(),
             model: "gpt-5.4-nano".into(),
             base_url: "https://api.openai.com/v1".into(),
-            max_tokens: 16384,
+            max_tokens: 0,
             temperature: 0.7,
             reply_language: "ja".into(),
-            spring_start: String::new(),
-            fall_start: String::new(),
-            ai_refresh_interval: 360, // default 6 hours
+            ai_refresh_interval: 360,
         }
     }
 }
@@ -71,6 +69,14 @@ impl Default for AiConfig {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImagePart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImagePart {
+    pub mime: String,
+    pub data_base64: String,
 }
 
 // ============ OpenAI API types ============
@@ -148,35 +154,6 @@ struct GeminiPartResponse {
 }
 
 // ============ Config persistence ============
-
-/// URL of the key distribution server.
-const KEY_SERVER_URL: &str = "http://api.selah.jp/index.php";
-
-/// Cached remote key (fetched once per app session)
-static REMOTE_KEY: std::sync::OnceLock<Option<RemoteKeyConfig>> = std::sync::OnceLock::new();
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteKeyConfig {
-    api_key: String,
-    model: String,
-    base_url: String,
-    provider: String,
-}
-
-/// Try to fetch the default AI key from the remote server (cached per session).
-fn get_remote_key() -> Option<RemoteKeyConfig> {
-    REMOTE_KEY.get_or_init(|| {
-        let resp = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .ok()?
-            .get(KEY_SERVER_URL)
-            .send()
-            .ok()?;
-        if !resp.status().is_success() { return None; }
-        resp.json::<RemoteKeyConfig>().ok()
-    }).clone()
-}
 
 fn config_path() -> PathBuf {
     crate::client::data_dir().join("ai_config.json")
@@ -259,29 +236,33 @@ async fn chat_completion(
     if !config.ai_enabled {
         return Err("AI機能が無効になっています。設定画面で有効にしてください。".into());
     }
-    // If user has their own key, use it directly
-    if !config.api_key.is_empty() {
-        return match config.provider.as_str() {
-            "gemini" => call_gemini(config, messages).await,
-            _ => call_openai(config, messages).await,
-        };
-    }
 
-    // No local key — try the remote default key
-    let remote = get_remote_key()
-        .ok_or("APIキーが設定されていません。設定画面でAPIキーを入力してください。")?;
-
-    let fallback = AiConfig {
-        provider: remote.provider.clone(),
-        api_key: remote.api_key.clone(),
-        model: remote.model.clone(),
-        base_url: remote.base_url.clone(),
-        ..config.clone()
-    };
-
-    match fallback.provider.as_str() {
-        "gemini" => call_gemini(&fallback, messages).await,
-        _ => call_openai(&fallback, messages).await,
+    match config.provider.as_str() {
+        "local" => {
+            // Run local inference in a blocking thread
+            let model_id = config.local_model.clone();
+            let catalog = crate::local_ai::model_catalog();
+            let info = catalog.iter().find(|m| m.id == model_id)
+                .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
+            let file_name = info.file_name.clone();
+            let msgs = messages;
+            tokio::task::spawn_blocking(move || {
+                crate::local_ai::run_inference(crate::local_ai::InferenceRequest {
+                    model_id,
+                    file_name,
+                    messages: msgs,
+                    sampler: crate::local_ai::SamplerConfig::default(),
+                    max_tokens: 0,
+                    prefill: String::new(),
+                    gen_id: String::new(),
+                    think_budget_pct: 40,
+                })
+            })
+            .await
+            .map_err(|e| format!("タスク実行エラー: {}", e))?
+        }
+        "gemini" => call_gemini(config, messages).await,
+        _ => call_openai(config, messages).await,
     }
 }
 
@@ -400,6 +381,29 @@ async fn call_gemini(
 
 /// Truncate error body to avoid leaking excessive API detail to the frontend.
 fn truncate_error(body: &str) -> String {
+    // Try to extract a human-friendly message from JSON error responses
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        // OpenAI / OpenRouter format: { "error": { "message": "..." } }
+        if let Some(msg) = v.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            let msg = msg.trim();
+            if !msg.is_empty() {
+                return if msg.len() > 200 {
+                    format!("{}...", &msg[..msg.char_indices().nth(200).map(|(i,_)|i).unwrap_or(msg.len())])
+                } else {
+                    msg.to_string()
+                };
+            }
+        }
+        // Gemini format: { "error": { "status": "...", "message": "..." } }
+        if let Some(status) = v.get("error").and_then(|e| e.get("status")).and_then(|s| s.as_str()) {
+            let msg = v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("");
+            return format!("{}: {}", status, if msg.len() > 150 { &msg[..150] } else { msg });
+        }
+    }
+    // Fallback: truncate raw body
     match body.char_indices().nth(200) {
         Some((i, _)) => format!("{}...", &body[..i]),
         None => body.to_string(),
@@ -410,41 +414,51 @@ fn truncate_error(body: &str) -> String {
 
 #[tauri::command]
 pub fn get_ai_config() -> AiConfig {
-    let mut cfg = load_config();
-    // If no local key but remote key available, populate fields so frontend sees AI as enabled
-    if cfg.api_key.is_empty() {
-        if let Some(remote) = get_remote_key() {
-            cfg.api_key = "(server)".into(); // sentinel — never sent to provider
-            cfg.model = remote.model;
-            cfg.base_url = remote.base_url;
-            cfg.provider = remote.provider;
-        }
-    }
-    cfg
+    load_config()
 }
 
 #[tauri::command]
-pub fn save_ai_config(mut config: AiConfig) -> Result<(), String> {
-    // Clamp values to valid ranges
+pub fn save_ai_config(app: tauri::AppHandle, mut config: AiConfig) -> Result<(), String> {
     config.temperature = config.temperature.clamp(0.0, 2.0);
-    config.max_tokens = config.max_tokens.clamp(8192, 32768);
     config.api_key = config.api_key.trim().to_string();
     config.base_url = config.base_url.trim().to_string();
     config.model = config.model.trim().to_string();
+    config.local_model = config.local_model.trim().to_string();
 
-    if config.model.is_empty() {
-        return Err("モデル名を入力してください".into());
+    // Validate based on provider
+    match config.provider.as_str() {
+        "local" => {
+            if config.local_model.is_empty() {
+                return Err("ローカルモデルを選択してください".into());
+            }
+        }
+        "openai" | "gemini" => {
+            config.max_tokens = config.max_tokens.clamp(8192, 32768);
+            if config.model.is_empty() {
+                return Err("モデル名を入力してください".into());
+            }
+            if !config.base_url.is_empty()
+                && !config.base_url.starts_with("https://")
+                && !config.base_url.starts_with("http://localhost")
+                && !config.base_url.starts_with("http://127.0.0.1")
+            {
+                return Err("Base URLは https:// で始まる必要があります".into());
+            }
+        }
+        _ => return Err("不明なプロバイダーです".into()),
     }
 
-    if !config.base_url.is_empty()
-        && !config.base_url.starts_with("https://")
-        && !config.base_url.starts_with("http://localhost")
-        && !config.base_url.starts_with("http://127.0.0.1")
-    {
-        return Err("Base URLは https:// で始まる必要があります".into());
+    // If switching away from local, unload the model to free memory
+    if config.provider != "local" {
+        crate::local_ai::unload_model();
     }
 
-    save_config(&config)
+    let result = save_config(&config);
+    if result.is_ok() {
+        // Notify all windows that AI config changed
+        let _ = app.emit("ai-config-changed", ());
+    }
+    result
 }
 
 #[tauri::command]
@@ -459,8 +473,79 @@ pub async fn ai_test_connection() -> Result<String, String> {
     let test_messages = vec![ChatMessage {
         role: "user".into(),
         content: "Reply OK in one word.".into(),
+        images: Vec::new(),
     }];
     chat_completion(&config, test_messages).await
+}
+
+// ============ Local model management commands ============
+
+#[tauri::command]
+pub fn list_local_models() -> Vec<serde_json::Value> {
+    let catalog = crate::local_ai::model_catalog();
+    catalog.iter().map(|m| {
+        let downloaded = crate::local_ai::is_model_downloaded(&m.file_name);
+        serde_json::json!({
+            "id": m.id,
+            "name": m.name,
+            "size_label": m.size_label,
+            "param_size": m.param_size,
+            "file_size_mb": m.file_size_mb,
+            "downloaded": downloaded,
+        })
+    }).collect()
+}
+
+#[tauri::command]
+pub async fn download_local_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
+    let catalog = crate::local_ai::model_catalog();
+    let info = catalog.iter().find(|m| m.id == model_id)
+        .ok_or_else(|| format!("不明なモデル: {}", model_id))?
+        .clone();
+
+    // Run download in blocking thread
+    let app_clone = app.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::local_ai::download_model(&app_clone, &info)
+    })
+    .await
+    .map_err(|e| format!("タスク実行エラー: {}", e))??;
+
+    // Model availability changed — notify frontend
+    let _ = app.emit("ai-config-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_model_download() {
+    crate::local_ai::cancel_download();
+}
+
+#[tauri::command]
+pub fn delete_local_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
+    let catalog = crate::local_ai::model_catalog();
+    let info = catalog.iter().find(|m| m.id == model_id)
+        .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
+
+    // Unload if currently loaded
+    crate::local_ai::unload_model();
+
+    let path = crate::local_ai::model_path(&info.file_name);
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("削除失敗: {}", e))?;
+    }
+
+    // Also remove partial file
+    let part = path.with_extension("gguf.part");
+    if part.exists() {
+        let _ = std::fs::remove_file(&part);
+    }
+
+    // Model availability changed — notify frontend
+    let _ = app.emit("ai-config-changed", ());
+
+    Ok(())
 }
 
 #[tauri::command]

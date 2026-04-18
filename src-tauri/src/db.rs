@@ -45,6 +45,8 @@ pub struct LunaActivityRow {
     pub title: String,
     pub period: String,         // deadline / date range
     pub status: String,         // e.g. "未提出", "提出済", "未回答", "new"
+    #[serde(default)]
+    pub detail_path: String,    // Luna path for fetching detail on demand
 }
 
 /// KGC course detail fields (授業概要, 成績評価 etc.) extracted from detail page.
@@ -248,6 +250,7 @@ impl Database {
                 title           TEXT NOT NULL DEFAULT '',
                 period          TEXT NOT NULL DEFAULT '',
                 status          TEXT NOT NULL DEFAULT '',
+                detail_path     TEXT NOT NULL DEFAULT '',
                 updated_at      INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS kgc_course_details (
@@ -278,6 +281,22 @@ impl Database {
                 data_json       TEXT NOT NULL,
                 updated_at      INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS agent_conversations (
+                id              TEXT PRIMARY KEY,
+                title           TEXT NOT NULL,
+                created_at      INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                conv_id         TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+                role            TEXT NOT NULL,
+                content         TEXT NOT NULL,
+                images_json     TEXT,
+                tool_name       TEXT,
+                tool_result_json TEXT,
+                created_at      INTEGER NOT NULL
+            );
         ").map_err(|e| format!("DB init: {}", e))?;
 
         // Indexes for frequent queries
@@ -288,6 +307,8 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_sp_kgc_code ON session_plans(kgc_code);
             CREATE INDEX IF NOT EXISTS idx_la_luna_id ON luna_activities(luna_id);
             CREATE INDEX IF NOT EXISTS idx_lc_updated ON luna_counts(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_conv ON agent_messages(conv_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_conv_updated ON agent_conversations(updated_at DESC);
         ").map_err(|e| format!("DB index: {}", e))?;
 
         // Drop old merged tables if they exist (migration from old schema)
@@ -297,6 +318,9 @@ impl Database {
 
         // Migration: add textbooks_json column to existing kgc_course_details tables
         let _ = conn.execute_batch("ALTER TABLE kgc_course_details ADD COLUMN textbooks_json TEXT NOT NULL DEFAULT '[]'");
+
+        // Migration: add detail_path column to existing luna_activities tables
+        let _ = conn.execute_batch("ALTER TABLE luna_activities ADD COLUMN detail_path TEXT NOT NULL DEFAULT ''");
 
         // Force re-fetch for rows that still have empty textbooks (parser was updated)
         let _ = conn.execute_batch("UPDATE kgc_course_details SET updated_at = 0 WHERE textbooks_json = '[]'");
@@ -592,12 +616,12 @@ impl Database {
             .map_err(|e| format!("DB delete activities: {}", e))?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO luna_activities (luna_id, activity_type, title, period, status, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6)"
+                "INSERT INTO luna_activities (luna_id, activity_type, title, period, status, detail_path, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)"
             ).map_err(|e| format!("DB prepare: {}", e))?;
             for a in activities {
                 stmt.execute(
-                    params![luna_id, a.activity_type, a.title, a.period, a.status, now],
+                    params![luna_id, a.activity_type, a.title, a.period, a.status, a.detail_path, now],
                 ).map_err(|e| format!("DB insert activity: {}", e))?;
             }
         }
@@ -613,7 +637,7 @@ impl Database {
 
     fn query_all_luna_activities(conn: &Connection) -> Result<Vec<LunaActivityRow>, String> {
         let mut stmt = conn.prepare(
-            "SELECT luna_id, activity_type, title, period, status FROM luna_activities ORDER BY luna_id, activity_type"
+            "SELECT luna_id, activity_type, title, period, status, detail_path FROM luna_activities ORDER BY luna_id, activity_type"
         ).map_err(|e| format!("DB query: {}", e))?;
         let rows = stmt.query_map([], |row| {
             Ok(LunaActivityRow {
@@ -622,6 +646,7 @@ impl Database {
                 title: row.get(2)?,
                 period: row.get(3)?,
                 status: row.get(4)?,
+                detail_path: row.get(5)?,
             })
         }).map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -765,6 +790,126 @@ impl Database {
             Err(e) => Err(format!("DB get cache: {}", e)),
         }
     }
+
+    // ── Agent conversations / messages ──
+
+    pub fn agent_create_conversation(&self, id: &str, title: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let now = epoch_secs();
+        conn.execute(
+            "INSERT INTO agent_conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+            params![id, title, now],
+        ).map_err(|e| format!("DB agent_create_conversation: {}", e))?;
+        Ok(())
+    }
+
+    pub fn agent_list_conversations(&self) -> Result<Vec<AgentConversationRow>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, created_at, updated_at FROM agent_conversations ORDER BY updated_at DESC"
+        ).map_err(|e| format!("DB prepare: {}", e))?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AgentConversationRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        }).map_err(|e| format!("DB map: {}", e))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn agent_rename_conversation(&self, id: &str, title: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        conn.execute(
+            "UPDATE agent_conversations SET title=?2, updated_at=?3 WHERE id=?1",
+            params![id, title, epoch_secs()],
+        ).map_err(|e| format!("DB agent_rename: {}", e))?;
+        Ok(())
+    }
+
+    pub fn agent_delete_conversation(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        conn.execute("DELETE FROM agent_messages WHERE conv_id=?1", params![id])
+            .map_err(|e| format!("DB delete msgs: {}", e))?;
+        conn.execute("DELETE FROM agent_conversations WHERE id=?1", params![id])
+            .map_err(|e| format!("DB delete conv: {}", e))?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn agent_touch_conversation(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        conn.execute(
+            "UPDATE agent_conversations SET updated_at=?2 WHERE id=?1",
+            params![id, epoch_secs()],
+        ).map_err(|e| format!("DB touch: {}", e))?;
+        Ok(())
+    }
+
+    pub fn agent_append_message(
+        &self,
+        conv_id: &str,
+        role: &str,
+        content: &str,
+        images_json: Option<&str>,
+        tool_name: Option<&str>,
+        tool_result_json: Option<&str>,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        conn.execute(
+            "INSERT INTO agent_messages (conv_id, role, content, images_json, tool_name, tool_result_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![conv_id, role, content, images_json, tool_name, tool_result_json, epoch_secs()],
+        ).map_err(|e| format!("DB append msg: {}", e))?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "UPDATE agent_conversations SET updated_at=?2 WHERE id=?1",
+            params![conv_id, epoch_secs()],
+        ).ok();
+        Ok(id)
+    }
+
+    pub fn agent_load_messages(&self, conv_id: &str) -> Result<Vec<AgentMessageRow>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conv_id, role, content, images_json, tool_name, tool_result_json, created_at
+             FROM agent_messages WHERE conv_id = ?1 ORDER BY created_at ASC, id ASC"
+        ).map_err(|e| format!("DB prepare: {}", e))?;
+        let rows = stmt.query_map(params![conv_id], |row| {
+            Ok(AgentMessageRow {
+                id: row.get(0)?,
+                conv_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                images_json: row.get(4)?,
+                tool_name: row.get(5)?,
+                tool_result_json: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        }).map_err(|e| format!("DB map: {}", e))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConversationRow {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessageRow {
+    pub id: i64,
+    pub conv_id: String,
+    pub role: String,
+    pub content: String,
+    pub images_json: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_result_json: Option<String>,
+    pub created_at: i64,
 }
 
 pub fn epoch_secs() -> i64 {

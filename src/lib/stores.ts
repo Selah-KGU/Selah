@@ -754,7 +754,8 @@ export function splitByFaculty<T extends { department: string }>(
 
 export interface AiConfig {
   ai_enabled: boolean;
-  provider: "openai" | "gemini" | "custom";
+  provider: "local" | "openai" | "gemini";
+  local_model: string;
   api_key: string;
   model: string;
   base_url: string;
@@ -768,3 +769,22 @@ export interface AiChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
+
+// ============ Agent (Selah) ============
+
+export interface AgentConversationSummary {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export const agentConversations = writable<AgentConversationSummary[]>([]);
+export const agentActiveConvId = writable<string | null>(null);
+
+// ============ AI Readiness (reactive) ============
+
+/** General AI readiness: ai_enabled + provider properly configured */
+export const aiReady = writable<boolean>(false);
+/** Agent entry readiness: ai_enabled + selected provider is usable (local or API). */
+export const agentReady = writable<boolean>(false);

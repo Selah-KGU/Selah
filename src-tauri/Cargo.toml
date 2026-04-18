@@ -20,7 +20,8 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.3", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-log = "2"
-reqwest = { version = "0.12", features = ["cookies", "json", "native-tls", "multipart", "blocking"] }
+reqwest = { version = "0.12", features = ["cookies", "json", "native-tls", "multipart", "blocking", "stream"] }
+futures-util = "0.3"
 tokio = { version = "1", features = ["sync", "time", "macros"] }
 scraper = "0.22"
 regex = "1"
@@ -47,12 +48,14 @@ objc2 = "0.6.4"
 block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", features = ["NSHTTPCookie", "NSArray", "NSString"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebsiteDataStore", "WKHTTPCookieStore", "block2"] }
+llama-cpp-2 = { version = "0.1", features = ["metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 webview2-com = "0.38"
 windows-core = "0.61"
 tauri-plugin-single-instance = "2"
+llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
 
 [profile.release]
 opt-level = "s"

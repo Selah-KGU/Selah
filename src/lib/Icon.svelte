@@ -26,7 +26,8 @@
     | "exclamationmark.triangle"
     | "arrow.down.circle"
     | "folder"
-    | "trash";
+    | "trash"
+    | "sparkles";
 </script>
 
 <script lang="ts">
@@ -148,6 +149,10 @@
   {:else if name === "trash"}
     <polyline points="3 6 5 6 21 6" />
     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+  {:else if name === "sparkles"}
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    <circle cx="18" cy="6" r="1" fill="currentColor" stroke="none" />
+    <circle cx="20.5" cy="9.5" r="0.5" fill="currentColor" stroke="none" />
   {/if}
 </svg>
 

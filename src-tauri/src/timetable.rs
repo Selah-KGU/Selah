@@ -421,7 +421,25 @@ pub async fn refresh_luna_counts(
     state: State<'_, LunaState>,
     db: State<'_, Database>,
 ) -> Result<i32, String> {
-    let luna_targets = db.luna_ids_needing_counts()?;
+    refresh_luna_counts_internal(&state, &db, false).await
+}
+
+/// Same as refresh_luna_counts but bypasses the 3-hour freshness threshold.
+/// Used when the caller (e.g. agent) explicitly wants fresh data.
+pub async fn refresh_luna_counts_internal(
+    state: &LunaState,
+    db: &Database,
+    force: bool,
+) -> Result<i32, String> {
+    let luna_targets = if force {
+        let courses = db.get_luna_courses().unwrap_or_default();
+        let mut ids: Vec<String> = courses.into_iter().map(|c| c.luna_id).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    } else {
+        db.luna_ids_needing_counts()?
+    };
     if luna_targets.is_empty() {
         log::info!("refresh_luna_counts: all counts are fresh, skipping");
         return Ok(0);
@@ -464,6 +482,7 @@ pub async fn refresh_luna_counts(
                 title: ann.title.clone(),
                 period: format!("{} ~ {}", ann.start_date, ann.end_date),
                 status: if ann.is_new { "new".into() } else { "read".into() },
+                detail_path: format!("/lms/coursetop/information/listdetail?idnumber={}&informationId={}", luna_id, ann.info_id),
             });
         }
 
@@ -481,6 +500,7 @@ pub async fn refresh_luna_counts(
                         title: m.title.clone(),
                         period: m.period.clone(),
                         status: m.status.clone(),
+                        detail_path: m.url.clone(),
                     });
                 }
                 for r in &reps {
@@ -490,6 +510,7 @@ pub async fn refresh_luna_counts(
                         title: r.title.clone(),
                         period: r.period.clone(),
                         status: r.status.clone(),
+                        detail_path: r.url.clone(),
                     });
                 }
                 for e in &exs {
@@ -499,6 +520,7 @@ pub async fn refresh_luna_counts(
                         title: e.title.clone(),
                         period: e.period.clone(),
                         status: e.status.clone(),
+                        detail_path: e.url.clone(),
                     });
                 }
                 for d in &discs {
@@ -508,6 +530,7 @@ pub async fn refresh_luna_counts(
                         title: d.title.clone(),
                         period: d.period.clone(),
                         status: d.status.clone(),
+                        detail_path: d.url.clone(),
                     });
                 }
 
@@ -642,6 +665,7 @@ async fn enrich_schedule_inner(
                     title: ann.title.clone(),
                     period: format!("{} ~ {}", ann.start_date, ann.end_date),
                     status: if ann.is_new { "new".into() } else { "read".into() },
+                    detail_path: format!("/lms/coursetop/information/listdetail?idnumber={}&informationId={}", luna_id, ann.info_id),
                 });
             }
 
@@ -661,6 +685,7 @@ async fn enrich_schedule_inner(
                             title: m.title.clone(),
                             period: m.period.clone(),
                             status: m.status.clone(),
+                            detail_path: m.url.clone(),
                         });
                     }
 
@@ -672,6 +697,7 @@ async fn enrich_schedule_inner(
                             title: r.title.clone(),
                             period: r.period.clone(),
                             status: r.status.clone(),
+                            detail_path: r.url.clone(),
                         });
                     }
 
@@ -683,6 +709,7 @@ async fn enrich_schedule_inner(
                             title: e.title.clone(),
                             period: e.period.clone(),
                             status: e.status.clone(),
+                            detail_path: e.url.clone(),
                         });
                     }
 
@@ -694,6 +721,7 @@ async fn enrich_schedule_inner(
                             title: d.title.clone(),
                             period: d.period.clone(),
                             status: d.status.clone(),
+                            detail_path: d.url.clone(),
                         });
                     }
 
@@ -749,33 +777,39 @@ pub async fn ai_generate_schedule(
     let raw = db.build_raw_data(&current_week_label, &next_week_label, Vec::new())?;
     let config = ai::load_ai_config();
 
-    if config.api_key.is_empty() {
-        return Err("APIキーが設定されていません。設定画面でAPIキーを入力してください。".into());
-    }
-
-    let prompt = build_ai_schedule_prompt(&raw, &config);
+    let is_local = config.provider == "local";
+    let prompt = build_ai_schedule_prompt(&raw, is_local);
     let lang_hint = match config.reply_language.as_str() {
         "zh" => "\n\n重要: 所有文本字段用中文（简体字）写。科目名・日付保持原数据不变。",
         "en" => "\n\nIMPORTANT: Write all text fields in English. Keep course names and dates as-is.",
         "ko" => "\n\n중요: 모든 텍스트 필드를 한국어로 작성. 과목명・날짜는 원본 그대로.",
         _ => "",
     };
-    log::info!("ai_generate_schedule: calling AI with {} chars prompt", prompt.len());
-    log::debug!("ai_generate_schedule: full prompt:\n{}", prompt);
-    let sys = if lang_hint.is_empty() {
-        SCHEDULE_SYSTEM_PROMPT.to_string()
+    log::info!("ai_generate_schedule: calling AI with {} chars prompt (local={})", prompt.len(), is_local);
+    if !is_local {
+        log::debug!("ai_generate_schedule: full prompt:\n{}", prompt);
+    }
+    let base_system_prompt = if config.provider == "local" {
+        LOCAL_SCHEDULE_SYSTEM_PROMPT
     } else {
-        format!("{}{}", SCHEDULE_SYSTEM_PROMPT, lang_hint)
+        SCHEDULE_SYSTEM_PROMPT
+    };
+    let sys = if lang_hint.is_empty() {
+        base_system_prompt.to_string()
+    } else {
+        format!("{}{}", base_system_prompt, lang_hint)
     };
     let messages = vec![
-        ai::ChatMessage { role: "system".into(), content: sys },
-        ai::ChatMessage { role: "user".into(), content: prompt },
+        ai::ChatMessage { role: "system".into(), content: sys, images: Vec::new() },
+        ai::ChatMessage { role: "user".into(), content: prompt, images: Vec::new() },
     ];
 
     let response = ai::chat_completion_public(&config, messages).await?;
     log::info!("ai_generate_schedule: got response ({} chars)", response.len());
-    log::debug!("ai_generate_schedule: response preview: {}", safe_preview(&response, 500));
-    let result = parse_ai_schedule_response(&response, &current_week_label, &next_week_label)?;
+    if !is_local {
+        log::debug!("ai_generate_schedule: response preview: {}", safe_preview(&response, 500));
+    }
+    let result = parse_ai_schedule_response(&response, &current_week_label, &next_week_label, is_local)?;
     log::info!(
         "ai_generate_schedule: parsed OK — current_week={} items, next_week={} items",
         result.current_week.len(), result.next_week.len()
@@ -851,6 +885,44 @@ const TODO_SYSTEM_PROMPT: &str = r#"あなたは関西学院大学の学生専�
 - 回答はJSONのみ。マークダウンのコードブロック(```)は使わない
 - 回答は指定された言語で書くこと"#;
 
+const LOCAL_TODO_SYSTEM_PROMPT: &str = r#"あなたは関西学院大学の学生専属の学習コンサルタントAIです。
+未提出タスク・授業計画・教材情報を使って、実行可能な学習支援をJSONのみで返してください。
+
+重要:
+- JSON以外の文は出力しない
+- マークダウンのコードブロック（```）を使わない
+
+出力形式（キー名を厳守）:
+{
+    "task_guides": [
+        {
+            "task_name": "課題名",
+            "course_name": "科目名",
+            "deadline": "YYYY/MM/DD HH:MM",
+            "urgency": "overdue|critical|soon|normal",
+            "background": "2〜4文の具体説明",
+            "study_hints": ["具体手順", "具体手順"],
+            "estimated_minutes": 120
+        }
+    ],
+    "daily_plan": [
+        {
+            "label": "今日（M/D）",
+            "tasks": ["task_nameと完全一致（N分）"],
+            "free_hours": 4.0
+        }
+    ],
+    "advice": "3〜5文。文は。で区切る"
+}
+
+品質ルール:
+- background は授業計画/教材の具体語を入れる（抽象論のみは禁止）
+- study_hints は課題固有の行動手順にする（汎用文禁止）
+- daily_plan.tasks は task_guides.task_name と完全一致させる
+- 期限超過・24h以内のタスクを最優先にする
+- 各フィールドは必ず型を守る（string/array/number）。nullを使わない
+- 回答は指定された言語で書くこと"#;
+
 #[tauri::command]
 pub async fn ai_analyze_todo(
     db: State<'_, Database>,
@@ -870,9 +942,6 @@ pub async fn ai_analyze_todo(
     }
 
     let config = ai::load_ai_config();
-    if config.api_key.is_empty() {
-        return Err("APIキーが設定されていません。設定画面でAPIキーを入力してください。".into());
-    }
 
     // Gather todo items from cache
     let todo_items: Vec<crate::luna_parser::LunaTodoItem> = db
@@ -894,9 +963,12 @@ pub async fn ai_analyze_todo(
         Vec::new(),
     )?;
 
-    let prompt = build_todo_ai_prompt(&todo_items, &raw, &config);
-    log::info!("ai_analyze_todo: calling AI with {} chars prompt, {} todo items", prompt.len(), todo_items.len());
-    log::debug!("ai_analyze_todo: full prompt:\n{}", prompt);
+    let is_local = config.provider == "local";
+    let prompt = build_todo_ai_prompt(&todo_items, &raw, is_local);
+    log::info!("ai_analyze_todo: calling AI with {} chars prompt, {} todo items (local={})", prompt.len(), todo_items.len(), is_local);
+    if !is_local {
+        log::debug!("ai_analyze_todo: full prompt:\n{}", prompt);
+    }
 
     let lang_hint = match config.reply_language.as_str() {
         "zh" => "\n\n重要: background, study_hints, advice, daily_plan.label, daily_plan.tasks 等所有文本用中文（简体字）写。task_name・course_name・deadline保持原数据不变。",
@@ -904,27 +976,44 @@ pub async fn ai_analyze_todo(
         "ko" => "\n\n중요: background, study_hints, advice, daily_plan.label, daily_plan.tasks 등 모든 텍스트를 한국어로 작성. task_name・course_name・deadline은 원본 데이터 그대로.",
         _ => "",
     };
-    let sys = if lang_hint.is_empty() {
-        TODO_SYSTEM_PROMPT.to_string()
+    let base_system_prompt = if config.provider == "local" {
+        LOCAL_TODO_SYSTEM_PROMPT
     } else {
-        format!("{}{}", TODO_SYSTEM_PROMPT, lang_hint)
+        TODO_SYSTEM_PROMPT
+    };
+    let sys = if lang_hint.is_empty() {
+        base_system_prompt.to_string()
+    } else {
+        format!("{}{}", base_system_prompt, lang_hint)
     };
     let messages = vec![
-        ai::ChatMessage { role: "system".into(), content: sys },
-        ai::ChatMessage { role: "user".into(), content: prompt },
+        ai::ChatMessage { role: "system".into(), content: sys, images: Vec::new() },
+        ai::ChatMessage { role: "user".into(), content: prompt, images: Vec::new() },
     ];
 
     let response = ai::chat_completion_public(&config, messages).await?;
     log::info!("ai_analyze_todo: got response ({} chars)", response.len());
 
-    let json_str = extract_json_from_response(&response);
-    let result: serde_json::Value = serde_json::from_str(json_str)
+    // Local models: dedicated JSON extractor that skips <think> blocks.
+    // Cloud models: sanitize then extract.
+    let json_str = if is_local {
+        extract_json_from_local_response(&response)?
+    } else {
+        let sanitized = sanitize_ai_response_text(&response);
+        if sanitized.is_empty() {
+            return Err("AI応答が空です。".into());
+        }
+        extract_json_from_response(&sanitized).to_string()
+    };
+    let result: serde_json::Value = serde_json::from_str(&json_str)
         .or_else(|_| {
             log::warn!("ai todo: initial JSON parse failed, attempting truncation repair");
-            let repaired = repair_truncated_json(json_str);
+            let repaired = repair_truncated_json(&json_str);
             serde_json::from_str::<serde_json::Value>(&repaired)
         })
-        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&response, 200)))?;
+        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&json_str, 200)))?;
+
+    let result = normalize_ai_todo_json(result);
 
     // Cache the result
     let cache_json = serde_json::to_string(&result).unwrap_or_default();
@@ -936,8 +1025,9 @@ pub async fn ai_analyze_todo(
 fn build_todo_ai_prompt(
     todos: &[crate::luna_parser::LunaTodoItem],
     raw: &ScheduleRawData,
-    config: &crate::ai::AiConfig,
+    is_local: bool,
 ) -> String {
+    let cal_cfg = crate::commands::load_calendar_config();
     let mut text = String::new();
 
     // Today's date and day of week
@@ -947,8 +1037,8 @@ fn build_todo_ai_prompt(
 
     // Semester week info
     let mut current_week: i32 = 4; // default fallback
-    if !config.spring_start.is_empty() {
-        if let Ok(spring) = chrono::NaiveDate::parse_from_str(&config.spring_start, "%Y-%m-%d") {
+    if !cal_cfg.spring_start.is_empty() {
+        if let Ok(spring) = chrono::NaiveDate::parse_from_str(&cal_cfg.spring_start, "%Y-%m-%d") {
             let days_since = (today_date - spring).num_days();
             if (0..150).contains(&days_since) {
                 let week = (days_since / 7 + 1) as i32;
@@ -957,8 +1047,8 @@ fn build_todo_ai_prompt(
             }
         }
     }
-    if !config.fall_start.is_empty() {
-        if let Ok(fall) = chrono::NaiveDate::parse_from_str(&config.fall_start, "%Y-%m-%d") {
+    if !cal_cfg.fall_start.is_empty() {
+        if let Ok(fall) = chrono::NaiveDate::parse_from_str(&cal_cfg.fall_start, "%Y-%m-%d") {
             let days_since = (today_date - fall).num_days();
             if (0..150).contains(&days_since) {
                 let week = (days_since / 7 + 1) as i32;
@@ -1015,7 +1105,10 @@ fn build_todo_ai_prompt(
         .map(|t| t.course_name.as_str())
         .collect();
 
-    if !raw.luna_activities.is_empty() {
+    // Local: skip Luna activities entirely — the TODO list itself already has
+    // task names, deadlines and status; duplicating activity details bloats
+    // prompt beyond what small context windows can handle.
+    if !is_local && !raw.luna_activities.is_empty() {
         let luna_id_to_name: std::collections::HashMap<&str, &str> = raw.luna_courses.iter()
             .map(|c| (c.luna_id.as_str(), c.name.as_str()))
             .collect();
@@ -1037,7 +1130,6 @@ fn build_todo_ai_prompt(
             let reports: Vec<_> = items.iter().filter(|a| a.activity_type == "report").collect();
             let exams: Vec<_> = items.iter().filter(|a| a.activity_type == "exam").collect();
             let discussions: Vec<_> = items.iter().filter(|a| a.activity_type == "discussion").collect();
-
 
             if !materials.is_empty() {
                 text.push_str("  教材:\n");
@@ -1078,7 +1170,9 @@ fn build_todo_ai_prompt(
     }
 
     // ── Session plans (授業計画) — show more sessions for full context ──
-    if !raw.session_plans.is_empty() {
+    // Local: skip session plans entirely — the TODO list + timetable already
+    // provide sufficient context; session plans are too verbose for small models.
+    if !is_local && !raw.session_plans.is_empty() {
         let code_to_name: std::collections::HashMap<&str, &str> = raw.kgc_entries_current.iter()
             .chain(raw.kgc_entries_next.iter())
             .map(|e| (e.kgc_code.as_str(), e.name.as_str()))
@@ -1094,7 +1188,6 @@ fn build_todo_ai_prompt(
             }
             text.push_str(&format!("### {} [{}]\n", cname, code));
             for p in plans {
-                // Show all sessions up to current + 3 for full context
                 if p.session_num <= current_week + 3 {
                     let marker = if p.session_num == current_week { " ← 今週" }
                         else if p.session_num == current_week - 1 { " ← 先週" }
@@ -1112,7 +1205,8 @@ fn build_todo_ai_prompt(
     }
 
     // ── KGC course details (syllabus: grading, textbooks, objectives, etc.) ──
-    if !raw.kgc_course_details.is_empty() {
+    // Local: skip syllabus entirely — not reliable and bloats prompt
+    if !is_local && !raw.kgc_course_details.is_empty() {
         let code_to_name: std::collections::HashMap<&str, &str> = raw.kgc_entries_current.iter()
             .chain(raw.kgc_entries_next.iter())
             .map(|e| (e.kgc_code.as_str(), e.name.as_str()))
@@ -1318,7 +1412,53 @@ topicに日付がある回を、今週・来週のカレンダーと照合して
 - 回答はJSONのみ、マークダウンのコードブロックは不要
 - 回答は指定された言語で書くこと"#;
 
-fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig) -> String {
+const LOCAL_SCHEDULE_SYSTEM_PROMPT: &str = r#"あなたは関西学院大学の学生向けスケジュール分析AIです。
+提供データ（KGC + Luna）から2週間分の時間割を作成し、JSONのみで返してください。
+
+重要:
+- JSON以外の文章は出力しない
+- マークダウンのコードブロック（```）を使わない
+
+出力形式（このキー名を厳守）:
+{
+    "current_week": [
+        {
+            "day": 1,
+            "period": 1,
+            "course_name": "科目名",
+            "delivery_mode": "対面/オンライン/同時双方向/オンデマンド",
+            "room": "教室",
+            "teacher": "教員名",
+            "session_topic": "第N回: 内容",
+            "is_cancelled": false,
+            "notifications": ["項目"],
+            "assignments": ["項目"],
+            "exams": ["項目"]
+        }
+    ],
+    "next_week": [同じ形式],
+    "weekly_summary": "3〜5文。文は。で区切る",
+    "cross_week_insights": "2〜3文。文は。で区切る"
+}
+
+品質ルール（重要な精髄）:
+- day は 1=月, 2=火, 3=水, 4=木, 5=金, 6=土
+- period は 1〜7
+- 休講は is_cancelled=true
+- notifications/assignments/exams が無ければ []
+- 文字列フィールドは必ず文字列で出力（objectやarrayを入れない）
+- 各セルに入る文は短くする
+- delivery_mode 判定優先順: header > column > KGC課程詳細 > 対面(デフォルト)
+- topic内の日付（例: 4/16）を今週/来週ラベルの範囲と照合して session_topic の回次を決める
+- 日付が欠ける回は前後の回次から補完し、必要なら「(推定)」を付ける
+- weekly_summary は情報羅列ではなく、今週の具体的行動提案を4〜6文で書く（締切・休講・予習・形態混在への対処を優先）
+- cross_week_insights は来週に向けた準備行動を2〜4文で書く
+- assignments/exams は課題名・テスト名と期間/締切を優先して短く記載
+- JSONの各配列/文字列は必ず型を守る（nullは使わない）
+- 回答は指定された言語で書くこと"#;
+
+fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
+    let cal_cfg = crate::commands::load_calendar_config();
     let mut text = String::new();
 
     // Today's date — critical for AI to determine current session number
@@ -1330,18 +1470,18 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
     let current_date = today.date_naive();
     {
         let mut semester_lines: Vec<String> = Vec::new();
-        if !config.spring_start.is_empty() {
-            if let Ok(spring) = chrono::NaiveDate::parse_from_str(&config.spring_start, "%Y-%m-%d") {
-                semester_lines.push(format!("- 春学期開始: {}", config.spring_start));
+        if !cal_cfg.spring_start.is_empty() {
+            if let Ok(spring) = chrono::NaiveDate::parse_from_str(&cal_cfg.spring_start, "%Y-%m-%d") {
+                semester_lines.push(format!("- 春学期開始: {}", cal_cfg.spring_start));
                 let days_since = (current_date - spring).num_days();
                 if (0..150).contains(&days_since) {
                     semester_lines.push(format!("- ★ 現在は春学期 第{}週目", days_since / 7 + 1));
                 }
             }
         }
-        if !config.fall_start.is_empty() {
-            if let Ok(fall) = chrono::NaiveDate::parse_from_str(&config.fall_start, "%Y-%m-%d") {
-                semester_lines.push(format!("- 秋学期開始: {}", config.fall_start));
+        if !cal_cfg.fall_start.is_empty() {
+            if let Ok(fall) = chrono::NaiveDate::parse_from_str(&cal_cfg.fall_start, "%Y-%m-%d") {
+                semester_lines.push(format!("- 秋学期開始: {}", cal_cfg.fall_start));
                 let days_since = (current_date - fall).num_days();
                 if (0..150).contains(&days_since) {
                     semester_lines.push(format!("- ★ 現在は秋学期 第{}週目", days_since / 7 + 1));
@@ -1363,22 +1503,45 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
     text.push_str(&format!("## 今週: {}\n", raw.current_week_label));
     text.push_str("### KGC時間割（今週）\n");
     for e in &raw.kgc_entries_current {
-        text.push_str(&format!(
-            "- {}曜{}限: {} [{}] 教室:{} 休講:{} 補講:{} 変更:{}\n",
-            day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room,
-            e.is_cancelled, e.is_makeup, e.is_room_changed
-        ));
+        if is_local {
+            // Local: only print flags that are true to save tokens
+            let mut flags = String::new();
+            if e.is_cancelled { flags.push_str(" [休講]"); }
+            if e.is_makeup { flags.push_str(" [補講]"); }
+            if e.is_room_changed { flags.push_str(" [変更]"); }
+            text.push_str(&format!(
+                "- {}曜{}限: {} [{}] 教室:{}{}\n",
+                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room, flags
+            ));
+        } else {
+            text.push_str(&format!(
+                "- {}曜{}限: {} [{}] 教室:{} 休講:{} 補講:{} 変更:{}\n",
+                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room,
+                e.is_cancelled, e.is_makeup, e.is_room_changed
+            ));
+        }
     }
 
     // ── KGC Timetable (Next Week) ──
     text.push_str(&format!("\n## 来週: {}\n", raw.next_week_label));
     text.push_str("### KGC時間割（来週）\n");
     for e in &raw.kgc_entries_next {
-        text.push_str(&format!(
-            "- {}曜{}限: {} [{}] 教室:{} 休講:{} 補講:{} 変更:{}\n",
-            day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room,
-            e.is_cancelled, e.is_makeup, e.is_room_changed
-        ));
+        if is_local {
+            let mut flags = String::new();
+            if e.is_cancelled { flags.push_str(" [休講]"); }
+            if e.is_makeup { flags.push_str(" [補講]"); }
+            if e.is_room_changed { flags.push_str(" [変更]"); }
+            text.push_str(&format!(
+                "- {}曜{}限: {} [{}] 教室:{}{}\n",
+                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room, flags
+            ));
+        } else {
+            text.push_str(&format!(
+                "- {}曜{}限: {} [{}] 教室:{} 休講:{} 補講:{} 変更:{}\n",
+                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room,
+                e.is_cancelled, e.is_makeup, e.is_room_changed
+            ));
+        }
     }
 
     // ── Luna Courses (with name-to-id mapping) ──
@@ -1399,6 +1562,24 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
         .collect();
 
     // ── Session Plans (授業計画) ──
+    // For local: compute current semester week for session filtering
+    let semester_week: i32 = if is_local {
+        let mut w: i32 = 4;
+        if !cal_cfg.spring_start.is_empty() {
+            if let Ok(spring) = chrono::NaiveDate::parse_from_str(&cal_cfg.spring_start, "%Y-%m-%d") {
+                let d = (current_date - spring).num_days();
+                if (0..150).contains(&d) { w = (d / 7 + 1) as i32; }
+            }
+        }
+        if !cal_cfg.fall_start.is_empty() {
+            if let Ok(fall) = chrono::NaiveDate::parse_from_str(&cal_cfg.fall_start, "%Y-%m-%d") {
+                let d = (current_date - fall).num_days();
+                if (0..150).contains(&d) { w = (d / 7 + 1) as i32; }
+            }
+        }
+        w
+    } else { 0 };
+
     if !raw.session_plans.is_empty() {
         text.push_str("\n### 授業計画\n");
         for (code, plans) in &raw.session_plans {
@@ -1407,6 +1588,10 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
                 .unwrap_or_else(|| code.clone());
             text.push_str(&format!("#### {}\n", course_label));
             for p in plans {
+                // Local: only show sessions within ±2 of current week
+                if is_local && (p.session_num < semester_week - 2 || p.session_num > semester_week + 2) {
+                    continue;
+                }
                 let mut line = format!("  第{}回:", p.session_num);
                 if !p.th_header.is_empty() {
                     line.push_str(&format!(" [header: {}]", p.th_header));
@@ -1417,7 +1602,8 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
                 if !p.topic.is_empty() {
                     line.push_str(&format!(" {}", p.topic));
                 }
-                if !p.study_outside.is_empty() {
+                // Local: skip study_outside to save tokens
+                if !is_local && !p.study_outside.is_empty() {
                     line.push_str(&format!(" (予習: {})", p.study_outside));
                 }
                 line.push('\n');
@@ -1427,7 +1613,9 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
     }
 
     // ── KGC Course Details (授業形態 etc.) ──
-    if !raw.kgc_course_details.is_empty() {
+    // Local: skip entirely — delivery_mode data from syllabus is unreliable,
+    // and session plan headers/columns already carry delivery info
+    if !is_local && !raw.kgc_course_details.is_empty() {
         text.push_str("\n### KGC課程詳細情報\n");
         // Only fields relevant to schedule analysis (delivery mode, grading, notes)
         let important_labels = [
@@ -1463,9 +1651,9 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
     }
 
     // ── Luna Activity Counts (summary) ──
-    if !raw.luna_counts.is_empty() {
+    // Local: skip counts entirely — details section covers the same info
+    if !is_local && !raw.luna_counts.is_empty() {
         text.push_str("\n### Luna活動サマリー\n");
-        // Build luna_id → course name mapping
         let luna_id_to_name: std::collections::HashMap<&str, &str> = raw.luna_courses.iter()
             .map(|c| (c.luna_id.as_str(), c.name.as_str()))
             .collect();
@@ -1496,6 +1684,10 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, config: &crate::ai::AiConfig)
             let name = luna_id_to_name.get(id).unwrap_or(id);
             text.push_str(&format!("#### {} [{}]\n", name, id));
             for a in items {
+                // Local: only keep actionable types (report + exam)
+                if is_local && !matches!(a.activity_type.as_str(), "report" | "exam") {
+                    continue;
+                }
                 let type_label = match a.activity_type.as_str() {
                     "announcement" => "お知らせ",
                     "report" => "課題",
@@ -1526,9 +1718,19 @@ fn parse_ai_schedule_response(
     response: &str,
     current_week_label: &str,
     next_week_label: &str,
+    is_local: bool,
 ) -> Result<AiScheduleResult, String> {
-    // Try to extract JSON from response (may be wrapped in markdown code blocks)
-    let json_str = extract_json_from_response(response);
+    // Local models: skip <think> blocks then extract JSON in one pass.
+    // Cloud models: strip think tags (just in case) then extract JSON.
+    let json_str = if is_local {
+        extract_json_from_local_response(response)?
+    } else {
+        let sanitized = sanitize_ai_response_text(response);
+        if sanitized.is_empty() {
+            return Err("AI応答が空です。".into());
+        }
+        extract_json_from_response(&sanitized).to_string()
+    };
 
     #[derive(Deserialize)]
     #[serde(default)]
@@ -1542,13 +1744,18 @@ fn parse_ai_schedule_response(
 
     
 
-    let parsed: AiResponse = serde_json::from_str(json_str)
+    let raw_value: serde_json::Value = serde_json::from_str(&json_str)
         .or_else(|_| {
             log::warn!("ai schedule: initial JSON parse failed, attempting truncation repair");
-            let repaired = repair_truncated_json(json_str);
-            serde_json::from_str::<AiResponse>(&repaired)
+            let repaired = repair_truncated_json(&json_str);
+            serde_json::from_str::<serde_json::Value>(&repaired)
         })
-        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(response, 200)))?;
+        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&json_str, 200)))?;
+
+    let normalized = normalize_ai_schedule_json(raw_value);
+
+    let parsed: AiResponse = serde_json::from_value(normalized)
+        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&json_str, 200)))?;
 
     if parsed.next_week.is_empty() && !next_week_label.is_empty() {
         log::warn!("ai schedule: next_week is empty — AI response may have been truncated");
@@ -1562,6 +1769,311 @@ fn parse_ai_schedule_response(
         weekly_summary: parsed.weekly_summary.unwrap_or_default(),
         cross_week_insights: parsed.cross_week_insights.unwrap_or_default(),
     })
+}
+
+fn sanitize_ai_response_text(text: &str) -> String {
+    let mut s = strip_tag_block_case_insensitive(text, "think");
+    s = strip_token_case_insensitive(&s, "<think>");
+    s = strip_token_case_insensitive(&s, "</think>");
+    s.trim().to_string()
+}
+
+fn strip_tag_block_case_insensitive(text: &str, tag: &str) -> String {
+    let mut out = text.to_string();
+    let open_prefix = format!("<{}", tag.to_ascii_lowercase());
+    let close_tag = format!("</{}>", tag.to_ascii_lowercase());
+
+    loop {
+        let lower = out.to_ascii_lowercase();
+        let Some(start) = lower.find(&open_prefix) else {
+            break;
+        };
+
+        let Some(open_end_rel) = lower[start..].find('>') else {
+            out.truncate(start);
+            break;
+        };
+        let content_start = start + open_end_rel + 1;
+
+        if let Some(close_rel) = lower[content_start..].find(&close_tag) {
+            let end = content_start + close_rel + close_tag.len();
+            out.replace_range(start..end, "");
+        } else {
+            out.replace_range(start..out.len(), "");
+            break;
+        }
+    }
+
+    out
+}
+
+fn strip_token_case_insensitive(text: &str, token: &str) -> String {
+    let mut out = text.to_string();
+    let token_lower = token.to_ascii_lowercase();
+
+    loop {
+        let lower = out.to_ascii_lowercase();
+        let Some(start) = lower.find(&token_lower) else {
+            break;
+        };
+        let end = start + token.len();
+        if end <= out.len() {
+            out.replace_range(start..end, "");
+        } else {
+            break;
+        }
+    }
+
+    out
+}
+
+fn normalize_ai_schedule_json(mut root: serde_json::Value) -> serde_json::Value {
+    if !root.is_object() {
+        return serde_json::json!({
+            "current_week": [],
+            "next_week": [],
+            "weekly_summary": "",
+            "cross_week_insights": "",
+        });
+    }
+
+    if let Some(obj) = root.as_object_mut() {
+        let current_week = obj.remove("current_week").unwrap_or(serde_json::Value::Array(vec![]));
+        let next_week = obj.remove("next_week").unwrap_or(serde_json::Value::Array(vec![]));
+        let weekly_summary = obj.remove("weekly_summary").unwrap_or(serde_json::Value::Null);
+        let cross_week_insights = obj.remove("cross_week_insights").unwrap_or(serde_json::Value::Null);
+
+        obj.insert(
+            "current_week".to_string(),
+            normalize_schedule_items(current_week),
+        );
+        obj.insert(
+            "next_week".to_string(),
+            normalize_schedule_items(next_week),
+        );
+        obj.insert(
+            "weekly_summary".to_string(),
+            serde_json::Value::String(value_to_string(weekly_summary)),
+        );
+        obj.insert(
+            "cross_week_insights".to_string(),
+            serde_json::Value::String(value_to_string(cross_week_insights)),
+        );
+    }
+
+    root
+}
+
+/// Normalize AI todo JSON: coerce field types that local models may output wrong.
+fn normalize_ai_todo_json(mut root: serde_json::Value) -> serde_json::Value {
+    if !root.is_object() {
+        return root;
+    }
+
+    if let Some(obj) = root.as_object_mut() {
+        // summary → string
+        if let Some(v) = obj.remove("summary") {
+            obj.insert("summary".to_string(), serde_json::Value::String(value_to_string(v)));
+        }
+
+        // suggestions → string array
+        if let Some(v) = obj.remove("suggestions") {
+            obj.insert("suggestions".to_string(), serde_json::json!(value_to_string_vec(v)));
+        }
+
+        // important → array of {title: string, reason: string, index: number}
+        if let Some(serde_json::Value::Array(arr)) = obj.remove("important") {
+            let normalized: Vec<serde_json::Value> = arr.into_iter().filter_map(|item| {
+                let mut m = match item {
+                    serde_json::Value::Object(m) => m,
+                    _ => return None,
+                };
+                Some(serde_json::json!({
+                    "title": value_to_string(m.remove("title").unwrap_or(serde_json::Value::Null)),
+                    "reason": value_to_string(m.remove("reason").unwrap_or(serde_json::Value::Null)),
+                    "index": value_to_i32(m.remove("index").unwrap_or(serde_json::Value::Null)),
+                }))
+            }).collect();
+            obj.insert("important".to_string(), serde_json::Value::Array(normalized));
+        }
+
+        // Remove internal working field
+        obj.remove("_check");
+    }
+
+    root
+}
+
+fn normalize_schedule_items(value: serde_json::Value) -> serde_json::Value {
+    let arr = match value {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Null => Vec::new(),
+        other => vec![other],
+    };
+
+    let out: Vec<serde_json::Value> = arr.into_iter().filter_map(normalize_schedule_item).collect();
+    serde_json::Value::Array(out)
+}
+
+fn normalize_schedule_item(value: serde_json::Value) -> Option<serde_json::Value> {
+    let mut obj = match value {
+        serde_json::Value::Object(m) => m,
+        _ => return None,
+    };
+
+    let item = serde_json::json!({
+        "day": value_to_i32(obj.remove("day").unwrap_or(serde_json::Value::Null)),
+        "period": value_to_i32(obj.remove("period").unwrap_or(serde_json::Value::Null)),
+        "course_name": value_to_string(obj.remove("course_name").unwrap_or(serde_json::Value::Null)),
+        "delivery_mode": value_to_string(obj.remove("delivery_mode").unwrap_or(serde_json::Value::Null)),
+        "room": value_to_string(obj.remove("room").unwrap_or(serde_json::Value::Null)),
+        "teacher": value_to_string(obj.remove("teacher").unwrap_or(serde_json::Value::Null)),
+        "session_topic": value_to_string(obj.remove("session_topic").unwrap_or(serde_json::Value::Null)),
+        "is_cancelled": value_to_bool(obj.remove("is_cancelled").unwrap_or(serde_json::Value::Null)),
+        "notifications": value_to_string_vec(obj.remove("notifications").unwrap_or(serde_json::Value::Null)),
+        "assignments": value_to_string_vec(obj.remove("assignments").unwrap_or(serde_json::Value::Null)),
+        "exams": value_to_string_vec(obj.remove("exams").unwrap_or(serde_json::Value::Null)),
+    });
+
+    Some(item)
+}
+
+fn value_to_i32(v: serde_json::Value) -> i32 {
+    match v {
+        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) as i32,
+        serde_json::Value::String(s) => s.trim().parse::<i32>().unwrap_or(0),
+        serde_json::Value::Bool(b) => if b { 1 } else { 0 },
+        _ => 0,
+    }
+}
+
+fn value_to_bool(v: serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Bool(b) => b,
+        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+        serde_json::Value::String(s) => {
+            let t = s.trim().to_lowercase();
+            t == "true" || t == "1" || t == "yes"
+        }
+        _ => false,
+    }
+}
+
+fn value_to_string_vec(v: serde_json::Value) -> Vec<String> {
+    match v {
+        serde_json::Value::Array(a) => a
+            .into_iter()
+            .map(value_to_string)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        serde_json::Value::Null => Vec::new(),
+        other => {
+            let s = value_to_string(other).trim().to_string();
+            if s.is_empty() { Vec::new() } else { vec![s] }
+        }
+    }
+}
+
+fn value_to_string(v: serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => if b { "true".to_string() } else { "false".to_string() },
+        serde_json::Value::Array(a) => {
+            let parts: Vec<String> = a.into_iter()
+                .map(value_to_string)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            parts.join(" / ")
+        }
+        serde_json::Value::Object(mut m) => {
+            // Prefer common textual keys if the model emits nested objects.
+            for key in ["text", "value", "name", "title", "content", "teacher", "room"] {
+                if let Some(val) = m.remove(key) {
+                    let s = value_to_string(val).trim().to_string();
+                    if !s.is_empty() {
+                        return s;
+                    }
+                }
+            }
+            serde_json::to_string(&serde_json::Value::Object(m)).unwrap_or_default()
+        }
+    }
+}
+
+/// Extract JSON from a local model response by skipping `<think>` blocks.
+///
+/// Local models often wrap reasoning in `<think>...</think>` tags.
+/// This function collects only the non-think portions of the response,
+/// then searches for JSON within that cleaned text.
+///
+/// Handles: closed blocks, unclosed blocks (model ran out of tokens
+/// mid-reasoning), orphan close tags, and nested-looking patterns.
+fn extract_json_from_local_response(response: &str) -> Result<String, String> {
+    let lower = response.to_ascii_lowercase();
+    let mut segments: Vec<&str> = Vec::new();
+    let mut pos: usize = 0;
+    let mut had_think = false;
+
+    loop {
+        match lower[pos..].find("<think") {
+            Some(start_rel) => {
+                had_think = true;
+                let start = pos + start_rel;
+                // Keep text before <think
+                if start > pos {
+                    segments.push(&response[pos..start]);
+                }
+                // Find the '>' that closes the opening tag
+                let after_open = match lower[start..].find('>') {
+                    Some(i) => start + i + 1,
+                    None => break, // malformed, rest is thinking
+                };
+                // Find closing </think>
+                match lower[after_open..].find("</think>") {
+                    Some(close_rel) => {
+                        pos = after_open + close_rel + "</think>".len();
+                    }
+                    None => {
+                        // Unclosed <think> — everything from here to end is reasoning
+                        break;
+                    }
+                }
+            }
+            None => {
+                // No more think tags — keep remaining text
+                segments.push(&response[pos..]);
+                break;
+            }
+        }
+    }
+
+    let clean = segments.join("");
+    let trimmed = clean.trim();
+
+    if trimmed.is_empty() {
+        if had_think {
+            return Err(
+                "AIモデルが推論のみで出力トークンを使い切り、JSONが生成されませんでした。\
+                モデルのmax_tokensを増やすか、プロンプトを短くしてください。"
+                    .into(),
+            );
+        } else {
+            return Err("AIモデルから空の応答が返されました。".into());
+        }
+    }
+
+    log::debug!(
+        "extract_json_from_local_response: response {}→{} chars (think={})",
+        response.len(),
+        trimmed.len(),
+        had_think
+    );
+
+    Ok(extract_json_from_response(trimmed).to_string())
 }
 
 fn extract_json_from_response(text: &str) -> &str {
@@ -1578,60 +2090,111 @@ fn extract_json_from_response(text: &str) -> &str {
             return after[..end].trim();
         }
     }
-    // Try to find raw JSON object
+    // Find first '{' and its matching '}' using bracket depth tracking
     if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
+        if let Some(end) = find_matching_brace(text, start) {
             return &text[start..=end];
         }
+        // Truncated JSON — no matching brace; fall back to rfind for repair_truncated_json to handle
+        if let Some(end) = text.rfind('}') {
+            if end > start {
+                return &text[start..=end];
+            }
+        }
+        // No closing brace at all — return from '{' to end for repair
+        return &text[start..];
     }
     text.trim()
 }
 
+/// Iterate over structural (non-string) characters in a JSON fragment.
+/// Calls `f(byte_offset, char)` for every character outside quoted strings.
+/// Returns `true` if the input ends inside an unclosed string.
+fn scan_json_structure(s: &str, offset: usize, mut f: impl FnMut(usize, char)) -> bool {
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, ch) in s[offset..].char_indices() {
+        if escape_next { escape_next = false; continue; }
+        if ch == '\\' && in_string { escape_next = true; continue; }
+        if ch == '"' { in_string = !in_string; continue; }
+        if in_string { continue; }
+        f(offset + i, ch);
+    }
+    in_string
+}
+
+/// Find the byte index of the '}' that matches the '{' at position `start`.
+/// Returns None if the JSON is truncated (no matching brace).
+fn find_matching_brace(text: &str, start: usize) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut result = None;
+    scan_json_structure(text, start, |i, ch| {
+        if result.is_some() { return; }
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 { result = Some(i); }
+            }
+            _ => {}
+        }
+    });
+    result
+}
+
 /// Attempt to repair truncated JSON from an AI response that was cut off mid-stream.
-/// Closes any open strings, arrays and objects to make the JSON parseable.
+///
+/// Multi-phase strategy:
+///   Phase 1: trim trailing partial tokens, close unclosed strings and brackets
+///   Phase 2: progressively truncate to the last comma outside strings and retry
+///            (handles orphan keys like `"teacher"` without a value, partial values
+///             like `"is_cancelled": tru`, etc.)
 fn repair_truncated_json(input: &str) -> String {
-    // First, try to trim back to the last complete value boundary.
-    // Find the last comma or colon followed by a complete value, then close brackets.
-    let mut s = input.trim_end().to_string();
+    let s = input.trim_end();
 
     // If already valid, return as-is
-    if serde_json::from_str::<serde_json::Value>(&s).is_ok() {
-        return s;
+    if serde_json::from_str::<serde_json::Value>(s).is_ok() {
+        return s.to_string();
     }
 
-    // Remove trailing incomplete string literal (e.g. `"session_topic":` or `"some text`)
-    // Trim trailing chars that are clearly mid-value
+    // Phase 1: trim trailing colons, commas, backslashes, then close brackets.
+    let mut cleaned = s.to_string();
     loop {
-        let trimmed = s.trim_end();
-        if trimmed.is_empty() { break; }
-        let last = trimmed.as_bytes()[trimmed.len() - 1];
-        // If the last char is a colon, comma, or backslash — remove it
+        let t = cleaned.trim_end();
+        if t.is_empty() { break; }
+        let last = t.as_bytes()[t.len() - 1];
         if last == b':' || last == b',' || last == b'\\' {
-            s = trimmed[..trimmed.len() - 1].to_string();
+            cleaned = t[..t.len() - 1].to_string();
             continue;
         }
         break;
     }
 
-    // Count open vs close brackets to determine what needs closing
-    let mut in_string = false;
-    let mut escape_next = false;
-    let mut stack: Vec<char> = Vec::new();
+    let attempt1 = close_json_brackets(&cleaned);
+    if serde_json::from_str::<serde_json::Value>(&attempt1).is_ok() {
+        return attempt1;
+    }
 
-    for ch in s.chars() {
-        if escape_next {
-            escape_next = false;
-            continue;
+    // Phase 2: try truncating at each comma (outside strings) from the end.
+    // Each truncation point removes at least one trailing incomplete entry
+    // (orphan key, partial value, etc.) and we close brackets on the remainder.
+    let commas = find_non_string_commas(&cleaned);
+    for &pos in commas.iter().rev().take(20) {
+        let candidate = close_json_brackets(&cleaned[..pos]);
+        if serde_json::from_str::<serde_json::Value>(&candidate).is_ok() {
+            return candidate;
         }
-        if ch == '\\' && in_string {
-            escape_next = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string { continue; }
+    }
+
+    // Fallback: return best-effort from Phase 1
+    attempt1
+}
+
+/// Close any unclosed JSON strings and bracket pairs.
+fn close_json_brackets(s: &str) -> String {
+    let mut stack: Vec<char> = Vec::new();
+    let in_string = scan_json_structure(s, 0, |_, ch| {
         match ch {
             '{' => stack.push('{'),
             '[' => stack.push('['),
@@ -1639,23 +2202,27 @@ fn repair_truncated_json(input: &str) -> String {
             ']' => { if stack.last() == Some(&'[') { stack.pop(); } }
             _ => {}
         }
-    }
+    });
 
-    // If we ended inside a string, close it
-    if in_string {
-        s.push('"');
-    }
-
-    // Close all open brackets in reverse order
+    let mut result = s.to_string();
+    if in_string { result.push('"'); }
     for &bracket in stack.iter().rev() {
         match bracket {
-            '{' => s.push('}'),
-            '[' => s.push(']'),
+            '{' => result.push('}'),
+            '[' => result.push(']'),
             _ => {}
         }
     }
+    result
+}
 
-    s
+/// Find byte positions of all commas that are NOT inside JSON strings.
+fn find_non_string_commas(s: &str) -> Vec<usize> {
+    let mut positions = Vec::new();
+    scan_json_structure(s, 0, |i, ch| {
+        if ch == ',' { positions.push(i); }
+    });
+    positions
 }
 
 

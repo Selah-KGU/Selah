@@ -234,9 +234,27 @@ pub async fn mail_fetch_inbox(
     top: Option<u32>,
     skip: Option<u32>,
 ) -> Result<Vec<MailMessage>, String> {
-    let top_val = top.unwrap_or(20);
-    let skip_val = skip.unwrap_or(0);
+    fetch_inbox_impl(&*state, &*db, top.unwrap_or(20), skip.unwrap_or(0)).await
+}
 
+/// Agent-accessible variant: resolves state from the AppHandle.
+pub async fn fetch_inbox_internal(
+    app: &tauri::AppHandle,
+    top: u32,
+    skip: u32,
+) -> Result<Vec<MailMessage>, String> {
+    use tauri::Manager;
+    let state = app.state::<MailState>();
+    let db = app.state::<crate::db::Database>();
+    fetch_inbox_impl(&*state, &*db, top, skip).await
+}
+
+async fn fetch_inbox_impl(
+    state: &MailState,
+    db: &crate::db::Database,
+    top_val: u32,
+    skip_val: u32,
+) -> Result<Vec<MailMessage>, String> {
     // Phase 1: short lock
     let prep = {
         let mut mail = state.client.lock().await;
@@ -314,7 +332,26 @@ pub async fn mail_fetch_message(
     db: State<'_, crate::db::Database>,
     message_id: String,
 ) -> Result<MailDetail, String> {
-    mail::validate_message_id(&message_id)?;
+    fetch_message_impl(&*state, &*db, &message_id).await
+}
+
+/// Agent-accessible variant: resolves state from the AppHandle.
+pub async fn fetch_message_internal(
+    app: &tauri::AppHandle,
+    message_id: &str,
+) -> Result<MailDetail, String> {
+    use tauri::Manager;
+    let state = app.state::<MailState>();
+    let db = app.state::<crate::db::Database>();
+    fetch_message_impl(&*state, &*db, message_id).await
+}
+
+async fn fetch_message_impl(
+    state: &MailState,
+    db: &crate::db::Database,
+    message_id: &str,
+) -> Result<MailDetail, String> {
+    mail::validate_message_id(message_id)?;
     let cache_key = format!("mail_msg:{}", message_id);
 
     // Phase 1: short lock – auth check, mark_as_read (fast PATCH), prepare token
@@ -330,7 +367,7 @@ pub async fn mail_fetch_message(
             return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
         }
         // Mark as read while we hold the lock (best-effort, fast PATCH)
-        if let Err(e) = mail.mark_as_read(&message_id).await {
+        if let Err(e) = mail.mark_as_read(message_id).await {
             log::warn!("Failed to mark message {} as read: {}", message_id, e);
         }
         mail.prepare_http().await
@@ -346,7 +383,7 @@ pub async fn mail_fetch_message(
         Ok(body) => body,
         Err((_, true)) => {
             let mut mail = state.client.lock().await;
-            match mail.fetch_message(&message_id).await {
+            match mail.fetch_message(message_id).await {
                 Ok(data) => {
                     if let Ok(json) = serde_json::to_string(&data) {
                         let _ = db.save_data_cache(&cache_key, &json);

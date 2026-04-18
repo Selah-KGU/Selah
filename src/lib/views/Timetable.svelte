@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, gcalDisconnect, syncCalendar, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts } from "../api";
-  import { lunaAuthState, gcalAuthState, registerTask, updateTask, onCacheUpdate } from "../stores";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, gcalDisconnect, syncCalendar, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts, getAiConfig, resetAiReady } from "../api";
+  import { lunaAuthState, gcalAuthState, sessionExpired, registerTask, updateTask, onCacheUpdate, aiReady } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
@@ -14,6 +15,8 @@
   let aiResult = $state<AiScheduleResult | null>(null);
   let aiGenerating = $state(false);
   let aiError = $state("");
+  let aiProvider = $state("");
+  let aiBlocked2b = $state(false);
   let syncing = $state(false);
   let activeWeek = $state<"current" | "next">("current");
   let gcalSyncing = $state(false);
@@ -246,10 +249,14 @@
       scheduleData = data;
       aiResult = data.ai_result;
 
-      // Auto-refresh AI when cache is stale
+      // Auto-refresh AI when cache is stale (only if AI is validated)
       if (data.ai_stale && data.ai_result && data.raw.current_week_label) {
-        console.log("[Timetable] AI cache stale, triggering background refresh");
-        triggerAiGenerate(true);
+        isAiReady().then(async ready => {
+          if (ready && !await isLocalStandard2b()) {
+            console.log("[Timetable] AI cache stale, triggering background refresh");
+            triggerAiGenerate(true);
+          }
+        });
       }
     } catch (e: any) {
       error = e?.message || String(e);
@@ -367,7 +374,11 @@
   }
 
   async function triggerAiGenerate(force: boolean) {
-    if (aiGenerating || !scheduleData) return;
+    if (aiGenerating || !scheduleData || get(sessionExpired)) return;
+    if (await isLocalStandard2b()) {
+      aiError = "standard_2b_blocked";
+      return;
+    }
     aiGenerating = true;
     aiError = "";
     console.log("[Timetable] triggerAiGenerate:", {
@@ -375,6 +386,22 @@
       currentWeekLabel: scheduleData.raw.current_week_label,
       nextWeekLabel: scheduleData.raw.next_week_label,
     });
+
+    try {
+      // Re-check readiness on explicit user action so local model availability is current.
+      resetAiReady();
+      const ready = await isAiReady();
+      if (!ready) {
+        const cfg = await getAiConfig();
+        aiProvider = cfg.provider || "";
+        aiError = cfg.provider === "local" ? "local_model_missing" : "api_key_missing";
+        return;
+      }
+    } catch {
+      aiError = "AI設定を確認してください";
+      return;
+    }
+
     try {
       const result = await aiGenerateSchedule(
         scheduleData.raw.current_week_label,
@@ -393,7 +420,18 @@
     } catch (e: any) {
       const msg = e?.message || String(e);
       console.error("[Timetable] AI generation failed:", msg);
-      aiError = msg.includes("APIキーが設定されていません") ? "api_key_missing" : msg;
+      if (msg.includes("APIキーが設定されていません")) {
+        aiError = "api_key_missing";
+      } else if (
+        msg.includes("不明なモデル") ||
+        msg.includes("モデルファイルが見つかりません") ||
+        msg.includes("モデルが読み込まれていません") ||
+        msg.includes("AI機能が無効")
+      ) {
+        aiError = "local_model_missing";
+      } else {
+        aiError = msg;
+      }
     } finally {
       aiGenerating = false;
     }
@@ -731,6 +769,10 @@
   }
 
   onMount(() => {
+    getAiConfig().then(cfg => {
+      aiProvider = cfg.provider || "";
+    }).catch(() => {});
+    isLocalStandard2b().then(v => { aiBlocked2b = v; }).catch(() => {});
     loadData();
     lastCacheReload = Date.now();
     startTipCycle();
@@ -761,6 +803,9 @@
   function handleVisibilityChange() {
     if (document.visibilityState === "visible") {
       syscalEnabled = isMac && localStorage.getItem("selah-syscal-enabled") !== "false";
+      getAiConfig().then(cfg => {
+        aiProvider = cfg.provider || "";
+      }).catch(() => {});
       // Reload cache if stale when coming back to foreground
       if (Date.now() - lastCacheReload >= CACHE_RELOAD_FG) reloadFromCache();
     }
@@ -869,7 +914,12 @@
             {/if}
             <span class="action-label">同期</span>
           </button>
-          <button class="action-btn action-btn-ai" onclick={() => triggerAiGenerate(true)} disabled={aiGenerating}>
+          <button
+            class="action-btn action-btn-ai"
+            onclick={() => triggerAiGenerate(true)}
+            disabled={aiGenerating || aiBlocked2b || !$aiReady}
+            title={!$aiReady ? 'AI が無効です（設定で有効化）' : aiBlocked2b ? '高品質モデルが必要です' : aiProvider === 'local' ? 'ローカルモデルでAI日程を分析' : 'AI日程を分析'}
+          >
             {#if aiGenerating}
               <span class="mini-spinner"></span>
             {:else}
@@ -898,6 +948,12 @@
       {#if aiError === "api_key_missing"}
         <span>AI 機能を利用するには API キーの設定が必要です</span>
         <button class="link-btn" onclick={() => openSettingsWindow()}>設定</button>
+      {:else if aiError === "local_model_missing"}
+        <span>ローカル AI を利用するにはモデルのダウンロードが必要です</span>
+        <button class="link-btn" onclick={() => openSettingsWindow()}>設定</button>
+      {:else if aiError === "standard_2b_blocked"}
+        <span>AI 日程分析には「高品質」モデルが必要です</span>
+        <button class="link-btn" onclick={() => openSettingsWindow()}>設定</button>
       {:else}
         <span>AI 分析に失敗: {aiError}</span>
       {/if}
@@ -914,7 +970,7 @@
 
     <!-- Grid timetable -->
     <div class="grid-outer">
-      <div class="grid-wrap" onwheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) { e.preventDefault(); e.currentTarget.scrollLeft += e.deltaY; } }}>
+      <div class="grid-wrap">
         <div class="timetable">
           <!-- Header row -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1338,7 +1394,11 @@
     box-shadow: var(--shadow-md);
     animation: fade-in 0.3s ease both;
     -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    cursor: grab;
   }
+  .grid-wrap:active { cursor: grabbing; }
+  .grid-wrap::-webkit-scrollbar { display: none; }
   @keyframes fade-in { from { opacity: 0; transform: translateY(6px); } }
 
   .timetable {

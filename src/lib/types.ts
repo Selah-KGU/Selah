@@ -163,6 +163,7 @@ export interface LunaActivityItem {
   title: string;
   period: string;
   status: string;
+  detail_path?: string;
 }
 
 export interface KgcCourseDetailItem {

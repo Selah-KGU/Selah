@@ -2297,6 +2297,75 @@ pub fn save_notification_config(config: NotificationConfig) -> Result<(), String
     save_notification_config_to_disk(&config)
 }
 
+// ─── Calendar Config ───────────────────────────────────────────
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalendarConfig {
+    pub spring_start: String,     // e.g. "2026-04-03"
+    pub fall_start: String,       // e.g. "2026-09-21"
+    pub syscal_enabled: bool,
+    pub syscal_auto_sync: bool,
+    pub gcal_auto_sync: bool,
+    pub cal_sync_interval: u32,   // hours (6, 12, 24, 48, 72)
+}
+
+impl Default for CalendarConfig {
+    fn default() -> Self {
+        Self {
+            spring_start: String::new(),
+            fall_start: String::new(),
+            syscal_enabled: false,
+            syscal_auto_sync: false,
+            gcal_auto_sync: false,
+            cal_sync_interval: 12,
+        }
+    }
+}
+
+fn calendar_config_path() -> std::path::PathBuf {
+    client::data_dir().join("calendar_config.json")
+}
+
+pub fn load_calendar_config() -> CalendarConfig {
+    let path = calendar_config_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str(&data) {
+                return cfg;
+            }
+        }
+    }
+    CalendarConfig::default()
+}
+
+fn save_calendar_config_to_disk(config: &CalendarConfig) -> Result<(), String> {
+    let path = calendar_config_path();
+    let data = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("JSON serialization error: {}", e))?;
+    std::fs::write(&path, &data)
+        .map_err(|e| format!("Failed to write calendar config: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_calendar_config() -> CalendarConfig {
+    load_calendar_config()
+}
+
+#[tauri::command]
+pub fn save_calendar_config(config: CalendarConfig) -> Result<(), String> {
+    // Validate date formats if provided
+    for (label, val) in [("春学期開始日", &config.spring_start), ("秋学期開始日", &config.fall_start)] {
+        if !val.is_empty() {
+            if chrono::NaiveDate::parse_from_str(val, "%Y-%m-%d").is_err() {
+                return Err(format!("{}の日付形式が不正です (YYYY-MM-DD)", label));
+            }
+        }
+    }
+    save_calendar_config_to_disk(&config)
+}
+
 /// Sanitize a string to be safe as a directory/file name component.
 fn sanitize_path_component(name: &str) -> String {
     let s: String = name.chars().map(|c| match c {

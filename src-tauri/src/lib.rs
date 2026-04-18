@@ -1,4 +1,10 @@
-mod ai;
+pub mod ai;
+mod agent;
+mod agent_commands;
+mod agent_error;
+mod agent_prompts;
+mod agent_provider;
+mod agent_tools;
 mod auth;
 mod client;
 pub(crate) mod config;
@@ -8,6 +14,7 @@ mod db;
 pub(crate) mod keychain;
 mod kwic_client;
 mod kwic_commands;
+pub mod local_ai;
 mod luna_client;
 mod luna_commands;
 mod luna_parser;
@@ -290,6 +297,10 @@ pub fn run() {
             ai::save_ai_config,
             ai::ai_chat,
             ai::ai_test_connection,
+            ai::list_local_models,
+            ai::download_local_model,
+            ai::cancel_model_download,
+            ai::delete_local_model,
             ai::open_settings_window,
             ai::open_ai_result_window,
             ai::request_ai_refresh,
@@ -301,6 +312,8 @@ pub fn run() {
             commands::select_download_dir,
             commands::get_notification_config,
             commands::save_notification_config,
+            commands::get_calendar_config,
+            commands::save_calendar_config,
             commands::list_downloads,
             commands::scan_download_dir,
             commands::check_file_downloaded,
@@ -326,6 +339,13 @@ pub fn run() {
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,
             webview_toolbar::browser_get_url,
+            agent_commands::agent_list_conversations,
+            agent_commands::agent_create_conversation,
+            agent_commands::agent_load_messages,
+            agent_commands::agent_send,
+            agent_commands::agent_cancel,
+            agent_commands::agent_delete_conversation,
+            agent_commands::agent_rename_conversation,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
