@@ -18,7 +18,7 @@ Selah の技術的なアーキテクチャの概要です。
 |  +------------------------------------+  |
 |  | Tauri Commands                     |  |
 |  | HTTP Client (reqwest)              |  |
-|  | HTML Parser (scraper)              |  |
+|  | HTML Parser (html5ever)             |  |
 |  | SQLite (rusqlite, WAL)             |  |
 |  | AI Client (OpenAI / Gemini)        |  |
 |  +------------------------------------+  |
@@ -32,13 +32,13 @@ Selah の技術的なアーキテクチャの概要です。
 +------------------------------------------+
 ```
 
-## Cookie Bridge 認証
+## SSO 認証連携
 
-Selah は独自の **Cookie Bridge** 方式で SSO 認証を処理します。
+Selah は内蔵 WebView を用いた SSO セッション共有方式で認証を処理します。
 
-1. 内蔵 WebView (WKWebView / WebView2) で関学 SSO のログインフォームを表示
+1. 内蔵 WebView (WKWebView / WebView2) で関学 SSO のログイン画面を表示
 2. ユーザーが SSO でログイン
-3. WebView から取得した Cookie を Rust 側の HTTP クライアント (`reqwest`) に橋渡し
+3. WebView の認証セッションをネイティブ HTTP クライアント (`reqwest`) と共有
 4. KG-Course・Luna・KWIC の 3 系統を一度のログインで認証
 
 ## データフロー
@@ -47,13 +47,13 @@ Selah は独自の **Cookie Bridge** 方式で SSO 認証を処理します。
 SSO Login
     |
     v
-Cookie Bridge --> reqwest HTTP Client
+SSO Session --> reqwest HTTP Client
     |                    |
     +-----> KWIC API     |
     +-----> Luna API     |
     +-----> Mail API     |
                          v
-                   HTML Scraping / JSON Parse
+                   HTML Parsing / JSON Parse
                          |
                          v
                    SQLite Cache (WAL)

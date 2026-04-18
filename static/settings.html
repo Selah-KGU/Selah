@@ -324,9 +324,28 @@
       </div>
       <div class="hero-text">
         <h2 class="panel-title">AI 設定</h2>
-        <p class="panel-desc">AI 分析機能の設定を管理します。デフォルトではサーバーから提供される無料モデルが使用されます。</p>
+        <p class="panel-desc">AIが週間スケジュール生成、課題の優先度分析・学習計画作成、お知らせの要約・重要度判定を行います。回答言語・自動更新間隔のほか、APIプロバイダーやモデルも自由に設定できます。</p>
       </div>
     </div>
+    <div class="card-label">AI 機能</div>
+    <div class="card">
+      <div class="row">
+        <span class="row-label">AI 機能</span>
+        <div class="row-input">
+          <select id="aiEnabled">
+            <option value="true">有効</option>
+            <option value="false">無効</option>
+          </select>
+          <div class="hint" id="aiEnabledHint">有効にすると、時間割・課題・お知らせなどのAI分析機能が利用できます。</div>
+        </div>
+      </div>
+      <div id="aiDisclaimer" class="row" style="display:none;">
+        <div style="padding:8px 12px;background:var(--bg-secondary,#f5f5f7);border-radius:8px;font-size:11.5px;line-height:1.6;color:var(--text-secondary,#666);">
+          デフォルトでは OpenRouter が提供する無料モデルを使用します。AI分析に必要な最低限のデータ（時間割・課題・お知らせ等）が第三者（OpenRouter 経由の AI プロバイダー）に送信されます。これを望まない場合は、下の「詳細設定」から自分の API キーとエンドポイントを設定してください。
+        </div>
+      </div>
+    </div>
+    <div id="aiSettingsBody">
     <div class="card-label">回答設定</div>
     <div class="card">
       <div class="row">
@@ -421,6 +440,7 @@
           </div>
         </div>
     </details>
+    </div>
   </div>
   <div class="panel" id="panel-session">
     <div class="hero-card">
@@ -530,14 +550,14 @@
         <span class="row-label">春学期開始日</span>
         <div class="row-input">
           <input type="date" id="springStart">
-          <div class="hint">春学期の最初の授業週の月曜日</div>
+          <div class="hint">春学期の最初の授業日</div>
         </div>
       </div>
       <div class="row">
         <span class="row-label">秋学期開始日</span>
         <div class="row-input">
           <input type="date" id="fallStart">
-          <div class="hint">秋学期の最初の授業週の月曜日</div>
+          <div class="hint">秋学期の最初の授業日</div>
         </div>
       </div>
     </div>
@@ -791,20 +811,33 @@
           <span class="ar" style="color:var(--accent)">GitHub<span style="color:var(--text-tertiary);font-weight:400;margin-left:4px">›</span></span>
         </div>
         <div class="about-row"><span class="al">ライセンス</span><span class="ar">MIT License</span></div>
-        <div class="about-row" style="cursor:pointer" onclick="invoke('open_external_url',{url:'https://selah.jp/terms.html'}).catch(console.error)">
-          <span class="al">利用規約</span>
-          <span class="ar" style="color:var(--accent)">selah.jp<span style="color:var(--text-tertiary);font-weight:400;margin-left:4px">›</span></span>
-        </div>
-        <div class="about-row" style="cursor:pointer" onclick="invoke('open_external_url',{url:'https://selah.jp/privacy.html'}).catch(console.error)">
-          <span class="al">プライバシーポリシー</span>
-          <span class="ar" style="color:var(--accent)">selah.jp<span style="color:var(--text-tertiary);font-weight:400;margin-left:4px">›</span></span>
-        </div>
       </div>
-      <div class="about-copy">© 2026 mirai-mamori. All rights reserved.</div>
+      <div class="about-copy">
+        © 2026 mirai-mamori. All rights reserved.<br>
+        <span style="cursor:pointer;color:var(--accent)" onclick="invoke('open_external_url',{url:'https://selah.jp/terms.html'}).catch(console.error)">利用規約</span>
+        <span style="margin:0 4px;color:var(--text-tertiary)">|</span>
+        <span style="cursor:pointer;color:var(--accent)" onclick="invoke('open_external_url',{url:'https://selah.jp/privacy.html'}).catch(console.error)">プライバシーポリシー</span>
+      </div>
     </div>
     <div class="card" style="margin-top:10px;padding:0;">
       <div class="about-row" style="cursor:pointer;justify-content:center;" onclick="logoutFromSettings()">
         <span style="color:var(--red);font-weight:500;">ログアウトしてログイン画面へ戻る</span>
+      </div>
+    </div>
+    <div class="card" style="margin-top:10px;padding:0;cursor:pointer;" onclick="startDeleteAllData()">
+      <div class="about-row" style="justify-content:center;pointer-events:none;">
+        <span style="color:var(--red);font-weight:500;">すべてのローカルデータを削除</span>
+      </div>
+      <div style="padding:0 12px 8px;font-size:10px;color:var(--text-secondary);line-height:1.35;pointer-events:none;">
+        データベース、設定、Cookie、キーチェーンの秘密情報など、アプリが保存したすべてのデータを完全に削除します。この操作は取り消せません。
+      </div>
+    </div>
+    <div id="deleteConfirmCard" class="card" style="margin-top:10px;padding:12px;display:none;border:1px solid var(--red,#ff3b30);">
+      <div style="font-size:12px;font-weight:600;color:var(--red,#ff3b30);margin-bottom:6px;">本当に削除しますか？</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;line-height:1.4;">すべてのローカルデータ（データベース、設定ファイル、Cookie、キーチェーンの秘密情報など）が完全に削除されます。この操作は取り消せません。</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn-test" onclick="cancelDeleteAllData()">キャンセル</button>
+        <button class="btn-test" style="background:var(--red,#ff3b30);color:#fff;border-color:var(--red,#ff3b30);" onclick="confirmDeleteAllData()">削除する</button>
       </div>
     </div>
     <div class="card" id="devCard" style="margin-top:10px;display:none;">
@@ -839,6 +872,34 @@
     }catch(e){console.error("logout failed:",e)}
   }
 
+  async function deleteAllData(){
+    if(!confirm("すべてのローカルデータ（データベース、設定ファイル、Cookie、キーチェーンの秘密情報など）を完全に削除します。\n\nこの操作は取り消せません。続行しますか？")){return}
+    try{
+      await invoke("delete_all_local_data");
+      localStorage.clear();
+      window.__TAURI__.window.getCurrentWindow().close().catch(function(){});
+    }catch(e){
+      console.error("delete_all_local_data failed:",e);
+    }
+  }
+
+  function startDeleteAllData(){
+    document.getElementById("deleteConfirmCard").style.display="block";
+  }
+  function cancelDeleteAllData(){
+    document.getElementById("deleteConfirmCard").style.display="none";
+  }
+  async function confirmDeleteAllData(){
+    try{
+      await invoke("delete_all_local_data");
+      localStorage.clear();
+      window.__TAURI__.window.getCurrentWindow().close().catch(function(){});
+    }catch(e){
+      showStatus("データの削除に失敗しました: "+e,"error");
+      console.error("delete_all_local_data failed:",e);
+    }
+  }
+
   var versionTapCount=0,versionTapTimer=null,devModeActive=false;
   function handleVersionTap(){
     if(devModeActive)return;
@@ -863,7 +924,10 @@
   var DEFAULT_URLS={openai:"https://api.openai.com/v1",gemini:"",custom:""};
   var DEFAULT_MODELS={openai:"gpt-5.4-nano",gemini:"gemini-3-flash-preview",custom:"gpt-5.4-nano"};
 
-  var $provider=document.getElementById("provider"),$apiKey=document.getElementById("apiKey"),$model=document.getElementById("model"),$baseUrl=document.getElementById("baseUrl"),$maxTokens=document.getElementById("maxTokens"),$temperature=document.getElementById("temperature"),$maxTokensVal=document.getElementById("maxTokensVal"),$temperatureVal=document.getElementById("temperatureVal"),$modelPresets=document.getElementById("modelPresets"),$baseUrlRow=document.getElementById("baseUrlRow"),$providerHint=document.getElementById("providerHint"),$status=document.getElementById("status"),$replyLanguage=document.getElementById("replyLanguage");
+  var $provider=document.getElementById("provider"),$apiKey=document.getElementById("apiKey"),$model=document.getElementById("model"),$baseUrl=document.getElementById("baseUrl"),$maxTokens=document.getElementById("maxTokens"),$temperature=document.getElementById("temperature"),$maxTokensVal=document.getElementById("maxTokensVal"),$temperatureVal=document.getElementById("temperatureVal"),$modelPresets=document.getElementById("modelPresets"),$baseUrlRow=document.getElementById("baseUrlRow"),$providerHint=document.getElementById("providerHint"),$status=document.getElementById("status"),$replyLanguage=document.getElementById("replyLanguage"),$aiEnabled=document.getElementById("aiEnabled"),$aiSettingsBody=document.getElementById("aiSettingsBody"),$aiDisclaimer=document.getElementById("aiDisclaimer");
+
+  function onAiEnabledChange(){var on=$aiEnabled.value==="true";$aiSettingsBody.style.display=on?"":"none";$aiDisclaimer.style.display=on?"":"none"}
+  $aiEnabled.addEventListener("change",onAiEnabledChange);
 
   $maxTokens.addEventListener("input",function(){$maxTokensVal.textContent=$maxTokens.value});
   $temperature.addEventListener("input",function(){$temperatureVal.textContent=parseFloat($temperature.value).toFixed(1)});
@@ -873,9 +937,9 @@
   function escapeHtml(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
   function showStatus(msg,type){var safe=escapeHtml(msg);if(type==="loading"){$status.innerHTML='<div class="status loading"><span class="spinner"></span>'+safe+"</div>"}else{$status.innerHTML='<div class="status '+type+'">'+safe+"</div>"}if(type!=="loading")setTimeout(function(){$status.innerHTML=""},4000)}
 
-  async function loadSettings(){try{var c=await invoke("get_ai_config");$provider.value=c.provider||"openai";$apiKey.value=(c.api_key&&c.api_key!=="(server)")?c.api_key:"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||16384;$maxTokensVal.textContent=c.max_tokens||16384;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"2026-04-03";document.getElementById("fallStart").value=c.fall_start||"2026-09-21";document.getElementById("aiRefreshInterval").value=String(c.ai_refresh_interval!=null?c.ai_refresh_interval:360);onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
+  async function loadSettings(){try{var c=await invoke("get_ai_config");$aiEnabled.value=c.ai_enabled!==false?"true":"false";onAiEnabledChange();$provider.value=c.provider||"openai";$apiKey.value=(c.api_key&&c.api_key!=="(server)")?c.api_key:"";$model.value=c.model||"";$baseUrl.value=c.base_url||"";$maxTokens.value=c.max_tokens||16384;$maxTokensVal.textContent=c.max_tokens||16384;$temperature.value=c.temperature!=null?c.temperature:0.7;$temperatureVal.textContent=(c.temperature!=null?c.temperature:0.7).toFixed(1);$replyLanguage.value=c.reply_language||"ja";document.getElementById("springStart").value=c.spring_start||"2026-04-03";document.getElementById("fallStart").value=c.fall_start||"2026-09-21";document.getElementById("aiRefreshInterval").value=String(c.ai_refresh_interval!=null?c.ai_refresh_interval:360);onProviderChange()}catch(e){console.error("Failed to load config:",e)}}
 
-  function getConfig(){return{provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value,spring_start:document.getElementById("springStart").value,fall_start:document.getElementById("fallStart").value,ai_refresh_interval:parseInt(document.getElementById("aiRefreshInterval").value)||0}}
+  function getConfig(){return{ai_enabled:$aiEnabled.value==="true",provider:$provider.value,api_key:$apiKey.value,model:$model.value,base_url:$baseUrl.value,max_tokens:parseInt($maxTokens.value),temperature:parseFloat($temperature.value),reply_language:$replyLanguage.value,spring_start:document.getElementById("springStart").value,fall_start:document.getElementById("fallStart").value,ai_refresh_interval:parseInt(document.getElementById("aiRefreshInterval").value)||0}}
 
   async function saveSettings(){var btn=document.getElementById("saveBtn");try{btn.disabled=true;if(activePanel==="ai"){await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="mail"){await invoke("mail_save_config",{config:{client_id:$mailClientId.value.trim()}});checkMailSession()}else if(activePanel==="calendar"){await invoke("gcal_save_config",{config:{client_id:$gcalClientId.value.trim(),client_secret:$gcalClientSecret.value.trim()}});await invoke("save_ai_config",{config:getConfig()})}else if(activePanel==="download"){await invoke("save_download_config",{config:{download_dir:document.getElementById("downloadDir").value,classify_by_course:document.getElementById("classifyByCourse").value==="true"}})}else if(activePanel==="notification"){await invoke("save_notification_config",{config:{notify_important:document.getElementById("notifImportant").value==="true",notify_faculty:document.getElementById("notifFaculty").value==="true",notify_class:document.getElementById("notifClass").value==="true",notify_other:document.getElementById("notifOther").value==="true",notify_mail:document.getElementById("notifMail").value==="true"}})}showStatus("設定を保存しました","success")}catch(e){showStatus("保存に失敗しました: "+e,"error")}finally{btn.disabled=false}}
 

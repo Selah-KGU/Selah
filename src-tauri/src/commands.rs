@@ -415,6 +415,47 @@ pub async fn logout(
     Ok(())
 }
 
+/// Delete all locally stored data: DB, config files, cookie jars, keychain secrets.
+/// Apple App Store Guideline 5.1.1(v) — account data deletion.
+#[tauri::command]
+pub async fn delete_all_local_data(
+    app: tauri::AppHandle,
+    state: State<'_, KgcState>,
+    luna_state: State<'_, LunaState>,
+    kwic_state: State<'_, KwicState>,
+) -> Result<(), String> {
+    // 1. Clear in-memory sessions first
+    {
+        let mut c = state.client.lock().await;
+        c.clear_session();
+    }
+    {
+        let mut l = luna_state.client.lock().await;
+        l.clear();
+    }
+    {
+        let mut k = kwic_state.client.lock().await;
+        k.clear();
+    }
+
+    // 2. Delete keychain secrets
+    let keychain_keys = ["ai_api_key", "gcal_token", "gcal_client_secret", "ms_mail_token"];
+    for key in &keychain_keys {
+        crate::keychain::delete_secret(key);
+    }
+
+    // 3. Remove entire data directory (DB, configs, cookies, secrets, etc.)
+    let dir = client::data_dir();
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 4. Emit logout event so frontend reacts
+    let _ = app.emit("logout", ());
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn check_session(
     state: State<'_, KgcState>,

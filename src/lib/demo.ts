@@ -310,6 +310,146 @@ export function demoMailInbox(): MailMessage[] {
   ];
 }
 
+// ---- Demo AI data generators ----
+
+export function demoAiTodoAnalysis(): import("./types").AiTodoAnalysis {
+  const deadlines = [futureDate(2), futureDate(3), futureDate(5), futureDate(7)];
+  return {
+    task_guides: [
+      {
+        task_name: "Essay Draft Submission",
+        course_name: "Academic English III",
+        deadline: deadlines[0],
+        urgency: "critical" as const,
+        background: "Academic essay writing requires a clear thesis statement, evidence-based arguments, and proper citation format (APA/MLA). Review the course rubric before submission.",
+        study_hints: [
+          "Outline your argument structure: introduction, 3 body paragraphs, conclusion",
+          "Use academic vocabulary and formal tone throughout",
+          "Proofread for grammar, spelling, and citation format",
+          "Submit a draft and revise based on peer feedback",
+        ],
+        estimated_minutes: 120,
+      },
+      {
+        task_name: "第7回 レポート課題",
+        course_name: "アルゴリズムとデータ構造",
+        deadline: deadlines[1],
+        urgency: "soon" as const,
+        background: "グラフ理論の基礎とその応用。BFS/DFS の動作原理と計算量を理解し、最短経路問題（ダイクストラ法）の擬似コードを書けることが求められます。",
+        study_hints: [
+          "教科書 第8章のグラフアルゴリズムの節を復習する",
+          "BFS と DFS の違いを図示して整理する",
+          "ダイクストラ法を小さなグラフで手計算してみる",
+          "擬似コードを書いて計算量 O((V+E)logV) を確認する",
+        ],
+        estimated_minutes: 90,
+      },
+      {
+        task_name: "プロセス管理 確認テスト",
+        course_name: "オペレーティングシステム",
+        deadline: deadlines[2],
+        urgency: "soon" as const,
+        background: "プロセスの状態遷移、スケジューリングアルゴリズム（FCFS, SJF, Round Robin, Priority）、デッドロックの検出と回避について出題されます。",
+        study_hints: [
+          "プロセスの 5 状態遷移図を描いて各遷移条件を確認",
+          "各スケジューリングアルゴリズムのガントチャートを練習",
+          "デッドロックの 4 条件（相互排他・保持待ち・横取り不可・循環待ち）を暗記",
+        ],
+        estimated_minutes: 60,
+      },
+      {
+        task_name: "SQL演習課題 第3回",
+        course_name: "データベース概論",
+        deadline: deadlines[3],
+        urgency: "normal" as const,
+        background: "JOIN 操作、サブクエリ、集約関数を組み合わせた複合クエリの演習です。正規化理論（第 1〜第 3 正規形）の理解も問われます。",
+        study_hints: [
+          "INNER JOIN / LEFT JOIN / CROSS JOIN の違いをサンプルデータで確認",
+          "GROUP BY + HAVING の使い分けを練習",
+          "サブクエリを JOIN に書き換える練習をする",
+          "正規化の手順を ER 図とともに整理する",
+        ],
+        estimated_minutes: 75,
+      },
+    ],
+    daily_plan: [
+      {
+        label: "今日",
+        tasks: [
+          "Essay Draft Submission（Academic English III）",
+          "第7回 レポート課題の下調べ（アルゴリズムとデータ構造）",
+        ],
+        free_hours: 3,
+      },
+      {
+        label: "明日",
+        tasks: [
+          "第7回 レポート課題を仕上げる（アルゴリズムとデータ構造）",
+          "プロセス管理 確認テストの復習開始（オペレーティングシステム）",
+        ],
+        free_hours: 4,
+      },
+      {
+        label: futureDate(2).slice(5).replace("-", "/"),
+        tasks: [
+          "プロセス管理のスケジューリング問題を解く（オペレーティングシステム）",
+          "SQL演習課題 第3回に着手（データベース概論）",
+        ],
+        free_hours: 2,
+      },
+    ],
+    advice:
+      "今週は英語エッセイの締切が最も近いので、まず Academic English III のドラフトを優先しましょう。" +
+      "アルゴリズムのレポートはグラフ理論の復習が鍵です。教科書第8章を読んでから取り組むと効率的です。" +
+      "OS の確認テストまでにはまだ余裕があるので、毎日30分ずつ復習を進めるのがおすすめです。" +
+      "SQL課題は締切が一番遠いですが、JOIN の練習は早めに始めておくと安心です。",
+  };
+}
+
+export function demoAiScheduleResult(): import("./types").AiScheduleResult {
+  return {
+    current_week_label: "第8週",
+    next_week_label: "第9週",
+    current_week: [
+      { day: 1, period: 2, course_name: "アルゴリズムとデータ構造", delivery_mode: "対面", room: "III-201", teacher: "田中 一郎", session_topic: "グラフアルゴリズム: BFS/DFS", is_cancelled: false, notifications: ["第8回の授業資料をアップロードしました"], assignments: ["第7回 レポート課題 (締切: " + futureDate(3) + ")"], exams: [] },
+      { day: 1, period: 4, course_name: "ソフトウェア工学", delivery_mode: "対面", room: "III-201", teacher: "山田 五郎", session_topic: "テスト駆動開発とCI/CD", is_cancelled: false, notifications: [], assignments: [], exams: [] },
+      { day: 2, period: 3, course_name: "オペレーティングシステム", delivery_mode: "対面", room: "III-301", teacher: "佐藤 花子", session_topic: "プロセス間通信とデッドロック", is_cancelled: false, notifications: ["中間テストの範囲を公開しました"], assignments: ["プロセス管理 確認テスト (締切: " + futureDate(5) + ")"], exams: [] },
+      { day: 3, period: 1, course_name: "データベース概論", delivery_mode: "対面", room: "III-102", teacher: "鈴木 三郎", session_topic: "トランザクション処理", is_cancelled: false, notifications: ["来週の授業は演習室で行います"], assignments: ["SQL演習課題 第3回 (締切: " + futureDate(7) + ")"], exams: [] },
+      { day: 3, period: 3, course_name: "コンピュータネットワーク", delivery_mode: "対面", room: "III-401", teacher: "伊藤 六介", session_topic: "（休講）", is_cancelled: true, notifications: [], assignments: [], exams: [] },
+      { day: 4, period: 2, course_name: "線形代数学 II", delivery_mode: "対面", room: "I-301", teacher: "高橋 四郎", session_topic: "固有値と固有ベクトル", is_cancelled: false, notifications: [], assignments: [], exams: [] },
+      { day: 5, period: 1, course_name: "Academic English III", delivery_mode: "対面", room: "IV-103", teacher: "J. Smith", session_topic: "Essay Workshop & Peer Review", is_cancelled: false, notifications: ["Essay topic has been updated"], assignments: ["Essay Draft Submission (締切: " + futureDate(2) + ")"], exams: [] },
+    ],
+    next_week: [
+      { day: 1, period: 2, course_name: "アルゴリズムとデータ構造", delivery_mode: "対面", room: "III-201", teacher: "田中 一郎", session_topic: "最短経路アルゴリズム", is_cancelled: false, notifications: [], assignments: [], exams: [] },
+      { day: 1, period: 4, course_name: "ソフトウェア工学", delivery_mode: "対面", room: "III-201", teacher: "山田 五郎", session_topic: "アジャイル開発手法", is_cancelled: false, notifications: [], assignments: [], exams: [] },
+      { day: 2, period: 3, course_name: "オペレーティングシステム", delivery_mode: "対面", room: "III-301", teacher: "佐藤 花子", session_topic: "メモリ管理", is_cancelled: false, notifications: [], assignments: [], exams: [{ title: "中間テスト", date: futureDate(14) }].map(() => "中間テスト (" + futureDate(14) + ")") },
+      { day: 3, period: 1, course_name: "データベース概論", delivery_mode: "対面", room: "III-102", teacher: "鈴木 三郎", session_topic: "正規化理論", is_cancelled: false, notifications: [], assignments: [], exams: [] },
+      { day: 3, period: 3, course_name: "コンピュータネットワーク", delivery_mode: "対面", room: "III-401", teacher: "伊藤 六介", session_topic: "TCP/IP プロトコル（補講）", is_cancelled: false, notifications: [], assignments: [], exams: [] },
+    ],
+    weekly_summary:
+      "今週はアルゴリズムのレポート提出と英語エッセイのドラフト提出が重なっています。水曜のネットワークは休講ですが、来週に補講があります。OS の中間テスト範囲が発表されたので、早めに復習を始めましょう。",
+    cross_week_insights:
+      "来週の OS 中間テストに向けて、今週中にプロセス管理の確認テストを済ませておくと良いでしょう。データベースの SQL 課題は来週の正規化理論の内容とも関連するので、並行して進めると理解が深まります。",
+  };
+}
+
+export function demoAiNotifResult(): { summary: string; important: { title: string; reason: string; index: number }[]; suggestions: string[] } {
+  return {
+    summary:
+      "今週は教務関連の通知が多く、特に春学期の履修登録確認が重要です。田中先生からレポート課題の期限延長のメールが届いています。来週の授業で教室変更があるので注意してください。",
+    important: [
+      { title: "春学期の履修登録確認について", reason: "履修登録の最終確認期限が近づいています", index: 1 },
+      { title: "アルゴリズム 第7回レポートについて", reason: "提出期限が3日延長されました", index: 2 },
+      { title: "2026年度 春学期の時間割変更について", reason: "来週から教室変更があります", index: 3 },
+    ],
+    suggestions: [
+      "履修登録に不備がないか今日中に確認しましょう",
+      "レポートの期限延長を活かしてグラフ理論の復習に時間を使いましょう",
+      "来週の教室変更に備えて時間割メモを更新しておきましょう",
+    ],
+  };
+}
+
 // ---- Populate cache with all demo data ----
 
 export function populateDemoCache() {

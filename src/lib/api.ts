@@ -932,6 +932,12 @@ export async function aiGenerateSchedule(
   nextWeekLabel: string,
   force: boolean = false,
 ): Promise<AiScheduleResult> {
+  if (_isDemo()) {
+    await new Promise(r => setTimeout(r, 1200));
+    const { demoAiScheduleResult } = await import("./demo");
+    return demoAiScheduleResult();
+  }
+  if (get(sessionExpired)) throw new Error("セッション未認証のためAI分析をスキップしました");
   return invoke<AiScheduleResult>("ai_generate_schedule", {
     currentWeekLabel,
     nextWeekLabel,
@@ -940,6 +946,12 @@ export async function aiGenerateSchedule(
 }
 
 export async function aiAnalyzeTodo(force: boolean = false): Promise<AiTodoAnalysis> {
+  if (_isDemo()) {
+    await new Promise(r => setTimeout(r, 1500));
+    const { demoAiTodoAnalysis } = await import("./demo");
+    return demoAiTodoAnalysis();
+  }
+  if (get(sessionExpired)) throw new Error("セッション未認証のためAI分析をスキップしました");
   return invoke<AiTodoAnalysis>("ai_analyze_todo", { force });
 }
 
@@ -998,11 +1010,17 @@ export async function openSyllabusDetail(classCode: string, courseName: string):
 // ---------- AI API ----------
 
 export async function getAiConfig(): Promise<AiConfig> {
-  if (_isDemo()) return { api_key: "", model: "", provider: "openai", base_url: "", max_tokens: 0, temperature: 0, reply_language: "", ai_refresh_interval: 0 };
+  if (_isDemo()) return { ai_enabled: false, api_key: "demo", model: "demo", provider: "openai", base_url: "", max_tokens: 0, temperature: 0, reply_language: "ja", ai_refresh_interval: 0 };
   return invoke<AiConfig>("get_ai_config");
 }
 
 export async function aiChat(messages: AiChatMessage[]): Promise<string> {
+  if (_isDemo()) {
+    await new Promise(r => setTimeout(r, 1000));
+    const { demoAiNotifResult } = await import("./demo");
+    return JSON.stringify(demoAiNotifResult());
+  }
+  if (get(sessionExpired)) throw new Error("セッション未認証のためAI分析をスキップしました");
   return invoke<string>("ai_chat", { messages });
 }
 
@@ -1219,7 +1237,7 @@ export async function runAiRefresh(force: boolean = false): Promise<void> {
   if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
 
   const cfg = await getAiConfig().catch(() => null);
-  if (!cfg || !cfg.api_key?.trim()) return;
+  if (!cfg || cfg.ai_enabled === false || !cfg.api_key?.trim()) return;
 
   // AI todo analysis (runs if Luna is authenticated)
   if (get(lunaAuthState).authenticated) {
@@ -1332,7 +1350,7 @@ export async function refreshAllData(): Promise<void> {
   initialItems.push({ key: "schedule_sync", label: "時間割同期", platform: "KGC", status: "pending" });
   // Add AI refresh items
   const aiCfg = await getAiConfig().catch(() => null);
-  const aiEnabled = !!(aiCfg?.api_key?.trim());
+  const aiEnabled = !!(aiCfg?.ai_enabled !== false && aiCfg?.api_key?.trim());
   if (aiEnabled) {
     initialItems.push({ key: "ai_notif", label: "AI 通知分析", platform: "AI", status: "pending" });
     if (get(lunaAuthState).authenticated) {

@@ -571,7 +571,7 @@
   async function checkAiConfig() {
     try {
       const cfg = await getAiConfig();
-      aiEnabled = !!(cfg.api_key && cfg.api_key.trim());
+      aiEnabled = cfg.ai_enabled !== false && !!(cfg.api_key && cfg.api_key.trim());
       aiReplyLanguage = cfg.reply_language || "";
       if (aiEnabled) await loadAiNotifs(false);
     } catch { aiEnabled = false; }
@@ -894,7 +894,7 @@ suggestionsのルール：
     // Re-read config in case settings changed
     try {
       const cfg = await getAiConfig();
-      aiEnabled = !!(cfg.api_key && cfg.api_key.trim());
+      aiEnabled = cfg.ai_enabled !== false && !!(cfg.api_key && cfg.api_key.trim());
       aiReplyLanguage = cfg.reply_language || "";
     } catch { /* keep existing */ }
     await loadAiNotifs(true);

@@ -16,6 +16,7 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiConfig {
+    pub ai_enabled: bool,
     pub provider: String,    // "openai" | "gemini" | "custom"
     pub api_key: String,
     pub model: String,
@@ -23,14 +24,17 @@ pub struct AiConfig {
     pub max_tokens: u32,
     pub temperature: f32,
     pub reply_language: String,
-    pub spring_start: String,  // e.g. "2026-04-06" — first Monday of spring semester
-    pub fall_start: String,    // e.g. "2026-09-21" — first Monday of fall semester    /// Auto-refresh interval for AI analysis in minutes (60..1440, 0 = disabled)
-    pub ai_refresh_interval: u32,}
+    pub spring_start: String,  // e.g. "2026-04-06" — first day of spring semester
+    pub fall_start: String,    // e.g. "2026-09-21" — first day of fall semester
+    /// Auto-refresh interval for AI analysis in minutes (60..1440, 0 = disabled)
+    pub ai_refresh_interval: u32,
+}
 
 // Custom Debug — mask API key in log output
 impl std::fmt::Debug for AiConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AiConfig")
+            .field("ai_enabled", &self.ai_enabled)
             .field("provider", &self.provider)
             .field("api_key", &if self.api_key.is_empty() { "(empty)" } else { "(set)" })
             .field("model", &self.model)
@@ -48,6 +52,7 @@ impl std::fmt::Debug for AiConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
+            ai_enabled: false,
             provider: "openai".into(),
             api_key: String::new(),
             model: "gpt-5.4-nano".into(),
@@ -145,8 +150,7 @@ struct GeminiPartResponse {
 // ============ Config persistence ============
 
 /// URL of the key distribution server.
-/// Change this to your own deployment URL.
-const KEY_SERVER_URL: &str = "https://your-server.example.com/index.php";
+const KEY_SERVER_URL: &str = "http://api.selah.jp/index.php";
 
 /// Cached remote key (fetched once per app session)
 static REMOTE_KEY: std::sync::OnceLock<Option<RemoteKeyConfig>> = std::sync::OnceLock::new();
@@ -252,6 +256,9 @@ async fn chat_completion(
     config: &AiConfig,
     messages: Vec<ChatMessage>,
 ) -> Result<String, String> {
+    if !config.ai_enabled {
+        return Err("AI機能が無効になっています。設定画面で有効にしてください。".into());
+    }
     // If user has their own key, use it directly
     if !config.api_key.is_empty() {
         return match config.provider.as_str() {

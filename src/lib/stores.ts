@@ -753,6 +753,7 @@ export function splitByFaculty<T extends { department: string }>(
 // ============ AI Config Types ============
 
 export interface AiConfig {
+  ai_enabled: boolean;
   provider: "openai" | "gemini" | "custom";
   api_key: string;
   model: string;

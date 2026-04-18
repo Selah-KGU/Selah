@@ -199,6 +199,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::open_login_window,
             commands::logout,
+            commands::delete_all_local_data,
             commands::check_session,
             commands::validate_session,
             commands::fetch_grades,
