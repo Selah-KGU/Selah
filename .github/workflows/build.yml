@@ -118,10 +118,14 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Install Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1.1.1
-        with:
-          version: latest
-          cache: true
+        run: choco install vulkan-sdk -y
+        shell: pwsh
+
+      - name: Set VULKAN_SDK env
+        run: |
+          $sdk = (Get-ChildItem "C:\VulkanSDK" | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          echo "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+        shell: pwsh
 
       - name: Install frontend dependencies
         run: npm ci
