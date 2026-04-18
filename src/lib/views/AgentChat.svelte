@@ -244,7 +244,7 @@
   }
 
   async function send() {
-    const text = inputText.trim();
+    let text = inputText.trim();
     if (!text) return;
     if (sending) return;
     if (!activeConvId) {
@@ -254,6 +254,13 @@
     if (!await isAiReady()) {
       alert("Agent は現在利用できません。AI設定（ローカルモデルまたはAPIキー）を確認してください。");
       return;
+    }
+    if (quotedMessage) {
+      const qText = quotedMessage.role === "assistant" ? stripHtml(render(quotedMessage.content)) : quotedMessage.content;
+      const lines = qText.trim().split("\n").filter(Boolean);
+      const short = lines.length > 3 ? lines.slice(0, 3).join("\n") + "..." : lines.join("\n");
+      text = `「${short}」について：\n${text}`;
+      quotedMessage = null;
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -403,6 +410,34 @@
     };
     return map[n] ?? n;
   }
+
+  let copiedId = $state<number | null>(null);
+  let quotedMessage = $state<UIMessage | null>(null);
+
+  function stripHtml(html: string): string {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    return tmp.textContent ?? tmp.innerText ?? "";
+  }
+
+  async function copyMessage(m: UIMessage) {
+    const text = m.role === "assistant" ? stripHtml(render(m.content)) : m.content;
+    await navigator.clipboard.writeText(text);
+    copiedId = m.id;
+    setTimeout(() => { if (copiedId === m.id) copiedId = null; }, 1500);
+  }
+
+  function quoteReply(m: UIMessage) {
+    quotedMessage = m;
+    tick().then(() => {
+      const ta = document.querySelector<HTMLTextAreaElement>(".composer-row textarea");
+      if (ta) ta.focus();
+    });
+  }
+
+  function dismissQuote() {
+    quotedMessage = null;
+  }
 </script>
 
 <div class="agent-root">
@@ -514,6 +549,17 @@
                 {#if m.content}
                   <div class="text">{m.content}</div>
                 {/if}
+                <div class="msg-actions">
+                  <button class="msg-act-btn" title="コピー" onclick={() => copyMessage(m)}>
+                    {#if copiedId === m.id}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      <span>コピー済</span>
+                    {:else}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><rect x="4" y="4" width="11" height="11" rx="2"/></svg>
+                      <span>コピー</span>
+                    {/if}
+                  </button>
+                </div>
               </div>
             </div>
           {:else if m.role === "assistant"}
@@ -521,6 +567,21 @@
               <img src={selahLogoUrl} alt="" class="avatar" />
               <div class="bubble assistant-bubble">
                 <div class="md">{@html render(m.content)}</div>
+                <div class="msg-actions">
+                  <button class="msg-act-btn" title="コピー" onclick={() => copyMessage(m)}>
+                    {#if copiedId === m.id}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      <span>コピー済</span>
+                    {:else}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><rect x="4" y="4" width="11" height="11" rx="2"/></svg>
+                      <span>コピー</span>
+                    {/if}
+                  </button>
+                  <button class="msg-act-btn" title="引用して返信" onclick={() => quoteReply(m)}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 8L4 12l6 4"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg>
+                    <span>返信</span>
+                  </button>
+                </div>
               </div>
             </div>
           {/if}
@@ -561,29 +622,39 @@
 
     <!-- Floating bottom composer + action capsule -->
     <div class="composer-bottom">
-      <div class="composer-island">
-        <div class="composer-row">
-          <textarea
-            bind:value={inputText}
-            onkeydown={onKeydown}
-            placeholder={sending ? "返事を書いている途中……" : "なにか書いてみて。"}
-            rows="1"
-            disabled={sending}
-          ></textarea>
+      {#if quotedMessage}
+        <div class="quote-bar">
+          <span class="quote-label">返信：</span>
+          <span class="quote-text">{quotedMessage.role === "assistant" ? stripHtml(render(quotedMessage.content)) : quotedMessage.content}</span>
+          <button class="quote-dismiss" onclick={dismissQuote} title="キャンセル">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
-      </div>
-
-      {#if sending}
-        <button class="action-capsule stop" onclick={cancel} title="停止">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-          <span>停止</span>
-        </button>
-      {:else}
-        <button class="action-capsule" onclick={send} disabled={!inputText.trim()}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-          <span>送る</span>
-        </button>
       {/if}
+      <div class="send-row">
+        <div class="composer-island">
+          <div class="composer-row">
+            <textarea
+              bind:value={inputText}
+              onkeydown={onKeydown}
+              placeholder={sending ? "返事を書いている途中……" : "なにか書いてみて。"}
+              rows="1"
+              disabled={sending}
+            ></textarea>
+          </div>
+        </div>
+        {#if sending}
+          <button class="action-capsule stop" onclick={cancel} title="停止">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            <span>停止</span>
+          </button>
+        {:else}
+          <button class="action-capsule" onclick={send} disabled={!inputText.trim()}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            <span>送る</span>
+          </button>
+        {/if}
+      </div>
     </div>
   </section>
 </div>
@@ -828,6 +899,7 @@
   .avatar.dim { opacity: 0.6; }
 
   .bubble {
+    position: relative;
     max-width: 76%;
     padding: 10px 14px;
     border-radius: 16px;
@@ -835,6 +907,8 @@
     line-height: 1.65;
     word-wrap: break-word;
     overflow-wrap: anywhere;
+    user-select: text;
+    -webkit-user-select: text;
   }
   .user-bubble {
     background: var(--accent);
@@ -886,6 +960,54 @@
   }
   .md :global(a) { color: var(--accent); text-decoration: none; }
   .md :global(a:hover) { text-decoration: underline; }
+
+  .msg-actions {
+    position: absolute;
+    bottom: 7px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px 4px;
+    border-radius: 999px;
+    background: transparent;
+    backdrop-filter: blur(12px) saturate(1.6);
+    -webkit-backdrop-filter: blur(12px) saturate(1.6);
+    border: 0.5px solid rgba(255, 255, 255, 0.25);
+    box-shadow: 0 1px 6px rgba(0,0,0,0.12);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s;
+    z-index: 2;
+  }
+  .assistant-bubble .msg-actions {
+    border-color: rgba(0, 0, 0, 0.08);
+    box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+  }
+  .bubble:hover .msg-actions,
+  .bubble:focus-within .msg-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .msg-act-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    padding: 0 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    border-radius: 999px;
+    font-size: 11px;
+    font-family: inherit;
+    letter-spacing: 0.01em;
+    transition: background 0.1s;
+  }
+  .user-bubble .msg-act-btn { color: rgba(255,255,255,0.85); }
+  .assistant-bubble .msg-act-btn { color: rgba(0,0,0,0.45); }
+  .user-bubble .msg-act-btn:hover { background: rgba(255,255,255,0.2); color: #fff; }
+  .assistant-bubble .msg-act-btn:hover { background: rgba(0,0,0,0.07); color: rgba(0,0,0,0.75); }
 
   /* ── Spinner ── */
   .spin {
@@ -1021,6 +1143,65 @@
     transform: translateX(-50%);
     width: min(640px, calc(100% - 28px));
     z-index: 30;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .quote-bar {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: var(--glass-bg, rgba(255, 255, 255, 0.82));
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    border: 0.5px solid var(--glass-border);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.07);
+    animation: msg-enter 0.18s ease-out;
+  }
+  .quote-label {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .quote-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+  .quote-dismiss {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+  }
+  .quote-dismiss:hover { color: var(--text-secondary); }
+
+  .composer-row-actions {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .send-row {
     display: flex;
     align-items: stretch;
     gap: 8px;
