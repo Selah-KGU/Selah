@@ -1645,7 +1645,7 @@
       c.querySelectorAll('[data-ann-id]').forEach(function(b) {
         b.addEventListener('click', function() {
           var id = b.dataset.annId, title = b.dataset.annTitle;
-          if (id && idnumber) invoke('luna_open_detail_window', { path: '', title: title, mode: 'announcement', idnumber: idnumber, infoId: id });
+          if (id && idnumber) invoke('luna_open_detail_window', { path: '', title: title, mode: 'announcement', idnumber: idnumber, infoId: id, courseName: _currentCourseName || null });
         });
       });
 
@@ -2092,6 +2092,7 @@
         } else if (mode === 'announcement') {
           var idn2 = params.get('idnumber'), infoId = params.get('infoId');
           if (!idn2 || !infoId) { renderDetail({ error: '\u30d1\u30e9\u30e1\u30fc\u30bf\u304c\u4e0d\u8db3\u3057\u3066\u3044\u307e\u3059' }); return; }
+          if (params.get('courseName')) _currentCourseName = params.get('courseName');
           renderDetail(await invoke('luna_fetch_announcement_detail', { idnumber: idn2, infoId: infoId }));
         } else if (mode === 'report') {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }

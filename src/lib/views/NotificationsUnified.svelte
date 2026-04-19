@@ -260,7 +260,7 @@
       activeTab.set("mail");
     } else if (n.source === "luna" && n.url) {
       try {
-        await lunaInvoke("luna_open_detail_window", { path: n.url, title: n.title });
+        await lunaInvoke("luna_open_detail_window", { path: n.url, title: n.title, courseName: n.courseInfo || null });
       } catch (e) { console.error("Failed to open Luna detail:", e); }
     } else if (n.source === "kwic" && n.id) {
       try {

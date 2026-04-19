@@ -64,9 +64,11 @@ sel!(SEL_POST_ID,            ".postId");
 sel!(SEL_MSG_BLOCK,          ".discussion-message-block");
 
 // ── Detail page selectors ──
-sel!(SEL_DL_CMT,        ".downloadFile, .cmtInfoFileName");
 sel!(SEL_REPORT_FORM,   "#reportDownloadForm");
 sel!(SEL_FORUMS_FORM,   "#forumsPostFile");
+// Luna announcement attachment hidden inputs
+sel!(SEL_CMT_FILENAME,   "input.cmtInfoFileName");
+sel!(SEL_CMT_OBJECTNAME, "input.cmtInfoObjectName");
 sel!(SEL_TEMPFILE_LINK, "a[href*='tempfile']");
 sel!(SEL_DOWNLOAD_LINK, "a[href*='download']");
 sel!(SEL_VIDEO_LINK,    ".block-list-video a[href], .examination-movie a[href]");
@@ -1057,7 +1059,7 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
     let doc = Html::parse_fragment(html);
     let mut sections = Vec::new();
     let mut meta = Vec::new();
-    let attachments = Vec::new();
+    let mut attachments: Vec<LunaAttachment> = Vec::new();
 
     // Title from #osiraseTitle or .block-title-txt
     let title = try_selectors_text(&doc, &[
@@ -1077,6 +1079,51 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
         }
     }
 
+    // Helper: build a LunaAttachment from an announcement-style .downloadFile div.
+    // Real Luna HTML looks like:
+    //   <div class="link-txt downloadFile downFile">
+    //     <p>display name.pdf</p>
+    //     <input type="hidden" class="cmtInfoFileName"   value="filename.pdf">
+    //     <input type="hidden" class="cmtInfoObjectName" value="2026/ab/cd/ef/uuid">
+    //   </div>
+    // The browser downloads from:
+    //   /lms/information/file/down/{makeDownFileName(name)}?fileName={name}&objectName={obj}
+    // We drop this into download_action/download_params so luna_download_file()
+    // assembles the URL the same way its report/forum path does.
+    let build_announcement_attachment = |container: scraper::ElementRef| -> Option<LunaAttachment> {
+        let file_name = container.select(&SEL_CMT_FILENAME).next()
+            .and_then(|e| e.value().attr("value"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let p = container.text().collect::<String>().trim().to_string();
+                if p.is_empty() { None } else { Some(p) }
+            })?;
+        let obj_name = container.select(&SEL_CMT_OBJECTNAME).next()
+            .and_then(|e| e.value().attr("value"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        if obj_name.is_empty() {
+            log::warn!("[announcement] attachment '{}' has no objectName", file_name);
+            return None;
+        }
+
+        let link_type = classify_link("", &file_name);
+        log::debug!("[announcement] attachment name='{}', object='{}'", file_name, obj_name);
+        Some(LunaAttachment {
+            name: file_name.clone(),
+            url: String::new(),
+            link_type,
+            object_name: obj_name.clone(),
+            download_action: "/lms/information/file/down".to_string(),
+            download_params: vec![
+                ("fileName".to_string(), file_name),
+                ("objectName".to_string(), obj_name),
+            ],
+        })
+    };
+
     // Extract meta rows from .contents-detail.contents-vertical
     {
         for row in doc.select(&SEL_DETAIL_VERT) {
@@ -1087,9 +1134,14 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
             // Skip "内容" — it's the Quill content we already extracted
             if label == "内容" { continue; }
 
-            // Check for attachment rows
-            if row.select(&SEL_DL_CMT).next().is_some() {
-                // TODO: extract attachment file info if needed
+            // Attachment rows: each .downloadFile div contains hidden inputs with the
+            // real file/object name. Read those directly instead of trusting text.
+            if row.select(&SEL_DOWNLOAD_FILE).next().is_some() {
+                for file_el in row.select(&SEL_DOWNLOAD_FILE) {
+                    if let Some(att) = build_announcement_attachment(file_el) {
+                        attachments.push(att);
+                    }
+                }
                 continue;
             }
 
@@ -1121,6 +1173,16 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
 
             if !label.is_empty() && !value.is_empty() {
                 meta.push((label, value));
+            }
+        }
+    }
+
+    // Fallback: some layouts may keep .downloadFile blocks outside the
+    // .contents-detail rows. Sweep the whole fragment only if nothing was found.
+    if attachments.is_empty() {
+        for file_el in doc.select(&SEL_DOWNLOAD_FILE) {
+            if let Some(att) = build_announcement_attachment(file_el) {
+                attachments.push(att);
             }
         }
     }

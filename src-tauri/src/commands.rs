@@ -2522,7 +2522,7 @@ pub fn list_downloads() -> Vec<DownloadRecord> {
 pub fn scan_download_dir() -> Vec<DownloadRecord> {
     let config = load_download_config();
     let base = if config.download_dir.is_empty() {
-        dirs::download_dir().unwrap_or_else(std::env::temp_dir)
+        default_download_dir()
     } else {
         std::path::PathBuf::from(&config.download_dir)
     };
@@ -2642,8 +2642,11 @@ pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), S
     if !p.exists() {
         return Err("ファイルが見つかりません".into());
     }
-    // Security: restrict to Downloads or configured download directory
+    // Security: restrict to the app's default (~/Documents/Selah), the system
+    // Downloads folder, or a user-configured download directory.
     let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
+    let app_default = default_download_dir().canonicalize()
+        .unwrap_or_else(|_| default_download_dir());
     let sys_downloads = dirs::download_dir().unwrap_or_else(|| {
         dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(std::env::temp_dir)
     });
@@ -2651,7 +2654,8 @@ pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), S
     let custom_dir = if dl_config.download_dir.is_empty() { None } else {
         std::path::Path::new(&dl_config.download_dir).canonicalize().ok()
     };
-    let allowed = canonical.starts_with(&sys_downloads)
+    let allowed = canonical.starts_with(&app_default)
+        || canonical.starts_with(&sys_downloads)
         || custom_dir.as_ref().is_some_and(|d| canonical.starts_with(d));
     if !allowed {
         return Err("ダウンロードフォルダ外のファイルは開けません".into());

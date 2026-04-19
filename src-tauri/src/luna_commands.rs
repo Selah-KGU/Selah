@@ -327,12 +327,16 @@ pub async fn luna_open_detail_window(
             parts
         }
         Some("announcement") => {
-            format!(
+            let mut parts = format!(
                 "luna-detail.html?mode=announcement&title={}&idnumber={}&infoId={}",
                 urlencoding::encode(&title),
                 urlencoding::encode(idnumber.as_deref().unwrap_or("")),
                 urlencoding::encode(info_id.as_deref().unwrap_or(""))
-            )
+            );
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
+            parts
         }
         Some("discussion") => {
             format!(
