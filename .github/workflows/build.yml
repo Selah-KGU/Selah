@@ -115,11 +115,6 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: s/src-tauri -> D:/t
-
       - name: Install Vulkan SDK
         run: choco install vulkan-sdk -y
         shell: pwsh
@@ -166,13 +161,23 @@ jobs:
           }
         shell: pwsh
 
+      - name: Cargo clean (Windows)
+        run: |
+          $env:CARGO_TARGET_DIR = "D:\t"
+          cargo clean --manifest-path s/src-tauri/Cargo.toml
+        shell: pwsh
+
       - name: Build Tauri app (Windows x64)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_TARGET_DIR: D:/t
+          CARGO_INCREMENTAL: 0
           CARGO_BUILD_JOBS: 1
           CMAKE_BUILD_PARALLEL_LEVEL: 1
+          CMAKE_GENERATOR: Visual Studio 17 2022
+          CMAKE_GENERATOR_PLATFORM: x64
+          CMAKE_GENERATOR_TOOLSET: host=x64
           GGML_CCACHE: OFF
           CL: /FS
           _CL_: /FS
