@@ -148,6 +148,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_BUILD_JOBS: 1
+          CMAKE_BUILD_PARALLEL_LEVEL: 1
+          CL: /FS
+          _CL_: /FS
         with:
           args: --target x86_64-pc-windows-msvc
           tagName: ${{ needs.prepare.outputs.tag }}
