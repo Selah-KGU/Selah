@@ -124,10 +124,6 @@ jobs:
         run: choco install vulkan-sdk -y
         shell: pwsh
 
-      - name: Install Ninja
-        run: choco install ninja -y
-        shell: pwsh
-
       - name: Set VULKAN_SDK env
         run: |
           $candidates = @("C:\VulkanSDK", "C:\Program Files\VulkanSDK", "C:\Program Files (x86)\VulkanSDK")
@@ -177,7 +173,7 @@ jobs:
           CARGO_TARGET_DIR: D:/t
           CARGO_BUILD_JOBS: 1
           CMAKE_BUILD_PARALLEL_LEVEL: 1
-          CMAKE_GENERATOR: Ninja
+          GGML_CCACHE: OFF
           CL: /FS
           _CL_: /FS
           CFLAGS: /FS
