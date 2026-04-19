@@ -100,12 +100,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: s
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: s/package-lock.json
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -115,7 +118,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: s/src-tauri -> D:/t
 
       - name: Install Vulkan SDK
         run: choco install vulkan-sdk -y
@@ -147,12 +150,23 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+        working-directory: s
+
+      - name: Shorten temp paths
+        run: |
+          New-Item -ItemType Directory -Force -Path "D:\tmp" | Out-Null
+          echo "TMP=D:\tmp" >> $env:GITHUB_ENV
+          echo "TEMP=D:\tmp" >> $env:GITHUB_ENV
+        shell: pwsh
 
       - name: Clean cached llama-cpp build artifacts
         run: |
-          if (Test-Path "src-tauri/target") {
-            Get-ChildItem "src-tauri/target" -Recurse -Directory -Filter "llama-cpp-sys-2-*" -ErrorAction SilentlyContinue |
+          if (Test-Path "s/src-tauri/target") {
+            Get-ChildItem "s/src-tauri/target" -Recurse -Directory -Filter "llama-cpp-sys-2-*" -ErrorAction SilentlyContinue |
               ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+          if (Test-Path "D:\t") {
+            Remove-Item "D:\t" -Recurse -Force -ErrorAction SilentlyContinue
           }
         shell: pwsh
 
@@ -160,6 +174,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_TARGET_DIR: D:/t
           CARGO_BUILD_JOBS: 1
           CMAKE_BUILD_PARALLEL_LEVEL: 1
           CMAKE_GENERATOR: Ninja
@@ -167,12 +182,8 @@ jobs:
           _CL_: /FS
           CFLAGS: /FS
           CXXFLAGS: /FS
-          CMAKE_ARGS: >-
-            -DCMAKE_TRY_COMPILE_CONFIGURATION=Release
-            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
-            -DCMAKE_C_FLAGS_DEBUG=/FS
-            -DCMAKE_CXX_FLAGS_DEBUG=/FS
         with:
+          projectPath: s
           args: --target x86_64-pc-windows-msvc
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
