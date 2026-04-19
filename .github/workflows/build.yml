@@ -121,6 +121,10 @@ jobs:
         run: choco install vulkan-sdk -y
         shell: pwsh
 
+      - name: Install Ninja
+        run: choco install ninja -y
+        shell: pwsh
+
       - name: Set VULKAN_SDK env
         run: |
           $candidates = @("C:\VulkanSDK", "C:\Program Files\VulkanSDK", "C:\Program Files (x86)\VulkanSDK")
@@ -144,14 +148,30 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Clean cached llama-cpp build artifacts
+        run: |
+          if (Test-Path "src-tauri/target") {
+            Get-ChildItem "src-tauri/target" -Recurse -Directory -Filter "llama-cpp-sys-2-*" -ErrorAction SilentlyContinue |
+              ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+        shell: pwsh
+
       - name: Build Tauri app (Windows x64)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_BUILD_JOBS: 1
           CMAKE_BUILD_PARALLEL_LEVEL: 1
+          CMAKE_GENERATOR: Ninja
           CL: /FS
           _CL_: /FS
+          CFLAGS: /FS
+          CXXFLAGS: /FS
+          CMAKE_ARGS: >-
+            -DCMAKE_TRY_COMPILE_CONFIGURATION=Release
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+            -DCMAKE_C_FLAGS_DEBUG=/FS
+            -DCMAKE_CXX_FLAGS_DEBUG=/FS
         with:
           args: --target x86_64-pc-windows-msvc
           tagName: ${{ needs.prepare.outputs.tag }}
