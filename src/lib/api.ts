@@ -854,10 +854,6 @@ export async function gcalClearCalendar(): Promise<void> {
   return invoke("gcal_clear_calendar");
 }
 
-export async function syncCalendar(entries: GcalSyncEntry[], weekLabel: string): Promise<string> {
-  return invoke<string>("sync_calendar", { entries, weekLabel });
-}
-
 export async function getDataCache(key: string): Promise<string | null> {
   if (_isDemo()) {
     const DEMO_DB_MAP: Record<string, () => any> = {
@@ -1110,8 +1106,10 @@ export async function aiChat(messages: AiChatMessage[]): Promise<string> {
   return invoke<string>("ai_chat", { messages });
 }
 
-export async function openSettingsWindow(): Promise<void> {
-  return invoke<void>("open_settings_window");
+export async function openSettingsWindow(panel?: string): Promise<void> {
+  const { activeTab, activeSettingsPanel } = await import("./stores");
+  if (panel) activeSettingsPanel.set(panel as any);
+  activeTab.set("settings");
 }
 
 export async function openProfileEditWindow(): Promise<void> {

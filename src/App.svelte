@@ -2,8 +2,7 @@
   import "./styles.css";
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
-  import DebugPanel from "./lib/DebugPanel.svelte";
-  import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, debugVisible, registerTask, updateTask, invalidateCache } from "./lib/stores";
+  import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, registerTask, updateTask, invalidateCache } from "./lib/stores";
   import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
   import { restoreDemo, isDemoMode } from "./lib/demo";
@@ -21,7 +20,6 @@
   let lastValidateTime = 0;
   const VALIDATE_COOLDOWN = 60_000; // 60 seconds minimum between validations
   let intervalId: ReturnType<typeof setInterval> | null = null;
-  let unlistenDebugToggle: (() => void) | null = null;
   let unlistenLogout: (() => void) | null = null;
 
   // Backoff: track consecutive sync failures per service to avoid spamming headless WebViews
@@ -45,10 +43,6 @@
   }
 
   onMount(async () => {
-    unlistenDebugToggle = await listen("toggle-debug", () => {
-      debugVisible.update(v => !v);
-    });
-
     // Handle logout triggered from settings window (or other windows)
     unlistenLogout = await listen("logout", async () => {
       const { deactivateDemo, isDemoMode: checkDemo } = await import("./lib/demo");
@@ -107,7 +101,6 @@
   });
 
   onDestroy(() => {
-    unlistenDebugToggle?.();
     unlistenLogout?.();
     stopTrayStatus();
     stopBackgroundPolling();
@@ -218,7 +211,6 @@
 {:else}
   <Dashboard />
 {/if}
-<DebugPanel />
 
 <style>
   .app-main {

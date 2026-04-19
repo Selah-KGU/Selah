@@ -18,6 +18,7 @@
   import MailView from "./views/MailView.svelte";
   import IctTools from "./views/IctTools.svelte";
   import AgentChat from "./views/AgentChat.svelte";
+  import Settings from "./views/Settings.svelte";
   import type { MailMessage, KwicPortalHome } from "./api";
   import { updateAiReadiness } from "./api";
   import type { LunaNotification } from "./types";
@@ -223,6 +224,11 @@
       {#if visited.has("agent")}
         <div class="view-panel" class:active={$activeTab === "agent"}>
           <AgentChat />
+        </div>
+      {/if}
+      {#if visited.has("settings")}
+        <div class="view-panel" class:active={$activeTab === "settings"}>
+          <Settings />
         </div>
       {/if}
     </div>

@@ -302,6 +302,8 @@ syllabusSearchState.subscribe((state) => {
 });
 
 export const activeTab = writable<string>("home");
+export type SettingsPanel = "ai" | "session" | "mail" | "calendar" | "notification" | "download" | "about" | "debug";
+export const activeSettingsPanel = writable<SettingsPanel>("ai");
 export const aiRefreshRequested = writable<boolean>(false);
 export const unreadNotifCount = writable<number>(0);
 export const unreadMailCount = writable<number>(0);
@@ -394,7 +396,10 @@ function initTheme(): "system" | "light" | "dark" {
   return "system";
 }
 export const theme = writable<"system" | "light" | "dark">(initTheme());
-export const debugVisible = writable<boolean>(false);
+
+// Dev mode: unlocked by 7-tap on About panel version label.
+// In-memory only — resets to false every app launch.
+export const devModeActive = writable<boolean>(false);
 
 // ============ Task Registry (for debug panel task observer) ============
 

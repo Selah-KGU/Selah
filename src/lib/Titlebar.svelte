@@ -94,6 +94,14 @@
     invoke("open_downloads_window").catch(console.error);
   }
 
+  function toggleSettings() {
+    if ($activeTab === "settings") {
+      activeTab.set("home");
+      return;
+    }
+    void openSettingsWindow();
+  }
+
   const AGENT_HINT_KEY = "selah-agent-hint-dismissed-v2";
   let showAgentHint = $state(typeof localStorage !== "undefined" && !localStorage.getItem(AGENT_HINT_KEY));
 
@@ -150,7 +158,13 @@
     <button class="tb-btn" onclick={openDownloadsWindow} title="ダウンロード" aria-label="ダウンロード">
       <Icon name="arrow.down.circle" size={14} />
     </button>
-    <button class="tb-btn" onclick={() => openSettingsWindow()} title="設定" aria-label="設定">
+    <button
+      class="tb-btn"
+      class:active={$activeTab === "settings"}
+      onclick={toggleSettings}
+      title={$activeTab === "settings" ? "ホームに戻る" : "設定"}
+      aria-label={$activeTab === "settings" ? "ホームに戻る" : "設定"}
+    >
       <Icon name="gear" size={14} />
     </button>
     {#if $authState.authenticated && !$sessionExpired && !$reloginInProgress}
@@ -621,6 +635,11 @@
   .tb-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
+  }
+
+  .tb-btn.active {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
   }
 
   .sync-badge {

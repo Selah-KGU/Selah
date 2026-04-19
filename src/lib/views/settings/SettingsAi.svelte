@@ -1,0 +1,545 @@
+<script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
+  import { onMount, onDestroy } from "svelte";
+  import { updateAiReadiness } from "../../api";
+
+  interface LocalModel {
+    id: string;
+    name: string;
+    size_label: string;
+    file_size_mb: number;
+    downloaded: boolean;
+  }
+
+  interface AiConfig {
+    ai_enabled: boolean;
+    provider: string;
+    local_model: string;
+    api_key: string;
+    model: string;
+    base_url: string;
+    max_tokens: number;
+    temperature: number;
+    reply_language: string;
+    ai_refresh_interval: number;
+  }
+
+  const MODEL_PRESETS: Record<string, string[]> = {
+    openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+    gemini: ["gemini-3.1-pro-preview", "gemini-3-flash-preview"],
+  };
+  const PROVIDER_HINTS: Record<string, string> = {
+    openai: "OpenAI API キーは platform.openai.com で取得できます。",
+    gemini: "Google AI Studio (aistudio.google.com) で API キーを取得できます。",
+  };
+  const DEFAULT_URLS: Record<string, string> = { openai: "https://api.openai.com/v1", gemini: "" };
+  const DEFAULT_MODELS: Record<string, string> = { openai: "gpt-5.4-nano", gemini: "gemini-3-flash-preview" };
+
+  let aiEnabled = $state("true");
+  let aiProvider = $state("local");
+  let selectedLocalModel = $state("qwen3.5-2b");
+  let apiKey = $state("");
+  let model = $state("");
+  let baseUrl = $state("");
+  let maxTokens = $state(0);
+  let temperature = $state(0.7);
+  let replyLanguage = $state("ja");
+  let aiRefreshInterval = $state(360);
+
+  let modelList = $state<LocalModel[]>([]);
+  let downloading = $state(false);
+  let downloadProgress = $state<{ modelId: string; name: string; percent: number; downloaded: number; total: number } | null>(null);
+
+  let statusMsg = $state("");
+  let statusType = $state<"success" | "error" | "loading" | "">("");
+  let saveBusy = $state(false);
+  let testBusy = $state(false);
+  let localTestBusy = $state(false);
+  let localTestMsg = $state("");
+  let localTestOk = $state<boolean | null>(null);
+
+  let unlistenDlProgress: (() => void) | null = null;
+
+  function isLocal() { return aiProvider === "local"; }
+
+  function getConfig(): AiConfig {
+    const p = aiProvider;
+    return {
+      ai_enabled: aiEnabled === "true",
+      provider: p,
+      local_model: selectedLocalModel,
+      api_key: p === "local" ? "" : apiKey,
+      model: p === "local" ? "" : model,
+      base_url: p === "local" ? "" : baseUrl,
+      max_tokens: Number(maxTokens) || 0,
+      temperature: Number(temperature),
+      reply_language: replyLanguage,
+      ai_refresh_interval: Number(aiRefreshInterval) || 0,
+    };
+  }
+
+  function friendlyError(e: any): string {
+    const s = String(e);
+    if (s.includes("rate limit") || s.includes("429") || s.includes("Too Many")) return "リクエスト上限に達しました。しばらく待ってから再試行してください。";
+    if (s.includes("401") || s.includes("Unauthorized") || s.includes("invalid_api_key")) return "APIキーが無効です。";
+    if (s.includes("403") || s.includes("Forbidden")) return "アクセスが拒否されました。";
+    if (s.includes("timeout") || s.includes("timed out")) return "接続がタイムアウトしました。";
+    if (s.includes("network") || s.includes("dns") || s.includes("ECONNREFUSED")) return "ネットワークエラー。接続を確認してください。";
+    if (s.includes("model_not_found") || s.includes("does not exist")) return "指定されたモデルが見つかりません。";
+    const m = s.match(/API error \(\d+\):\s*(.*)/);
+    if (m) return m[1];
+    return s.length > 120 ? s.substring(0, 120) + "..." : s;
+  }
+
+  function showStatus(msg: string, type: "success" | "error" | "loading") {
+    statusMsg = msg;
+    statusType = type;
+    if (type !== "loading") setTimeout(() => { statusMsg = ""; statusType = ""; }, 4000);
+  }
+
+  function onProviderSwitch() {
+    if (!isLocal()) {
+      const p = aiProvider;
+      const pr = MODEL_PRESETS[p] || [];
+      if (!model || !pr.includes(model)) model = DEFAULT_MODELS[p] || "";
+      if (p === "openai" && !baseUrl) baseUrl = DEFAULT_URLS.openai;
+    }
+  }
+
+  async function loadModelList() {
+    try {
+      modelList = await invoke<LocalModel[]>("list_local_models");
+    } catch (e) {
+      console.error("Failed to load models:", e);
+    }
+  }
+
+  async function startDownload(modelId: string) {
+    if (downloading) return;
+    downloading = true;
+    const m = modelList.find(x => x.id === modelId);
+    if (!m) return;
+    downloadProgress = { modelId, name: m.name, percent: 0, downloaded: 0, total: 0 };
+    try {
+      await invoke("download_local_model", { modelId });
+      showStatus(m.name + " のダウンロードが完了しました", "success");
+      await loadModelList();
+      selectedLocalModel = modelId;
+      updateAiReadiness().catch(() => {});
+    } catch (e) {
+      if (String(e) === "cancelled") showStatus("ダウンロードを中止しました", "error");
+      else showStatus("ダウンロードエラー: " + friendlyError(e), "error");
+    } finally {
+      downloading = false;
+      downloadProgress = null;
+    }
+  }
+
+  function cancelDownload() {
+    invoke("cancel_model_download").catch(() => {});
+  }
+
+  async function deleteModel(modelId: string) {
+    if (!confirm("このモデルを削除しますか？")) return;
+    try {
+      await invoke("delete_local_model", { modelId });
+      showStatus("モデルを削除しました", "success");
+      await loadModelList();
+      updateAiReadiness().catch(() => {});
+    } catch (e) {
+      showStatus("削除エラー: " + String(e), "error");
+    }
+  }
+
+  async function loadConfig() {
+    try {
+      const c = await invoke<any>("get_ai_config");
+      aiEnabled = c.ai_enabled !== false ? "true" : "false";
+      aiProvider = c.provider || "local";
+      selectedLocalModel = c.local_model || "qwen3.5-2b";
+      apiKey = c.api_key || "";
+      model = c.model || "";
+      baseUrl = c.base_url || "";
+      maxTokens = c.max_tokens != null ? c.max_tokens : 0;
+      temperature = c.temperature != null ? c.temperature : 0.7;
+      replyLanguage = c.reply_language || "ja";
+      aiRefreshInterval = c.ai_refresh_interval != null ? c.ai_refresh_interval : 360;
+      await loadModelList();
+    } catch (e) {
+      console.error("Failed to load config:", e);
+    }
+  }
+
+  export async function save() {
+    saveBusy = true;
+    try {
+      await invoke("save_ai_config", { config: getConfig() });
+      updateAiReadiness().catch(() => {});
+    } catch (e) {
+      throw e;
+    } finally {
+      saveBusy = false;
+    }
+  }
+
+  async function testConnection() {
+    testBusy = true;
+    showStatus("接続をテスト中...", "loading");
+    try {
+      await invoke("save_ai_config", { config: getConfig() });
+      const r = await invoke<string>("ai_test_connection");
+      showStatus("接続成功: " + r.substring(0, 80), "success");
+    } catch (e) {
+      showStatus(friendlyError(e), "error");
+    } finally {
+      testBusy = false;
+    }
+  }
+
+  async function testLocalModel() {
+    localTestBusy = true;
+    localTestOk = null;
+    localTestMsg = "モデルを読み込み中...";
+    try {
+      await invoke("save_ai_config", { config: getConfig() });
+      const r = await invoke<string>("ai_test_connection");
+      localTestOk = true;
+      localTestMsg = "成功: " + r.substring(0, 80);
+    } catch (e) {
+      localTestOk = false;
+      localTestMsg = "エラー: " + (typeof e === "string" ? e : (e as any)?.message || JSON.stringify(e));
+    } finally {
+      localTestBusy = false;
+    }
+  }
+
+  onMount(async () => {
+    await loadConfig();
+    unlistenDlProgress = await listen<{ percent: number; downloaded: number; total: number }>(
+      "model-download-progress",
+      (ev) => {
+        if (!downloadProgress) return;
+        downloadProgress = { ...downloadProgress, percent: ev.payload.percent ?? downloadProgress.percent, downloaded: ev.payload.downloaded ?? 0, total: ev.payload.total ?? 0 };
+      }
+    );
+  });
+
+  onDestroy(() => { unlistenDlProgress?.(); });
+
+  // React to provider/value changes to apply defaults
+  $effect(() => { onProviderSwitch(); void aiProvider; });
+</script>
+
+<div class="hero-card">
+  <div class="hero-icon">
+    <svg viewBox="0 0 20 20" fill="none" stroke="#6a3fa0" stroke-width="1.3" stroke-linejoin="round">
+      <path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z"/>
+      <path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke-width="1"/>
+    </svg>
+  </div>
+  <div class="hero-text">
+    <h2 class="panel-title">AI 設定</h2>
+    <p class="panel-desc">ローカルモデルまたは外部 API を使って、時間割・課題・お知らせを分析します。</p>
+  </div>
+</div>
+
+<div class="card-label">AI 機能</div>
+<div class="card">
+  <div class="row">
+    <span class="row-label">AI 機能</span>
+    <div class="row-input">
+      <select bind:value={aiEnabled}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+      <div class="hint">有効にすると、時間割・課題・お知らせなどのAI分析機能が利用できます。</div>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">推論方法</span>
+    <div class="row-input">
+      <select bind:value={aiProvider}>
+        <option value="local">ローカルモデル</option>
+        <option value="openai">OpenAI API</option>
+        <option value="gemini">Google Gemini API</option>
+      </select>
+      <div class="hint">
+        {isLocal() ? "ローカルモデルはデバイス上で実行されます。" : "API 利用時のみ、キー・モデル名・ベース URL・max tokens・temperature が有効です。"}
+      </div>
+    </div>
+  </div>
+</div>
+
+{#if aiEnabled === "true"}
+  {#if isLocal()}
+    <div class="card-label">ローカルモデル</div>
+    <div class="card">
+      {#each modelList as m}
+        <div class="model-row">
+          <input type="radio" class="model-radio" name="localModel" value={m.id} bind:group={selectedLocalModel} />
+          <div class="model-info">
+            <div class="model-name">{m.name}</div>
+            <div class="model-meta">{m.size_label}</div>
+            {#if m.id === "qwen3.5-2b"}
+              <div class="model-meta model-note-standard">標準: ホームのお知らせAI要約 / 時間割のAI日程分析は利用不可</div>
+            {:else if m.id === "qwen3.5-4b"}
+              <div class="model-meta model-note-high">高品質: すべてのAI分析機能を利用可能</div>
+            {/if}
+          </div>
+          <span class="model-badge" class:downloaded={m.downloaded}>
+            {m.downloaded ? "DL済み" : m.file_size_mb + "MB"}
+          </span>
+          <div class="model-actions">
+            {#if !m.downloaded}
+              <button class="btn-test" onclick={() => startDownload(m.id)} disabled={downloading}>ダウンロード</button>
+            {:else}
+              <button class="btn-test danger" onclick={() => deleteModel(m.id)}>削除</button>
+            {/if}
+          </div>
+        </div>
+      {/each}
+      {#if modelList.length === 0}
+        <div class="model-empty">モデル情報を読み込み中...</div>
+      {/if}
+    </div>
+    {#if downloadProgress}
+      <div class="card download-progress">
+        <div class="dl-head">
+          <span class="dl-name">{downloadProgress.name}</span>
+          <span class="dl-percent">{downloadProgress.percent}%</span>
+          <button class="btn-test danger" onclick={cancelDownload}>中止</button>
+        </div>
+        <div class="dl-bar"><div class="dl-fill" style="width:{downloadProgress.percent}%"></div></div>
+        {#if downloadProgress.total}
+          <div class="dl-size">{(downloadProgress.downloaded / 1048576).toFixed(1)} / {(downloadProgress.total / 1048576).toFixed(1)} MB</div>
+        {/if}
+      </div>
+    {/if}
+    <div class="action-row">
+      <button class="btn-test" onclick={testLocalModel} disabled={localTestBusy}>
+        {localTestBusy ? "テスト中..." : "推論テスト"}
+      </button>
+      {#if localTestMsg}
+        <span class="hint" class:ok={localTestOk === true} class:ng={localTestOk === false}>{localTestMsg}</span>
+      {/if}
+    </div>
+  {:else}
+    <div class="card-label">API モデル設定</div>
+    <div class="card">
+      <div class="row">
+        <span class="row-label">API キー</span>
+        <div class="row-input">
+          <div class="key-row">
+            <input type="password" bind:value={apiKey} placeholder="APIキーを入力" autocomplete="off" spellcheck="false" />
+            <button class="btn-test" onclick={testConnection} disabled={testBusy}>テスト</button>
+          </div>
+          <div class="hint">{PROVIDER_HINTS[aiProvider] || ""}</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">モデル名</span>
+        <div class="row-input">
+          <input type="text" bind:value={model} placeholder="gpt-5.4-nano" spellcheck="false" />
+          <div class="presets">
+            {#each (MODEL_PRESETS[aiProvider] || []) as preset}
+              <button class="preset" onclick={() => (model = preset)}>{preset}</button>
+            {/each}
+          </div>
+        </div>
+      </div>
+      {#if aiProvider !== "gemini"}
+        <div class="row">
+          <span class="row-label">ベース URL</span>
+          <div class="row-input">
+            <input type="text" bind:value={baseUrl} placeholder="https://api.openai.com/v1" spellcheck="false" />
+            <div class="hint">OpenAI 互換 API のエンドポイント</div>
+          </div>
+        </div>
+      {/if}
+      <div class="row">
+        <span class="row-label">最大トークン</span>
+        <div class="row-input">
+          <input type="number" bind:value={maxTokens} min="0" step="1024" placeholder="0" />
+          <div class="hint">API モデル用の出力上限です。</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="row-label">Temperature</span>
+        <div class="row-input">
+          <div class="range-row">
+            <input type="range" min="0" max="2" step="0.1" bind:value={temperature} />
+            <span class="range-val">{Number(temperature).toFixed(1)}</span>
+          </div>
+          <div class="hint">API モデル用のサンプリング設定です。</div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <div class="card-label">回答設定</div>
+  <div class="card">
+    <div class="row">
+      <span class="row-label">回答言語</span>
+      <div class="row-input">
+        <select bind:value={replyLanguage}>
+          <option value="ja">日本語</option>
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+          <option value="ko">한국어</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card-label">自動更新</div>
+  <div class="card">
+    <div class="row">
+      <span class="row-label">更新間隔</span>
+      <div class="row-input">
+        <select bind:value={aiRefreshInterval}>
+          <option value={0}>無効</option>
+          <option value={60}>1時間</option>
+          <option value={120}>2時間</option>
+          <option value={180}>3時間</option>
+          <option value={360}>6時間</option>
+          <option value={720}>12時間</option>
+          <option value={1440}>24時間</option>
+        </select>
+        <div class="hint">AI通知分析・AI課題分析を自動的に更新する間隔</div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if statusMsg}
+  <div class="status-msg {statusType}" style="margin-top:10px;">{statusMsg}</div>
+{/if}
+
+<style>
+  .model-row {
+    padding: 10px 14px;
+    border-top: 0.5px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .model-row:first-child { border-top: none; }
+  .model-radio { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .model-info { flex: 1; min-width: 0; }
+  .model-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+  .model-meta { font-size: 10.5px; color: var(--text-secondary); margin-top: 1px; }
+  .model-note-standard { color: color-mix(in srgb, var(--text-primary) 72%, var(--red) 28%); font-weight: 500; }
+  .model-note-high { color: color-mix(in srgb, var(--text-primary) 78%, var(--green, #34c759) 22%); font-weight: 500; }
+  .model-badge {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .model-badge.downloaded {
+    background: color-mix(in srgb, var(--green, #34c759) 15%, transparent);
+    color: var(--green, #34c759);
+  }
+  .model-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .model-empty { padding: 14px; font-size: 12px; color: var(--text-secondary); }
+
+  :global(.settings-main .btn-test.danger) {
+    color: var(--red);
+    border-color: color-mix(in srgb, var(--red) 30%, transparent);
+  }
+  :global(.settings-main .btn-test.danger:hover:not(:disabled)) {
+    background: var(--red);
+    color: #fff;
+    border-color: var(--red);
+  }
+
+  .download-progress { padding: 10px 14px; margin-top: -4px; }
+  .dl-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .dl-name { font-size: 12px; font-weight: 600; flex: 1; }
+  .dl-percent { font-size: 11px; color: var(--text-secondary); }
+  .dl-bar {
+    height: 4px;
+    background: var(--border-strong);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .dl-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.2s;
+  }
+  .dl-size {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    margin-top: 3px;
+  }
+
+  .action-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+  }
+  .action-row .hint { margin-top: 0; }
+  .action-row .hint.ok { color: var(--green, #34c759); }
+  .action-row .hint.ng { color: var(--red); }
+
+  .key-row { display: flex; align-items: center; gap: 6px; }
+  .key-row input { flex: 1; }
+
+  .presets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+  .preset {
+    font-size: 10px;
+    font-family: inherit;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 0.5px solid var(--border-strong);
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .preset:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .range-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .range-row input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-strong);
+    outline: none;
+    border: none;
+    padding: 0;
+  }
+  .range-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+  .range-val {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    min-width: 28px;
+    text-align: right;
+  }
+</style>

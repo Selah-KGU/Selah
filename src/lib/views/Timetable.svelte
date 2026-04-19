@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, gcalDisconnect, syncCalendar, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts, getAiConfig, resetAiReady } from "../api";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts, getAiConfig, resetAiReady } from "../api";
   import { lunaAuthState, gcalAuthState, sessionExpired, registerTask, updateTask, onCacheUpdate, aiReady } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
@@ -25,8 +25,6 @@
   let examEntries = $state<ExamEntry[]>([]);
   let favoriteEntries = $state<SyllabusEntry[]>([]);
   let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") === "1");
-  const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
-  let syscalEnabled = $state(isMac && localStorage.getItem("selah-syscal-enabled") === "true");
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let cacheReloadTimer: ReturnType<typeof setInterval> | undefined;
@@ -288,6 +286,30 @@
     }));
   }
 
+  function buildSyncWeeks(raw: {
+    kgc_entries_current: KgcCourseRow[];
+    kgc_entries_next: KgcCourseRow[];
+    current_week_label?: string;
+    next_week_label?: string;
+  }) {
+    const candidates = [
+      { kind: "current" as const, entries: raw.kgc_entries_current, label: (raw.current_week_label || "").trim() },
+      { kind: "next" as const, entries: raw.kgc_entries_next, label: (raw.next_week_label || "").trim() },
+    ];
+    const seen = new Set<string>();
+    const weeks: { kind: "current" | "next"; entries: KgcCourseRow[]; label: string }[] = [];
+    for (const w of candidates) {
+      if (!w.entries.length || !w.label) continue;
+      if (seen.has(w.label)) {
+        console.warn("[Timetable] duplicate week label detected, skip sync target:", w.kind, w.label);
+        continue;
+      }
+      seen.add(w.label);
+      weeks.push(w);
+    }
+    return weeks;
+  }
+
   // ── Auto-sync to calendars if data changed ──
   async function autoSyncCalendars(entries: KgcCourseRow[], weekLabel: string) {
     const newHash = computeScheduleHash(entries);
@@ -309,18 +331,6 @@
     }
 
     const calEntries = buildCalendarEntries(entries);
-
-    // System Calendar.app auto-sync (respect enabled setting)
-    try {
-      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") === "true";
-      const autoSync = localStorage.getItem("selah-auto-sync");
-      if (syscalEnabled && autoSync === "true" && calEntries.length > 0) {
-        await syncCalendar(calEntries, weekLabel);
-        showToast("カレンダーに同期しました");
-      }
-    } catch (e: any) {
-      console.error("[Timetable] Calendar.app auto-sync failed:", e);
-    }
 
     // Google Calendar auto-sync
     try {
@@ -356,13 +366,9 @@
       // Reload cached extras (exam might have updated)
       loadCachedExtras();
 
-      // Auto-sync calendars (hash-based, non-blocking) - sync both weeks
-      for (const week of ["current", "next"] as const) {
-        const entries = week === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
-        const label = week === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
-        if (entries.length > 0) {
-          await autoSyncCalendars(entries, label);
-        }
+      // Auto-sync calendars (hash-based, non-blocking) - sync unique week labels only
+      for (const week of buildSyncWeeks(data.raw)) {
+        await autoSyncCalendars(week.entries, week.label);
       }
       localStorage.setItem("selah-cal-last-sync", String(Date.now()));
     } catch (e: any) {
@@ -443,25 +449,7 @@
     gcalSyncing = true;
     gcalError = "";
     try {
-      const weeks = [
-        { entries: scheduleData.raw.kgc_entries_current, label: scheduleData.raw.current_week_label || "" },
-        { entries: scheduleData.raw.kgc_entries_next, label: scheduleData.raw.next_week_label || "" },
-      ];
-
-      // Apple Calendar.app sync (respect enabled setting)
-      const syscalEnabled = localStorage.getItem("selah-syscal-enabled") === "true";
-      if (syscalEnabled) {
-        for (const { entries: raw, label } of weeks) {
-          const calEntries = buildCalendarEntries(raw);
-          if (calEntries.length > 0) {
-            try {
-              await syncCalendar(calEntries, label);
-            } catch (e: any) {
-              console.error("[Timetable] Calendar.app sync failed:", e);
-            }
-          }
-        }
-      }
+      const weeks = buildSyncWeeks(scheduleData.raw);
 
       // Google Calendar sync
       try {
@@ -643,13 +631,9 @@
       if (data.ai_result) aiResult = data.ai_result;
       localStorage.setItem("selah-sunday-refreshed", todayKey);
 
-      // Sync calendars with refreshed data (both weeks)
-      for (const week of ["current", "next"] as const) {
-        const entries = week === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
-        const label = week === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
-        if (entries.length > 0) {
-          await autoSyncCalendars(entries, label);
-        }
+      // Sync calendars with refreshed data (unique week labels only)
+      for (const week of buildSyncWeeks(data.raw)) {
+        await autoSyncCalendars(week.entries, week.label);
       }
       localStorage.setItem("selah-cal-last-sync", String(Date.now()));
       console.log("[Timetable] Sunday auto-refresh completed");
@@ -695,11 +679,9 @@
   }
 
   async function timerCalendarSync() {
-    // Check if any auto-sync is enabled
-    const sysEnabled = localStorage.getItem("selah-syscal-enabled") !== "false";
-    const sysAuto = localStorage.getItem("selah-auto-sync") === "true";
+    // Check if Google auto-sync is enabled
     const gcalAuto = localStorage.getItem("selah-gcal-auto-sync") === "true";
-    if (!(sysEnabled && sysAuto) && !gcalAuto) return;
+    if (!gcalAuto) return;
 
     // Check interval
     const lastSync = parseInt(localStorage.getItem("selah-cal-last-sync") || "0", 10);
@@ -714,13 +696,9 @@
       scheduleData = data;
       if (data.ai_result) aiResult = data.ai_result;
 
-      // Sync both weeks
-      for (const week of ["current", "next"] as const) {
-        const entries = week === "current" ? data.raw.kgc_entries_current : data.raw.kgc_entries_next;
-        const label = week === "current" ? (data.raw.current_week_label || "") : (data.raw.next_week_label || "");
-        if (entries.length > 0) {
-          await autoSyncCalendars(entries, label);
-        }
+      // Sync unique week labels only
+      for (const week of buildSyncWeeks(data.raw)) {
+        await autoSyncCalendars(week.entries, week.label);
       }
 
       localStorage.setItem("selah-cal-last-sync", String(now));
@@ -802,7 +780,6 @@
 
   function handleVisibilityChange() {
     if (document.visibilityState === "visible") {
-      syscalEnabled = isMac && localStorage.getItem("selah-syscal-enabled") !== "false";
       getAiConfig().then(cfg => {
         aiProvider = cfg.provider || "";
       }).catch(() => {});
@@ -891,17 +868,11 @@
             {/if}
             <span class="action-label">更新</span>
           </button>
-          <button class="action-btn" onclick={handleGcalSync} disabled={gcalSyncing} title={syscalEnabled && $gcalAuthState.authenticated ? "Apple / Google カレンダーに同期" : syscalEnabled ? "Apple カレンダーに同期" : "Google カレンダーに同期"}>
+          <button class="action-btn" onclick={handleGcalSync} disabled={gcalSyncing} title="Google カレンダーに同期">
             {#if gcalSyncing}
               <span class="mini-spinner"></span>
             {:else}
               <span class="cal-logos">
-                {#if syscalEnabled}
-                <svg width="13" height="13" viewBox="0 0 814 1000" fill="currentColor">
-                  <path d="M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 202.2-.6 3.2-20.7 71.9-68.7 141.9-42.8 61.6-87.5 123.1-155.5 123.1s-85.5-39.5-164-39.5c-76.5 0-103.7 40.8-165.9 40.8s-105.6-57.8-155.5-127.4c-58.6-81.6-106.3-207.3-106.3-327.1 0-192.8 125.3-295.1 248.8-295.1 65.6 0 120.2 43.1 161.4 43.1 39.3 0 100.6-45.7 174.5-45.7 28.2 0 129.6 2.6 196.2 99.2z"/>
-                  <path d="M554.1 159.4c31.5-37.7 53.8-90.1 53.8-142.6 0-7.3-.7-14.4-1.9-20.5-51.2 1.9-111.7 34.1-148.4 76.5-28.2 31.5-55.8 83.8-55.8 137.1 0 8 1.3 16 1.9 18.5 3.2.6 8.6 1.3 14 1.3 46.3-.1 103.7-30.7 136.4-70.3z"/>
-                </svg>
-                {/if}
                 {#if $gcalAuthState.authenticated}
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
                   <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>

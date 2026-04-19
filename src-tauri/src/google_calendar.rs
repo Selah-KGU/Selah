@@ -7,7 +7,7 @@ use sha2::{Sha256, Digest};
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GCAL_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
-const SCOPES: &str = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar";
+const SCOPES: &str = "https://www.googleapis.com/auth/calendar.app.created";
 const TOKEN_FILE: &str = "google_calendar_token.json";
 const SYNC_STATE_FILE: &str = "google_calendar_sync.json";
 const CONFIG_FILE: &str = "google_calendar_config.json";

@@ -549,28 +549,6 @@ pub fn delete_local_model(app: tauri::AppHandle, model_id: String) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("settings") {
-        let _ = win.set_focus();
-        return Ok(());
-    }
-
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        "settings",
-        tauri::WebviewUrl::App("settings.html".into()),
-    )
-    .title("設定")
-    .inner_size(720.0, 460.0)
-    .min_inner_size(600.0, 400.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("Failed to open settings window: {}", e))?;
-
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn request_ai_refresh(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Emitter;
     log::info!("[ai] request_ai_refresh called, emitting to all windows");
@@ -646,20 +624,6 @@ pub async fn debug_test_notification(title: String, body: String) -> Result<Stri
     {
         Err("debug_test_notification: use test_notification on non-macOS".to_string())
     }
-}
-
-#[tauri::command]
-pub async fn toggle_debug_panel(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Emitter;
-    if let Some(win) = app.get_webview_window("main") {
-        win.emit("toggle-debug", ())
-            .map_err(|e| format!("emit failed: {}", e))?;
-    }
-    // Close the settings window
-    if let Some(settings_win) = app.get_webview_window("settings") {
-        let _ = settings_win.close();
-    }
-    Ok(())
 }
 
 #[tauri::command]

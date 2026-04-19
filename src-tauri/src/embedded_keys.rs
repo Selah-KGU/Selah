@@ -36,7 +36,7 @@ mod tests {
     #[test]
     fn encode_credentials() {
         // Google Calendar
-        let gcal_id = "3896007148-v58haqu83810imt0miarem0299g43uod.apps.googleusercontent.com";
+        let gcal_id = "73896007148-v58haqu83810imt0miarem0299g43uod.apps.googleusercontent.com";
         let gcal_secret = "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";
         // Microsoft Mail
         let ms_id = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";

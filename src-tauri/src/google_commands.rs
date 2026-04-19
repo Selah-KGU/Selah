@@ -62,14 +62,22 @@ pub async fn gcal_open_login(
         let _ = ready_tx.send(Ok(()));
 
         let code = tokio::time::timeout(std::time::Duration::from_secs(300), async {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    let std_stream = stream.into_std()
-                        .map_err(|e| (format!("stream変換失敗: {}", e), None::<std::net::TcpStream>))?;
-                    parse_oauth_callback(std_stream)
-                }
-                Err(e) => {
-                    Err((format!("接続受信失敗: {}", e), None))
+            loop {
+                let (stream, _) = listener.accept().await
+                    .map_err(|e| (format!("接続受信失敗: {}", e), None))?;
+
+                let std_stream = stream.into_std()
+                    .map_err(|e| (format!("stream変換失敗: {}", e), None::<std::net::TcpStream>))?;
+
+                match parse_oauth_callback(std_stream) {
+                    Ok(ok) => break Ok(ok),
+                    Err((e, Some(s))) if e == "oauth_code_missing" => {
+                        // Browsers may issue an extra probe request (e.g. /favicon.ico) before the OAuth callback.
+                        // Keep listener alive and return a tiny waiting page instead of failing the flow.
+                        send_oauth_waiting_response(s);
+                        continue;
+                    }
+                    Err(other) => break Err(other),
                 }
             }
         }).await;
@@ -144,10 +152,30 @@ fn parse_oauth_callback(mut stream: std::net::TcpStream) -> Result<(String, std:
 
     if let Some(code) = params.get("code") {
         Ok((code.clone(), stream))
+    } else if params.get("error").is_none() {
+        Err(("oauth_code_missing".into(), Some(stream)))
     } else {
         let err = params.get("error").cloned().unwrap_or_else(|| "不明なエラー".into());
         Err((err, Some(stream)))
     }
+}
+
+fn send_oauth_waiting_response(mut stream: std::net::TcpStream) {
+    use std::io::Write;
+
+    let body = r#"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>
+body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f7;color:#1d1d1f}
+.card{text-align:center;padding:30px;border-radius:14px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+h1{font-size:18px;margin:0 0 8px}p{font-size:13px;color:#86868b;margin:0}
+</style></head><body><div class=\"card\"><h1>認証を待機中...</h1><p>このタブはそのままにしてください。</p></div></body></html>"#;
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 /// Send the final HTML response to the browser after token exchange.
