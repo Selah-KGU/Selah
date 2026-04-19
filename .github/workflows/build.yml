@@ -137,6 +137,7 @@ jobs:
           if (-not $sdk) { Write-Error "VulkanSDK not found"; exit 1 }
           Write-Host "VULKAN_SDK=$sdk"
           echo "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+          if (Test-Path "$sdk\Bin") { echo "$sdk\Bin" >> $env:GITHUB_PATH }
         shell: pwsh
 
       - name: Install frontend dependencies
@@ -168,14 +169,17 @@ jobs:
         shell: pwsh
 
       - name: Probe Vulkan and MSVC toolchain
-        run: |
-          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
-          where.exe glslc
-          glslc --version
-          where.exe cl
-          where.exe msbuild
-          msbuild -version
         shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+          Write-Host "PATH=$env:Path"
+          & where.exe glslc 2>&1 | Out-Host
+          & glslc --version 2>&1 | Out-Host
+          & where.exe cl 2>&1 | Out-Host
+          & where.exe msbuild 2>&1 | Out-Host
+          & msbuild -version 2>&1 | Out-Host
+          exit 0
 
       - name: Fetch Cargo dependencies
         working-directory: s/src-tauri
