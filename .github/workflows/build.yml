@@ -167,10 +167,114 @@ jobs:
           cargo clean --manifest-path s/src-tauri/Cargo.toml
         shell: pwsh
 
+      - name: Probe Vulkan and MSVC toolchain
+        run: |
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+          where.exe glslc
+          glslc --version
+          where.exe cl
+          where.exe msbuild
+          msbuild -version
+        shell: pwsh
+
+      - name: Fetch Cargo dependencies
+        working-directory: s/src-tauri
+        run: cargo fetch --target x86_64-pc-windows-msvc
+        shell: pwsh
+
+      - name: Patch llama.cpp to bypass vulkan-shaders-gen ExternalProject
+        shell: pwsh
+        run: |
+          # Root cause: llama.cpp's ggml-vulkan/CMakeLists.txt builds
+          # vulkan-shaders-gen via ExternalProject_Add. With the Visual Studio
+          # generator, MSBuild schedules the ExternalProject step targets
+          # (configure/build/install) in parallel, so `install` can start before
+          # `configure` produced cmake_install.cmake -> MSB8066 / CMake error:
+          # "Not a file: ...vulkan-shaders-gen-build/cmake_install.cmake".
+          #
+          # Fix: replace the ExternalProject_Add block with add_subdirectory so
+          # vulkan-shaders-gen becomes a normal target in the main build tree
+          # with proper target-level dependencies.
+          $registryCacheRoot = "$env:USERPROFILE\.cargo\registry\cache"
+          $registrySrcRoot   = "$env:USERPROFILE\.cargo\registry\src"
+
+          $cacheIdx = Get-ChildItem $registryCacheRoot -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $cacheIdx) { Write-Error "No registry cache index directory found"; exit 1 }
+
+          $srcIdxPath = Join-Path $registrySrcRoot $cacheIdx.Name
+          New-Item -ItemType Directory -Path $srcIdxPath -Force | Out-Null
+
+          $crateDir = Get-ChildItem $srcIdxPath -Directory -Filter "llama-cpp-sys-2-*" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $crateDir) {
+            $crateFile = Get-ChildItem $cacheIdx.FullName -Filter "llama-cpp-sys-2-*.crate" | Select-Object -First 1
+            if (-not $crateFile) { Write-Error "llama-cpp-sys-2 crate not found in cache"; exit 1 }
+            Write-Host "Unpacking $($crateFile.FullName) -> $srcIdxPath"
+            tar -xzf $crateFile.FullName -C $srcIdxPath
+            $crateDir = Get-ChildItem $srcIdxPath -Directory -Filter "llama-cpp-sys-2-*" | Select-Object -First 1
+            if (-not $crateDir) { Write-Error "Unpack did not produce a crate directory"; exit 1 }
+            New-Item -ItemType File -Path (Join-Path $crateDir.FullName ".cargo-ok") -Force | Out-Null
+          }
+          Write-Host "Patching $($crateDir.FullName)"
+
+          $cmakeFile = Join-Path $crateDir.FullName "llama.cpp\ggml\src\ggml-vulkan\CMakeLists.txt"
+          if (-not (Test-Path $cmakeFile)) { Write-Error "CMakeLists.txt not found at $cmakeFile"; exit 1 }
+
+          $lines = [System.IO.File]::ReadAllLines($cmakeFile)
+
+          if (($lines -join "`n") -match 'CI patch: use add_subdirectory') {
+            Write-Host "Patch already applied, skipping"
+            exit 0
+          }
+
+          # Locate `    include(ExternalProject)` through the `    )` closing ExternalProject_Add(...)
+          $startIdx = -1; $addStart = -1; $endIdx = -1
+          for ($i = 0; $i -lt $lines.Length; $i++) {
+            if ($startIdx -lt 0 -and $lines[$i] -match '^\s*include\(ExternalProject\)\s*$') { $startIdx = $i; continue }
+            if ($startIdx -ge 0 -and $addStart -lt 0 -and $lines[$i] -match '^\s*ExternalProject_Add\(') { $addStart = $i; continue }
+            if ($addStart -ge 0 -and $lines[$i] -match '^\s*\)\s*$') { $endIdx = $i; break }
+          }
+          if ($startIdx -lt 0 -or $addStart -lt 0 -or $endIdx -lt 0) {
+            Write-Error "Could not locate ExternalProject block (start=$startIdx add=$addStart end=$endIdx)"
+            exit 1
+          }
+
+          $replacement = @(
+            '    # CI patch: use add_subdirectory instead of ExternalProject_Add to avoid',
+            '    # MSBuild parallel scheduling race on vulkan-shaders-gen step stamps.',
+            '    foreach(_arg IN LISTS VULKAN_SHADER_GEN_CMAKE_ARGS)',
+            '        if(_arg MATCHES "^-D([^=]+)=(.*)$")',
+            '            set(${CMAKE_MATCH_1} ${CMAKE_MATCH_2})',
+            '        endif()',
+            '    endforeach()',
+            '    add_subdirectory(vulkan-shaders vulkan-shaders-gen-build)',
+            '    set_target_properties(vulkan-shaders-gen PROPERTIES',
+            '        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")'
+          )
+
+          $newLines = @()
+          if ($startIdx -gt 0) { $newLines += $lines[0..($startIdx-1)] }
+          $newLines += $replacement
+          if ($endIdx + 1 -le $lines.Length - 1) { $newLines += $lines[($endIdx+1)..($lines.Length-1)] }
+
+          [System.IO.File]::WriteAllLines($cmakeFile, $newLines)
+          Write-Host "Patched $cmakeFile (replaced lines $startIdx..$endIdx)"
+
+          # Update .cargo-checksum.json so cargo accepts the modified file
+          $checksumFile = Join-Path $crateDir.FullName ".cargo-checksum.json"
+          if (Test-Path $checksumFile) {
+            $json = Get-Content $checksumFile -Raw | ConvertFrom-Json -AsHashtable
+            $relPath = "llama.cpp/ggml/src/ggml-vulkan/CMakeLists.txt"
+            $newHash = (Get-FileHash -Algorithm SHA256 -Path $cmakeFile).Hash.ToLower()
+            $json.files[$relPath] = $newHash
+            ($json | ConvertTo-Json -Depth 100 -Compress) | Set-Content -Path $checksumFile -NoNewline
+            Write-Host "Updated checksum entry: $relPath -> $newHash"
+          }
+
       - name: Build Tauri app (Windows x64)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUST_BACKTRACE: 1
           CARGO_TARGET_DIR: D:/t
           CARGO_INCREMENTAL: 0
           CARGO_BUILD_JOBS: 1
@@ -178,6 +282,8 @@ jobs:
           CMAKE_GENERATOR: Visual Studio 17 2022
           CMAKE_GENERATOR_PLATFORM: x64
           CMAKE_GENERATOR_TOOLSET: host=x64
+          CMAKE_VS_GLOBALS: UseMultiToolTask=false;EnforceProcessCountAcrossBuilds=true;CL_MPCount=1
+          CMAKE_MSVC_DEBUG_INFORMATION_FORMAT: Embedded
           GGML_CCACHE: OFF
           CL: /FS
           _CL_: /FS
