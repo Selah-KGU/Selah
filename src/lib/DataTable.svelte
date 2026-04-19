@@ -1,27 +1,51 @@
+
 <script lang="ts" generics="T">
-  import type { Snippet } from "svelte";
+import type { Snippet } from "svelte";
+import { onMount, onDestroy } from "svelte";
 
-  interface Column<T> {
-    key: string;
-    label: string;
-    align?: "left" | "center" | "right";
-    width?: string;
-    class?: string;
-    render?: (row: T) => string;
+interface Column<T> {
+  key: string;
+  label: string;
+  align?: "left" | "center" | "right";
+  width?: string;
+  class?: string;
+  render?: (row: T) => string;
+}
+
+interface Props {
+  data: T[];
+  columns: Column<T>[];
+  rowKey?: (row: T, i: number) => string | number;
+  cellSnippet?: Snippet<[{ row: T; col: Column<T>; value: any }]>;
+  onrowclick?: (row: T, event: MouseEvent) => void;
+}
+
+let { data, columns, rowKey, cellSnippet, onrowclick }: Props = $props();
+
+let tableWrapEl: HTMLDivElement | null = null;
+function handleArrowScroll(e: KeyboardEvent) {
+  if (!tableWrapEl) return;
+  if (e.key === "ArrowLeft") {
+    tableWrapEl.scrollLeft -= 40;
+    e.preventDefault();
+  } else if (e.key === "ArrowRight") {
+    tableWrapEl.scrollLeft += 40;
+    e.preventDefault();
   }
-
-  interface Props {
-    data: T[];
-    columns: Column<T>[];
-    rowKey?: (row: T, i: number) => string | number;
-    cellSnippet?: Snippet<[{ row: T; col: Column<T>; value: any }]>;
-    onrowclick?: (row: T, event: MouseEvent) => void;
-  }
-
-  let { data, columns, rowKey, cellSnippet, onrowclick }: Props = $props();
+}
+onMount(() => {
+  // 可选：自动聚焦
+  // tableWrapEl?.focus();
+});
+onDestroy(() => {});
 </script>
 
-<div class="table-wrap">
+<div
+  class="table-wrap"
+  tabindex="0"
+  onkeydown={handleArrowScroll}
+  bind:this={tableWrapEl}
+>
   <table>
     <thead>
       <tr>
