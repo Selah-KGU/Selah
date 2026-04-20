@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
-use tauri::Manager;
 use tauri::Emitter;
+use tauri::Manager;
 
 /// Shared HTTP client — reuses connection pool across all AI calls.
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
@@ -37,7 +37,14 @@ impl std::fmt::Debug for AiConfig {
             .field("ai_enabled", &self.ai_enabled)
             .field("provider", &self.provider)
             .field("local_model", &self.local_model)
-            .field("api_key", &if self.api_key.is_empty() { "(empty)" } else { "(set)" })
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    "(empty)"
+                } else {
+                    "(set)"
+                },
+            )
             .field("model", &self.model)
             .field("base_url", &self.base_url)
             .field("max_tokens", &self.max_tokens)
@@ -206,8 +213,7 @@ fn save_config_to_disk(config: &AiConfig) -> Result<(), String> {
     let path = config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    std::fs::write(&path, &data).map_err(|e| format!("Failed to write config: {}", e))?;
 
     #[cfg(unix)]
     {
@@ -229,10 +235,7 @@ pub async fn chat_completion_public(
     chat_completion(config, messages).await
 }
 
-async fn chat_completion(
-    config: &AiConfig,
-    messages: Vec<ChatMessage>,
-) -> Result<String, String> {
+async fn chat_completion(config: &AiConfig, messages: Vec<ChatMessage>) -> Result<String, String> {
     if !config.ai_enabled {
         return Err("AI機能が無効になっています。設定画面で有効にしてください。".into());
     }
@@ -242,7 +245,9 @@ async fn chat_completion(
             // Run local inference in a blocking thread
             let model_id = config.local_model.clone();
             let catalog = crate::local_ai::model_catalog();
-            let info = catalog.iter().find(|m| m.id == model_id)
+            let info = catalog
+                .iter()
+                .find(|m| m.id == model_id)
                 .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
             let file_name = info.file_name.clone();
             let msgs = messages;
@@ -266,10 +271,7 @@ async fn chat_completion(
     }
 }
 
-async fn call_openai(
-    config: &AiConfig,
-    messages: Vec<ChatMessage>,
-) -> Result<String, String> {
+async fn call_openai(config: &AiConfig, messages: Vec<ChatMessage>) -> Result<String, String> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
     let body = OpenAiRequest {
@@ -289,7 +291,10 @@ async fn call_openai(
         .map_err(|e| format!("リクエスト失敗: {}", e))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("レスポンス読み取り失敗: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("レスポンス読み取り失敗: {}", e))?;
 
     if !status.is_success() {
         return Err(format!("API error ({}): {}", status, truncate_error(&text)));
@@ -306,10 +311,7 @@ async fn call_openai(
         .ok_or_else(|| "AIからの応答がありません".into())
 }
 
-async fn call_gemini(
-    config: &AiConfig,
-    messages: Vec<ChatMessage>,
-) -> Result<String, String> {
+async fn call_gemini(config: &AiConfig, messages: Vec<ChatMessage>) -> Result<String, String> {
     let model = urlencoding::encode(&config.model);
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
@@ -328,7 +330,9 @@ async fn call_gemini(
     } else {
         Some(GeminiContent {
             role: "user".into(), // Gemini systemInstruction uses "user" role
-            parts: vec![GeminiPart { text: system_instruction.join("\n") }],
+            parts: vec![GeminiPart {
+                text: system_instruction.join("\n"),
+            }],
         })
     };
 
@@ -336,7 +340,11 @@ async fn call_gemini(
         .into_iter()
         .filter(|m| m.role != "system")
         .map(|m| GeminiContent {
-            role: if m.role == "assistant" { "model".into() } else { "user".into() },
+            role: if m.role == "assistant" {
+                "model".into()
+            } else {
+                "user".into()
+            },
             parts: vec![GeminiPart { text: m.content }],
         })
         .collect();
@@ -360,7 +368,10 @@ async fn call_gemini(
         .map_err(|e| format!("リクエスト失敗: {}", e))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("レスポンス読み取り失敗: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("レスポンス読み取り失敗: {}", e))?;
 
     if !status.is_success() {
         return Err(format!("API error ({}): {}", status, truncate_error(&text)));
@@ -376,7 +387,9 @@ async fn call_gemini(
         .and_then(|c| c.content.as_ref())
         .and_then(|c| c.parts.first())
         .map(|p| p.text.clone())
-        .ok_or_else(|| "AIからの応答がありません（安全フィルターによりブロックされた可能性があります）".into())
+        .ok_or_else(|| {
+            "AIからの応答がありません（安全フィルターによりブロックされた可能性があります）".into()
+        })
 }
 
 /// Truncate error body to avoid leaking excessive API detail to the frontend.
@@ -384,23 +397,43 @@ fn truncate_error(body: &str) -> String {
     // Try to extract a human-friendly message from JSON error responses
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         // OpenAI / OpenRouter format: { "error": { "message": "..." } }
-        if let Some(msg) = v.get("error")
+        if let Some(msg) = v
+            .get("error")
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
             let msg = msg.trim();
             if !msg.is_empty() {
                 return if msg.len() > 200 {
-                    format!("{}...", &msg[..msg.char_indices().nth(200).map(|(i,_)|i).unwrap_or(msg.len())])
+                    format!(
+                        "{}...",
+                        &msg[..msg
+                            .char_indices()
+                            .nth(200)
+                            .map(|(i, _)| i)
+                            .unwrap_or(msg.len())]
+                    )
                 } else {
                     msg.to_string()
                 };
             }
         }
         // Gemini format: { "error": { "status": "...", "message": "..." } }
-        if let Some(status) = v.get("error").and_then(|e| e.get("status")).and_then(|s| s.as_str()) {
-            let msg = v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("");
-            return format!("{}: {}", status, if msg.len() > 150 { &msg[..150] } else { msg });
+        if let Some(status) = v
+            .get("error")
+            .and_then(|e| e.get("status"))
+            .and_then(|s| s.as_str())
+        {
+            let msg = v
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            return format!(
+                "{}: {}",
+                status,
+                if msg.len() > 150 { &msg[..150] } else { msg }
+            );
         }
     }
     // Fallback: truncate raw body
@@ -483,33 +516,36 @@ pub async fn ai_test_connection() -> Result<String, String> {
 #[tauri::command]
 pub fn list_local_models() -> Vec<serde_json::Value> {
     let catalog = crate::local_ai::model_catalog();
-    catalog.iter().map(|m| {
-        let downloaded = crate::local_ai::is_model_downloaded(&m.file_name);
-        serde_json::json!({
-            "id": m.id,
-            "name": m.name,
-            "size_label": m.size_label,
-            "param_size": m.param_size,
-            "file_size_mb": m.file_size_mb,
-            "downloaded": downloaded,
+    catalog
+        .iter()
+        .map(|m| {
+            let downloaded = crate::local_ai::is_model_downloaded(&m.file_name);
+            serde_json::json!({
+                "id": m.id,
+                "name": m.name,
+                "size_label": m.size_label,
+                "param_size": m.param_size,
+                "file_size_mb": m.file_size_mb,
+                "downloaded": downloaded,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 #[tauri::command]
 pub async fn download_local_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
     let catalog = crate::local_ai::model_catalog();
-    let info = catalog.iter().find(|m| m.id == model_id)
+    let info = catalog
+        .iter()
+        .find(|m| m.id == model_id)
         .ok_or_else(|| format!("不明なモデル: {}", model_id))?
         .clone();
 
     // Run download in blocking thread
     let app_clone = app.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::local_ai::download_model(&app_clone, &info)
-    })
-    .await
-    .map_err(|e| format!("タスク実行エラー: {}", e))??;
+    tokio::task::spawn_blocking(move || crate::local_ai::download_model(&app_clone, &info))
+        .await
+        .map_err(|e| format!("タスク実行エラー: {}", e))??;
 
     // Model availability changed — notify frontend
     let _ = app.emit("ai-config-changed", ());
@@ -524,7 +560,9 @@ pub fn cancel_model_download() {
 #[tauri::command]
 pub fn delete_local_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
     let catalog = crate::local_ai::model_catalog();
-    let info = catalog.iter().find(|m| m.id == model_id)
+    let info = catalog
+        .iter()
+        .find(|m| m.id == model_id)
         .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
 
     // Unload if currently loaded
@@ -532,8 +570,7 @@ pub fn delete_local_model(app: tauri::AppHandle, model_id: String) -> Result<(),
 
     let path = crate::local_ai::model_path(&info.file_name);
     if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("削除失敗: {}", e))?;
+        std::fs::remove_file(&path).map_err(|e| format!("削除失敗: {}", e))?;
     }
 
     // Also remove partial file
@@ -558,7 +595,11 @@ pub async fn request_ai_refresh(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn test_notification(app: tauri::AppHandle, title: String, body: String) -> Result<String, String> {
+pub async fn test_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<String, String> {
     log::info!("test_notification called: title={}, body={}", title, body);
     send_native_notification(&app, &title, &body)
 }
@@ -567,7 +608,11 @@ pub async fn test_notification(app: tauri::AppHandle, title: String, body: Strin
 /// macOS: uses notify-rust directly so the app's own bundle ID (and icon) is
 /// always used, bypassing the tauri plugin's dev-mode fallback to Terminal.
 /// Other platforms: uses the tauri plugin as before.
-pub fn send_native_notification(app: &tauri::AppHandle, title: &str, body: &str) -> Result<String, String> {
+pub fn send_native_notification(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         let bundle_id = &app.config().identifier;
@@ -587,7 +632,11 @@ pub fn send_native_notification(app: &tauri::AppHandle, title: &str, body: &str)
     #[cfg(not(target_os = "macos"))]
     {
         use tauri_plugin_notification::NotificationExt;
-        app.notification().builder().title(title).body(body).show()
+        app.notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
             .map(|_| "Notification sent".to_string())
             .map_err(|e| format!("Notification unavailable: {}", e))
     }
@@ -612,7 +661,10 @@ pub async fn debug_test_notification(title: String, body: String) -> Result<Stri
                 .output()
             {
                 Ok(out) if !out.status.success() => {
-                    log::warn!("osascript notification failed: {}", String::from_utf8_lossy(&out.stderr));
+                    log::warn!(
+                        "osascript notification failed: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
                 }
                 Err(e) => log::warn!("osascript spawn failed: {}", e),
                 _ => {}

@@ -42,7 +42,9 @@ const COOKIES_FILE: &str = "cookies.json";
 pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
 
 /// Build a reqwest HTTP client with shared configuration (no-redirect, UA, cookie provider).
-pub(crate) fn build_http_client(cookie_store: Arc<reqwest_cookie_store::CookieStoreMutex>) -> Client {
+pub(crate) fn build_http_client(
+    cookie_store: Arc<reqwest_cookie_store::CookieStoreMutex>,
+) -> Client {
     Client::builder()
         .cookie_provider(cookie_store)
         .redirect(Policy::none())
@@ -82,15 +84,20 @@ pub(crate) fn soonest_cookie_expiry(store: &reqwest_cookie_store::CookieStoreMut
 /// This catches SSO login forms, Shibboleth redirects, and various session timeout pages.
 pub(crate) fn is_session_expired_body(body: &str) -> bool {
     // SSO login form redirect
-    if body.contains("action=\"UnSSOLoginControl") || body.contains("action=\"/uniasv2/UnSSOLoginControl") {
+    if body.contains("action=\"UnSSOLoginControl")
+        || body.contains("action=\"/uniasv2/UnSSOLoginControl")
+    {
         return true;
     }
     // Okta/Shibboleth SSO redirect in meta refresh or JS
-    if body.contains("sso.kwansei.ac.jp") && (body.contains("saml") || body.contains("redirect") || body.contains("location.href")) {
+    if body.contains("sso.kwansei.ac.jp")
+        && (body.contains("saml") || body.contains("redirect") || body.contains("location.href"))
+    {
         return true;
     }
     // Japanese session timeout / error messages from the app
-    if body.contains("セッションがタイムアウト") || body.contains("セッション切れ") {
+    if body.contains("セッションがタイムアウト") || body.contains("セッション切れ")
+    {
         return true;
     }
     // Struts token error or "不正なアクセス" sometimes means session lost
@@ -132,12 +139,12 @@ pub(crate) const SESSION_EXPIRED_MSG: &str = "セッションが期限切れで�
 pub(crate) fn data_dir() -> std::path::PathBuf {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let base = dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let base = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let dir = base.join("com.kgu.selah");
         let _ = std::fs::create_dir_all(&dir);
         dir
-    }).clone()
+    })
+    .clone()
 }
 
 /// Save a cookie jar to a JSON file in the data directory.
@@ -151,7 +158,12 @@ pub(crate) fn save_cookie_jar(store: &reqwest_cookie_store::CookieStoreMutex, fi
             log::warn!("Failed to save cookies ({}): {}", filename, e);
         } else {
             #[cfg(unix)]
-            { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
+            {
+                let _ = std::fs::set_permissions(
+                    &path,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o600),
+                );
+            }
         }
     }
 }
@@ -182,7 +194,10 @@ pub(crate) async fn fetch_with_redirect(
 ) -> Result<String, String> {
     let mut current_url = url.to_string();
     for i in 0..10 {
-        let resp = http.get(&current_url).send().await
+        let resp = http
+            .get(&current_url)
+            .send()
+            .await
             .map_err(|e| format!("リクエスト失敗: {}", e))?;
         let status = resp.status();
         if status.is_redirection() {
@@ -193,7 +208,11 @@ pub(crate) async fn fetch_with_redirect(
                 } else {
                     loc_str.to_string()
                 };
-                log::debug!("redirect #{} -> {}", i + 1, safe_truncate(&current_url, 120));
+                log::debug!(
+                    "redirect #{} -> {}",
+                    i + 1,
+                    safe_truncate(&current_url, 120)
+                );
                 if current_url.contains("sso.kwansei.ac.jp") {
                     return Err(expired_msg.into());
                 }
@@ -206,7 +225,10 @@ pub(crate) async fn fetch_with_redirect(
             log::debug!("HTTP {} body (first 500 chars): {}", status, preview);
             return Err(format!("HTTP {}", status));
         }
-        let body = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("レスポンス読取失敗: {}", e))?;
         if is_body_expired(&body) {
             return Err(expired_msg.into());
         }
@@ -224,12 +246,18 @@ pub(crate) async fn send_and_follow_redirect(
     expired_msg: &str,
     is_body_expired: fn(&str) -> bool,
 ) -> Result<String, String> {
-    let resp = request.send().await
+    let resp = request
+        .send()
+        .await
         .map_err(|e| format!("リクエスト失敗: {}", e))?;
 
     let status = resp.status();
     let resp_url = resp.url().to_string();
-    log::debug!("send_and_follow_redirect: status={}, url={}", status, safe_truncate(&resp_url, 120));
+    log::debug!(
+        "send_and_follow_redirect: status={}, url={}",
+        status,
+        safe_truncate(&resp_url, 120)
+    );
     if status.is_redirection() {
         if let Some(loc) = resp.headers().get("location") {
             let loc_str = loc.to_str().unwrap_or_default();
@@ -241,13 +269,17 @@ pub(crate) async fn send_and_follow_redirect(
             if next_url.contains("sso.kwansei.ac.jp") {
                 return Err(expired_msg.into());
             }
-            return fetch_with_redirect(http, &next_url, base_url, expired_msg, is_body_expired).await;
+            return fetch_with_redirect(http, &next_url, base_url, expired_msg, is_body_expired)
+                .await;
         }
     }
     if !status.is_success() {
         return Err(format!("HTTP {}", status));
     }
-    let text = resp.text().await.map_err(|e| format!("レスポンス読取失敗: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("レスポンス読取失敗: {}", e))?;
     if is_body_expired(&text) {
         return Err(expired_msg.into());
     }
@@ -269,7 +301,8 @@ where
     K: AsRef<str>,
     V: AsRef<str>,
 {
-    let form_data: Vec<(String, String)> = params.into_iter()
+    let form_data: Vec<(String, String)> = params
+        .into_iter()
         .map(|(k, v)| (k.as_ref().to_string(), v.as_ref().to_string()))
         .collect();
     let mut builder = http.post(url).form(&form_data);
@@ -282,7 +315,14 @@ where
 /// Fetch a KG-Course page using a raw reqwest Client (no auth guard).
 /// Used by headless refresh to verify session without holding the KgcClient mutex.
 pub(crate) async fn fetch_page_with(http: &Client, url: &str) -> Result<String, String> {
-    fetch_with_redirect(http, url, config::KG_COURSE_BASE, SESSION_EXPIRED_MSG, is_session_expired_body).await
+    fetch_with_redirect(
+        http,
+        url,
+        config::KG_COURSE_BASE,
+        SESSION_EXPIRED_MSG,
+        is_session_expired_body,
+    )
+    .await
 }
 
 /// Main HTTP client for KG-Course (kg-course.kwansei.ac.jp)
@@ -338,7 +378,12 @@ impl KgcClient {
                     log::warn!("Failed to save session: {}", e);
                 } else {
                     #[cfg(unix)]
-                    { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
+                    {
+                        let _ = std::fs::set_permissions(
+                            &path,
+                            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+                        );
+                    }
                 }
             }
         }
@@ -371,9 +416,7 @@ impl KgcClient {
         // Load cookies
         match load_cookie_jar(COOKIES_FILE) {
             Some(store) => {
-                let cookie_store = Arc::new(
-                    reqwest_cookie_store::CookieStoreMutex::new(store),
-                );
+                let cookie_store = Arc::new(reqwest_cookie_store::CookieStoreMutex::new(store));
                 self.http = build_http_client(cookie_store.clone());
                 self.cookie_store = cookie_store;
                 self.session = Some(session);

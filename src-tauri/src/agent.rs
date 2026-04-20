@@ -38,7 +38,12 @@ fn datetime_context() -> String {
     };
     format!(
         "Today: {}-{:02}-{:02} ({}) {:02}:{:02} JST",
-        now.year(), now.month(), now.day(), dow, now.hour(), now.minute()
+        now.year(),
+        now.month(),
+        now.day(),
+        dow,
+        now.hour(),
+        now.minute()
     )
 }
 
@@ -48,7 +53,11 @@ fn datetime_context() -> String {
 fn tomorrow_week_offset() -> i32 {
     use chrono::{Datelike, Local};
     let dow = Local::now().weekday().number_from_monday(); // 1=Mon..7=Sun
-    if dow == 7 { 1 } else { 0 }
+    if dow == 7 {
+        1
+    } else {
+        0
+    }
 }
 
 // ─────────────────────── Agent Configuration ───────────────────────
@@ -83,6 +92,8 @@ struct AgentConfig {
     recent_tool_context: usize,
     /// Bytes shown in the tool_result event preview.
     preview_bytes: usize,
+    /// Hard timeout for a single tool execution.
+    tool_timeout_secs: u64,
 }
 
 const CFG: AgentConfig = AgentConfig {
@@ -100,6 +111,7 @@ const CFG: AgentConfig = AgentConfig {
     recent_tool_result_chars: 4000,
     recent_tool_context: 3,
     preview_bytes: 180,
+    tool_timeout_secs: 35,
 };
 
 // ─────────────────────── Stream Events ───────────────────────
@@ -107,21 +119,33 @@ const CFG: AgentConfig = AgentConfig {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum StreamEvent<'a> {
-    Phase { stage: &'a str },
-    ToolCall { name: &'a str },
-    ToolResult { name: &'a str, preview: &'a str, ok: bool },
-    Think { text: &'a str },
-    Token { text: &'a str },
+    Phase {
+        stage: &'a str,
+    },
+    ToolCall {
+        name: &'a str,
+    },
+    ToolResult {
+        name: &'a str,
+        preview: &'a str,
+        ok: bool,
+    },
+    Think {
+        text: &'a str,
+    },
+    Token {
+        text: &'a str,
+    },
     Done,
-    Error { message: &'a str },
+    Error {
+        message: &'a str,
+    },
 }
 
 fn emit(app: &AppHandle, conv_id: &str, ev: &StreamEvent) {
     let topic = format!("agent_stream:{}", conv_id);
     let _ = app.emit(&topic, ev);
 }
-
-
 
 // ─────────────────────── Public Entry Point ───────────────────────
 
@@ -167,13 +191,30 @@ async fn run_turn(
     let history_slice = slice_history(&history, CFG.history_window);
 
     // 3. Phase 1 — plan (skip for image-only turns).
-    let plan = plan_phase(app, conv_id, &provider, &history_slice, &user_text, &user_images).await;
+    let plan = plan_phase(
+        app,
+        conv_id,
+        &provider,
+        &history_slice,
+        &user_text,
+        &user_images,
+    )
+    .await;
 
     // 4. Execute tools.
     let tool_results = execute_tools(app, conv_id, &db, &plan).await;
 
     // 5. Phase 2 — stream answer.
-    let answer = answer_phase(app, conv_id, &provider, &history_slice, &user_text, &user_images, &tool_results).await?;
+    let answer = answer_phase(
+        app,
+        conv_id,
+        &provider,
+        &history_slice,
+        &user_text,
+        &user_images,
+        &tool_results,
+    )
+    .await?;
 
     // 6. Persist assistant response.
     db.agent_append_message(conv_id, "assistant", &answer, None, None, None)
@@ -193,8 +234,15 @@ fn persist_user_message(
     } else {
         serde_json::to_string(user_images).ok()
     };
-    db.agent_append_message(conv_id, "user", user_text, images_json.as_deref(), None, None)
-        .map_err(AgentError::db)?;
+    db.agent_append_message(
+        conv_id,
+        "user",
+        user_text,
+        images_json.as_deref(),
+        None,
+        None,
+    )
+    .map_err(AgentError::db)?;
     maybe_autotitle(db, conv_id, user_text);
     Ok(())
 }
@@ -226,7 +274,10 @@ async fn plan_phase(
     user_images: &[ImagePart],
 ) -> Plan {
     if !user_images.is_empty() {
-        return Plan { tools: vec![], image_only: true };
+        return Plan {
+            tools: vec![],
+            image_only: true,
+        };
     }
     emit(app, conv_id, &StreamEvent::Phase { stage: "planning" });
     choose_plan(provider, history, user_text).await
@@ -257,11 +308,17 @@ async fn run_plan_inference(
     user_text: &str,
 ) -> Result<Plan, AgentError> {
     let supports_prefill = provider.supports_prefill();
-    log::debug!("[agent plan] user_text={:?} history_tool_turns={}",
+    log::debug!(
+        "[agent plan] user_text={:?} history_tool_turns={}",
         truncate_for_log(user_text, 200),
-        history.iter().filter(|r| r.role == "tool").count());
+        history.iter().filter(|r| r.role == "tool").count()
+    );
     let msgs = build_plan_messages(history, user_text, supports_prefill);
-    let prefill = if supports_prefill { CFG.plan_prefill } else { "" };
+    let prefill = if supports_prefill {
+        CFG.plan_prefill
+    } else {
+        ""
+    };
 
     let raw = provider
         .plan(
@@ -280,8 +337,14 @@ async fn run_plan_inference(
         truncate_for_log(&raw, 400)
     );
     let parsed = parse_plan(&raw).map_err(AgentError::model)?;
-    log::debug!("[agent plan] parsed tools: {:?}",
-        parsed.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>());
+    log::debug!(
+        "[agent plan] parsed tools: {:?}",
+        parsed
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+    );
     Ok(parsed)
 }
 
@@ -305,7 +368,14 @@ fn build_plan_messages(
         images: Vec::new(),
     }];
 
-    for row in history.iter().rev().take(CFG.plan_history_turns).collect::<Vec<_>>().into_iter().rev() {
+    for row in history
+        .iter()
+        .rev()
+        .take(CFG.plan_history_turns)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         match row.role.as_str() {
             "user" | "assistant" => msgs.push(ChatMessage {
                 role: row.role.clone(),
@@ -313,10 +383,16 @@ fn build_plan_messages(
                 images: Vec::new(),
             }),
             "tool" => {
-                if let Some(name) = row.tool_name.as_deref() {
+                if let (Some(name), Some(json)) =
+                    (row.tool_name.as_deref(), row.tool_result_json.as_deref())
+                {
                     msgs.push(ChatMessage {
                         role: "assistant".into(),
-                        content: format!("[tool result: {}]", name),
+                        content: format!(
+                            "[tool result: {}] {}",
+                            name,
+                            summarize_plan_tool_result(name, json)
+                        ),
                         images: Vec::new(),
                     });
                 }
@@ -334,9 +410,139 @@ fn build_plan_messages(
     msgs
 }
 
+fn summarize_plan_tool_result(name: &str, json: &str) -> String {
+    let parsed: Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return trim_to(json, 260),
+    };
+    let summary = match name {
+        "list_recent_mail" => parsed.get("mails").and_then(|v| v.as_array()).map(|items| {
+            items
+                .iter()
+                .take(3)
+                .map(|m| {
+                    format!(
+                        "mail[id={}, subject={}]",
+                        m.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                        m.get("subject").and_then(|v| v.as_str()).unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        }),
+        "list_luna_todos" => parsed.get("todos").and_then(|v| v.as_array()).map(|items| {
+            items
+                .iter()
+                .take(3)
+                .map(|t| {
+                    format!(
+                        "todo[title={}, course={}]",
+                        t.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        t.get("course").and_then(|v| v.as_str()).unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        }),
+        "get_upcoming_deadlines" => {
+            parsed
+                .get("deadlines")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(3)
+                        .map(|t| {
+                            format!(
+                                "deadline[title={}, deadline={}]",
+                                t.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                t.get("deadline").and_then(|v| v.as_str()).unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+        }
+        "list_downloaded_files" => parsed.get("files").and_then(|v| v.as_array()).map(|items| {
+            items
+                .iter()
+                .take(3)
+                .map(|f| {
+                    format!(
+                        "file[path={}, filename={}]",
+                        f.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+                        f.get("filename").and_then(|v| v.as_str()).unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        }),
+        "get_course_context" => parsed.get("course").map(|course| {
+            let name = course.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let materials = course
+                .get("materials")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(2)
+                        .map(|m| {
+                            format!(
+                                "material[title={}, url={}]",
+                                m.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                m.get("url").and_then(|v| v.as_str()).unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+            format!("course[name={}] {}", name, materials)
+        }),
+        "list_browser_windows" => parsed
+            .get("windows")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .map(|w| {
+                        format!(
+                            "browser[target={}, url={}]",
+                            w.get("target").and_then(|v| v.as_str()).unwrap_or(""),
+                            w.get("url").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+        "search_notifications" | "list_recent_notifications" => parsed
+            .get("notifications")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .map(|n| {
+                        format!(
+                            "notification[title={}]",
+                            n.get("title").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+        _ => None,
+    };
+    trim_to(summary.as_deref().unwrap_or(json), 260)
+}
+
 fn finalize_plan(plan: Plan, history: &[crate::db::AgentMessageRow], user_text: &str) -> Plan {
     if should_skip_tools(history, user_text) {
-        log::debug!("[agent plan] skip_tools=true (smalltalk/followup), dropping {} tool(s)", plan.tools.len());
+        log::debug!(
+            "[agent plan] skip_tools=true (smalltalk/followup), dropping {} tool(s)",
+            plan.tools.len()
+        );
         return Plan::default();
     }
     let mut seen = HashSet::new();
@@ -346,19 +552,32 @@ fn finalize_plan(plan: Plan, history: &[crate::db::AgentMessageRow], user_text: 
         .filter_map(|call| {
             let sanitized = agent_tools::sanitize_tool_args(&call.name, &call.args);
             if sanitized.is_none() {
-                log::warn!("[agent plan] tool dropped by sanitize: name={} args={}",
-                    call.name, call.args);
+                log::warn!(
+                    "[agent plan] tool dropped by sanitize: name={} args={}",
+                    call.name,
+                    call.args
+                );
             }
             let args = sanitized?;
-            let key = format!("{}:{}", call.name, serde_json::to_string(&args).unwrap_or_default());
+            let key = format!(
+                "{}:{}",
+                call.name,
+                serde_json::to_string(&args).unwrap_or_default()
+            );
             if !seen.insert(key) {
                 return None;
             }
-            Some(ToolCall { name: call.name, args })
+            Some(ToolCall {
+                name: call.name,
+                args,
+            })
         })
         .take(CFG.max_tools)
         .collect();
-    Plan { tools, image_only: plan.image_only }
+    Plan {
+        tools,
+        image_only: plan.image_only,
+    }
 }
 
 // ─────────────────────── Tool Execution ───────────────────────
@@ -372,15 +591,52 @@ async fn execute_tools(
     let mut results = Vec::new();
     for call in plan.tools.iter().take(CFG.max_tools) {
         emit(app, conv_id, &StreamEvent::ToolCall { name: &call.name });
-
-        let result = agent_tools::dispatch(app, &call.name, &call.args).await;
+        let started = std::time::Instant::now();
+        log::debug!(
+            "[agent tool] start name={} args={}",
+            call.name,
+            serde_json::to_string(&call.args).unwrap_or_default()
+        );
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(CFG.tool_timeout_secs),
+            agent_tools::dispatch(app, &call.name, &call.args),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => json!({
+                "error": format!("tool timed out after {}s", CFG.tool_timeout_secs),
+            }),
+        };
         let ok = result.get("error").is_none();
         let preview = preview_of(&result);
-        emit(app, conv_id, &StreamEvent::ToolResult { name: &call.name, preview: &preview, ok });
+        log::debug!(
+            "[agent tool] finish name={} ok={} elapsed_ms={} preview={}",
+            call.name,
+            ok,
+            started.elapsed().as_millis(),
+            truncate_for_log(&preview, 200)
+        );
+        emit(
+            app,
+            conv_id,
+            &StreamEvent::ToolResult {
+                name: &call.name,
+                preview: &preview,
+                ok,
+            },
+        );
 
         // Persist tool result.
         let tool_json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
-        let _ = db.agent_append_message(conv_id, "tool", "", None, Some(&call.name), Some(&tool_json));
+        let _ = db.agent_append_message(
+            conv_id,
+            "tool",
+            "",
+            None,
+            Some(&call.name),
+            Some(&tool_json),
+        );
 
         results.push((call.name.clone(), result));
     }
@@ -401,17 +657,29 @@ async fn answer_phase(
     emit(app, conv_id, &StreamEvent::Phase { stage: "answering" });
 
     let messages = build_answer_messages(history, user_text, user_images, tool_results);
+    log::debug!(
+        "[agent answer] start conv_id={} messages={} tool_results={}",
+        conv_id,
+        messages.len(),
+        tool_results.len()
+    );
 
     let app_for_cb = app.clone();
     let conv_for_cb = conv_id.to_string();
     let gen_id = conv_id.to_string();
+    let visible_chars = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let visible_chars_for_cb = visible_chars.clone();
 
-    provider
+    let answer = provider
         .answer(
             messages,
             &gen_id,
             CFG.answer_think_budget_pct,
             move |chunk: &str, is_think: bool| {
+                if !is_think && !chunk.is_empty() {
+                    visible_chars_for_cb
+                        .fetch_add(chunk.chars().count(), std::sync::atomic::Ordering::Relaxed);
+                }
                 let topic = format!("agent_stream:{}", conv_for_cb);
                 let ev = if is_think {
                     StreamEvent::Think { text: chunk }
@@ -421,7 +689,24 @@ async fn answer_phase(
                 let _ = app_for_cb.emit(&topic, &ev);
             },
         )
-        .await
+        .await?;
+    if visible_chars.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        let cleaned = strip_think(&answer).trim().to_string();
+        if !cleaned.is_empty() {
+            log::warn!(
+                "[agent answer] no visible token was streamed; emitting cleaned final answer chars={}",
+                cleaned.len()
+            );
+            emit(app, conv_id, &StreamEvent::Token { text: &cleaned });
+        }
+    }
+    log::debug!(
+        "[agent answer] finish conv_id={} chars={} empty={}",
+        conv_id,
+        answer.len(),
+        answer.trim().is_empty()
+    );
+    Ok(answer)
 }
 
 fn build_answer_messages(
@@ -434,13 +719,21 @@ fn build_answer_messages(
 
     // ── System prompt: persona + date + tool results ──
     let mut system = String::from(agent_prompts::PERSONA_PROMPT);
-    system.push_str(&format!("\n\n=== CURRENT DATE/TIME ===\n{}\n", datetime_context()));
+    system.push_str(&format!(
+        "\n\n=== CURRENT DATE/TIME ===\n{}\n",
+        datetime_context()
+    ));
 
     if !tool_results.is_empty() {
         system.push_str("\n\n<tool_results>\n");
         for (name, value) in tool_results {
-            let json_str = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
-            system.push_str(&format!("[{}] {}\n", name, trim_to(&json_str, CFG.tool_result_chars)));
+            let json_str = serde_json::to_string(&sanitize_answer_tool_result(value))
+                .unwrap_or_else(|_| "{}".into());
+            system.push_str(&format!(
+                "[{}] {}\n",
+                name,
+                trim_to(&json_str, CFG.tool_result_chars)
+            ));
         }
         system.push_str("</tool_results>\n");
     }
@@ -449,7 +742,15 @@ fn build_answer_messages(
     if !recent.is_empty() {
         system.push_str("\n<recent_tool_results>\n");
         for (name, json) in &recent {
-            system.push_str(&format!("[{}] {}\n", name, trim_to(json, CFG.recent_tool_result_chars)));
+            let sanitized = serde_json::from_str::<Value>(json)
+                .map(|v| sanitize_answer_tool_result(&v))
+                .unwrap_or_else(|_| Value::String(trim_to(json, CFG.recent_tool_result_chars)));
+            let safe_json = serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".into());
+            system.push_str(&format!(
+                "[{}] {}\n",
+                name,
+                trim_to(&safe_json, CFG.recent_tool_result_chars)
+            ));
         }
         system.push_str("</recent_tool_results>\n");
     }
@@ -474,10 +775,14 @@ fn build_answer_messages(
     // ── History: budget-aware, newest-first selection ──
     let mut history_msgs: Vec<ChatMessage> = Vec::new();
     for row in history.iter().rev() {
-        if row.role != "user" && row.role != "assistant" { continue; }
+        if row.role != "user" && row.role != "assistant" {
+            continue;
+        }
         let content = trim_to(&row.content, 1200);
         let cost = estimate_tokens(&content) + 10; // overhead for role/tags
-        if budget < cost { break; }
+        if budget < cost {
+            break;
+        }
         budget -= cost;
         history_msgs.push(ChatMessage {
             role: row.role.clone(),
@@ -502,12 +807,17 @@ fn estimate_tokens(text: &str) -> usize {
     text.len() / 3 + 1
 }
 
-fn recent_tool_results(history: &[crate::db::AgentMessageRow], limit: usize) -> Vec<(String, String)> {
+fn recent_tool_results(
+    history: &[crate::db::AgentMessageRow],
+    limit: usize,
+) -> Vec<(String, String)> {
     history
         .iter()
         .rev()
         .filter_map(|row| {
-            if row.role != "tool" { return None; }
+            if row.role != "tool" {
+                return None;
+            }
             Some((row.tool_name.clone()?, row.tool_result_json.clone()?))
         })
         .take(limit)
@@ -515,6 +825,36 @@ fn recent_tool_results(history: &[crate::db::AgentMessageRow], limit: usize) -> 
         .into_iter()
         .rev()
         .collect()
+}
+
+fn sanitize_answer_tool_result(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, val) in map {
+                if matches!(
+                    key.as_str(),
+                    "download_action"
+                        | "download_params"
+                        | "object_name"
+                        | "action"
+                        | "_cid"
+                        | "form_params"
+                ) {
+                    continue;
+                }
+                out.insert(key.clone(), sanitize_answer_tool_result(val));
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(sanitize_answer_tool_result)
+                .collect::<Vec<_>>(),
+        ),
+        _ => value.clone(),
+    }
 }
 
 // ─────────────────────── Heuristic Planner ───────────────────────
@@ -532,29 +872,191 @@ struct HeuristicRule {
 }
 
 const HEURISTIC_RULES: &[HeuristicRule] = &[
-    HeuristicRule { keywords: &["天気", "weather", "天气"], requires: &[], tool: "get_weather", args: || json!({}) },
-    HeuristicRule { keywords: &["今日の授業", "今天的课", "todayclasses", "todayclass"], requires: &[], tool: "list_today_classes", args: || json!({}) },
-    HeuristicRule { keywords: &["成績", "grade", "成绩", "単位", "学分"], requires: &[], tool: "get_grades", args: || json!({}) },
-    HeuristicRule { keywords: &["履修", "registration", "选课"], requires: &[], tool: "get_registration", args: || json!({}) },
-    HeuristicRule { keywords: &["休講", "停课", "cancelledclass"], requires: &[], tool: "get_cancellations", args: || json!({}) },
-    HeuristicRule { keywords: &["補講", "makeupclass", "补课"], requires: &[], tool: "get_makeup_classes", args: || json!({}) },
-    HeuristicRule { keywords: &["教室変更", "roomchange", "换教室"], requires: &[], tool: "get_room_changes", args: || json!({}) },
-    HeuristicRule { keywords: &["試験時間割", "examtimetable", "考试时间", "考试安排"], requires: &[], tool: "get_exam_timetable", args: || json!({}) },
-    HeuristicRule { keywords: &["週間サマリー", "weeklysummary", "周总结", "这周总结"], requires: &[], tool: "get_weekly_summary", args: || json!({}) },
-    HeuristicRule { keywords: &["学生情報", "学籍番号", "studentprofile", "学部", "学科", "个人资料"], requires: &[], tool: "get_student_profile", args: || json!({}) },
-    HeuristicRule { keywords: &["お気に入りシラバス", "bookmarksyllabus", "收藏课程"], requires: &[], tool: "list_syllabus_favorites", args: || json!({ "limit": 10 }) },
+    HeuristicRule {
+        keywords: &["天気", "weather", "天气"],
+        requires: &[],
+        tool: "get_weather",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["今日の授業", "今天的课", "todayclasses", "todayclass"],
+        requires: &[],
+        tool: "list_today_classes",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["成績", "grade", "成绩", "単位", "学分"],
+        requires: &[],
+        tool: "get_grades",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["履修", "registration", "选课"],
+        requires: &[],
+        tool: "get_registration",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["休講", "停课", "cancelledclass"],
+        requires: &[],
+        tool: "get_cancellations",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["補講", "makeupclass", "补课"],
+        requires: &[],
+        tool: "get_makeup_classes",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["教室変更", "roomchange", "换教室"],
+        requires: &[],
+        tool: "get_room_changes",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["試験時間割", "examtimetable", "考试时间", "考试安排"],
+        requires: &[],
+        tool: "get_exam_timetable",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["週間サマリー", "weeklysummary", "周总结", "这周总结"],
+        requires: &[],
+        tool: "get_weekly_summary",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &[
+            "学生情報",
+            "学籍番号",
+            "studentprofile",
+            "学部",
+            "学科",
+            "个人资料",
+        ],
+        requires: &[],
+        tool: "get_student_profile",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["お気に入りシラバス", "bookmarksyllabus", "收藏课程"],
+        requires: &[],
+        tool: "list_syllabus_favorites",
+        args: || json!({ "limit": 10 }),
+    },
     // Schedule with week offset
-    HeuristicRule { keywords: &["来週", "nextweek", "下周"], requires: &["授業", "课程", "時間割", "课表", "时间", "schedule"], tool: "list_week_classes", args: || json!({ "offset": 1 }) },
-    HeuristicRule { keywords: &["今週", "thisweek", "本周", "这周"], requires: &["授業", "课程", "時間割", "课表", "时间", "schedule"], tool: "list_week_classes", args: || json!({ "offset": 0 }) },
+    HeuristicRule {
+        keywords: &["来週", "nextweek", "下周"],
+        requires: &["授業", "课程", "時間割", "课表", "时间", "schedule"],
+        tool: "list_week_classes",
+        args: || json!({ "offset": 1 }),
+    },
+    HeuristicRule {
+        keywords: &["今週", "thisweek", "本周", "这周"],
+        requires: &["授業", "课程", "時間割", "课表", "时间", "schedule"],
+        tool: "list_week_classes",
+        args: || json!({ "offset": 0 }),
+    },
     // Mail
-    HeuristicRule { keywords: &["メールアドレス", "メールアカウント", "mail address", "邮箱账号"], requires: &[], tool: "get_mail_profile", args: || json!({}) },
-    HeuristicRule { keywords: &["メール", "mail", "邮箱", "收件箱", "受信"], requires: &[], tool: "list_recent_mail", args: || json!({ "limit": 10 }) },
-    HeuristicRule { keywords: &["お知らせ", "通知", "notification", "公告"], requires: &[], tool: "list_recent_notifications", args: || json!({ "limit": 10 }) },
+    HeuristicRule {
+        keywords: &[
+            "メールアドレス",
+            "メールアカウント",
+            "mail address",
+            "邮箱账号",
+        ],
+        requires: &[],
+        tool: "get_mail_profile",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["メール", "mail", "邮箱", "收件箱", "受信"],
+        requires: &[],
+        tool: "list_recent_mail",
+        args: || json!({ "limit": 10 }),
+    },
+    HeuristicRule {
+        keywords: &["お知らせ", "通知", "notification", "公告"],
+        requires: &[],
+        tool: "list_recent_notifications",
+        args: || json!({ "limit": 10 }),
+    },
+    HeuristicRule {
+        keywords: &["pdf", "docx", "ファイル", "附件", "添付", "ダウンロード"],
+        requires: &[],
+        tool: "list_downloaded_files",
+        args: || json!({ "limit": 10 }),
+    },
+    HeuristicRule {
+        keywords: &[
+            "ブラウザ",
+            "webview",
+            "网页",
+            "网页内容",
+            "ページ",
+            "url",
+            "リンク先",
+            "website",
+            "webpage",
+        ],
+        requires: &[],
+        tool: "list_browser_windows",
+        args: || json!({}),
+    },
     // Tasks
-    HeuristicRule { keywords: &["レポート", "課題", "未提出", "report", "assignment", "作业", "报告"], requires: &[], tool: "list_luna_todos", args: || json!({}) },
-    HeuristicRule { keywords: &["締め切り", "期限", "deadline", "截止", "いつまで", "due"], requires: &[], tool: "get_upcoming_deadlines", args: || json!({}) },
-    HeuristicRule { keywords: &["学習ガイド", "勉強計画", "studyplan", "学习计划", "やるべきこと", "怎么学", "どう取り組む", "アドバイス", "建议", "todo分析"], requires: &[], tool: "get_todo_guide", args: || json!({}) },
-    HeuristicRule { keywords: &["最新化", "再同期", "强制刷新", "refreshdata", "更新して", "同步一下", "重新获取", "最新取得"], requires: &[], tool: "refresh_data", args: || json!({}) },
+    HeuristicRule {
+        keywords: &[
+            "レポート",
+            "課題",
+            "未提出",
+            "report",
+            "assignment",
+            "作业",
+            "报告",
+        ],
+        requires: &[],
+        tool: "list_luna_todos",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &["締め切り", "期限", "deadline", "截止", "いつまで", "due"],
+        requires: &[],
+        tool: "get_upcoming_deadlines",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &[
+            "学習ガイド",
+            "勉強計画",
+            "studyplan",
+            "学习计划",
+            "やるべきこと",
+            "怎么学",
+            "どう取り組む",
+            "アドバイス",
+            "建议",
+            "todo分析",
+        ],
+        requires: &[],
+        tool: "get_todo_guide",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &[
+            "最新化",
+            "再同期",
+            "强制刷新",
+            "refreshdata",
+            "更新して",
+            "同步一下",
+            "重新获取",
+            "最新取得",
+        ],
+        requires: &[],
+        tool: "refresh_data",
+        args: || json!({}),
+    },
 ];
 
 fn heuristic_plan(history: &[crate::db::AgentMessageRow], user_text: &str) -> Option<Plan> {
@@ -563,6 +1065,48 @@ fn heuristic_plan(history: &[crate::db::AgentMessageRow], user_text: &str) -> Op
     }
 
     let norm = normalize_planner_text(user_text);
+
+    if let Some(path) = recent_downloaded_file_path(history) {
+        if contains_any(
+            &norm,
+            &[
+                "看看",
+                "看一下",
+                "看看内容",
+                "内容",
+                "总结",
+                "總結",
+                "summary",
+                "要点",
+                "重點",
+                "写了什么",
+                "寫了什麼",
+                "说了什么",
+                "說了什麼",
+                "読んで",
+                "読んでみて",
+                "見て",
+                "中身",
+                "内容みて",
+                "何が書いてある",
+                "ppt",
+                "pdf",
+                "doc",
+                "docx",
+            ],
+        ) {
+            return Some(single_tool_plan(
+                "read_downloaded_file",
+                json!({ "path": path }),
+            ));
+        }
+        if contains_any(&norm, &["打开", "打開", "開いて", "open"]) {
+            return Some(single_tool_plan(
+                "open_downloaded_file",
+                json!({ "path": path }),
+            ));
+        }
+    }
 
     // Table-driven matching.
     for rule in HEURISTIC_RULES {
@@ -575,15 +1119,61 @@ fn heuristic_plan(history: &[crate::db::AgentMessageRow], user_text: &str) -> Op
         return Some(single_tool_plan(rule.tool, (rule.args)()));
     }
 
+    if contains_any(
+        &norm,
+        &[
+            "重新连接",
+            "重新連接",
+            "再接続",
+            "reconnect",
+            "retry",
+            "重新试试",
+            "重新試試",
+        ],
+    ) && !contains_any(
+        &norm,
+        &[
+            "課題",
+            "レポート",
+            "mail",
+            "メール",
+            "通知",
+            "授業",
+            "课程",
+            "course",
+            "资料",
+            "資料",
+        ],
+    ) {
+        return Some(single_tool_plan("refresh_data", json!({})));
+    }
+
     // "明日" / "明天" / "tomorrow" — needs dynamic offset based on day of week.
     if contains_any(&norm, &["明日", "明天", "tomorrow"]) {
-        return Some(single_tool_plan("list_week_classes", json!({ "offset": tomorrow_week_offset() })));
+        return Some(single_tool_plan(
+            "list_week_classes",
+            json!({ "offset": tomorrow_week_offset() }),
+        ));
     }
 
     // KGC code extraction (structural, not keyword-based).
     if let Some(code) = extract_kgc_code(user_text) {
-        if contains_any(&norm, &["授業計画", "教材", "教科書", "詳細", "syllabus", "detail", "textbook"]) {
-            return Some(single_tool_plan("get_course_detail", json!({ "kgc_code": code })));
+        if contains_any(
+            &norm,
+            &[
+                "授業計画",
+                "教材",
+                "教科書",
+                "詳細",
+                "syllabus",
+                "detail",
+                "textbook",
+            ],
+        ) {
+            return Some(single_tool_plan(
+                "get_course_detail",
+                json!({ "kgc_code": code }),
+            ));
         }
     }
 
@@ -592,7 +1182,10 @@ fn heuristic_plan(history: &[crate::db::AgentMessageRow], user_text: &str) -> Op
 
 fn single_tool_plan(name: &str, args: Value) -> Plan {
     Plan {
-        tools: vec![ToolCall { name: name.into(), args }],
+        tools: vec![ToolCall {
+            name: name.into(),
+            args,
+        }],
         image_only: false,
     }
 }
@@ -609,29 +1202,123 @@ fn is_smalltalk_or_identity(norm: &str) -> bool {
         return true;
     }
     const SMALLTALK: &[&str] = &[
-        "こんにちは", "こんばんは", "おはよう", "ありがと", "ありがとう", "thanks", "thankyou",
-        "你好", "您好", "谢谢", "嗨", "hello", "hi", "hey", "元気", "howareyou",
+        "こんにちは",
+        "こんばんは",
+        "おはよう",
+        "ありがと",
+        "ありがとう",
+        "thanks",
+        "thankyou",
+        "你好",
+        "您好",
+        "谢谢",
+        "嗨",
+        "hello",
+        "hi",
+        "hey",
+        "元気",
+        "howareyou",
     ];
     const IDENTITY: &[&str] = &[
-        "あなたは誰", "君は誰", "是谁", "你是谁", "whoareyou", "自己紹介", "介绍一下自己",
-        "好き", "like", "喜歡", "喜欢", "意见", "意見", "怎么看", "どう思う",
+        "あなたは誰",
+        "君は誰",
+        "是谁",
+        "你是谁",
+        "whoareyou",
+        "自己紹介",
+        "介绍一下自己",
+        "好き",
+        "like",
+        "喜歡",
+        "喜欢",
+        "意见",
+        "意見",
+        "怎么看",
+        "どう思う",
     ];
     let short = norm.chars().count() <= 24;
     (short && contains_any(norm, SMALLTALK)) || (short && contains_any(norm, IDENTITY))
+}
+
+fn recent_downloaded_file_path(history: &[crate::db::AgentMessageRow]) -> Option<String> {
+    history
+        .iter()
+        .rev()
+        .filter(|row| row.role == "tool")
+        .find_map(|row| {
+            let name = row.tool_name.as_deref()?;
+            if name != "list_downloaded_files" {
+                return None;
+            }
+            let raw = row.tool_result_json.as_deref()?;
+            let parsed: Value = serde_json::from_str(raw).ok()?;
+            parsed
+                .get("files")
+                .and_then(|v| v.as_array())
+                .and_then(|items| items.first())
+                .and_then(|file| file.get("path"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
 }
 
 fn is_follow_up_with_context(history: &[crate::db::AgentMessageRow], norm: &str) -> bool {
     if !history.iter().rev().take(6).any(|row| row.role == "tool") {
         return false;
     }
-    const MARKERS: &[&str] = &[
-        "那个", "那個", "这个", "這個", "それ", "その", "那呢", "然后呢", "詳しく", "详细一点",
-        "もう少し", "继续", "続けて", "为什么", "為什麼", "怎么说", "什么意思", "哪个", "哪個",
-        "whichone", "why", "moredetail", "goon", "continue",
-        "もっと", "具体的に", "ほかに", "他に", "还有", "另外", "第一", "第二", "第三",
-        "一个", "最初", "最後", "ありがと", "谢谢", "thanks", "ok", "わかった", "了解",
+    const DETAIL_MARKERS: &[&str] = &[
+        "詳しく",
+        "详细",
+        "详细一点",
+        "もう少し",
+        "为什么",
+        "為什麼",
+        "怎么说",
+        "什么意思",
+        "哪个",
+        "哪個",
+        "whichone",
+        "why",
+        "moredetail",
+        "continue",
+        "続けて",
+        "もっと",
+        "具体的に",
+        "ほかに",
+        "他に",
+        "还有",
+        "另外",
+        "第一",
+        "第二",
+        "第三",
+        "最初",
+        "最後",
+        "pdf",
+        "doc",
+        "docx",
+        "ファイル",
+        "附件",
+        "本文",
+        "添付",
     ];
-    norm.chars().count() <= 40 && contains_any(norm, MARKERS)
+    if contains_any(norm, DETAIL_MARKERS) {
+        return false;
+    }
+    const ACK_MARKERS: &[&str] = &[
+        "ありがと",
+        "ありがとう",
+        "谢谢",
+        "thanks",
+        "thankyou",
+        "ok",
+        "わかった",
+        "了解",
+        "助かった",
+        "收到",
+        "明白",
+        "なるほど",
+    ];
+    norm.chars().count() <= 24 && contains_any(norm, ACK_MARKERS)
 }
 
 // ─────────────────────── Plan Parsing ───────────────────────
@@ -653,7 +1340,10 @@ fn parse_plan(raw: &str) -> Result<Plan, String> {
         }
     } else if trimmed.contains("\"tools\"") {
         // JSON mentions tools but is unbalanced — almost certainly truncated.
-        log::warn!("plan output looks truncated (no balanced object): {}", trimmed);
+        log::warn!(
+            "plan output looks truncated (no balanced object): {}",
+            trimmed
+        );
     }
     Ok(Plan::default())
 }
@@ -665,7 +1355,10 @@ fn strip_think(s: &str) -> String {
         out.push_str(&rest[..start]);
         match rest[start..].find("</think>") {
             Some(end_rel) => rest = &rest[start + end_rel + "</think>".len()..],
-            None => { rest = ""; break; }
+            None => {
+                rest = "";
+                break;
+            }
         }
     }
     out.push_str(rest);
@@ -679,17 +1372,35 @@ fn first_json_object(s: &str) -> Option<&str> {
     let mut in_str = false;
     let mut escape = false;
     for (i, &b) in bytes.iter().enumerate() {
-        if escape { escape = false; continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
         if in_str {
-            match b { b'\\' => escape = true, b'"' => in_str = false, _ => {} }
+            match b {
+                b'\\' => escape = true,
+                b'"' => in_str = false,
+                _ => {}
+            }
             continue;
         }
         match b {
             b'"' => in_str = true,
-            b'{' => { if depth == 0 { start = Some(i); } depth += 1; }
+            b'{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
             b'}' => {
-                if depth > 0 { depth -= 1; }
-                if depth == 0 { if let Some(st) = start { return Some(&s[st..=i]); } }
+                if depth > 0 {
+                    depth -= 1;
+                }
+                if depth == 0 {
+                    if let Some(st) = start {
+                        return Some(&s[st..=i]);
+                    }
+                }
             }
             _ => {}
         }
@@ -732,8 +1443,15 @@ fn extract_kgc_code(text: &str) -> Option<String> {
 }
 
 fn looks_like_kgc_code(token: &str) -> bool {
-    let letters = token.chars().take_while(|c| c.is_ascii_alphabetic()).count();
-    let digits = token.chars().skip(letters).take_while(|c| c.is_ascii_digit()).count();
+    let letters = token
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .count();
+    let digits = token
+        .chars()
+        .skip(letters)
+        .take_while(|c| c.is_ascii_digit())
+        .count();
     letters >= 2 && digits >= 3 && letters + digits == token.len()
 }
 
@@ -748,14 +1466,25 @@ fn trim_to(s: &str, max_chars: usize) -> String {
 fn preview_of(v: &Value) -> String {
     let s = serde_json::to_string(v).unwrap_or_default();
     let mut end = CFG.preview_bytes.min(s.len());
-    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
-    if s.len() > CFG.preview_bytes { format!("{}…", &s[..end]) } else { s }
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    if s.len() > CFG.preview_bytes {
+        format!("{}…", &s[..end])
+    } else {
+        s
+    }
 }
 
 // ─────────────────────── History Helpers ───────────────────────
 
-fn slice_history(rows: &[crate::db::AgentMessageRow], window: usize) -> Vec<crate::db::AgentMessageRow> {
-    if rows.is_empty() { return Vec::new(); }
+fn slice_history(
+    rows: &[crate::db::AgentMessageRow],
+    window: usize,
+) -> Vec<crate::db::AgentMessageRow> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
     let end = rows.len().saturating_sub(1);
     let start = end.saturating_sub(window);
     rows[start..end].to_vec()
@@ -766,12 +1495,22 @@ fn maybe_autotitle(db: &Database, conv_id: &str, user_text: &str) {
         Ok(l) => l,
         Err(_) => return,
     };
-    let Some(row) = list.iter().find(|c| c.id == conv_id) else { return };
+    let Some(row) = list.iter().find(|c| c.id == conv_id) else {
+        return;
+    };
     if row.title != "新しい会話" && !row.title.is_empty() {
         return;
     }
-    let title: String = user_text.chars().filter(|c| !c.is_control()).take(24).collect();
-    let title = if title.trim().is_empty() { "新しい会話".to_string() } else { title };
+    let title: String = user_text
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(24)
+        .collect();
+    let title = if title.trim().is_empty() {
+        "新しい会話".to_string()
+    } else {
+        title
+    };
     let _ = db.agent_rename_conversation(conv_id, &title);
 }
 
@@ -854,7 +1593,10 @@ mod tests {
 
     #[test]
     fn strip_think_blocks() {
-        assert_eq!(strip_think("<think>reasoning</think>{\"tools\":[]}"), "{\"tools\":[]}");
+        assert_eq!(
+            strip_think("<think>reasoning</think>{\"tools\":[]}"),
+            "{\"tools\":[]}"
+        );
         assert_eq!(strip_think("no tags here"), "no tags here");
     }
 
@@ -934,7 +1676,8 @@ mod tests {
 
     #[test]
     fn parse_plan_prefill_multi_tool() {
-        let raw = r#"{"tools":[{"name":"get_grades","args":{}},{"name":"list_luna_todos","args":{}}]}"#;
+        let raw =
+            r#"{"tools":[{"name":"get_grades","args":{}},{"name":"list_luna_todos","args":{}}]}"#;
         let plan = parse_plan(raw).unwrap();
         assert_eq!(plan.tools.len(), 2);
         assert_eq!(plan.tools[0].name, "get_grades");
@@ -971,9 +1714,14 @@ mod tests {
     fn build_plan_messages_structure() {
         let history = vec![
             crate::db::AgentMessageRow {
-                id: 1, conv_id: "c".into(),
-                role: "user".into(), content: "天気は？".into(),
-                images_json: None, tool_name: None, tool_result_json: None, created_at: 0,
+                id: 1,
+                conv_id: "c".into(),
+                role: "user".into(),
+                content: "天気は？".into(),
+                images_json: None,
+                tool_name: None,
+                tool_result_json: None,
+                created_at: 0,
             },
             tool_row("get_weather"),
         ];
@@ -987,9 +1735,7 @@ mod tests {
 
     #[test]
     fn build_answer_messages_includes_tool_results() {
-        let tool_results = vec![
-            ("get_weather".to_string(), serde_json::json!({"temp": 22})),
-        ];
+        let tool_results = vec![("get_weather".to_string(), serde_json::json!({"temp": 22}))];
         let msgs = build_answer_messages(&[], "天気は？", &[], &tool_results);
         assert_eq!(msgs.len(), 2); // system + user
         assert!(msgs[0].content.contains("tool_results"));
@@ -1001,17 +1747,29 @@ mod tests {
         // Each message is trimmed to 1200 chars (~400 tokens).
         // 200 messages × ~410 tokens = ~82000 > budget of 50000.
         let long_msg = "あ".repeat(20000);
-        let history: Vec<crate::db::AgentMessageRow> = (0..200).map(|i| {
-            crate::db::AgentMessageRow {
-                id: i, conv_id: "c".into(),
-                role: if i % 2 == 0 { "user".into() } else { "assistant".into() },
+        let history: Vec<crate::db::AgentMessageRow> = (0..200)
+            .map(|i| crate::db::AgentMessageRow {
+                id: i,
+                conv_id: "c".into(),
+                role: if i % 2 == 0 {
+                    "user".into()
+                } else {
+                    "assistant".into()
+                },
                 content: long_msg.clone(),
-                images_json: None, tool_name: None, tool_result_json: None, created_at: 0,
-            }
-        }).collect();
+                images_json: None,
+                tool_name: None,
+                tool_result_json: None,
+                created_at: 0,
+            })
+            .collect();
         let msgs = build_answer_messages(&history, "test", &[], &[]);
         // Budget should prevent ALL 200 history messages from being included.
-        assert!(msgs.len() < 200, "expected truncation, got {} messages", msgs.len());
+        assert!(
+            msgs.len() < 200,
+            "expected truncation, got {} messages",
+            msgs.len()
+        );
         assert_eq!(msgs.last().unwrap().content, "test");
     }
 }

@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -41,20 +41,20 @@ pub struct LunaCountsRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LunaActivityRow {
     pub luna_id: String,
-    pub activity_type: String,  // "announcement", "report", "exam", "discussion", "material"
+    pub activity_type: String, // "announcement", "report", "exam", "discussion", "material"
     pub title: String,
-    pub period: String,         // deadline / date range
-    pub status: String,         // e.g. "未提出", "提出済", "未回答", "new"
+    pub period: String, // deadline / date range
+    pub status: String, // e.g. "未提出", "提出済", "未回答", "new"
     #[serde(default)]
-    pub detail_path: String,    // Luna path for fetching detail on demand
+    pub detail_path: String, // Luna path for fetching detail on demand
 }
 
 /// KGC course detail fields (授業概要, 成績評価 etc.) extracted from detail page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KgcCourseDetailRow {
     pub kgc_code: String,
-    pub fields: Vec<(String, String)>,  // (label, value) pairs
-    pub delivery_mode: String,          // detected from detail page
+    pub fields: Vec<(String, String)>, // (label, value) pairs
+    pub delivery_mode: String,         // detected from detail page
     pub textbooks: Vec<crate::parser::TextbookEntry>,
 }
 
@@ -135,10 +135,10 @@ pub struct ScheduleRawData {
     pub kgc_entries_current: Vec<KgcCourseRow>,
     pub kgc_entries_next: Vec<KgcCourseRow>,
     pub luna_courses: Vec<LunaCourseRow>,
-    pub session_plans: Vec<(String, Vec<SessionPlanRow>)>,  // (kgc_code, plans)
-    pub luna_counts: Vec<(String, LunaCountsRow)>,          // (luna_id, counts)
-    pub luna_activities: Vec<LunaActivityRow>,               // detailed activity items
-    pub kgc_course_details: Vec<KgcCourseDetailRow>,         // KGC course detail fields
+    pub session_plans: Vec<(String, Vec<SessionPlanRow>)>, // (kgc_code, plans)
+    pub luna_counts: Vec<(String, LunaCountsRow)>,         // (luna_id, counts)
+    pub luna_activities: Vec<LunaActivityRow>,             // detailed activity items
+    pub kgc_course_details: Vec<KgcCourseDetailRow>,       // KGC course detail fields
     pub current_week_label: String,
     pub next_week_label: String,
     pub luna_communities: Vec<crate::luna_parser::LunaCommunity>,
@@ -160,13 +160,16 @@ pub struct SnapshotState {
 
 impl Database {
     pub fn open(data_dir: &PathBuf) -> Result<Self, String> {
-        std::fs::create_dir_all(data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
+        std::fs::create_dir_all(data_dir)
+            .map_err(|e| format!("Failed to create data dir: {}", e))?;
         let db_path = data_dir.join("courses.db");
         let conn = Connection::open(&db_path).map_err(|e| format!("Failed to open DB: {}", e))?;
         // WAL mode: allows concurrent reads while writing, reduces lock contention
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
             .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.init_tables()?;
         Ok(db)
     }
@@ -182,7 +185,8 @@ impl Database {
 
         const CURRENT_VERSION: i32 = 6;
         if user_version != CURRENT_VERSION {
-            conn.execute_batch("
+            conn.execute_batch(
+                "
                 DROP TABLE IF EXISTS session_plans;
                 DROP TABLE IF EXISTS luna_counts;
                 DROP TABLE IF EXISTS luna_activities;
@@ -192,12 +196,15 @@ impl Database {
                 DROP TABLE IF EXISTS ai_schedule_cache;
                 DROP TABLE IF EXISTS schedule_snapshot_state;
                 DROP TABLE IF EXISTS data_cache;
-            ").map_err(|e| format!("Migration failed: {}", e))?;
+            ",
+            )
+            .map_err(|e| format!("Migration failed: {}", e))?;
             conn.execute_batch(&format!("PRAGMA user_version = {}", CURRENT_VERSION))
                 .map_err(|e| format!("Set version failed: {}", e))?;
         }
 
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE IF NOT EXISTS kgc_courses (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 kgc_code        TEXT NOT NULL,
@@ -297,7 +304,9 @@ impl Database {
                 tool_result_json TEXT,
                 created_at      INTEGER NOT NULL
             );
-        ").map_err(|e| format!("DB init: {}", e))?;
+        ",
+        )
+        .map_err(|e| format!("DB init: {}", e))?;
 
         // Indexes for frequent queries
         conn.execute_batch("
@@ -312,18 +321,26 @@ impl Database {
         ").map_err(|e| format!("DB index: {}", e))?;
 
         // Drop old merged tables if they exist (migration from old schema)
-        let _ = conn.execute_batch("
+        let _ = conn.execute_batch(
+            "
             DROP TABLE IF EXISTS courses;
-        ");
+        ",
+        );
 
         // Migration: add textbooks_json column to existing kgc_course_details tables
-        let _ = conn.execute_batch("ALTER TABLE kgc_course_details ADD COLUMN textbooks_json TEXT NOT NULL DEFAULT '[]'");
+        let _ = conn.execute_batch(
+            "ALTER TABLE kgc_course_details ADD COLUMN textbooks_json TEXT NOT NULL DEFAULT '[]'",
+        );
 
         // Migration: add detail_path column to existing luna_activities tables
-        let _ = conn.execute_batch("ALTER TABLE luna_activities ADD COLUMN detail_path TEXT NOT NULL DEFAULT ''");
+        let _ = conn.execute_batch(
+            "ALTER TABLE luna_activities ADD COLUMN detail_path TEXT NOT NULL DEFAULT ''",
+        );
 
         // Force re-fetch for rows that still have empty textbooks (parser was updated)
-        let _ = conn.execute_batch("UPDATE kgc_course_details SET updated_at = 0 WHERE textbooks_json = '[]'");
+        let _ = conn.execute_batch(
+            "UPDATE kgc_course_details SET updated_at = 0 WHERE textbooks_json = '[]'",
+        );
 
         Ok(())
     }
@@ -367,21 +384,23 @@ impl Database {
             "SELECT id, kgc_code, name, day, period, room, detail_path, is_cancelled, is_makeup, is_room_changed, week_label
              FROM kgc_courses WHERE week_label = ?1 ORDER BY day, period"
         ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map(params![week_label], |row| {
-            Ok(KgcCourseRow {
-                id: row.get(0)?,
-                kgc_code: row.get(1)?,
-                name: row.get(2)?,
-                day: row.get(3)?,
-                period: row.get(4)?,
-                room: row.get(5)?,
-                detail_path: row.get(6)?,
-                is_cancelled: row.get::<_, i32>(7)? != 0,
-                is_makeup: row.get::<_, i32>(8)? != 0,
-                is_room_changed: row.get::<_, i32>(9)? != 0,
-                week_label: row.get(10)?,
+        let rows = stmt
+            .query_map(params![week_label], |row| {
+                Ok(KgcCourseRow {
+                    id: row.get(0)?,
+                    kgc_code: row.get(1)?,
+                    name: row.get(2)?,
+                    day: row.get(3)?,
+                    period: row.get(4)?,
+                    room: row.get(5)?,
+                    detail_path: row.get(6)?,
+                    is_cancelled: row.get::<_, i32>(7)? != 0,
+                    is_makeup: row.get::<_, i32>(8)? != 0,
+                    is_room_changed: row.get::<_, i32>(9)? != 0,
+                    week_label: row.get(10)?,
+                })
             })
-        }).map_err(|e| format!("DB map: {}", e))?;
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -392,17 +411,19 @@ impl Database {
         // A course needs plans if:
         //   1. its detail was never fetched (no row in kgc_course_details within 24h), OR
         //   2. it has fewer than 5 session_plans rows (previous parse bug / incomplete data)
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT c.kgc_code FROM kgc_courses c
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT c.kgc_code FROM kgc_courses c
              WHERE c.kgc_code != ''
                AND (
                  c.kgc_code NOT IN (SELECT kgc_code FROM kgc_course_details WHERE updated_at > ?1)
                  OR (SELECT COUNT(*) FROM session_plans sp WHERE sp.kgc_code = c.kgc_code) < 5
-               )"
-        ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map(params![threshold], |row| {
-            row.get::<_, String>(0)
-        }).map_err(|e| format!("DB map: {}", e))?;
+               )",
+            )
+            .map_err(|e| format!("DB query: {}", e))?;
+        let rows = stmt
+            .query_map(params![threshold], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -423,7 +444,8 @@ impl Database {
              VALUES (?1,?2,?3,?4,?5,?6)
              ON CONFLICT(luna_id, day, period) DO UPDATE SET name=?2, teacher=?3, updated_at=?6",
             params![luna_id, name, teacher, day, period, now],
-        ).map_err(|e| format!("DB upsert luna: {}", e))?;
+        )
+        .map_err(|e| format!("DB upsert luna: {}", e))?;
         Ok(conn.last_insert_rowid())
     }
 
@@ -437,16 +459,18 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, luna_id, name, teacher, day, period FROM luna_courses ORDER BY day, period"
         ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(LunaCourseRow {
-                id: row.get(0)?,
-                luna_id: row.get(1)?,
-                name: row.get(2)?,
-                teacher: row.get(3)?,
-                day: row.get(4)?,
-                period: row.get(5)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(LunaCourseRow {
+                    id: row.get(0)?,
+                    luna_id: row.get(1)?,
+                    name: row.get(2)?,
+                    teacher: row.get(3)?,
+                    day: row.get(4)?,
+                    period: row.get(5)?,
+                })
             })
-        }).map_err(|e| format!("DB map: {}", e))?;
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -454,19 +478,25 @@ impl Database {
     pub fn luna_ids_needing_counts(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let threshold = epoch_secs() - 3 * 3600; // 3 hours
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT luna_id FROM luna_courses
-             WHERE luna_id NOT IN (SELECT luna_id FROM luna_counts WHERE updated_at > ?1)"
-        ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map(params![threshold], |row| {
-            row.get::<_, String>(0)
-        }).map_err(|e| format!("DB map: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT luna_id FROM luna_courses
+             WHERE luna_id NOT IN (SELECT luna_id FROM luna_counts WHERE updated_at > ?1)",
+            )
+            .map_err(|e| format!("DB query: {}", e))?;
+        let rows = stmt
+            .query_map(params![threshold], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     // ── Session plans ──
 
-    pub fn upsert_session_plans(&self, kgc_code: &str, plans: &[SessionPlanRow]) -> Result<(), String> {
+    pub fn upsert_session_plans(
+        &self,
+        kgc_code: &str,
+        plans: &[SessionPlanRow],
+    ) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let now = epoch_secs();
         let tx = conn.transaction().map_err(|e| format!("DB begin: {}", e))?;
@@ -477,9 +507,16 @@ impl Database {
                  ON CONFLICT(kgc_code, session_num) DO UPDATE SET th_header=?3, topic=?4, delivery_mode=?5, study_outside=?6, updated_at=?7"
             ).map_err(|e| format!("DB prepare: {}", e))?;
             for p in plans {
-                stmt.execute(
-                    params![kgc_code, p.session_num, p.th_header, p.topic, p.delivery_mode, p.study_outside, now],
-                ).map_err(|e| format!("DB upsert plan: {}", e))?;
+                stmt.execute(params![
+                    kgc_code,
+                    p.session_num,
+                    p.th_header,
+                    p.topic,
+                    p.delivery_mode,
+                    p.study_outside,
+                    now
+                ])
+                .map_err(|e| format!("DB upsert plan: {}", e))?;
             }
         }
         tx.commit().map_err(|e| format!("DB commit: {}", e))?;
@@ -492,19 +529,26 @@ impl Database {
         Self::query_all_session_plans(&conn)
     }
 
-    fn query_all_session_plans(conn: &Connection) -> Result<Vec<(String, Vec<SessionPlanRow>)>, String> {
+    fn query_all_session_plans(
+        conn: &Connection,
+    ) -> Result<Vec<(String, Vec<SessionPlanRow>)>, String> {
         let mut stmt = conn.prepare(
             "SELECT kgc_code, session_num, th_header, topic, delivery_mode, study_outside FROM session_plans ORDER BY kgc_code, session_num"
         ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, SessionPlanRow {
-                session_num: row.get(1)?,
-                th_header: row.get(2)?,
-                topic: row.get(3)?,
-                delivery_mode: row.get(4)?,
-                study_outside: row.get(5)?,
-            }))
-        }).map_err(|e| format!("DB map: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    SessionPlanRow {
+                        session_num: row.get(1)?,
+                        th_header: row.get(2)?,
+                        topic: row.get(3)?,
+                        delivery_mode: row.get(4)?,
+                        study_outside: row.get(5)?,
+                    },
+                ))
+            })
+            .map_err(|e| format!("DB map: {}", e))?;
         let mut map: std::collections::HashMap<String, Vec<SessionPlanRow>> = Default::default();
         for r in rows.flatten() {
             map.entry(r.0).or_default().push(r.1);
@@ -536,20 +580,31 @@ impl Database {
         Self::query_all_kgc_course_details(&conn)
     }
 
-    pub fn get_kgc_course_detail(&self, kgc_code: &str) -> Result<Option<KgcCourseDetailRow>, String> {
+    pub fn get_kgc_course_detail(
+        &self,
+        kgc_code: &str,
+    ) -> Result<Option<KgcCourseDetailRow>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT kgc_code, fields_json, delivery_mode, COALESCE(textbooks_json, '[]') FROM kgc_course_details WHERE kgc_code = ?1"
         ).map_err(|e| format!("DB query: {}", e))?;
-        let mut rows = stmt.query_map(params![kgc_code], |row| {
-            let kgc_code: String = row.get(0)?;
-            let fields_json: String = row.get(1)?;
-            let delivery_mode: String = row.get(2)?;
-            let textbooks_json: String = row.get(3)?;
-            let fields: Vec<(String, String)> = serde_json::from_str(&fields_json).unwrap_or_default();
-            let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
-            Ok(KgcCourseDetailRow { kgc_code, fields, delivery_mode, textbooks })
-        }).map_err(|e| format!("DB map: {}", e))?;
+        let mut rows = stmt
+            .query_map(params![kgc_code], |row| {
+                let kgc_code: String = row.get(0)?;
+                let fields_json: String = row.get(1)?;
+                let delivery_mode: String = row.get(2)?;
+                let textbooks_json: String = row.get(3)?;
+                let fields: Vec<(String, String)> =
+                    serde_json::from_str(&fields_json).unwrap_or_default();
+                let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
+                Ok(KgcCourseDetailRow {
+                    kgc_code,
+                    fields,
+                    delivery_mode,
+                    textbooks,
+                })
+            })
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.next().and_then(|r| r.ok()))
     }
 
@@ -557,15 +612,23 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT kgc_code, fields_json, delivery_mode, COALESCE(textbooks_json, '[]') FROM kgc_course_details"
         ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            let kgc_code: String = row.get(0)?;
-            let fields_json: String = row.get(1)?;
-            let delivery_mode: String = row.get(2)?;
-            let textbooks_json: String = row.get(3)?;
-            let fields: Vec<(String, String)> = serde_json::from_str(&fields_json).unwrap_or_default();
-            let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
-            Ok(KgcCourseDetailRow { kgc_code, fields, delivery_mode, textbooks })
-        }).map_err(|e| format!("DB map: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let kgc_code: String = row.get(0)?;
+                let fields_json: String = row.get(1)?;
+                let delivery_mode: String = row.get(2)?;
+                let textbooks_json: String = row.get(3)?;
+                let fields: Vec<(String, String)> =
+                    serde_json::from_str(&fields_json).unwrap_or_default();
+                let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
+                Ok(KgcCourseDetailRow {
+                    kgc_code,
+                    fields,
+                    delivery_mode,
+                    textbooks,
+                })
+            })
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -593,36 +656,55 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT luna_id, announcements, new_announcements, reports, exams, discussions FROM luna_counts"
         ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, LunaCountsRow {
-                announcements: row.get(1)?,
-                new_announcements: row.get(2)?,
-                reports: row.get(3)?,
-                exams: row.get(4)?,
-                discussions: row.get(5)?,
-            }))
-        }).map_err(|e| format!("DB map: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    LunaCountsRow {
+                        announcements: row.get(1)?,
+                        new_announcements: row.get(2)?,
+                        reports: row.get(3)?,
+                        exams: row.get(4)?,
+                        discussions: row.get(5)?,
+                    },
+                ))
+            })
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     // ── Luna activities (detailed items) ──
 
     /// Replace all activities for a given luna_id with fresh data.
-    pub fn replace_luna_activities(&self, luna_id: &str, activities: &[LunaActivityRow]) -> Result<(), String> {
+    pub fn replace_luna_activities(
+        &self,
+        luna_id: &str,
+        activities: &[LunaActivityRow],
+    ) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let now = epoch_secs();
         let tx = conn.transaction().map_err(|e| format!("DB begin: {}", e))?;
-        tx.execute("DELETE FROM luna_activities WHERE luna_id = ?1", params![luna_id])
-            .map_err(|e| format!("DB delete activities: {}", e))?;
+        tx.execute(
+            "DELETE FROM luna_activities WHERE luna_id = ?1",
+            params![luna_id],
+        )
+        .map_err(|e| format!("DB delete activities: {}", e))?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO luna_activities (luna_id, activity_type, title, period, status, detail_path, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7)"
             ).map_err(|e| format!("DB prepare: {}", e))?;
             for a in activities {
-                stmt.execute(
-                    params![luna_id, a.activity_type, a.title, a.period, a.status, a.detail_path, now],
-                ).map_err(|e| format!("DB insert activity: {}", e))?;
+                stmt.execute(params![
+                    luna_id,
+                    a.activity_type,
+                    a.title,
+                    a.period,
+                    a.status,
+                    a.detail_path,
+                    now
+                ])
+                .map_err(|e| format!("DB insert activity: {}", e))?;
             }
         }
         tx.commit().map_err(|e| format!("DB commit: {}", e))?;
@@ -639,16 +721,18 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT luna_id, activity_type, title, period, status, detail_path FROM luna_activities ORDER BY luna_id, activity_type"
         ).map_err(|e| format!("DB query: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(LunaActivityRow {
-                luna_id: row.get(0)?,
-                activity_type: row.get(1)?,
-                title: row.get(2)?,
-                period: row.get(3)?,
-                status: row.get(4)?,
-                detail_path: row.get(5)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(LunaActivityRow {
+                    luna_id: row.get(0)?,
+                    activity_type: row.get(1)?,
+                    title: row.get(2)?,
+                    period: row.get(3)?,
+                    status: row.get(4)?,
+                    detail_path: row.get(5)?,
+                })
             })
-        }).map_err(|e| format!("DB map: {}", e))?;
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -656,15 +740,17 @@ impl Database {
 
     pub fn get_ai_schedule_cache(&self) -> Result<Option<(AiScheduleResult, i64)>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        let result: Option<(String, i64)> = conn.query_row(
-            "SELECT result_json, updated_at FROM ai_schedule_cache WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).ok();
+        let result: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT result_json, updated_at FROM ai_schedule_cache WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
         match result {
             Some((json, ts)) => {
-                let parsed: AiScheduleResult = serde_json::from_str(&json)
-                    .map_err(|e| format!("AI cache parse: {}", e))?;
+                let parsed: AiScheduleResult =
+                    serde_json::from_str(&json).map_err(|e| format!("AI cache parse: {}", e))?;
                 Ok(Some((parsed, ts)))
             }
             None => Ok(None),
@@ -674,12 +760,14 @@ impl Database {
     pub fn save_ai_schedule_cache(&self, result: &AiScheduleResult) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let now = epoch_secs();
-        let json = serde_json::to_string(result).map_err(|e| format!("AI cache serialize: {}", e))?;
+        let json =
+            serde_json::to_string(result).map_err(|e| format!("AI cache serialize: {}", e))?;
         conn.execute(
             "INSERT INTO ai_schedule_cache (id, result_json, updated_at) VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET result_json=?1, updated_at=?2",
             params![json, now],
-        ).map_err(|e| format!("DB save ai cache: {}", e))?;
+        )
+        .map_err(|e| format!("DB save ai cache: {}", e))?;
         Ok(())
     }
 
@@ -713,9 +801,12 @@ impl Database {
         ).ok();
         match result {
             Some((cwl, nwl, ly, lt, comm_json, yo_json, to_json, updated_at)) => {
-                let luna_communities: Vec<luna_parser::LunaCommunity> = serde_json::from_str(&comm_json).unwrap_or_default();
-                let luna_year_options: Vec<luna_parser::SelectOption> = serde_json::from_str(&yo_json).unwrap_or_default();
-                let luna_term_options: Vec<luna_parser::SelectOption> = serde_json::from_str(&to_json).unwrap_or_default();
+                let luna_communities: Vec<luna_parser::LunaCommunity> =
+                    serde_json::from_str(&comm_json).unwrap_or_default();
+                let luna_year_options: Vec<luna_parser::SelectOption> =
+                    serde_json::from_str(&yo_json).unwrap_or_default();
+                let luna_term_options: Vec<luna_parser::SelectOption> =
+                    serde_json::from_str(&to_json).unwrap_or_default();
                 Ok(Some(SnapshotState {
                     current_week_label: cwl,
                     next_week_label: nwl,
@@ -772,7 +863,8 @@ impl Database {
              VALUES (?1, ?2, ?3)
              ON CONFLICT(cache_key) DO UPDATE SET data_json=?2, updated_at=?3",
             params![key, json, now],
-        ).map_err(|e| format!("DB save cache: {}", e))?;
+        )
+        .map_err(|e| format!("DB save cache: {}", e))?;
         Ok(())
     }
 
@@ -808,14 +900,16 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, title, created_at, updated_at FROM agent_conversations ORDER BY updated_at DESC"
         ).map_err(|e| format!("DB prepare: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(AgentConversationRow {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                created_at: row.get(2)?,
-                updated_at: row.get(3)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(AgentConversationRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
             })
-        }).map_err(|e| format!("DB map: {}", e))?;
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -824,7 +918,8 @@ impl Database {
         conn.execute(
             "UPDATE agent_conversations SET title=?2, updated_at=?3 WHERE id=?1",
             params![id, title, epoch_secs()],
-        ).map_err(|e| format!("DB agent_rename: {}", e))?;
+        )
+        .map_err(|e| format!("DB agent_rename: {}", e))?;
         Ok(())
     }
 
@@ -843,7 +938,8 @@ impl Database {
         conn.execute(
             "UPDATE agent_conversations SET updated_at=?2 WHERE id=?1",
             params![id, epoch_secs()],
-        ).map_err(|e| format!("DB touch: {}", e))?;
+        )
+        .map_err(|e| format!("DB touch: {}", e))?;
         Ok(())
     }
 
@@ -866,7 +962,8 @@ impl Database {
         conn.execute(
             "UPDATE agent_conversations SET updated_at=?2 WHERE id=?1",
             params![conv_id, epoch_secs()],
-        ).ok();
+        )
+        .ok();
         Ok(id)
     }
 
@@ -876,18 +973,20 @@ impl Database {
             "SELECT id, conv_id, role, content, images_json, tool_name, tool_result_json, created_at
              FROM agent_messages WHERE conv_id = ?1 ORDER BY created_at ASC, id ASC"
         ).map_err(|e| format!("DB prepare: {}", e))?;
-        let rows = stmt.query_map(params![conv_id], |row| {
-            Ok(AgentMessageRow {
-                id: row.get(0)?,
-                conv_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                images_json: row.get(4)?,
-                tool_name: row.get(5)?,
-                tool_result_json: row.get(6)?,
-                created_at: row.get(7)?,
+        let rows = stmt
+            .query_map(params![conv_id], |row| {
+                Ok(AgentMessageRow {
+                    id: row.get(0)?,
+                    conv_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    images_json: row.get(4)?,
+                    tool_name: row.get(5)?,
+                    tool_result_json: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
             })
-        }).map_err(|e| format!("DB map: {}", e))?;
+            .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 }

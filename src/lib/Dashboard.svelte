@@ -17,6 +17,7 @@
   import HomePage from "./views/HomePage.svelte";
   import MailView from "./views/MailView.svelte";
   import IctTools from "./views/IctTools.svelte";
+  import Live from "./views/Live.svelte";
   import AgentChat from "./views/AgentChat.svelte";
   import Settings from "./views/Settings.svelte";
   import type { MailMessage, KwicPortalHome } from "./api";
@@ -37,6 +38,7 @@
     { id: "mail", label: "メール", icon: "envelope" },
     { id: "ict-tools", label: "ツール", icon: "square.grid.2x2" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
+    { id: "live", label: "ライブ", icon: "broadcast" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },
     { id: "registration", label: "履修登録", icon: "list.clipboard" },
@@ -136,6 +138,12 @@
       activeTab.set('timetable');
       aiRefreshRequested.set(true);
     });
+    const unlistenTrayTab = await listen<string>('tray-open-tab', (event) => {
+      if (event.payload) activeTab.set(event.payload);
+    });
+    const unlistenOpenAgent = await listen("open-agent-tab", () => {
+      activeTab.set("agent");
+    });
     // Initialize AI readiness stores
     updateAiReadiness().catch(() => {});
     // Re-check when AI config changes (e.g. user edits settings)
@@ -143,7 +151,7 @@
       updateAiReadiness().catch(() => {});
     });
     const _prevDestroy = unlistenRefresh;
-    unlistenRefresh = () => { _prevDestroy?.(); unlistenAiCfg(); };
+    unlistenRefresh = () => { _prevDestroy?.(); unlistenTrayTab(); unlistenOpenAgent(); unlistenAiCfg(); };
   });
   onDestroy(() => { if (unlistenRefresh) unlistenRefresh(); unsubMail(); unsubNotif(); unsubLuna(); unsubKwicHome(); });
 </script>
@@ -184,6 +192,11 @@
       {#if visited.has("timetable")}
         <div class="view-panel" class:active={$activeTab === "timetable"}>
           <Timetable />
+        </div>
+      {/if}
+      {#if visited.has("live")}
+        <div class="view-panel" class:active={$activeTab === "live"}>
+          <Live />
         </div>
       {/if}
       {#if visited.has("todo")}

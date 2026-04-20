@@ -62,23 +62,19 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
             let method: Vec<u16> = "Network.getAllCookies\0".encode_utf16().collect();
             let params: Vec<u16> = "{}\0".encode_utf16().collect();
 
-            let handler = CallDevToolsProtocolMethodCompletedHandler::create(
-                Box::new(
-                    move |error_code, return_json| {
-                        let result = if error_code.is_ok() {
-                            Ok(return_json)
-                        } else {
-                            Err(format!("CDP call failed: {:?}", error_code))
-                        };
-                        if let Some(sender) =
-                            tx.lock().unwrap_or_else(|e| e.into_inner()).take()
-                        {
-                            let _ = sender.send(result);
-                        }
-                        Ok(())
-                    },
-                ),
-            );
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                move |error_code, return_json| {
+                    let result = if error_code.is_ok() {
+                        Ok(return_json)
+                    } else {
+                        Err(format!("CDP call failed: {:?}", error_code))
+                    };
+                    if let Some(sender) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                        let _ = sender.send(result);
+                    }
+                    Ok(())
+                },
+            ));
 
             // PCWSTR from windows-core 0.61 matches webview2-com-sys 0.38's expected types.
             core_webview

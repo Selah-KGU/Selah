@@ -3,7 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 /// Five content lists returned from the contents page (materials, reports, examinations, discussions, surveys)
-pub type ContentsPageResult = (Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>, Vec<LunaContentItem>);
+pub type ContentsPageResult = (
+    Vec<LunaContentItem>,
+    Vec<LunaContentItem>,
+    Vec<LunaContentItem>,
+    Vec<LunaContentItem>,
+    Vec<LunaContentItem>,
+);
 
 macro_rules! sel {
     ($name:ident, $s:expr) => {
@@ -12,131 +18,170 @@ macro_rules! sel {
 }
 
 // ── Timetable selectors ──
-sel!(SEL_DATA_ROW,      ".div-table-data-row");
-sel!(SEL_PERIOD_COL,    ".div-table-colomn-period");
-sel!(SEL_TABLE_CELL,    ".div-table-cell");
-sel!(SEL_COURSE_BTN,    ".timetable-course-top-btn");
-sel!(SEL_CELL_DETAIL,   ".div-table-cell-detail span");
-sel!(SEL_COMMUNITY_BTN, ".timetable-community-course .timetable-course-top-btn");
+sel!(SEL_DATA_ROW, ".div-table-data-row");
+sel!(SEL_PERIOD_COL, ".div-table-colomn-period");
+sel!(SEL_TABLE_CELL, ".div-table-cell");
+sel!(SEL_COURSE_BTN, ".timetable-course-top-btn");
+sel!(SEL_CELL_DETAIL, ".div-table-cell-detail span");
+sel!(
+    SEL_COMMUNITY_BTN,
+    ".timetable-community-course .timetable-course-top-btn"
+);
 
 // ── Todo selectors ──
-sel!(SEL_TODO_LIST,     ".todo-list");
-sel!(SEL_TODO_COURSE,   ".todolist-course");
-sel!(SEL_TODO_TYPE,     ".todolist-contents-type span");
-sel!(SEL_TODO_NAME,     ".todolist-contents-name a");
+sel!(SEL_TODO_LIST, ".todo-list");
+sel!(SEL_TODO_COURSE, ".todolist-course");
+sel!(SEL_TODO_TYPE, ".todolist-contents-type span");
+sel!(SEL_TODO_NAME, ".todolist-contents-name a");
 sel!(SEL_TODO_DEADLINE, ".todolist-mobile-width-deadline");
-sel!(SEL_TODO_STATUS,   ".todolist-contents-status span");
-sel!(SEL_TODO_FEEDBACK, ".todolist-feedback .todolist-mobile-feedback");
+sel!(SEL_TODO_STATUS, ".todolist-contents-status span");
+sel!(
+    SEL_TODO_FEEDBACK,
+    ".todolist-feedback .todolist-mobile-feedback"
+);
 
 // ── Notification selectors ──
-sel!(SEL_NOTIF_LIST,    ".update-info-list");
-sel!(SEL_NOTIF_DATE,    ".update-info-updateDate label");
-sel!(SEL_NOTIF_COURSE,  ".update-info-courseInfo span");
-sel!(SEL_NOTIF_MODULE,  ".update-info-module span");
+sel!(SEL_NOTIF_LIST, ".update-info-list");
+sel!(SEL_NOTIF_DATE, ".update-info-updateDate label");
+sel!(SEL_NOTIF_COURSE, ".update-info-courseInfo span");
+sel!(SEL_NOTIF_MODULE, ".update-info-module span");
 sel!(SEL_NOTIF_CONTENT, ".update-info-contents .break-word");
-sel!(SEL_NOTIF_URL,     ".updateInfoUrl");
-sel!(SEL_INPUT_IDNUMBER,"input[id='idnumber']");
-sel!(SEL_INPUT_IDNAME,  "input[name='idnumber']");
+sel!(SEL_NOTIF_URL, ".updateInfoUrl");
+sel!(SEL_INPUT_IDNUMBER, "input[id='idnumber']");
+sel!(SEL_INPUT_IDNAME, "input[name='idnumber']");
 
 // ── Common shared selectors ──
-sel!(SEL_DETAIL_VERT,   ".contents-detail.contents-vertical");
-sel!(SEL_BLOCK_DETAIL,  ".block > .contents-list > .contents-detail.contents-vertical");
-sel!(SEL_HEADER_BOLD,   ".contents-header-txt .bold-txt");
-sel!(SEL_HEADER_COMBO,  ".contents-header-txt .bold-txt, .contents-header-txt");
-sel!(SEL_INPUT_AREA,    ".contents-input-area");
+sel!(SEL_DETAIL_VERT, ".contents-detail.contents-vertical");
+sel!(
+    SEL_BLOCK_DETAIL,
+    ".block > .contents-list > .contents-detail.contents-vertical"
+);
+sel!(SEL_HEADER_BOLD, ".contents-header-txt .bold-txt");
+sel!(
+    SEL_HEADER_COMBO,
+    ".contents-header-txt .bold-txt, .contents-header-txt"
+);
+sel!(SEL_INPUT_AREA, ".contents-input-area");
 sel!(SEL_DOWNLOAD_FILE, ".downloadFile");
-sel!(SEL_OBJECT_NAME,   ".objectName");
-sel!(SEL_HIDDEN_INPUT,  "input[type='hidden']");
+sel!(SEL_OBJECT_NAME, ".objectName");
+sel!(SEL_HIDDEN_INPUT, "input[type='hidden']");
 
 // ── Discussion selectors ──
-sel!(SEL_THEME_TOP,     "#themeTopList .result-list.sp-contents-hidden");
-sel!(SEL_THREAD_TITLE,  ".theme-top-thread-title.link-txt");
+sel!(
+    SEL_THEME_TOP,
+    "#themeTopList .result-list.sp-contents-hidden"
+);
+sel!(SEL_THREAD_TITLE, ".theme-top-thread-title.link-txt");
 sel!(SEL_THREAD_AUTHOR, ".theme-top-thread-author");
-sel!(SEL_THREAD_DATE,   ".theme-top-thread-createdate");
+sel!(SEL_THREAD_DATE, ".theme-top-thread-createdate");
 sel!(SEL_THREAD_STATUS, ".theme-top-thread-postzyoukyou");
 
 // ── Thread post selectors ──
 sel!(SEL_THREAD_POST_BLOCK, "#threadPostListArea .clearfix");
 sel!(SEL_POST_CONTENTS_TEXT, ".postContentsText");
-sel!(SEL_POST_DATE,          ".postDate");
-sel!(SEL_POST_USER,          ".postUser");
-sel!(SEL_POST_ID,            ".postId");
-sel!(SEL_MSG_BLOCK,          ".discussion-message-block");
+sel!(SEL_POST_DATE, ".postDate");
+sel!(SEL_POST_USER, ".postUser");
+sel!(SEL_POST_ID, ".postId");
+sel!(SEL_MSG_BLOCK, ".discussion-message-block");
 
 // ── Detail page selectors ──
-sel!(SEL_REPORT_FORM,   "#reportDownloadForm");
-sel!(SEL_FORUMS_FORM,   "#forumsPostFile");
+sel!(SEL_REPORT_FORM, "#reportDownloadForm");
+sel!(SEL_FORUMS_FORM, "#forumsPostFile");
 // Luna announcement attachment hidden inputs
-sel!(SEL_CMT_FILENAME,   "input.cmtInfoFileName");
+sel!(SEL_CMT_FILENAME, "input.cmtInfoFileName");
 sel!(SEL_CMT_OBJECTNAME, "input.cmtInfoObjectName");
 sel!(SEL_TEMPFILE_LINK, "a[href*='tempfile']");
 sel!(SEL_DOWNLOAD_LINK, "a[href*='download']");
-sel!(SEL_VIDEO_LINK,    ".block-list-video a[href], .examination-movie a[href]");
-sel!(SEL_BODY_LINK,     ".contents-input-area a[href], .ql-editor a[href]");
+sel!(
+    SEL_VIDEO_LINK,
+    ".block-list-video a[href], .examination-movie a[href]"
+);
+sel!(
+    SEL_BODY_LINK,
+    ".contents-input-area a[href], .ql-editor a[href]"
+);
 
 // ── Course top selectors ──
-sel!(SEL_INFO_RESULT,   ".course-result-list.sp-contents-hidden");
-sel!(SEL_INFO_NAME_A,   ".class-view-information-name a");
+sel!(SEL_INFO_RESULT, ".course-result-list.sp-contents-hidden");
+sel!(SEL_INFO_NAME_A, ".class-view-information-name a");
 sel!(SEL_INFO_PRIORITY, ".portal-information-priority");
-sel!(SEL_INFO_START,    ".class-view-information-start");
-sel!(SEL_INFO_END,      ".class-view-information-end");
-sel!(SEL_ONLINE_LINK,   "#online .online-link a[href]");
-sel!(SEL_READMORE_DIV,  ".contents-detail-readmore-txt div");
+sel!(SEL_INFO_START, ".class-view-information-start");
+sel!(SEL_INFO_END, ".class-view-information-end");
+sel!(SEL_ONLINE_LINK, "#online .online-link a[href]");
+sel!(SEL_READMORE_DIV, ".contents-detail-readmore-txt div");
 sel!(SEL_READMORE_SPAN, ".contents-detail-readmore-txt span");
 sel!(SEL_SYLLABUS_LINK, ".class-header-syllabus");
-sel!(SEL_GRADE_LINK,    "a[href*='external_grade']");
-sel!(SEL_SIDE_MENU,     "#sidemenuListMessage a[onclick], #sidemenuListEdit a[onclick]");
+sel!(SEL_GRADE_LINK, "a[href*='external_grade']");
+sel!(
+    SEL_SIDE_MENU,
+    "#sidemenuListMessage a[onclick], #sidemenuListEdit a[onclick]"
+);
 sel!(SEL_MATERIAL_LIST, "#courseContent #materialList");
-sel!(SEL_MAT_TITLE,     ".course-material-title-txt");
-sel!(SEL_INPUT_SPAN,    ".contents-input-area span");
+sel!(SEL_MAT_TITLE, ".course-material-title-txt");
+sel!(SEL_INPUT_SPAN, ".contents-input-area span");
 sel!(SEL_MAT_FILE_NAME, ".material-file-name");
-sel!(SEL_MAT_CSS,       ".course-result-list.materialCss");
-sel!(SEL_QL_EDITOR,     ".ql-editor");
-sel!(SEL_SCRIPT,        "script");
-sel!(SEL_FILENAME,      ".fileName");
-sel!(SEL_RESOURCE_ID,   ".resource_Id");
-sel!(SEL_FILETYPE,      ".fileType");
-sel!(SEL_DL_MAT_ID,     "#dlMaterialId");
+sel!(SEL_MAT_CSS, ".course-result-list.materialCss");
+sel!(SEL_QL_EDITOR, ".ql-editor");
+sel!(SEL_SCRIPT, "script");
+sel!(SEL_FILENAME, ".fileName");
+sel!(SEL_RESOURCE_ID, ".resource_Id");
+sel!(SEL_FILETYPE, ".fileType");
+sel!(SEL_DL_MAT_ID, "#dlMaterialId");
 sel!(SEL_OPEN_END_DATE, ".openEndDate");
-sel!(SEL_SCAN_STATUS,   ".scanStatus");
+sel!(SEL_SCAN_STATUS, ".scanStatus");
 
 // ── Report/Exam/Discussion list selectors ──
-sel!(SEL_REPORT_LIST,   "#report .contents-result-list");
-sel!(SEL_RPT_NAME,      ".course-view-report-name.link-txt");
-sel!(SEL_RPT_START,     ".course-view-report-time-start");
-sel!(SEL_RPT_END,       ".course-view-report-time-end");
-sel!(SEL_RPT_STATUS,    ".course-view-report-status");
-sel!(SEL_EXAM_LIST,     "#examination .contents-result-list");
-sel!(SEL_EXAM_NAME,     ".course-view-examination-name.link-txt");
-sel!(SEL_EXAM_NAME_FB,  ".course-view-examination-name");
-sel!(SEL_LINK_TXT,      "a.link-txt");
-sel!(SEL_EXAM_PERIOD,   ".course-view-examination-period.sp-contents-hidden");
-sel!(SEL_EXAM_STATUS,   ".course-view-examination-answer-status");
-sel!(SEL_DISC_LIST,     "#discussion .contents-result-list");
-sel!(SEL_DISC_NAME,     ".course-view-forum-title.link-txt");
-sel!(SEL_DISC_NAME_FB,  ".course-view-forum-title");
-sel!(SEL_DISC_PERIOD,   ".course-view-forum-period.sp-contents-hidden");
-sel!(SEL_DISC_STATUS,   ".course-view-forum-postzyoukyou");
+sel!(SEL_REPORT_LIST, "#report .contents-result-list");
+sel!(SEL_RPT_NAME, ".course-view-report-name.link-txt");
+sel!(SEL_RPT_START, ".course-view-report-time-start");
+sel!(SEL_RPT_END, ".course-view-report-time-end");
+sel!(SEL_RPT_STATUS, ".course-view-report-status");
+sel!(SEL_EXAM_LIST, "#examination .contents-result-list");
+sel!(SEL_EXAM_NAME, ".course-view-examination-name.link-txt");
+sel!(SEL_EXAM_NAME_FB, ".course-view-examination-name");
+sel!(SEL_LINK_TXT, "a.link-txt");
+sel!(
+    SEL_EXAM_PERIOD,
+    ".course-view-examination-period.sp-contents-hidden"
+);
+sel!(SEL_EXAM_STATUS, ".course-view-examination-answer-status");
+sel!(SEL_DISC_LIST, "#discussion .contents-result-list");
+sel!(SEL_DISC_NAME, ".course-view-forum-title.link-txt");
+sel!(SEL_DISC_NAME_FB, ".course-view-forum-title");
+sel!(
+    SEL_DISC_PERIOD,
+    ".course-view-forum-period.sp-contents-hidden"
+);
+sel!(SEL_DISC_STATUS, ".course-view-forum-postzyoukyou");
 
 // ── Survey/questionnaire list selectors ──
-sel!(SEL_SURVEY_LIST,   "#questionnaire .course-result-list, #courseViewSurveyList .course-result-list");
-sel!(SEL_SURV_NAME,     ".course-view-questionnaire-name.link-txt");
-sel!(SEL_SURV_NAME_FB,  ".course-view-questionnaire-name");
-sel!(SEL_SURV_PERIOD,   ".course-view-questionnaire-period.sp-contents-hidden");
-sel!(SEL_SURV_STATUS,   ".course-view-questionnaire-answer-status");
+sel!(
+    SEL_SURVEY_LIST,
+    "#questionnaire .course-result-list, #courseViewSurveyList .course-result-list"
+);
+sel!(SEL_SURV_NAME, ".course-view-questionnaire-name.link-txt");
+sel!(SEL_SURV_NAME_FB, ".course-view-questionnaire-name");
+sel!(
+    SEL_SURV_PERIOD,
+    ".course-view-questionnaire-period.sp-contents-hidden"
+);
+sel!(SEL_SURV_STATUS, ".course-view-questionnaire-answer-status");
 
 // ── Attendance selectors ──
-sel!(SEL_ATT_LIST,      "#attendance .course-result-list.contents-display-flex");
-sel!(SEL_ATT_TITLE,     ".course-view-attendance-title");
-sel!(SEL_ATT_DATE,      ".course-view-attendance-date");
-sel!(SEL_ATT_STATUS,    ".course-view-attendance-status");
-sel!(SEL_ATT_ACTION_A,  ".course-view-attendance-status a");
+sel!(
+    SEL_ATT_LIST,
+    "#attendance .course-result-list.contents-display-flex"
+);
+sel!(SEL_ATT_TITLE, ".course-view-attendance-title");
+sel!(SEL_ATT_DATE, ".course-view-attendance-date");
+sel!(SEL_ATT_STATUS, ".course-view-attendance-status");
+sel!(SEL_ATT_ACTION_A, ".course-view-attendance-status a");
 
 // ── Utility selectors ──
-sel!(SEL_A_HREF,        "a[href]");
-sel!(SEL_SPAN,          "span");
-sel!(SEL_OPT_SELECTED,  "option[selected]");
-sel!(SEL_OPTION,        "option");
+sel!(SEL_A_HREF, "a[href]");
+sel!(SEL_SPAN, "span");
+sel!(SEL_OPT_SELECTED, "option[selected]");
+sel!(SEL_OPTION, "option");
 
 // ──────────────────────────────────────────────
 // Timetable
@@ -166,8 +211,8 @@ pub struct LunaCourse {
     pub idnumber: String,
     pub name: String,
     pub teacher: String,
-    pub period: u32,   // 1-7
-    pub day: u32,      // 1=月 ... 6=土
+    pub period: u32, // 1-7
+    pub day: u32,    // 1=月 ... 6=土
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,11 +233,15 @@ pub fn parse_luna_timetable(html: &str) -> LunaTimetable {
 
     for row in doc.select(&SEL_DATA_ROW) {
         // Extract period number from text like "１時限"
-        let period_text = row.select(&SEL_PERIOD_COL).next()
+        let period_text = row
+            .select(&SEL_PERIOD_COL)
+            .next()
             .map(|e| e.text().collect::<String>())
             .unwrap_or_default();
         let period = parse_japanese_number(&period_text);
-        if period == 0 { continue; }
+        if period == 0 {
+            continue;
+        }
 
         // Each cell corresponds to a day (1=月 through 6=土)
         for (i, cell) in row.select(&SEL_TABLE_CELL).enumerate() {
@@ -200,7 +249,8 @@ pub fn parse_luna_timetable(html: &str) -> LunaTimetable {
             if let Some(btn) = cell.select(&SEL_COURSE_BTN).next() {
                 let idnumber = btn.value().attr("id").unwrap_or_default().to_string();
                 let name = btn.text().collect::<String>().trim().to_string();
-                let teacher = cell.select(&SEL_CELL_DETAIL)
+                let teacher = cell
+                    .select(&SEL_CELL_DETAIL)
                     .map(|s| s.text().collect::<String>().trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
@@ -225,7 +275,16 @@ pub fn parse_luna_timetable(html: &str) -> LunaTimetable {
         communities.push(LunaCommunity { idnumber, name });
     }
 
-    LunaTimetable { year, term, year_label, term_label, year_options, term_options, courses, communities }
+    LunaTimetable {
+        year,
+        term,
+        year_label,
+        term_label,
+        year_options,
+        term_options,
+        courses,
+        communities,
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -235,11 +294,11 @@ pub fn parse_luna_timetable(html: &str) -> LunaTimetable {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LunaTodoItem {
     pub course_name: String,
-    pub content_type: String,  // 課題, テスト, 掲示板
+    pub content_type: String, // 課題, テスト, 掲示板
     pub content_name: String,
     pub url: String,
     pub deadline: String,
-    pub status: String,        // 未提出, 提出済み, etc.
+    pub status: String, // 未提出, 提出済み, etc.
     pub feedback: String,
 }
 
@@ -248,30 +307,44 @@ pub fn parse_luna_todo(html: &str) -> Vec<LunaTodoItem> {
     let mut items = Vec::new();
 
     for item in doc.select(&SEL_TODO_LIST) {
-        let course_name = item.select(&SEL_TODO_COURSE).next()
+        let course_name = item
+            .select(&SEL_TODO_COURSE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let content_type = item.select(&SEL_TODO_TYPE).next()
+        let content_type = item
+            .select(&SEL_TODO_TYPE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let (content_name, url) = item.select(&SEL_TODO_NAME).next()
-            .map(|e| (
-                e.text().collect::<String>().trim().to_string(),
-                e.value().attr("href").unwrap_or_default().to_string(),
-            ))
+        let (content_name, url) = item
+            .select(&SEL_TODO_NAME)
+            .next()
+            .map(|e| {
+                (
+                    e.text().collect::<String>().trim().to_string(),
+                    e.value().attr("href").unwrap_or_default().to_string(),
+                )
+            })
             .unwrap_or_default();
 
-        let deadline = item.select(&SEL_TODO_DEADLINE).next()
+        let deadline = item
+            .select(&SEL_TODO_DEADLINE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let status = item.select(&SEL_TODO_STATUS).next()
+        let status = item
+            .select(&SEL_TODO_STATUS)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let feedback = item.select(&SEL_TODO_FEEDBACK).next()
+        let feedback = item
+            .select(&SEL_TODO_FEEDBACK)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
@@ -297,7 +370,7 @@ pub fn parse_luna_todo(html: &str) -> Vec<LunaTodoItem> {
 pub struct LunaNotification {
     pub date: String,
     pub course_info: String,
-    pub module: String,       // 掲示板スレッド, お知らせ, 課題, etc.
+    pub module: String, // 掲示板スレッド, お知らせ, 課題, etc.
     pub content: String,
     pub url: String,
     pub idnumber: String,
@@ -308,28 +381,40 @@ pub fn parse_luna_notifications(html: &str) -> Vec<LunaNotification> {
     let mut items = Vec::new();
 
     for item in doc.select(&SEL_NOTIF_LIST) {
-        let date = item.select(&SEL_NOTIF_DATE).next()
+        let date = item
+            .select(&SEL_NOTIF_DATE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let course_info = item.select(&SEL_NOTIF_COURSE).next()
+        let course_info = item
+            .select(&SEL_NOTIF_COURSE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let module = item.select(&SEL_NOTIF_MODULE).next()
+        let module = item
+            .select(&SEL_NOTIF_MODULE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let content = item.select(&SEL_NOTIF_CONTENT).next()
+        let content = item
+            .select(&SEL_NOTIF_CONTENT)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let url = item.select(&SEL_NOTIF_URL).next()
+        let url = item
+            .select(&SEL_NOTIF_URL)
+            .next()
             .and_then(|e| e.value().attr("value"))
             .unwrap_or_default()
             .to_string();
 
-        let idnumber = item.select(&SEL_INPUT_IDNUMBER).next()
+        let idnumber = item
+            .select(&SEL_INPUT_IDNUMBER)
+            .next()
             .or_else(|| item.select(&SEL_INPUT_IDNAME).next())
             .and_then(|e| e.value().attr("value"))
             .unwrap_or_default()
@@ -387,7 +472,7 @@ pub struct LunaAttachment {
     pub name: String,
     pub url: String,
     #[serde(default)]
-    pub link_type: String,  // "file", "external", "video", "zoom", "panopto", "web"
+    pub link_type: String, // "file", "external", "video", "zoom", "panopto", "web"
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub object_name: String,
     /// Form action path for download (e.g. /lms/course/report/submission_download)
@@ -424,35 +509,46 @@ pub struct LunaDiscussionThread {
 pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
     let doc = Html::parse_document(html);
 
-    let course_name = try_selectors_text(&doc, &[
-        ".course-title-txt",
-        ".class-title-txt.course-view-header-txt",
-    ]);
+    let course_name = try_selectors_text(
+        &doc,
+        &[
+            ".course-title-txt",
+            ".class-title-txt.course-view-header-txt",
+        ],
+    );
 
-    let title = try_selectors_text(&doc, &[
-        ".contents-title-txt",
-        ".block-title-txt",
-    ]);
+    let title = try_selectors_text(&doc, &[".contents-title-txt", ".block-title-txt"]);
 
     // Extract theme description from themeContents Quill
-    let description = extract_named_quill_text(html, "themeContents")
-        .unwrap_or_default();
+    let description = extract_named_quill_text(html, "themeContents").unwrap_or_default();
 
     // Extract meta info from the top section (テーマタイトル, 投稿期間, etc.)
     let mut meta = Vec::new();
     {
         for row in doc.select(&SEL_BLOCK_DETAIL) {
-            let label = row.select(&SEL_HEADER_COMBO).next()
+            let label = row
+                .select(&SEL_HEADER_COMBO)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            if label == "内容" || label == "添付ファイル" { continue; }
-            let value = row.select(&SEL_INPUT_AREA).next()
+            if label == "内容" || label == "添付ファイル" {
+                continue;
+            }
+            let value = row
+                .select(&SEL_INPUT_AREA)
+                .next()
                 .map(|e| {
                     e.text()
                         .map(|t| t.trim())
-                        .filter(|t| !t.is_empty() && !t.starts_with("/*") && !t.starts_with("$(")
-                            && !t.starts_with("var ") && !t.contains("setJsonData")
-                            && !t.contains("function") && !t.contains("QuillUtil"))
+                        .filter(|t| {
+                            !t.is_empty()
+                                && !t.starts_with("/*")
+                                && !t.starts_with("$(")
+                                && !t.starts_with("var ")
+                                && !t.contains("setJsonData")
+                                && !t.contains("function")
+                                && !t.contains("QuillUtil")
+                        })
                         .collect::<Vec<_>>()
                         .join(" ")
                 })
@@ -469,25 +565,35 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
     // Themetop page: threads are in result-list divs with .theme-top-thread-* classes
     {
         for (idx, row) in doc.select(&SEL_THEME_TOP).enumerate() {
-            let thread_title = row.select(&SEL_THREAD_TITLE).next()
+            let thread_title = row
+                .select(&SEL_THREAD_TITLE)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
             // Extract threadId from onclick="viewthread(50406);"
-            let thread_id = row.select(&SEL_THREAD_TITLE).next()
+            let thread_id = row
+                .select(&SEL_THREAD_TITLE)
+                .next()
                 .and_then(|e| e.value().attr("onclick"))
                 .and_then(|onclick| {
                     let start = onclick.find('(')? + 1;
-                    let end = onclick.find(')')? ;
+                    let end = onclick.find(')')?;
                     Some(onclick[start..end].trim().to_string())
                 })
                 .unwrap_or_default();
-            let author = row.select(&SEL_THREAD_AUTHOR).next()
+            let author = row
+                .select(&SEL_THREAD_AUTHOR)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let date = row.select(&SEL_THREAD_DATE).next()
+            let date = row
+                .select(&SEL_THREAD_DATE)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let status = row.select(&SEL_THREAD_STATUS).next()
+            let status = row
+                .select(&SEL_THREAD_STATUS)
+                .next()
                 .map(|e| {
                     e.text()
                         .map(|t| t.trim())
@@ -499,11 +605,17 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
 
             // Extract thread content from threadContentsN Quill
             let quill_name = format!("threadContents{}", idx);
-            let content = extract_named_quill_text(html, &quill_name)
-                .unwrap_or_default();
+            let content = extract_named_quill_text(html, &quill_name).unwrap_or_default();
 
             if !thread_title.is_empty() || !content.is_empty() || !author.is_empty() {
-                posts.push(LunaDiscussionPost { title: thread_title, author, date, content, status, thread_id });
+                posts.push(LunaDiscussionPost {
+                    title: thread_title,
+                    author,
+                    date,
+                    content,
+                    status,
+                    thread_id,
+                });
             }
         }
     }
@@ -527,7 +639,13 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
         }
     }
 
-    LunaDiscussionThread { title, course_name, description, meta, posts }
+    LunaDiscussionThread {
+        title,
+        course_name,
+        description,
+        meta,
+        posts,
+    }
 }
 
 /// Parse a Luna thread detail page (/lms/course/forums/thread)
@@ -535,25 +653,30 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
 pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
     let doc = Html::parse_document(html);
 
-    let course_name = try_selectors_text(&doc, &[
-        ".course-title-txt",
-    ]);
+    let course_name = try_selectors_text(&doc, &[".course-title-txt"]);
 
-    let title = try_selectors_text(&doc, &[
-        ".contents-title-txt",
-    ]);
+    let title = try_selectors_text(&doc, &[".contents-title-txt"]);
 
     // Extract meta rows: テーマ, スレッド, 登録者, 学生番号, 更新日時
     let mut meta = Vec::new();
     let mut thread_title = String::new();
     {
         for row in doc.select(&SEL_BLOCK_DETAIL) {
-            let label = row.select(&SEL_HEADER_BOLD).next()
+            let label = row
+                .select(&SEL_HEADER_BOLD)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            if label == "説明" || label == "投稿内容" || label == "添付ファイル"
-                || label == "返信先投稿内容" { continue; }
-            let value = row.select(&SEL_INPUT_AREA).next()
+            if label == "説明"
+                || label == "投稿内容"
+                || label == "添付ファイル"
+                || label == "返信先投稿内容"
+            {
+                continue;
+            }
+            let value = row
+                .select(&SEL_INPUT_AREA)
+                .next()
                 .map(|e| {
                     e.text()
                         .map(|t| t.trim())
@@ -572,40 +695,57 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
     }
 
     // Description from headerContents Quill
-    let description = extract_named_quill_text(html, "headerContents")
-        .unwrap_or_default();
+    let description = extract_named_quill_text(html, "headerContents").unwrap_or_default();
 
     // Parse posts from #threadPostList (embedded in the page)
     let mut posts = Vec::new();
     for block in doc.select(&SEL_THREAD_POST_BLOCK) {
-        let content = block.select(&SEL_POST_CONTENTS_TEXT).next()
+        let content = block
+            .select(&SEL_POST_CONTENTS_TEXT)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
-        let date = block.select(&SEL_POST_DATE).next()
+        let date = block
+            .select(&SEL_POST_DATE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
-        let raw_user = block.select(&SEL_POST_USER).next()
+        let raw_user = block
+            .select(&SEL_POST_USER)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
         // Format: "氏名:名前" → extract the name after ":"
-        let author = raw_user.split(':').nth(1)
+        let author = raw_user
+            .split(':')
+            .nth(1)
             .unwrap_or(&raw_user)
             .trim()
             .to_string();
-        let post_id = block.select(&SEL_POST_ID).next()
+        let post_id = block
+            .select(&SEL_POST_ID)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
         // Check if teacher post (has board-discussion-teacher-color-left)
-        let is_teacher = block.select(&SEL_MSG_BLOCK).next()
+        let is_teacher = block
+            .select(&SEL_MSG_BLOCK)
+            .next()
             .map(|e| e.html().contains("board-discussion-teacher-color"))
             .unwrap_or(false);
-        let is_self = block.select(&SEL_MSG_BLOCK).next()
+        let is_self = block
+            .select(&SEL_MSG_BLOCK)
+            .next()
             .map(|e| e.value().classes().any(|c| c == "discussion-self"))
             .unwrap_or(false);
         let mut status = String::new();
-        if is_teacher { status.push_str("teacher"); }
+        if is_teacher {
+            status.push_str("teacher");
+        }
         if is_self {
-            if !status.is_empty() { status.push(','); }
+            if !status.is_empty() {
+                status.push(',');
+            }
             status.push_str("self");
         }
 
@@ -627,7 +767,13 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
         title
     };
 
-    LunaDiscussionThread { title: display_title, course_name, description, meta, posts }
+    LunaDiscussionThread {
+        title: display_title,
+        course_name,
+        description,
+        meta,
+        posts,
+    }
 }
 
 /// Extract Quill text from a specific named variable (e.g. "themeContents", "threadContents0")
@@ -654,7 +800,9 @@ fn extract_named_quill_text(html: &str, var_name: &str) -> Option<String> {
         }
         i += 1;
     }
-    if end == 0 { return None; }
+    if end == 0 {
+        return None;
+    }
     let json_str = &after[..end];
     extract_quill_rich_html(json_str)
 }
@@ -667,9 +815,14 @@ fn escape_html_fragment(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn wrap_quill_inline_attrs(text: &str, attrs: Option<&serde_json::Map<String, serde_json::Value>>) -> String {
+fn wrap_quill_inline_attrs(
+    text: &str,
+    attrs: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> String {
     let mut out = escape_html_fragment(text);
-    let Some(attrs) = attrs else { return out; };
+    let Some(attrs) = attrs else {
+        return out;
+    };
 
     if attrs.get("bold").and_then(|v| v.as_bool()) == Some(true) {
         out = format!("<strong>{}</strong>", out);
@@ -720,7 +873,9 @@ fn extract_quill_rich_html(json_str: &str) -> Option<String> {
 
     let mut html = String::new();
     for op in ops {
-        let Some(insert) = op.get("insert").and_then(|v| v.as_str()) else { continue; };
+        let Some(insert) = op.get("insert").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let attrs = op.get("attributes").and_then(|a| a.as_object());
 
         let mut segment = String::new();
@@ -746,7 +901,11 @@ fn extract_quill_rich_html(json_str: &str) -> Option<String> {
         .replace("<br />", "")
         .trim()
         .to_string();
-    if compact.is_empty() { None } else { Some(html) }
+    if compact.is_empty() {
+        None
+    } else {
+        Some(html)
+    }
 }
 
 /// Parse any Luna detail page (report/submission, examination, forum, etc.)
@@ -780,8 +939,10 @@ fn classify_link(url: &str, name: &str) -> String {
         return "cloud".into();
     }
     // Google (Drive, Docs, Slides, Sheets, Forms)
-    if u.contains("drive.google.com") || u.contains("docs.google.com")
-        || u.contains("forms.gle") || u.contains("forms.google.com")
+    if u.contains("drive.google.com")
+        || u.contains("docs.google.com")
+        || u.contains("forms.gle")
+        || u.contains("forms.google.com")
     {
         return "google".into();
     }
@@ -790,8 +951,10 @@ fn classify_link(url: &str, name: &str) -> String {
         return "teams".into();
     }
     // Known file extensions in URL or name → treat as downloadable external file
-    let file_exts = [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
-                     ".zip", ".rar", ".7z", ".mp4", ".mp3", ".wav", ".png", ".jpg", ".jpeg"];
+    let file_exts = [
+        ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".zip", ".rar", ".7z", ".mp4",
+        ".mp3", ".wav", ".png", ".jpg", ".jpeg",
+    ];
     for ext in &file_exts {
         if u.ends_with(ext) || n.ends_with(ext) {
             return "file".into();
@@ -811,17 +974,23 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
     let doc = Html::parse_document(html);
 
     // Course name: .course-title-txt
-    let course_name = try_selectors_text(&doc, &[
-        ".course-title-txt",
-        ".class-title-txt.course-view-header-txt",
-    ]);
+    let course_name = try_selectors_text(
+        &doc,
+        &[
+            ".course-title-txt",
+            ".class-title-txt.course-view-header-txt",
+        ],
+    );
 
     // Page title: .contents-title-txt
-    let title = try_selectors_text(&doc, &[
-        ".contents-title-txt",
-        ".contents-title .contents-title-txt",
-        "title",
-    ]);
+    let title = try_selectors_text(
+        &doc,
+        &[
+            ".contents-title-txt",
+            ".contents-title .contents-title-txt",
+            "title",
+        ],
+    );
 
     let mut meta = Vec::new();
     let mut attachments = Vec::new();
@@ -829,7 +998,9 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
     // === Primary pattern: .contents-detail.contents-vertical rows ===
     {
         for row in doc.select(&SEL_DETAIL_VERT) {
-            let label = row.select(&SEL_HEADER_COMBO).next()
+            let label = row
+                .select(&SEL_HEADER_COMBO)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
 
@@ -838,7 +1009,9 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 continue;
             }
 
-            let value = row.select(&SEL_INPUT_AREA).next()
+            let value = row
+                .select(&SEL_INPUT_AREA)
+                .next()
                 .map(|e| {
                     // Collect text but skip script content and hidden elements
                     let mut text_parts = Vec::new();
@@ -881,10 +1054,14 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
     let mut sections: Vec<LunaDetailSection> = if !quill_texts.is_empty() {
         // Check which quill texts are already in meta values
         let meta_values: Vec<&str> = meta.iter().map(|(_, v)| v.as_str()).collect();
-        quill_texts.into_iter()
+        quill_texts
+            .into_iter()
             .filter(|t| !meta_values.iter().any(|mv| mv.contains(t.as_str())))
             .filter(|t| t.len() > 5)
-            .map(|t| LunaDetailSection { heading: String::new(), body: t })
+            .map(|t| LunaDetailSection {
+                heading: String::new(),
+                body: t,
+            })
             .collect()
     } else {
         Vec::new()
@@ -920,7 +1097,12 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                             params.push((iname.to_string(), ival.to_string()));
                         }
                     }
-                    log::debug!("[attachments] download form: action='{}', is_forum={}, params={:?}", action, is_forum, params);
+                    log::debug!(
+                        "[attachments] download form: action='{}', is_forum={}, params={:?}",
+                        action,
+                        is_forum,
+                        params
+                    );
                     info = Some((action, params, is_forum));
                     break;
                 }
@@ -935,10 +1117,13 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
         for el in doc.select(&SEL_DOWNLOAD_FILE) {
             let name = el.text().collect::<String>().trim().to_string();
             if !name.is_empty() {
-                let obj_name = el.parent()
+                let obj_name = el
+                    .parent()
                     .and_then(scraper::ElementRef::wrap)
                     .and_then(|parent_el| {
-                        parent_el.select(&SEL_OBJECT_NAME).next()
+                        parent_el
+                            .select(&SEL_OBJECT_NAME)
+                            .next()
                             .map(|e| e.text().collect::<String>().trim().to_string())
                     })
                     .unwrap_or_default();
@@ -957,8 +1142,13 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                         all_params.push(("objectName".to_string(), obj_name.clone()));
                         all_params.push(("downloadMode".to_string(), String::new()));
                     }
-                    log::debug!("[attachments] name='{}', objectName='{}', action='{}', type='{}'",
-                        name, obj_name, action, link_type);
+                    log::debug!(
+                        "[attachments] name='{}', objectName='{}', action='{}', type='{}'",
+                        name,
+                        obj_name,
+                        action,
+                        link_type
+                    );
                     attachments.push(LunaAttachment {
                         name,
                         url: String::new(),
@@ -968,7 +1158,11 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                         download_params: all_params,
                     });
                 } else {
-                    log::warn!("[attachments] no download form for '{}', objectName='{}'", name, obj_name);
+                    log::warn!(
+                        "[attachments] no download form for '{}', objectName='{}'",
+                        name,
+                        obj_name
+                    );
                 }
             }
         }
@@ -983,7 +1177,14 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 let url = a.value().attr("href").unwrap_or_default().to_string();
                 if !name.is_empty() && !url.is_empty() && !url.contains("javascript:") {
                     let link_type = classify_link(&url, &name);
-                    attachments.push(LunaAttachment { name, url, link_type, object_name: String::new(), download_action: String::new(), download_params: Vec::new() });
+                    attachments.push(LunaAttachment {
+                        name,
+                        url,
+                        link_type,
+                        object_name: String::new(),
+                        download_action: String::new(),
+                        download_params: Vec::new(),
+                    });
                 }
             }
         }
@@ -997,13 +1198,34 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 // Show a friendly name for external video links
                 let link_type = classify_link(&url, "");
                 let display_name = match link_type.as_str() {
-                    "cloud" => format!("動画 ({})", if url.contains("sharepoint") { "SharePoint" } else { "OneDrive" }),
-                    "video" => format!("動画 ({})", if url.contains("youtube") || url.contains("youtu.be") { "YouTube" } else { "Vimeo" }),
+                    "cloud" => format!(
+                        "動画 ({})",
+                        if url.contains("sharepoint") {
+                            "SharePoint"
+                        } else {
+                            "OneDrive"
+                        }
+                    ),
+                    "video" => format!(
+                        "動画 ({})",
+                        if url.contains("youtube") || url.contains("youtu.be") {
+                            "YouTube"
+                        } else {
+                            "Vimeo"
+                        }
+                    ),
                     "zoom" => "Zoom ミーティング".to_string(),
                     "panopto" => "Panopto 録画".to_string(),
                     _ => "外部リンク".to_string(),
                 };
-                attachments.push(LunaAttachment { name: display_name, url, link_type, object_name: String::new(), download_action: String::new(), download_params: Vec::new() });
+                attachments.push(LunaAttachment {
+                    name: display_name,
+                    url,
+                    link_type,
+                    object_name: String::new(),
+                    download_action: String::new(),
+                    download_params: Vec::new(),
+                });
             }
         }
     }
@@ -1021,7 +1243,8 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
             for post_el in doc.select(&post_sel) {
                 let post_text = post_el.text().collect::<String>();
                 let trimmed = post_text.trim().to_string();
-                if !trimmed.is_empty() && trimmed.len() > 3
+                if !trimmed.is_empty()
+                    && trimmed.len() > 3
                     && !sections.iter().any(|s| s.body.contains(&trimmed))
                 {
                     sections.push(LunaDetailSection {
@@ -1039,17 +1262,31 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
         for a in doc.select(&SEL_BODY_LINK) {
             let url = a.value().attr("href").unwrap_or_default().to_string();
             let name = a.text().collect::<String>().trim().to_string();
-            if !url.is_empty() && url.starts_with("http")
+            if !url.is_empty()
+                && url.starts_with("http")
                 && !attachments.iter().any(|att| att.url == url)
             {
                 let display = if name.is_empty() { url.clone() } else { name };
                 let link_type = classify_link(&url, &display);
-                attachments.push(LunaAttachment { name: display, url, link_type, object_name: String::new(), download_action: String::new(), download_params: Vec::new() });
+                attachments.push(LunaAttachment {
+                    name: display,
+                    url,
+                    link_type,
+                    object_name: String::new(),
+                    download_action: String::new(),
+                    download_params: Vec::new(),
+                });
             }
         }
     }
 
-    LunaDetailPage { title, course_name, sections, attachments, meta }
+    LunaDetailPage {
+        title,
+        course_name,
+        sections,
+        attachments,
+        meta,
+    }
 }
 /// This returns an HTML fragment that typically contains:
 ///   - .information-detail-title or similar title
@@ -1062,11 +1299,10 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
     let mut attachments: Vec<LunaAttachment> = Vec::new();
 
     // Title from #osiraseTitle or .block-title-txt
-    let title = try_selectors_text(&doc, &[
-        "#osiraseTitle",
-        ".block-title-txt",
-        ".contents-title-txt",
-    ]);
+    let title = try_selectors_text(
+        &doc,
+        &["#osiraseTitle", ".block-title-txt", ".contents-title-txt"],
+    );
 
     // Extract Quill rich text content (main body) from setJsonData() calls
     let quill_texts = extract_all_quill_texts(html);
@@ -1091,26 +1327,41 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
     // We drop this into download_action/download_params so luna_download_file()
     // assembles the URL the same way its report/forum path does.
     let build_announcement_attachment = |container: scraper::ElementRef| -> Option<LunaAttachment> {
-        let file_name = container.select(&SEL_CMT_FILENAME).next()
+        let file_name = container
+            .select(&SEL_CMT_FILENAME)
+            .next()
             .and_then(|e| e.value().attr("value"))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .or_else(|| {
                 let p = container.text().collect::<String>().trim().to_string();
-                if p.is_empty() { None } else { Some(p) }
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p)
+                }
             })?;
-        let obj_name = container.select(&SEL_CMT_OBJECTNAME).next()
+        let obj_name = container
+            .select(&SEL_CMT_OBJECTNAME)
+            .next()
             .and_then(|e| e.value().attr("value"))
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
 
         if obj_name.is_empty() {
-            log::warn!("[announcement] attachment '{}' has no objectName", file_name);
+            log::warn!(
+                "[announcement] attachment '{}' has no objectName",
+                file_name
+            );
             return None;
         }
 
         let link_type = classify_link("", &file_name);
-        log::debug!("[announcement] attachment name='{}', object='{}'", file_name, obj_name);
+        log::debug!(
+            "[announcement] attachment name='{}', object='{}'",
+            file_name,
+            obj_name
+        );
         Some(LunaAttachment {
             name: file_name.clone(),
             url: String::new(),
@@ -1127,12 +1378,16 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
     // Extract meta rows from .contents-detail.contents-vertical
     {
         for row in doc.select(&SEL_DETAIL_VERT) {
-            let label = row.select(&SEL_HEADER_BOLD).next()
+            let label = row
+                .select(&SEL_HEADER_BOLD)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
 
             // Skip "内容" — it's the Quill content we already extracted
-            if label == "内容" { continue; }
+            if label == "内容" {
+                continue;
+            }
 
             // Attachment rows: each .downloadFile div contains hidden inputs with the
             // real file/object name. Read those directly instead of trusting text.
@@ -1146,7 +1401,9 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
             }
 
             // Collect text from the value area, filtering out script content
-            let value = row.select(&SEL_INPUT_AREA).next()
+            let value = row
+                .select(&SEL_INPUT_AREA)
+                .next()
                 .map(|e| {
                     let mut text_parts = Vec::new();
                     for child in e.text() {
@@ -1169,7 +1426,9 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
                 .unwrap_or_default();
 
             // Skip "添付ファイル" if empty
-            if label == "添付ファイル" && value.is_empty() { continue; }
+            if label == "添付ファイル" && value.is_empty() {
+                continue;
+            }
 
             if !label.is_empty() && !value.is_empty() {
                 meta.push((label, value));
@@ -1187,7 +1446,13 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
         }
     }
 
-    LunaDetailPage { title, course_name: String::new(), sections, attachments, meta }
+    LunaDetailPage {
+        title,
+        course_name: String::new(),
+        sections,
+        attachments,
+        meta,
+    }
 }
 
 /// Extract text from a Quill Delta JSON string, preserving link URLs.
@@ -1216,14 +1481,22 @@ fn extract_quill_plain_text(json_str: &str) -> Option<String> {
             let pass1 = unescape_js_string(raw_value);
             let pass2 = unescape_js_string(&pass1);
             result.push_str(&pass2);
-            search = if end_pos + 2 < rest.len() { &rest[end_pos + 2..] } else { "" };
+            search = if end_pos + 2 < rest.len() {
+                &rest[end_pos + 2..]
+            } else {
+                ""
+            };
         } else {
             break;
         }
     }
 
     let trimmed = result.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 /// Try to parse Quill Delta JSON properly via serde_json.
@@ -1239,7 +1512,8 @@ fn extract_quill_via_json(json_str: &str) -> Option<String> {
     let mut result = String::new();
     for op in ops {
         if let Some(text) = op.get("insert").and_then(|v| v.as_str()) {
-            let link = op.get("attributes")
+            let link = op
+                .get("attributes")
                 .and_then(|a| a.get("link"))
                 .and_then(|l| l.as_str());
 
@@ -1256,7 +1530,11 @@ fn extract_quill_via_json(json_str: &str) -> Option<String> {
     }
 
     let trimmed = result.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 /// Find the position of the closing \" in a JS-escaped string value.
@@ -1286,12 +1564,30 @@ fn unescape_js_string(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.peek().copied() {
-                Some('n') => { chars.next(); result.push('\n'); }
-                Some('t') => { chars.next(); result.push('\t'); }
-                Some('r') => { chars.next(); result.push('\r'); }
-                Some('\\') => { chars.next(); result.push('\\'); }
-                Some('"') => { chars.next(); result.push('"'); }
-                Some('/') => { chars.next(); result.push('/'); }
+                Some('n') => {
+                    chars.next();
+                    result.push('\n');
+                }
+                Some('t') => {
+                    chars.next();
+                    result.push('\t');
+                }
+                Some('r') => {
+                    chars.next();
+                    result.push('\r');
+                }
+                Some('\\') => {
+                    chars.next();
+                    result.push('\\');
+                }
+                Some('"') => {
+                    chars.next();
+                    result.push('"');
+                }
+                Some('/') => {
+                    chars.next();
+                    result.push('/');
+                }
                 Some('u') => {
                     chars.next();
                     let hex: String = chars.by_ref().take(4).collect();
@@ -1306,7 +1602,9 @@ fn unescape_js_string(s: &str) -> String {
                     result.push_str("\\u");
                     result.push_str(&hex);
                 }
-                _ => { result.push(c); }
+                _ => {
+                    result.push(c);
+                }
             }
         } else {
             result.push(c);
@@ -1322,8 +1620,7 @@ fn extract_quill_text(html: &str) -> Option<String> {
     let pos = html.find(marker)?;
     let rest = &html[pos + marker.len()..];
     // Find the closing: try "\", '" first, then "\");"
-    let end = rest.find("\", '")
-        .or_else(|| rest.find("\");"))?;
+    let end = rest.find("\", '").or_else(|| rest.find("\");"))?;
     let json_str = &rest[..end];
     extract_quill_plain_text(json_str)
 }
@@ -1336,8 +1633,7 @@ fn extract_all_quill_texts(html: &str) -> Vec<String> {
     while let Some(pos) = search.find(marker) {
         let rest = &search[pos + marker.len()..];
         // Try both closing patterns
-        let end = rest.find("\", '")
-            .or_else(|| rest.find("\");"));
+        let end = rest.find("\", '").or_else(|| rest.find("\");"));
         if let Some(end) = end {
             let json_str = &rest[..end];
             if let Some(text) = extract_quill_plain_text(json_str) {
@@ -1419,7 +1715,7 @@ pub struct LunaContentItem {
     pub url: String,
     pub period: String,
     pub status: String,
-    pub item_type: String,   // material, report, examination, discussion
+    pub item_type: String, // material, report, examination, discussion
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -1428,16 +1724,16 @@ pub struct LunaContentItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LunaMaterialFile {
-    pub display_name: String,   // link text (e.g. "2026日本語Ⅰ金_配布用シラバス")
-    pub file_name: String,      // actual filename (e.g. "2026日本語Ⅰ金_配布用シラバス.pdf")
-    pub object_name: String,    // storage path (e.g. "2026/ee/3c/1b/...")
-    pub resource_id: String,    // resource ID
-    pub material_id: String,    // dlMaterialId
-    pub file_type: String,      // "0" = file, else HTML
-    pub end_date: String,       // open end date (e.g. "2026-07-04 00:00:00.0")
-    pub scan_status: String,    // virus scan status ("1" = clean)
+    pub display_name: String, // link text (e.g. "2026日本語Ⅰ金_配布用シラバス")
+    pub file_name: String,    // actual filename (e.g. "2026日本語Ⅰ金_配布用シラバス.pdf")
+    pub object_name: String,  // storage path (e.g. "2026/ee/3c/1b/...")
+    pub resource_id: String,  // resource ID
+    pub material_id: String,  // dlMaterialId
+    pub file_type: String,    // "0" = file, else HTML
+    pub end_date: String,     // open end date (e.g. "2026-07-04 00:00:00.0")
+    pub scan_status: String,  // virus scan status ("1" = clean)
     #[serde(default)]
-    pub link_type: String,      // "file", "zoom", "panopto", "video", "cloud", "google", "teams", "web"
+    pub link_type: String, // "file", "zoom", "panopto", "video", "cloud", "google", "teams", "web"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1506,18 +1802,22 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
     let doc = Html::parse_document(html);
 
     // Course name from header
-    let course_name = try_selectors_text(&doc, &[
-        ".class-title-txt.course-view-header-txt",
-        ".course-title-txt",
-        "title",
-    ]);
+    let course_name = try_selectors_text(
+        &doc,
+        &[
+            ".class-title-txt.course-view-header-txt",
+            ".course-title-txt",
+            "title",
+        ],
+    );
 
     // Semester from subblock
     let semester = try_selectors_text(&doc, &[".subblock_form"]);
 
     // Teachers from .contents-detail-readmore-txt
     let teachers = {
-        let spans: Vec<String> = doc.select(&SEL_READMORE_SPAN)
+        let spans: Vec<String> = doc
+            .select(&SEL_READMORE_SPAN)
             .map(|el| el.text().collect::<String>().trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
@@ -1550,12 +1850,16 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
     let la_info = extract_staff_info(&doc, "担当LA");
 
     // Syllabus link
-    let syllabus_url = doc.select(&SEL_SYLLABUS_LINK).next()
+    let syllabus_url = doc
+        .select(&SEL_SYLLABUS_LINK)
+        .next()
         .and_then(|el| el.value().attr("href").map(|s| s.to_string()))
         .unwrap_or_default();
 
     // Grade link
-    let grade_url = doc.select(&SEL_GRADE_LINK).next()
+    let grade_url = doc
+        .select(&SEL_GRADE_LINK)
+        .next()
         .and_then(|el| el.value().attr("href").map(|s| s.to_string()))
         .unwrap_or_default();
 
@@ -1601,19 +1905,29 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
                 .and_then(|e| e.value().attr("onclick"))
                 .and_then(|onclick| {
                     let start = onclick.find(',')? + 1;
-                    let end = onclick.find(')')? ;
+                    let end = onclick.find(')')?;
                     Some(onclick[start..end].trim().to_string())
                 })
                 .unwrap_or_default();
             let is_new = row.select(&SEL_INFO_PRIORITY).next().is_some();
-            let start_date = row.select(&SEL_INFO_START).next()
+            let start_date = row
+                .select(&SEL_INFO_START)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let end_date = row.select(&SEL_INFO_END).next()
+            let end_date = row
+                .select(&SEL_INFO_END)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
             if !title.is_empty() {
-                announcements.push(LunaCourseAnnouncement { title, info_id, start_date, end_date, is_new });
+                announcements.push(LunaCourseAnnouncement {
+                    title,
+                    info_id,
+                    start_date,
+                    end_date,
+                    is_new,
+                });
             }
         }
     }
@@ -1622,7 +1936,9 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
     let mut online_tools = Vec::new();
     for a in doc.select(&SEL_ONLINE_LINK) {
         let href = a.value().attr("href").unwrap_or_default().to_string();
-        if href.is_empty() { continue; }
+        if href.is_empty() {
+            continue;
+        }
         let (name, icon) = if href.contains("zoom") {
             ("Zoom".to_string(), "video".to_string())
         } else if href.contains("panopto") {
@@ -1630,7 +1946,11 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
         } else {
             ("オンラインツール".to_string(), "link".to_string())
         };
-        online_tools.push(LunaOnlineTool { name, url: href, icon });
+        online_tools.push(LunaOnlineTool {
+            name,
+            url: href,
+            icon,
+        });
     }
 
     // Parse attendance rows from the course top page
@@ -1681,14 +2001,20 @@ pub fn parse_luna_course_contents(html: &str, idnumber: &str) -> LunaCourseConte
 fn parse_attendances(doc: &Html, fallback_idnumber: &str) -> Vec<LunaAttendanceItem> {
     let mut items = Vec::new();
     for row in doc.select(&SEL_ATT_LIST) {
-        let title = row.select(&SEL_ATT_TITLE).next()
+        let title = row
+            .select(&SEL_ATT_TITLE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
-        let date = row.select(&SEL_ATT_DATE).next()
+        let date = row
+            .select(&SEL_ATT_DATE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let mut status = row.select(&SEL_ATT_STATUS).next()
+        let mut status = row
+            .select(&SEL_ATT_STATUS)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
         let mut can_register = false;
@@ -1705,7 +2031,9 @@ fn parse_attendances(doc: &Html, fallback_idnumber: &str) -> Vec<LunaAttendanceI
             let data2 = a.value().attr("data2").unwrap_or_default().to_string();
             let data3 = a.value().attr("data3").unwrap_or_default().to_string();
 
-            if !data1.is_empty() { idnumber = data1; }
+            if !data1.is_empty() {
+                idnumber = data1;
+            }
             attendance_id = data2;
             log_type = data3;
             can_register = !attendance_id.is_empty() && status.contains("受付");
@@ -1734,7 +2062,8 @@ fn extract_staff_info(doc: &Html, label: &str) -> String {
         let text = div.text().collect::<String>();
         if text.contains(label) {
             // Extract the value after the label span
-            let spans: Vec<String> = div.select(&SEL_SPAN)
+            let spans: Vec<String> = div
+                .select(&SEL_SPAN)
                 .map(|s| s.text().collect::<String>().trim().to_string())
                 .collect();
             // spans[0] = label, spans[1..] = values
@@ -1768,9 +2097,33 @@ pub fn parse_luna_contents_page(html: &str) -> ContentsPageResult {
     let doc = Html::parse_document(html);
     let materials = parse_materials(&doc);
     let reports = parse_reports(&doc);
-    let examinations = parse_content_list(&doc, &SEL_EXAM_LIST, &SEL_EXAM_NAME, &SEL_EXAM_NAME_FB, &SEL_EXAM_PERIOD, &SEL_EXAM_STATUS, "examination");
-    let discussions = parse_content_list(&doc, &SEL_DISC_LIST, &SEL_DISC_NAME, &SEL_DISC_NAME_FB, &SEL_DISC_PERIOD, &SEL_DISC_STATUS, "discussion");
-    let surveys = parse_content_list(&doc, &SEL_SURVEY_LIST, &SEL_SURV_NAME, &SEL_SURV_NAME_FB, &SEL_SURV_PERIOD, &SEL_SURV_STATUS, "survey");
+    let examinations = parse_content_list(
+        &doc,
+        &SEL_EXAM_LIST,
+        &SEL_EXAM_NAME,
+        &SEL_EXAM_NAME_FB,
+        &SEL_EXAM_PERIOD,
+        &SEL_EXAM_STATUS,
+        "examination",
+    );
+    let discussions = parse_content_list(
+        &doc,
+        &SEL_DISC_LIST,
+        &SEL_DISC_NAME,
+        &SEL_DISC_NAME_FB,
+        &SEL_DISC_PERIOD,
+        &SEL_DISC_STATUS,
+        "discussion",
+    );
+    let surveys = parse_content_list(
+        &doc,
+        &SEL_SURVEY_LIST,
+        &SEL_SURV_NAME,
+        &SEL_SURV_NAME_FB,
+        &SEL_SURV_PERIOD,
+        &SEL_SURV_STATUS,
+        "survey",
+    );
     (materials, reports, examinations, discussions, surveys)
 }
 
@@ -1793,7 +2146,9 @@ fn extract_quill_delta_text(script: &str) -> Option<String> {
             i += 1;
         }
     }
-    if i >= bytes.len() { return None; }
+    if i >= bytes.len() {
+        return None;
+    }
     let escaped = &rest[..i];
     // Treat as a JSON string body to decode \uXXXX, \", \\n etc.
     let json_lit = format!("\"{}\"", escaped);
@@ -1807,7 +2162,11 @@ fn extract_quill_delta_text(script: &str) -> Option<String> {
         }
     }
     let trimmed = text.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn extract_quill_delta_html(script: &str) -> Option<String> {
@@ -1825,7 +2184,9 @@ fn extract_quill_delta_html(script: &str) -> Option<String> {
             i += 1;
         }
     }
-    if i >= bytes.len() { return None; }
+    if i >= bytes.len() {
+        return None;
+    }
     let escaped = &rest[..i];
     extract_quill_rich_html(escaped)
 }
@@ -1835,13 +2196,19 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
 
     // Each materialList div is a folder with materials
     for folder in doc.select(&SEL_MATERIAL_LIST) {
-        let title = folder.select(&SEL_MAT_TITLE).next()
+        let title = folder
+            .select(&SEL_MAT_TITLE)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
-        if title.is_empty() { continue; }
+        if title.is_empty() {
+            continue;
+        }
 
-        let period = folder.select(&SEL_INPUT_SPAN)
-            .map(|e| e.text().collect::<String>().trim().to_string()).find(|s| s.contains('～'))
+        let period = folder
+            .select(&SEL_INPUT_SPAN)
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .find(|s| s.contains('～'))
             .unwrap_or_default();
 
         // Prefer rendered Quill HTML to preserve rich text formatting.
@@ -1866,31 +2233,49 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
         // Parse individual material files with download metadata
         let mut files = Vec::new();
         for row in folder.select(&SEL_MAT_CSS) {
-            let display_name = row.select(&SEL_MAT_FILE_NAME).next()
+            let display_name = row
+                .select(&SEL_MAT_FILE_NAME)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            if display_name.is_empty() { continue; }
+            if display_name.is_empty() {
+                continue;
+            }
 
-            let file_name = row.select(&SEL_FILENAME).next()
+            let file_name = row
+                .select(&SEL_FILENAME)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let object_name = row.select(&SEL_OBJECT_NAME).next()
+            let object_name = row
+                .select(&SEL_OBJECT_NAME)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let resource_id = row.select(&SEL_RESOURCE_ID).next()
+            let resource_id = row
+                .select(&SEL_RESOURCE_ID)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let file_type = row.select(&SEL_FILETYPE).next()
+            let file_type = row
+                .select(&SEL_FILETYPE)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let material_id = row.select(&SEL_DL_MAT_ID).next()
+            let material_id = row
+                .select(&SEL_DL_MAT_ID)
+                .next()
                 .and_then(|e| e.value().attr("value"))
                 .unwrap_or_default()
                 .to_string();
-            let end_date = row.select(&SEL_OPEN_END_DATE).next()
+            let end_date = row
+                .select(&SEL_OPEN_END_DATE)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
-            let scan_status = row.select(&SEL_SCAN_STATUS).next()
+            let scan_status = row
+                .select(&SEL_SCAN_STATUS)
+                .next()
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
 
@@ -1898,7 +2283,11 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
                 classify_link(&file_name, &display_name)
             } else {
                 let cl = classify_link(&display_name, &file_name);
-                if cl == "file" { "web".to_string() } else { cl }
+                if cl == "file" {
+                    "web".to_string()
+                } else {
+                    cl
+                }
             };
 
             files.push(LunaMaterialFile {
@@ -1917,7 +2306,11 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
         let status = if files.is_empty() {
             String::new()
         } else {
-            files.iter().map(|f| f.display_name.as_str()).collect::<Vec<_>>().join(", ")
+            files
+                .iter()
+                .map(|f| f.display_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         };
 
         items.push(LunaContentItem {
@@ -1944,10 +2337,14 @@ fn parse_reports(doc: &Html) -> Vec<LunaContentItem> {
         let title = a.text().collect::<String>().trim().to_string();
         let url = a.value().attr("href").unwrap_or_default().to_string();
 
-        let start = row.select(&SEL_RPT_START).next()
+        let start = row
+            .select(&SEL_RPT_START)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
-        let end = row.select(&SEL_RPT_END).next()
+        let end = row
+            .select(&SEL_RPT_END)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
         let period = if !start.is_empty() && !end.is_empty() {
@@ -1956,7 +2353,9 @@ fn parse_reports(doc: &Html) -> Vec<LunaContentItem> {
             String::new()
         };
 
-        let status = row.select(&SEL_RPT_STATUS).next()
+        let status = row
+            .select(&SEL_RPT_STATUS)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
@@ -2000,17 +2399,23 @@ fn parse_content_list(
             continue;
         };
 
-        if title.is_empty() { continue; }
+        if title.is_empty() {
+            continue;
+        }
 
         if url.is_empty() || url == "#" || url == "javascript:void(0)" {
             url = extract_url_from_row(&row);
         }
 
-        let period = row.select(period_sel).next()
+        let period = row
+            .select(period_sel)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
-        let status = row.select(status_sel).next()
+        let status = row
+            .select(status_sel)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
@@ -2041,18 +2446,25 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
             let action = form.value().attr("action").unwrap_or_default().to_string();
             if !action.is_empty() {
                 let hidden_sel = Selector::parse("input[type=\"hidden\"]").unwrap();
-                let params: Vec<(String, String)> = form.select(&hidden_sel)
+                let params: Vec<(String, String)> = form
+                    .select(&hidden_sel)
                     .filter_map(|input| {
                         let name = input.value().attr("name").unwrap_or_default();
                         let val = input.value().attr("value").unwrap_or_default();
                         if !val.is_empty() && name != "fileId" && name != "fileName" {
                             Some((name.to_string(), val.to_string()))
-                        } else { None }
+                        } else {
+                            None
+                        }
                     })
                     .collect();
                 Some((action, params))
-            } else { None }
-        } else { None }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
 
     // Extract header info from .contents-detail.contents-vertical rows
@@ -2065,10 +2477,13 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
     let mut respondent = String::new();
     let mut attachments = Vec::new();
 
-    let header_sel = Selector::parse(".contents-list > .contents-detail.contents-vertical").unwrap();
+    let header_sel =
+        Selector::parse(".contents-list > .contents-detail.contents-vertical").unwrap();
     for row in doc.select(&header_sel) {
         let label_sel = Selector::parse(".contents-header .bold-txt").unwrap();
-        let label = row.select(&label_sel).next()
+        let label = row
+            .select(&label_sel)
+            .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
@@ -2077,13 +2492,14 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
 
         match label.as_str() {
             "タイトル" => {
-                title = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+                title = value_el
+                    .map(|e| e.text().collect::<String>().trim().to_string())
+                    .unwrap_or_default();
             }
             "内容" => {
                 // Quill editor content — in static HTML, .ql-editor doesn't exist.
                 // Try extracting from setJsonData in page-level scripts first.
-                description = extract_named_quill_text(html, "bodyText")
-                    .unwrap_or_default();
+                description = extract_named_quill_text(html, "bodyText").unwrap_or_default();
                 if description.is_empty() {
                     // Fallback: try ql-editor if Quill somehow rendered
                     let ql_sel = Selector::parse(".ql-editor").unwrap();
@@ -2101,45 +2517,66 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
             }
             "回答期間" => {
                 period = value_el
-                    .map(|e| e.select(&SEL_SPAN).map(|s| s.text().collect::<String>().trim().to_string()).collect::<Vec<_>>().join(" "))
+                    .map(|e| {
+                        e.select(&SEL_SPAN)
+                            .map(|s| s.text().collect::<String>().trim().to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
                     .unwrap_or_default();
             }
             "記名・無記名" => {
-                anonymity = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+                anonymity = value_el
+                    .map(|e| e.text().collect::<String>().trim().to_string())
+                    .unwrap_or_default();
             }
             "回答の修正" => {
-                allow_edit = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+                allow_edit = value_el
+                    .map(|e| e.text().collect::<String>().trim().to_string())
+                    .unwrap_or_default();
             }
             "回答状況" => {
-                answer_status = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+                answer_status = value_el
+                    .map(|e| e.text().collect::<String>().trim().to_string())
+                    .unwrap_or_default();
             }
             "氏名" => {
-                respondent = value_el.map(|e| e.text().collect::<String>().trim().to_string()).unwrap_or_default();
+                respondent = value_el
+                    .map(|e| e.text().collect::<String>().trim().to_string())
+                    .unwrap_or_default();
             }
             "添付ファイル" => {
                 if let Some(area) = value_el {
                     let dl_sel = Selector::parse(".downloadFile").unwrap();
                     let obj_sel = Selector::parse(".objectName").unwrap();
                     let fname_sel = Selector::parse(".fileName").unwrap();
-                    let file_name = area.select(&fname_sel).next()
+                    let file_name = area
+                        .select(&fname_sel)
+                        .next()
                         .or_else(|| area.select(&dl_sel).next())
                         .map(|e| e.text().collect::<String>().trim().to_string())
                         .unwrap_or_default();
-                    let object_name = area.select(&obj_sel).next()
+                    let object_name = area
+                        .select(&obj_sel)
+                        .next()
                         .map(|e| e.text().collect::<String>().trim().to_string())
                         .unwrap_or_default();
                     if !file_name.is_empty() {
-                        let (dl_action, mut dl_params) = if let Some((ref act, ref params)) = survey_dl_form {
-                            (act.clone(), params.clone())
-                        } else {
-                            (String::new(), Vec::new())
-                        };
+                        let (dl_action, mut dl_params) =
+                            if let Some((ref act, ref params)) = survey_dl_form {
+                                (act.clone(), params.clone())
+                            } else {
+                                (String::new(), Vec::new())
+                            };
                         // Add per-file dynamic fields: fileId = objectName, fileName = raw filename
                         dl_params.push(("fileId".to_string(), object_name.clone()));
                         dl_params.push(("fileName".to_string(), file_name.clone()));
                         attachments.push(LunaSurveyAttachment {
-                            file_name, object_name, url: String::new(),
-                            download_action: dl_action, download_params: dl_params,
+                            file_name,
+                            object_name,
+                            url: String::new(),
+                            download_action: dl_action,
+                            download_params: dl_params,
                         });
                     }
                 }
@@ -2164,11 +2601,12 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
 
         // Extract question body from surveyTakeItemText.setJsonData in script
         let q_html = q_el.html();
-        let body = extract_named_quill_text(&q_html, "surveyTakeItemText")
-            .unwrap_or_default();
+        let body = extract_named_quill_text(&q_html, "surveyTakeItemText").unwrap_or_default();
 
         // Determine answer type from hidden branchType input
-        let branch_type = q_el.select(&q_branch_type_sel).next()
+        let branch_type = q_el
+            .select(&q_branch_type_sel)
+            .next()
             .and_then(|e| e.value().attr("value"))
             .unwrap_or_default();
         let answer_type = match branch_type {
@@ -2177,7 +2615,8 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
             "check" | "multCheck" => "checkbox",
             "text" | "textArea" => "text",
             _ => "",
-        }.to_string();
+        }
+        .to_string();
 
         // Extract option labels from answerListContents_X_Y.setJsonData
         let mut options = Vec::new();
@@ -2248,7 +2687,11 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
                     for att in &mut attachments {
                         att.url = action.clone();
                     }
-                    log::debug!("[survey attachments] action='{}', params={:?}", action, params);
+                    log::debug!(
+                        "[survey attachments] action='{}', params={:?}",
+                        action,
+                        params
+                    );
                     break;
                 }
             }
@@ -2281,7 +2724,12 @@ fn extract_url_from_row(row: &scraper::ElementRef) -> String {
     // Check onclick attributes for URL patterns
     let row_html = row.html();
     // Pattern: location.href='...' or window.open('...')
-    for pattern in &["location.href='", "location.href=\"", "window.open('", "window.open(\""] {
+    for pattern in &[
+        "location.href='",
+        "location.href=\"",
+        "window.open('",
+        "window.open(\"",
+    ] {
         if let Some(start) = row_html.find(pattern) {
             let after = &row_html[start + pattern.len()..];
             let quote = if pattern.ends_with('\'') { '\'' } else { '"' };
@@ -2330,23 +2778,38 @@ fn extract_select_options(doc: &Html, selector: &str) -> Vec<SelectOption> {
         None => return Vec::new(),
     };
     let option_sel = &*SEL_OPTION;
-    select_el.select(option_sel).map(|opt| {
-        SelectOption {
+    select_el
+        .select(option_sel)
+        .map(|opt| SelectOption {
             value: opt.value().attr("value").unwrap_or_default().to_string(),
             label: opt.text().collect::<String>().trim().to_string(),
             selected: opt.value().attr("selected").is_some(),
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 fn parse_japanese_number(s: &str) -> u32 {
-    if s.contains('１') { return 1; }
-    if s.contains('２') { return 2; }
-    if s.contains('３') { return 3; }
-    if s.contains('４') { return 4; }
-    if s.contains('５') { return 5; }
-    if s.contains('６') { return 6; }
-    if s.contains('７') { return 7; }
+    if s.contains('１') {
+        return 1;
+    }
+    if s.contains('２') {
+        return 2;
+    }
+    if s.contains('３') {
+        return 3;
+    }
+    if s.contains('４') {
+        return 4;
+    }
+    if s.contains('５') {
+        return 5;
+    }
+    if s.contains('６') {
+        return 6;
+    }
+    if s.contains('７') {
+        return 7;
+    }
     // Also try ASCII digits
     for c in s.chars() {
         if c.is_ascii_digit() {
@@ -2359,7 +2822,7 @@ fn parse_japanese_number(s: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     #[ignore] // requires local HTML dump file
     fn test_parse_detail_attachments() {
@@ -2370,7 +2833,10 @@ mod tests {
         println!("Sections: {}", result.sections.len());
         println!("Meta: {:?}", result.meta);
         println!("Attachments: {:?}", result.attachments);
-        assert!(!result.attachments.is_empty(), "Should have at least one attachment");
+        assert!(
+            !result.attachments.is_empty(),
+            "Should have at least one attachment"
+        );
         let att = &result.attachments[0];
         assert!(!att.name.is_empty(), "Attachment name should not be empty");
         assert!(!att.url.is_empty(), "Attachment URL should not be empty");
@@ -2380,8 +2846,10 @@ mod tests {
     #[test]
     #[ignore] // requires local HTML dump file
     fn test_parse_course_page() {
-        let html = std::fs::read_to_string("/tmp/luna_detail_lms_course_idnumber=2026510010040201#information.html")
-            .expect("Course HTML dump file not found");
+        let html = std::fs::read_to_string(
+            "/tmp/luna_detail_lms_course_idnumber=2026510010040201#information.html",
+        )
+        .expect("Course HTML dump file not found");
         let result = parse_luna_course_contents(&html, "2026510010040201");
         println!("Course name: {}", result.course_name);
         println!("Semester: {}", result.semester);
@@ -2395,13 +2863,19 @@ mod tests {
         }
         println!("Announcements: {}", result.announcements.len());
         for a in &result.announcements {
-            println!("  {} [{}~{}] new={}", a.title, a.start_date, a.end_date, a.is_new);
+            println!(
+                "  {} [{}~{}] new={}",
+                a.title, a.start_date, a.end_date, a.is_new
+            );
         }
         println!("Online tools: {}", result.online_tools.len());
         for t in &result.online_tools {
             println!("  {} -> {}", t.name, t.url);
         }
-        assert!(!result.course_name.is_empty(), "Course name should not be empty");
+        assert!(
+            !result.course_name.is_empty(),
+            "Course name should not be empty"
+        );
         assert!(!result.menus.is_empty(), "Should have menus");
     }
 
@@ -2410,7 +2884,8 @@ mod tests {
     fn test_parse_contents_page() {
         let html = std::fs::read_to_string("/tmp/luna_contents_2026510010040201.html")
             .expect("Contents HTML dump file not found");
-        let (materials, reports, examinations, discussions, _surveys) = parse_luna_contents_page(&html);
+        let (materials, reports, examinations, discussions, _surveys) =
+            parse_luna_contents_page(&html);
         println!("Materials: {}", materials.len());
         for m in &materials {
             println!("  {} | {} | {}", m.title, m.period, m.status);
@@ -2427,8 +2902,13 @@ mod tests {
         for d in &discussions {
             println!("  {} | {} | {}", d.title, d.period, d.status);
         }
-        assert!(!materials.is_empty() || !reports.is_empty() || !examinations.is_empty() || !discussions.is_empty(),
-            "Should have at least some content items");
+        assert!(
+            !materials.is_empty()
+                || !reports.is_empty()
+                || !examinations.is_empty()
+                || !discussions.is_empty(),
+            "Should have at least some content items"
+        );
     }
 
     #[test]
@@ -2445,14 +2925,26 @@ mod tests {
         }
         println!("Meta: {:?}", result.meta);
         assert!(!result.title.is_empty(), "Title should not be empty");
-        assert!(!result.sections.is_empty(), "Should have body content from Quill");
+        assert!(
+            !result.sections.is_empty(),
+            "Should have body content from Quill"
+        );
         // The body should contain the teacher's message
         let body = &result.sections[0].body;
         assert!(body.contains("掛橋"), "Body should contain teacher name");
-        assert!(body.contains("オンデマンド"), "Body should contain 'オンデマンド'");
+        assert!(
+            body.contains("オンデマンド"),
+            "Body should contain 'オンデマンド'"
+        );
         // Meta should have 掲示期間 and 発信者
-        assert!(result.meta.iter().any(|(k, _)| k == "掲示期間"), "Should have 掲示期間");
-        assert!(result.meta.iter().any(|(k, _)| k == "発信者"), "Should have 発信者");
+        assert!(
+            result.meta.iter().any(|(k, _)| k == "掲示期間"),
+            "Should have 掲示期間"
+        );
+        assert!(
+            result.meta.iter().any(|(k, _)| k == "発信者"),
+            "Should have 発信者"
+        );
     }
 
     #[test]
@@ -2463,8 +2955,14 @@ mod tests {
         let result = extract_quill_delta_text(script);
         assert!(result.is_some(), "Should extract text from Quill Delta");
         let text = result.unwrap();
-        assert!(text.contains("出席確認は授業冒頭に行います。"), "Should contain decoded Japanese text");
-        assert!(text.contains("座席表があります。"), "Should contain bold text too");
+        assert!(
+            text.contains("出席確認は授業冒頭に行います。"),
+            "Should contain decoded Japanese text"
+        );
+        assert!(
+            text.contains("座席表があります。"),
+            "Should contain bold text too"
+        );
     }
 
     #[test]
@@ -2473,10 +2971,22 @@ mod tests {
             _QuillUtil.materialContents_0.setJsonData("{\"ops\":[{\"attributes\":{\"bold\":true},\"insert\":\"\u592A\u5B57\"},{\"insert\":\" \"},{\"attributes\":{\"italic\":true,\"link\":\"https://example.com\"},\"insert\":\"\u30EA\u30F3\u30AF\"},{\"insert\":\"\\n\"}]}", 'reference');
         "#;
         let result = extract_quill_delta_html(script);
-        assert!(result.is_some(), "Should extract rich HTML from Quill Delta");
+        assert!(
+            result.is_some(),
+            "Should extract rich HTML from Quill Delta"
+        );
         let html = result.unwrap();
-        assert!(html.contains("<strong>太字</strong>"), "Should preserve bold style");
-        assert!(html.contains("<em>リンク</em>"), "Should preserve italic style");
-        assert!(html.contains("href=\"https://example.com\""), "Should preserve link href");
+        assert!(
+            html.contains("<strong>太字</strong>"),
+            "Should preserve bold style"
+        );
+        assert!(
+            html.contains("<em>リンク</em>"),
+            "Should preserve italic style"
+        );
+        assert!(
+            html.contains("href=\"https://example.com\""),
+            "Should preserve link href"
+        );
     }
 }

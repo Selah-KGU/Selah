@@ -8,12 +8,11 @@ use crate::ai;
 use crate::client;
 use crate::commands;
 use crate::config;
-use crate::db::{
-    AiScheduleItem, AiScheduleResult, Database, KgcCourseDetailRow,
-    LunaActivityRow, LunaCountsRow, ScheduleRawData, SessionPlanRow,
-    SnapshotState,
-};
 use crate::db::epoch_secs;
+use crate::db::{
+    AiScheduleItem, AiScheduleResult, Database, KgcCourseDetailRow, LunaActivityRow, LunaCountsRow,
+    ScheduleRawData, SessionPlanRow, SnapshotState,
+};
 use crate::luna_client;
 use crate::luna_parser;
 use crate::parser;
@@ -35,13 +34,22 @@ fn safe_preview(s: &str, max_chars: usize) -> &str {
 /// KGC day letter -> integer (1=Mon .. 6=Sat)
 fn day_str_to_int(d: &str) -> i32 {
     match d {
-        "月" => 1, "火" => 2, "水" => 3, "木" => 4, "金" => 5, "土" => 6,
+        "月" => 1,
+        "火" => 2,
+        "水" => 3,
+        "木" => 4,
+        "金" => 5,
+        "土" => 6,
         _ => 0,
     }
 }
 
 fn day_int_to_str(d: i32) -> &'static str {
-    if (1..=6).contains(&d) { config::DAY_SHORT[d as usize] } else { "?" }
+    if (1..=6).contains(&d) {
+        config::DAY_SHORT[d as usize]
+    } else {
+        "?"
+    }
 }
 
 /// Response type: raw data + optional cached AI result.
@@ -62,9 +70,7 @@ pub struct ScheduleResponse {
 
 /// Load schedule from DB snapshot only (no network). Fast, used on page mount.
 #[tauri::command]
-pub async fn get_schedule_snapshot(
-    db: State<'_, Database>,
-) -> Result<ScheduleResponse, String> {
+pub async fn get_schedule_snapshot(db: State<'_, Database>) -> Result<ScheduleResponse, String> {
     let snap = db.get_snapshot_state()?.unwrap_or_default();
     let raw = db.build_raw_data(
         &snap.current_week_label,
@@ -116,7 +122,8 @@ pub async fn sync_schedule_data(
     let current_week_label = kgc_data.week_label.clone();
     log::info!(
         "sync_schedule_data: parsed KGC: {} entries, week_label='{}'",
-        kgc_data.entries.len(), current_week_label
+        kgc_data.entries.len(),
+        current_week_label
     );
 
     // Guard: empty KGC page — return DB snapshot as-is
@@ -128,11 +135,19 @@ pub async fn sync_schedule_data(
     // Store KGC current-week entries
     for entry in &kgc_data.entries {
         let day_int = day_str_to_int(&entry.day);
-        if day_int == 0 { continue; }
+        if day_int == 0 {
+            continue;
+        }
         db.upsert_kgc_course(
-            &entry.course_code, &entry.course_name, day_int, entry.period,
-            &entry.room, &entry.detail_path,
-            entry.is_cancelled, entry.is_makeup, entry.is_room_changed,
+            &entry.course_code,
+            &entry.course_name,
+            day_int,
+            entry.period,
+            &entry.room,
+            &entry.detail_path,
+            entry.is_cancelled,
+            entry.is_makeup,
+            entry.is_room_changed,
             &current_week_label,
         )?;
     }
@@ -145,35 +160,67 @@ pub async fn sync_schedule_data(
     let (communities, year_opts, term_opts, year, term) = {
         let luna_http = {
             let luna = luna_state.client.lock().await;
-            if luna.authenticated { Some(luna.http.clone()) } else { None }
+            if luna.authenticated {
+                Some(luna.http.clone())
+            } else {
+                None
+            }
         };
         if let Some(http) = luna_http {
             let url = format!("{}/lms/timetable", config::LUNA_BASE);
             match client::fetch_with_redirect(
-                &http, &url, config::LUNA_BASE,
+                &http,
+                &url,
+                config::LUNA_BASE,
                 luna_client::LUNA_SESSION_EXPIRED_MSG,
                 luna_client::is_luna_session_expired,
-            ).await {
+            )
+            .await
+            {
                 Ok(html) => {
                     let l = luna_parser::parse_luna_timetable(&html);
-                    log::info!("sync_schedule_data: Luna: {} courses, {} communities",
-                        l.courses.len(), l.communities.len());
+                    log::info!(
+                        "sync_schedule_data: Luna: {} courses, {} communities",
+                        l.courses.len(),
+                        l.communities.len()
+                    );
                     for course in &l.courses {
                         db.upsert_luna_course(
-                            &course.idnumber, &course.name, &course.teacher,
-                            course.day as i32, course.period as i32,
+                            &course.idnumber,
+                            &course.name,
+                            &course.teacher,
+                            course.day as i32,
+                            course.period as i32,
                         )?;
                     }
-                    (l.communities, l.year_options, l.term_options, l.year, l.term)
+                    (
+                        l.communities,
+                        l.year_options,
+                        l.term_options,
+                        l.year,
+                        l.term,
+                    )
                 }
                 Err(e) => {
                     log::warn!("sync_schedule_data: Luna fetch failed: {}", e);
-                    (Vec::new(), Vec::new(), Vec::new(), String::new(), String::new())
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        String::new(),
+                        String::new(),
+                    )
                 }
             }
         } else {
             log::info!("sync_schedule_data: Luna not authenticated");
-            (Vec::new(), Vec::new(), Vec::new(), String::new(), String::new())
+            (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                String::new(),
+                String::new(),
+            )
         }
     };
 
@@ -199,8 +246,11 @@ pub async fn sync_schedule_data(
     let raw = db.build_raw_data(&current_week_label, &next_week_label, communities)?;
     log::info!(
         "sync_schedule_data: done — kgc_current={}, kgc_next={}, luna={}, plans={}, counts={}",
-        raw.kgc_entries_current.len(), raw.kgc_entries_next.len(),
-        raw.luna_courses.len(), raw.session_plans.len(), raw.luna_counts.len()
+        raw.kgc_entries_current.len(),
+        raw.kgc_entries_next.len(),
+        raw.luna_courses.len(),
+        raw.session_plans.len(),
+        raw.luna_counts.len()
     );
     let (ai_result, ai_stale) = load_ai_cache(&db)?;
 
@@ -240,7 +290,11 @@ async fn batch_fetch_syllabi(
             let search_html = match commands::kgc_get(http, SYLLABUS_SSO_URL).await {
                 Ok(h) => h,
                 Err(e) => {
-                    log::warn!("batch_fetch_syllabi: {} GET search page failed: {}", code, e);
+                    log::warn!(
+                        "batch_fetch_syllabi: {} GET search page failed: {}",
+                        code,
+                        e
+                    );
                     break; // session broken, skip remaining terms for this code
                 }
             };
@@ -277,8 +331,12 @@ async fn batch_fetch_syllabi(
             ];
 
             let results_html = match commands::kgc_post(
-                http, "/uniasv2/AGA030PSC01EventAction.do", &search_params,
-            ).await {
+                http,
+                "/uniasv2/AGA030PSC01EventAction.do",
+                &search_params,
+            )
+            .await
+            {
                 Ok(h) => h,
                 Err(e) => {
                     log::warn!("batch_fetch_syllabi: {} POST search failed: {}", code, e);
@@ -294,7 +352,11 @@ async fn batch_fetch_syllabi(
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            let target = match parsed.entries.iter().find(|e| e.class_code == code.as_str()) {
+            let target = match parsed
+                .entries
+                .iter()
+                .find(|e| e.class_code == code.as_str())
+            {
                 Some(t) => t,
                 None => continue,
             };
@@ -307,27 +369,36 @@ async fn batch_fetch_syllabi(
             // Guard: empty refer_index means the hidden input wasn't in the row HTML
             // (likely set by JavaScript onclick). Use positional index as fallback.
             let effective_refer_index = if refer_index.is_empty() {
-                let pos = parsed.entries.iter()
+                let pos = parsed
+                    .entries
+                    .iter()
                     .position(|e| e.class_code == code.as_str())
                     .unwrap_or(0);
                 log::warn!(
                     "batch_fetch_syllabi: {} ereferIndex is empty, using positional fallback: {}",
-                    code, pos
+                    code,
+                    pos
                 );
                 pos.to_string()
             } else {
                 refer_index.clone()
             };
 
-            log::info!("batch_fetch_syllabi: {} ereferIndex={}", code, effective_refer_index);
+            log::info!(
+                "batch_fetch_syllabi: {} ereferIndex={}",
+                code,
+                effective_refer_index
+            );
 
             // Navigate to syllabus detail page.
             // Extract inputs ONLY from the results list form (AGA030PLS01Form),
             // not from the search form which shares the page and has conflicting params.
-            let mut form_params = commands::extract_named_form_inputs(&results_html, "AGA030PLS01Form");
+            let mut form_params =
+                commands::extract_named_form_inputs(&results_html, "AGA030PLS01Form");
 
             // Log diagnostic info about extracted params
-            let token_count = form_params.iter()
+            let token_count = form_params
+                .iter()
                 .filter(|(k, _)| k == "org.apache.struts.taglib.html.TOKEN")
                 .count();
             log::info!(
@@ -339,11 +410,15 @@ async fn batch_fetch_syllabi(
             // (only one form's token is extracted).
 
             form_params.retain(|(k, _)| {
-                !k.starts_with("ESearch") && !k.starts_with("ENarrowSearch")
-                && !k.starts_with("EBack") && !k.starts_with("ENext")
-                && !k.starts_with("EPrev") && !k.starts_with("ERefer")
-                && !k.starts_with("ERegister") && !k.starts_with("EPageSet")
-                && k != "hdnEsearch"
+                !k.starts_with("ESearch")
+                    && !k.starts_with("ENarrowSearch")
+                    && !k.starts_with("EBack")
+                    && !k.starts_with("ENext")
+                    && !k.starts_with("EPrev")
+                    && !k.starts_with("ERefer")
+                    && !k.starts_with("ERegister")
+                    && !k.starts_with("EPageSet")
+                    && k != "hdnEsearch"
             });
             form_params.retain(|(k, _)| k != "ereferIndex");
             form_params.push(("ereferIndex".into(), effective_refer_index.clone()));
@@ -351,15 +426,23 @@ async fn batch_fetch_syllabi(
             form_params.push(("ERefer.y".into(), "10".into()));
 
             // Dump params for debugging
-            log::debug!("batch_fetch_syllabi: {} POST params: {:?}",
+            log::debug!(
+                "batch_fetch_syllabi: {} POST params: {:?}",
                 code,
-                form_params.iter().map(|(k, v)| {
-                    if v.len() > 60 { format!("{}={}...", k, &v[..60]) }
-                    else { format!("{}={}", k, v) }
-                }).collect::<Vec<_>>()
+                form_params
+                    .iter()
+                    .map(|(k, v)| {
+                        if v.len() > 60 {
+                            format!("{}={}...", k, &v[..60])
+                        } else {
+                            format!("{}={}", k, v)
+                        }
+                    })
+                    .collect::<Vec<_>>()
             );
 
-            match commands::kgc_post(http, "/uniasv2/AGA030PLS01EventAction.do", &form_params).await {
+            match commands::kgc_post(http, "/uniasv2/AGA030PLS01EventAction.do", &form_params).await
+            {
                 Ok(detail_html) => {
                     if !detail_html.contains("AGA030PVI01Form") {
                         log::warn!(
@@ -367,28 +450,43 @@ async fn batch_fetch_syllabi(
                             code, term_code, detail_html.len()
                         );
                         #[cfg(debug_assertions)]
-                        { let _ = std::fs::write(
-                            std::env::temp_dir().join(format!("kwic_detail_fail_{}.html", code)),
-                            &detail_html
-                        ); }
+                        {
+                            let _ = std::fs::write(
+                                std::env::temp_dir()
+                                    .join(format!("kwic_detail_fail_{}.html", code)),
+                                &detail_html,
+                            );
+                        }
                         continue;
                     }
-                    log::info!("batch_fetch_syllabi: {} -> {} bytes (term {})",
-                        code, detail_html.len(), term_code);
+                    log::info!(
+                        "batch_fetch_syllabi: {} -> {} bytes (term {})",
+                        code,
+                        detail_html.len(),
+                        term_code
+                    );
 
                     results.push((code.clone(), Ok(detail_html)));
                     found = true;
                     break;
                 }
                 Err(e) => {
-                    log::warn!("batch_fetch_syllabi: {} POST detail failed (term {}): {}", code, term_code, e);
+                    log::warn!(
+                        "batch_fetch_syllabi: {} POST detail failed (term {}): {}",
+                        code,
+                        term_code,
+                        e
+                    );
                     continue;
                 }
             }
         }
 
         if !found && !results.iter().any(|(c, _)| c == code) {
-            results.push((code.clone(), Err(format!("科目コード {} が見つかりません", code))));
+            results.push((
+                code.clone(),
+                Err(format!("科目コード {} が見つかりません", code)),
+            ));
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -400,11 +498,15 @@ async fn batch_fetch_syllabi(
 /// Background enrichment: fetch KGC syllabus pages for session plans + Luna counts.
 #[tauri::command]
 pub async fn enrich_schedule(
-    state: State<'_, KgcState>, luna_state: State<'_, LunaState>,
+    state: State<'_, KgcState>,
+    luna_state: State<'_, LunaState>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
     // Prevent concurrent runs — Struts tokens conflict when two enrichments hit KGC simultaneously
-    if ENRICHMENT_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if ENRICHMENT_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         log::info!("enrich_schedule: skipped (already running)");
         return Ok(());
     }
@@ -453,25 +555,45 @@ pub async fn refresh_luna_counts_internal(
         luna.http.clone()
     };
 
-    log::info!("refresh_luna_counts: {} courses need updates", luna_targets.len());
+    log::info!(
+        "refresh_luna_counts: {} courses need updates",
+        luna_targets.len()
+    );
     let mut updated = 0i32;
 
     for luna_id in &luna_targets {
-        if luna_id.is_empty() { continue; }
+        if luna_id.is_empty() {
+            continue;
+        }
         let course_url = format!("{}/lms/course?idnumber={}", config::LUNA_BASE, luna_id);
         let contents_url = format!("{}/lms/contents?idnumber={}", config::LUNA_BASE, luna_id);
 
         let course_html = match client::fetch_with_redirect(
-            &luna_http, &course_url, config::LUNA_BASE,
+            &luna_http,
+            &course_url,
+            config::LUNA_BASE,
             luna_client::LUNA_SESSION_EXPIRED_MSG,
             luna_client::is_luna_session_expired,
-        ).await {
+        )
+        .await
+        {
             Ok(h) => h,
-            Err(e) => { log::warn!("refresh_luna_counts: course page failed for {}: {}", luna_id, e); continue; }
+            Err(e) => {
+                log::warn!(
+                    "refresh_luna_counts: course page failed for {}: {}",
+                    luna_id,
+                    e
+                );
+                continue;
+            }
         };
 
         let course_data = luna_parser::parse_luna_course_contents(&course_html, luna_id);
-        let new_announcements = course_data.announcements.iter().filter(|a| a.is_new).count() as i32;
+        let new_announcements = course_data
+            .announcements
+            .iter()
+            .filter(|a| a.is_new)
+            .count() as i32;
         let announcement_count = course_data.announcements.len() as i32;
 
         let mut activities: Vec<LunaActivityRow> = Vec::new();
@@ -481,18 +603,30 @@ pub async fn refresh_luna_counts_internal(
                 activity_type: "announcement".into(),
                 title: ann.title.clone(),
                 period: format!("{} ~ {}", ann.start_date, ann.end_date),
-                status: if ann.is_new { "new".into() } else { "read".into() },
-                detail_path: format!("/lms/coursetop/information/listdetail?idnumber={}&informationId={}", luna_id, ann.info_id),
+                status: if ann.is_new {
+                    "new".into()
+                } else {
+                    "read".into()
+                },
+                detail_path: format!(
+                    "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
+                    luna_id, ann.info_id
+                ),
             });
         }
 
         let (reports, exams, discussions) = match client::fetch_with_redirect(
-            &luna_http, &contents_url, config::LUNA_BASE,
+            &luna_http,
+            &contents_url,
+            config::LUNA_BASE,
             luna_client::LUNA_SESSION_EXPIRED_MSG,
             luna_client::is_luna_session_expired,
-        ).await {
+        )
+        .await
+        {
             Ok(html) => {
-                let (materials, reps, exs, discs, _surveys) = luna_parser::parse_luna_contents_page(&html);
+                let (materials, reps, exs, discs, _surveys) =
+                    luna_parser::parse_luna_contents_page(&html);
                 for m in &materials {
                     activities.push(LunaActivityRow {
                         luna_id: luna_id.clone(),
@@ -534,17 +668,30 @@ pub async fn refresh_luna_counts_internal(
                     });
                 }
 
-                let pending_reports = reps.iter().filter(|r| r.status.contains("未提出")).count() as i32;
-                let pending_exams = exs.iter().filter(|e| {
-                    e.status.contains("未回答") || e.status.contains("未受験")
-                }).count() as i32;
+                let pending_reports =
+                    reps.iter().filter(|r| r.status.contains("未提出")).count() as i32;
+                let pending_exams = exs
+                    .iter()
+                    .filter(|e| e.status.contains("未回答") || e.status.contains("未受験"))
+                    .count() as i32;
                 (pending_reports, pending_exams, discs.len() as i32)
             }
-            Err(e) => { log::warn!("refresh_luna_counts: contents failed for {}: {}", luna_id, e); (0, 0, 0) }
+            Err(e) => {
+                log::warn!(
+                    "refresh_luna_counts: contents failed for {}: {}",
+                    luna_id,
+                    e
+                );
+                (0, 0, 0)
+            }
         };
 
         if let Err(e) = db.replace_luna_activities(luna_id, &activities) {
-            log::warn!("refresh_luna_counts: failed to save activities for {}: {}", luna_id, e);
+            log::warn!(
+                "refresh_luna_counts: failed to save activities for {}: {}",
+                luna_id,
+                e
+            );
         }
 
         let counts = LunaCountsRow {
@@ -555,19 +702,28 @@ pub async fn refresh_luna_counts_internal(
             discussions,
         };
         if let Err(e) = db.upsert_luna_counts(luna_id, &counts) {
-            log::warn!("refresh_luna_counts: failed to save counts for {}: {}", luna_id, e);
+            log::warn!(
+                "refresh_luna_counts: failed to save counts for {}: {}",
+                luna_id,
+                e
+            );
         }
 
         updated += 1;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    log::info!("refresh_luna_counts: updated {}/{} courses", updated, luna_targets.len());
+    log::info!(
+        "refresh_luna_counts: updated {}/{} courses",
+        updated,
+        luna_targets.len()
+    );
     Ok(updated)
 }
 
 async fn enrich_schedule_inner(
-    kgc: &KgcState, luna: &LunaState,
+    kgc: &KgcState,
+    luna: &LunaState,
     db: &Database,
 ) -> Result<(), String> {
     // Session plans from KGC syllabus pages (not timetable detail pages)
@@ -576,7 +732,9 @@ async fn enrich_schedule_inner(
     if !plan_targets.is_empty() {
         let kgc_http = {
             let client = kgc.client.lock().await;
-            if !client.is_authenticated() { return Ok(()); }
+            if !client.is_authenticated() {
+                return Ok(());
+            }
             client.http.clone()
         };
 
@@ -586,23 +744,35 @@ async fn enrich_schedule_inner(
                 Ok(detail_html) => {
                     // Parse session plans from the real syllabus page
                     let parsed = parser::parse_session_plans(&detail_html);
-                    log::info!("enrich_schedule: {} parsed {} plans from syllabus ({} bytes)",
-                        kgc_code, parsed.len(), detail_html.len());
+                    log::info!(
+                        "enrich_schedule: {} parsed {} plans from syllabus ({} bytes)",
+                        kgc_code,
+                        parsed.len(),
+                        detail_html.len()
+                    );
                     if parsed.is_empty() {
                         log::warn!("enrich_schedule: {} - syllabus fetched but 0 plans parsed (no 第N回 rows?)",
                             kgc_code);
                     } else {
                         for p in parsed.iter().take(3) {
-                            log::debug!("  plan #{}: header={:?}, dm={:?}, topic={:.60}",
-                                p.session_num, p.th_header, p.delivery_mode, p.topic);
+                            log::debug!(
+                                "  plan #{}: header={:?}, dm={:?}, topic={:.60}",
+                                p.session_num,
+                                p.th_header,
+                                p.delivery_mode,
+                                p.topic
+                            );
                         }
-                        let rows: Vec<SessionPlanRow> = parsed.iter().map(|p| SessionPlanRow {
-                            session_num: p.session_num,
-                            th_header: p.th_header.clone(),
-                            topic: p.topic.clone(),
-                            delivery_mode: p.delivery_mode.clone(),
-                            study_outside: p.study_outside.clone(),
-                        }).collect();
+                        let rows: Vec<SessionPlanRow> = parsed
+                            .iter()
+                            .map(|p| SessionPlanRow {
+                                session_num: p.session_num,
+                                th_header: p.th_header.clone(),
+                                topic: p.topic.clone(),
+                                delivery_mode: p.delivery_mode.clone(),
+                                study_outside: p.study_outside.clone(),
+                            })
+                            .collect();
                         if let Err(e) = db.upsert_session_plans(&kgc_code, &rows) {
                             log::warn!("Failed to save plans for {}: {}", kgc_code, e);
                         }
@@ -632,26 +802,41 @@ async fn enrich_schedule_inner(
     if !luna_targets.is_empty() {
         let luna_http = {
             let luna = luna.client.lock().await;
-            if !luna.authenticated { return Ok(()); }
+            if !luna.authenticated {
+                return Ok(());
+            }
             luna.http.clone()
         };
 
         for luna_id in luna_targets {
-            if luna_id.is_empty() { continue; }
+            if luna_id.is_empty() {
+                continue;
+            }
             let course_url = format!("{}/lms/course?idnumber={}", config::LUNA_BASE, luna_id);
             let contents_url = format!("{}/lms/contents?idnumber={}", config::LUNA_BASE, luna_id);
 
             let course_html = match client::fetch_with_redirect(
-                &luna_http, &course_url, config::LUNA_BASE,
+                &luna_http,
+                &course_url,
+                config::LUNA_BASE,
                 luna_client::LUNA_SESSION_EXPIRED_MSG,
                 luna_client::is_luna_session_expired,
-            ).await {
+            )
+            .await
+            {
                 Ok(h) => h,
-                Err(e) => { log::warn!("Luna course page failed for {}: {}", luna_id, e); continue; }
+                Err(e) => {
+                    log::warn!("Luna course page failed for {}: {}", luna_id, e);
+                    continue;
+                }
             };
 
             let course_data = luna_parser::parse_luna_course_contents(&course_html, &luna_id);
-            let new_announcements = course_data.announcements.iter().filter(|a| a.is_new).count() as i32;
+            let new_announcements = course_data
+                .announcements
+                .iter()
+                .filter(|a| a.is_new)
+                .count() as i32;
             let announcement_count = course_data.announcements.len() as i32;
 
             // Collect detailed activity items for AI prompt
@@ -664,18 +849,30 @@ async fn enrich_schedule_inner(
                     activity_type: "announcement".into(),
                     title: ann.title.clone(),
                     period: format!("{} ~ {}", ann.start_date, ann.end_date),
-                    status: if ann.is_new { "new".into() } else { "read".into() },
-                    detail_path: format!("/lms/coursetop/information/listdetail?idnumber={}&informationId={}", luna_id, ann.info_id),
+                    status: if ann.is_new {
+                        "new".into()
+                    } else {
+                        "read".into()
+                    },
+                    detail_path: format!(
+                        "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
+                        luna_id, ann.info_id
+                    ),
                 });
             }
 
             let (reports, exams, discussions) = match client::fetch_with_redirect(
-                &luna_http, &contents_url, config::LUNA_BASE,
+                &luna_http,
+                &contents_url,
+                config::LUNA_BASE,
                 luna_client::LUNA_SESSION_EXPIRED_MSG,
                 luna_client::is_luna_session_expired,
-            ).await {
+            )
+            .await
+            {
                 Ok(html) => {
-                    let (materials, reps, exs, discs, _surveys) = luna_parser::parse_luna_contents_page(&html);
+                    let (materials, reps, exs, discs, _surveys) =
+                        luna_parser::parse_luna_contents_page(&html);
 
                     // Store material items
                     for m in &materials {
@@ -725,13 +922,18 @@ async fn enrich_schedule_inner(
                         });
                     }
 
-                    let pending_reports = reps.iter().filter(|r| r.status.contains("未提出")).count() as i32;
-                    let pending_exams = exs.iter().filter(|e| {
-                        e.status.contains("未回答") || e.status.contains("未受験")
-                    }).count() as i32;
+                    let pending_reports =
+                        reps.iter().filter(|r| r.status.contains("未提出")).count() as i32;
+                    let pending_exams = exs
+                        .iter()
+                        .filter(|e| e.status.contains("未回答") || e.status.contains("未受験"))
+                        .count() as i32;
                     (pending_reports, pending_exams, discs.len() as i32)
                 }
-                Err(e) => { log::warn!("Luna contents failed for {}: {}", luna_id, e); (0, 0, 0) }
+                Err(e) => {
+                    log::warn!("Luna contents failed for {}: {}", luna_id, e);
+                    (0, 0, 0)
+                }
             };
 
             // Save detailed activities
@@ -781,11 +983,17 @@ pub async fn ai_generate_schedule(
     let prompt = build_ai_schedule_prompt(&raw, is_local);
     let lang_hint = match config.reply_language.as_str() {
         "zh" => "\n\n重要: 所有文本字段用中文（简体字）写。科目名・日付保持原数据不变。",
-        "en" => "\n\nIMPORTANT: Write all text fields in English. Keep course names and dates as-is.",
+        "en" => {
+            "\n\nIMPORTANT: Write all text fields in English. Keep course names and dates as-is."
+        }
         "ko" => "\n\n중요: 모든 텍스트 필드를 한국어로 작성. 과목명・날짜는 원본 그대로.",
         _ => "",
     };
-    log::info!("ai_generate_schedule: calling AI with {} chars prompt (local={})", prompt.len(), is_local);
+    log::info!(
+        "ai_generate_schedule: calling AI with {} chars prompt (local={})",
+        prompt.len(),
+        is_local
+    );
     if !is_local {
         log::debug!("ai_generate_schedule: full prompt:\n{}", prompt);
     }
@@ -800,19 +1008,35 @@ pub async fn ai_generate_schedule(
         format!("{}{}", base_system_prompt, lang_hint)
     };
     let messages = vec![
-        ai::ChatMessage { role: "system".into(), content: sys, images: Vec::new() },
-        ai::ChatMessage { role: "user".into(), content: prompt, images: Vec::new() },
+        ai::ChatMessage {
+            role: "system".into(),
+            content: sys,
+            images: Vec::new(),
+        },
+        ai::ChatMessage {
+            role: "user".into(),
+            content: prompt,
+            images: Vec::new(),
+        },
     ];
 
     let response = ai::chat_completion_public(&config, messages).await?;
-    log::info!("ai_generate_schedule: got response ({} chars)", response.len());
+    log::info!(
+        "ai_generate_schedule: got response ({} chars)",
+        response.len()
+    );
     if !is_local {
-        log::debug!("ai_generate_schedule: response preview: {}", safe_preview(&response, 500));
+        log::debug!(
+            "ai_generate_schedule: response preview: {}",
+            safe_preview(&response, 500)
+        );
     }
-    let result = parse_ai_schedule_response(&response, &current_week_label, &next_week_label, is_local)?;
+    let result =
+        parse_ai_schedule_response(&response, &current_week_label, &next_week_label, is_local)?;
     log::info!(
         "ai_generate_schedule: parsed OK — current_week={} items, next_week={} items",
-        result.current_week.len(), result.next_week.len()
+        result.current_week.len(),
+        result.next_week.len()
     );
 
     db.save_ai_schedule_cache(&result)?;
@@ -934,7 +1158,10 @@ pub async fn ai_analyze_todo(
             let now = crate::db::epoch_secs();
             if now - ts < TODO_AI_CACHE_MAX_AGE {
                 if let Ok(cached) = serde_json::from_str::<serde_json::Value>(&json) {
-                    log::info!("ai_analyze_todo: returning cached result (age={}s)", now - ts);
+                    log::info!(
+                        "ai_analyze_todo: returning cached result (age={}s)",
+                        now - ts
+                    );
                     return Ok(cached);
                 }
             }
@@ -957,15 +1184,16 @@ pub async fn ai_analyze_todo(
 
     // Gather enrichment data from DB
     let snap = db.get_snapshot_state()?.unwrap_or_default();
-    let raw = db.build_raw_data(
-        &snap.current_week_label,
-        &snap.next_week_label,
-        Vec::new(),
-    )?;
+    let raw = db.build_raw_data(&snap.current_week_label, &snap.next_week_label, Vec::new())?;
 
     let is_local = config.provider == "local";
     let prompt = build_todo_ai_prompt(&todo_items, &raw, is_local);
-    log::info!("ai_analyze_todo: calling AI with {} chars prompt, {} todo items (local={})", prompt.len(), todo_items.len(), is_local);
+    log::info!(
+        "ai_analyze_todo: calling AI with {} chars prompt, {} todo items (local={})",
+        prompt.len(),
+        todo_items.len(),
+        is_local
+    );
     if !is_local {
         log::debug!("ai_analyze_todo: full prompt:\n{}", prompt);
     }
@@ -987,8 +1215,16 @@ pub async fn ai_analyze_todo(
         format!("{}{}", base_system_prompt, lang_hint)
     };
     let messages = vec![
-        ai::ChatMessage { role: "system".into(), content: sys, images: Vec::new() },
-        ai::ChatMessage { role: "user".into(), content: prompt, images: Vec::new() },
+        ai::ChatMessage {
+            role: "system".into(),
+            content: sys,
+            images: Vec::new(),
+        },
+        ai::ChatMessage {
+            role: "user".into(),
+            content: prompt,
+            images: Vec::new(),
+        },
     ];
 
     let response = ai::chat_completion_public(&config, messages).await?;
@@ -1011,7 +1247,13 @@ pub async fn ai_analyze_todo(
             let repaired = repair_truncated_json(&json_str);
             serde_json::from_str::<serde_json::Value>(&repaired)
         })
-        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&json_str, 200)))?;
+        .map_err(|e| {
+            format!(
+                "AI応答のJSON解析に失敗: {} — 応答: {}",
+                e,
+                safe_preview(&json_str, 200)
+            )
+        })?;
 
     let result = normalize_ai_todo_json(result);
 
@@ -1033,7 +1275,11 @@ fn build_todo_ai_prompt(
     // Today's date and day of week
     let today = chrono::Local::now();
     let today_date = today.date_naive();
-    text.push_str(&format!("## 今日: {} ({})\n", today.format("%Y年%m月%d日"), today.format("%A")));
+    text.push_str(&format!(
+        "## 今日: {} ({})\n",
+        today.format("%Y年%m月%d日"),
+        today.format("%A")
+    ));
 
     // Semester week info
     let mut current_week: i32 = 4; // default fallback
@@ -1060,28 +1306,45 @@ fn build_todo_ai_prompt(
 
     // ── Pending TODO items with full detail ──
     text.push_str("\n## 未提出タスク一覧\n");
-    let pending: Vec<&crate::luna_parser::LunaTodoItem> = todos.iter()
+    let pending: Vec<&crate::luna_parser::LunaTodoItem> = todos
+        .iter()
         .filter(|t| !t.status.contains("提出済"))
         .collect();
 
     for item in &pending {
         // Calculate urgency for context
         let urgency_hint = if !item.deadline.is_empty() {
-            if let Ok(dl) = chrono::NaiveDateTime::parse_from_str(&item.deadline, "%Y-%m-%d %H:%M") {
+            if let Ok(dl) = chrono::NaiveDateTime::parse_from_str(&item.deadline, "%Y-%m-%d %H:%M")
+            {
                 let diff = dl.signed_duration_since(today.naive_local());
                 let hours = diff.num_hours();
-                if hours < 0 { "【期限超過】" }
-                else if hours < 24 { "【24h以内】" }
-                else if hours < 72 { "【3日以内】" }
-                else { "" }
-            } else { "" }
-        } else { "" };
+                if hours < 0 {
+                    "【期限超過】"
+                } else if hours < 24 {
+                    "【24h以内】"
+                } else if hours < 72 {
+                    "【3日以内】"
+                } else {
+                    ""
+                }
+            } else {
+                ""
+            }
+        } else {
+            ""
+        };
 
         text.push_str(&format!(
             "- {}{} [{}] | 科目: {} | 締切: {} | 状態: {}\n",
             urgency_hint,
-            item.content_name, item.content_type, item.course_name,
-            if item.deadline.is_empty() { "未設定" } else { &item.deadline },
+            item.content_name,
+            item.content_type,
+            item.course_name,
+            if item.deadline.is_empty() {
+                "未設定"
+            } else {
+                &item.deadline
+            },
             item.status,
         ));
         if !item.feedback.is_empty() {
@@ -1093,27 +1356,39 @@ fn build_todo_ai_prompt(
     if !raw.kgc_entries_current.is_empty() {
         text.push_str(&format!("\n## 今週の時間割 ({})\n", raw.current_week_label));
         for e in &raw.kgc_entries_current {
-            let status = if e.is_cancelled { " [休講]" } else if e.is_makeup { " [補講]" } else { "" };
+            let status = if e.is_cancelled {
+                " [休講]"
+            } else if e.is_makeup {
+                " [補講]"
+            } else {
+                ""
+            };
             text.push_str(&format!(
-                "- {}曜{}限: {}{}\n", day_int_to_str(e.day), e.period, e.name, status
+                "- {}曜{}限: {}{}\n",
+                day_int_to_str(e.day),
+                e.period,
+                e.name,
+                status
             ));
         }
     }
 
     // ── Luna activity details for EVERY pending course ──
-    let pending_course_names: std::collections::HashSet<&str> = pending.iter()
-        .map(|t| t.course_name.as_str())
-        .collect();
+    let pending_course_names: std::collections::HashSet<&str> =
+        pending.iter().map(|t| t.course_name.as_str()).collect();
 
     // Local: skip Luna activities entirely — the TODO list itself already has
     // task names, deadlines and status; duplicating activity details bloats
     // prompt beyond what small context windows can handle.
     if !is_local && !raw.luna_activities.is_empty() {
-        let luna_id_to_name: std::collections::HashMap<&str, &str> = raw.luna_courses.iter()
+        let luna_id_to_name: std::collections::HashMap<&str, &str> = raw
+            .luna_courses
+            .iter()
             .map(|c| (c.luna_id.as_str(), c.name.as_str()))
             .collect();
 
-        let mut grouped: std::collections::HashMap<&str, Vec<&crate::db::LunaActivityRow>> = Default::default();
+        let mut grouped: std::collections::HashMap<&str, Vec<&crate::db::LunaActivityRow>> =
+            Default::default();
         for a in &raw.luna_activities {
             grouped.entry(a.luna_id.as_str()).or_default().push(a);
         }
@@ -1121,21 +1396,34 @@ fn build_todo_ai_prompt(
         text.push_str("\n## コース別の活動詳細（教材・課題・テスト・ディスカッション）\n");
         for (id, items) in &grouped {
             let name = luna_id_to_name.get(id).unwrap_or(id);
-            if !pending_course_names.contains(*name) { continue; }
+            if !pending_course_names.contains(*name) {
+                continue;
+            }
 
             text.push_str(&format!("### {}\n", name));
 
             // Separate by type for clarity
-            let materials: Vec<_> = items.iter().filter(|a| a.activity_type == "material").collect();
-            let reports: Vec<_> = items.iter().filter(|a| a.activity_type == "report").collect();
+            let materials: Vec<_> = items
+                .iter()
+                .filter(|a| a.activity_type == "material")
+                .collect();
+            let reports: Vec<_> = items
+                .iter()
+                .filter(|a| a.activity_type == "report")
+                .collect();
             let exams: Vec<_> = items.iter().filter(|a| a.activity_type == "exam").collect();
-            let discussions: Vec<_> = items.iter().filter(|a| a.activity_type == "discussion").collect();
+            let discussions: Vec<_> = items
+                .iter()
+                .filter(|a| a.activity_type == "discussion")
+                .collect();
 
             if !materials.is_empty() {
                 text.push_str("  教材:\n");
                 for a in &materials {
                     text.push_str(&format!("    - {}", a.title));
-                    if !a.period.is_empty() { text.push_str(&format!(" ({})", a.period)); }
+                    if !a.period.is_empty() {
+                        text.push_str(&format!(" ({})", a.period));
+                    }
                     text.push('\n');
                 }
             }
@@ -1143,8 +1431,12 @@ fn build_todo_ai_prompt(
                 text.push_str("  課題:\n");
                 for a in &reports {
                     text.push_str(&format!("    - {}", a.title));
-                    if !a.period.is_empty() { text.push_str(&format!(" (期限: {})", a.period)); }
-                    if !a.status.is_empty() { text.push_str(&format!(" [{}]", a.status)); }
+                    if !a.period.is_empty() {
+                        text.push_str(&format!(" (期限: {})", a.period));
+                    }
+                    if !a.status.is_empty() {
+                        text.push_str(&format!(" [{}]", a.status));
+                    }
                     text.push('\n');
                 }
             }
@@ -1152,8 +1444,12 @@ fn build_todo_ai_prompt(
                 text.push_str("  テスト:\n");
                 for a in &exams {
                     text.push_str(&format!("    - {}", a.title));
-                    if !a.period.is_empty() { text.push_str(&format!(" (期間: {})", a.period)); }
-                    if !a.status.is_empty() { text.push_str(&format!(" [{}]", a.status)); }
+                    if !a.period.is_empty() {
+                        text.push_str(&format!(" (期間: {})", a.period));
+                    }
+                    if !a.status.is_empty() {
+                        text.push_str(&format!(" [{}]", a.status));
+                    }
                     text.push('\n');
                 }
             }
@@ -1161,8 +1457,12 @@ fn build_todo_ai_prompt(
                 text.push_str("  ディスカッション:\n");
                 for a in &discussions {
                     text.push_str(&format!("    - {}", a.title));
-                    if !a.period.is_empty() { text.push_str(&format!(" (期間: {})", a.period)); }
-                    if !a.status.is_empty() { text.push_str(&format!(" [{}]", a.status)); }
+                    if !a.period.is_empty() {
+                        text.push_str(&format!(" (期間: {})", a.period));
+                    }
+                    if !a.status.is_empty() {
+                        text.push_str(&format!(" [{}]", a.status));
+                    }
                     text.push('\n');
                 }
             }
@@ -1173,7 +1473,9 @@ fn build_todo_ai_prompt(
     // Local: skip session plans entirely — the TODO list + timetable already
     // provide sufficient context; session plans are too verbose for small models.
     if !is_local && !raw.session_plans.is_empty() {
-        let code_to_name: std::collections::HashMap<&str, &str> = raw.kgc_entries_current.iter()
+        let code_to_name: std::collections::HashMap<&str, &str> = raw
+            .kgc_entries_current
+            .iter()
             .chain(raw.kgc_entries_next.iter())
             .map(|e| (e.kgc_code.as_str(), e.name.as_str()))
             .collect();
@@ -1181,7 +1483,9 @@ fn build_todo_ai_prompt(
         let mut any_plan = false;
         for (code, plans) in &raw.session_plans {
             let cname = code_to_name.get(code.as_str()).copied().unwrap_or("");
-            if !pending_course_names.contains(cname) { continue; }
+            if !pending_course_names.contains(cname) {
+                continue;
+            }
             if !any_plan {
                 text.push_str("\n## 関連コースの授業計画\n");
                 any_plan = true;
@@ -1189,13 +1493,23 @@ fn build_todo_ai_prompt(
             text.push_str(&format!("### {} [{}]\n", cname, code));
             for p in plans {
                 if p.session_num <= current_week + 3 {
-                    let marker = if p.session_num == current_week { " ← 今週" }
-                        else if p.session_num == current_week - 1 { " ← 先週" }
-                        else { "" };
+                    let marker = if p.session_num == current_week {
+                        " ← 今週"
+                    } else if p.session_num == current_week - 1 {
+                        " ← 先週"
+                    } else {
+                        ""
+                    };
                     let mut line = format!("  第{}回:", p.session_num);
-                    if !p.topic.is_empty() { line.push_str(&format!(" {}", p.topic)); }
-                    if !p.delivery_mode.is_empty() { line.push_str(&format!(" [{}]", p.delivery_mode)); }
-                    if !p.study_outside.is_empty() { line.push_str(&format!(" | 予復習: {}", p.study_outside)); }
+                    if !p.topic.is_empty() {
+                        line.push_str(&format!(" {}", p.topic));
+                    }
+                    if !p.delivery_mode.is_empty() {
+                        line.push_str(&format!(" [{}]", p.delivery_mode));
+                    }
+                    if !p.study_outside.is_empty() {
+                        line.push_str(&format!(" | 予復習: {}", p.study_outside));
+                    }
                     line.push_str(marker);
                     line.push('\n');
                     text.push_str(&line);
@@ -1207,16 +1521,25 @@ fn build_todo_ai_prompt(
     // ── KGC course details (syllabus: grading, textbooks, objectives, etc.) ──
     // Local: skip syllabus entirely — not reliable and bloats prompt
     if !is_local && !raw.kgc_course_details.is_empty() {
-        let code_to_name: std::collections::HashMap<&str, &str> = raw.kgc_entries_current.iter()
+        let code_to_name: std::collections::HashMap<&str, &str> = raw
+            .kgc_entries_current
+            .iter()
             .chain(raw.kgc_entries_next.iter())
             .map(|e| (e.kgc_code.as_str(), e.name.as_str()))
             .collect();
 
         let mut any_detail = false;
         for detail in &raw.kgc_course_details {
-            let cname = code_to_name.get(detail.kgc_code.as_str()).copied().unwrap_or("");
-            if !pending_course_names.contains(cname) { continue; }
-            if detail.fields.is_empty() { continue; }
+            let cname = code_to_name
+                .get(detail.kgc_code.as_str())
+                .copied()
+                .unwrap_or("");
+            if !pending_course_names.contains(cname) {
+                continue;
+            }
+            if detail.fields.is_empty() {
+                continue;
+            }
             if !any_detail {
                 text.push_str("\n## 関連コースのシラバス詳細\n");
                 any_detail = true;
@@ -1260,22 +1583,33 @@ async fn fetch_next_week_kgc(
     params.push(("ENext.x".into(), "1".into()));
     params.push(("ENext.y".into(), "1".into()));
 
-    let post_url = format!("{}/uniasv2/ARF010PCT01EventAction.do", config::KG_COURSE_BASE);
+    let post_url = format!(
+        "{}/uniasv2/ARF010PCT01EventAction.do",
+        config::KG_COURSE_BASE
+    );
     let html = client::post_form_with_redirect(
-        kgc_http, &post_url, config::KG_COURSE_BASE,
-        client::SESSION_EXPIRED_MSG, client::is_session_expired_body,
+        kgc_http,
+        &post_url,
+        config::KG_COURSE_BASE,
+        client::SESSION_EXPIRED_MSG,
+        client::is_session_expired_body,
         params.iter().map(|(k, v)| (k.as_str(), v.as_str())),
         &[
-            ("Referer", &format!("{}/uniasv2/ARF010.do", config::KG_COURSE_BASE)),
+            (
+                "Referer",
+                &format!("{}/uniasv2/ARF010.do", config::KG_COURSE_BASE),
+            ),
             ("Origin", config::KG_COURSE_BASE),
         ],
-    ).await?;
+    )
+    .await?;
 
     let next_data = parser::parse_timetable(&html);
     let next_week_label = next_data.week_label.clone();
     log::info!(
         "fetch_next_week_kgc: next page: {} entries, week_label='{}'",
-        next_data.entries.len(), next_week_label
+        next_data.entries.len(),
+        next_week_label
     );
 
     if next_data.entries.is_empty() && next_week_label.is_empty() {
@@ -1284,11 +1618,19 @@ async fn fetch_next_week_kgc(
 
     for entry in &next_data.entries {
         let day_int = day_str_to_int(&entry.day);
-        if day_int == 0 { continue; }
+        if day_int == 0 {
+            continue;
+        }
         db.upsert_kgc_course(
-            &entry.course_code, &entry.course_name, day_int, entry.period,
-            &entry.room, &entry.detail_path,
-            entry.is_cancelled, entry.is_makeup, entry.is_room_changed,
+            &entry.course_code,
+            &entry.course_name,
+            day_int,
+            entry.period,
+            &entry.room,
+            &entry.detail_path,
+            entry.is_cancelled,
+            entry.is_makeup,
+            entry.is_room_changed,
             &next_week_label,
         )?;
     }
@@ -1297,18 +1639,16 @@ async fn fetch_next_week_kgc(
 }
 
 fn load_ai_cache(db: &Database) -> Result<(Option<AiScheduleResult>, bool), String> {
-    load_ai_cache_inner(db).map(|opt| {
-        match opt {
-            Some((result, ts)) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                let stale = now - ts > AI_CACHE_MAX_AGE;
-                (Some(result), stale)
-            }
-            None => (None, true),
+    load_ai_cache_inner(db).map(|opt| match opt {
+        Some((result, ts)) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let stale = now - ts > AI_CACHE_MAX_AGE;
+            (Some(result), stale)
         }
+        None => (None, true),
     })
 }
 
@@ -1471,7 +1811,8 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
     {
         let mut semester_lines: Vec<String> = Vec::new();
         if !cal_cfg.spring_start.is_empty() {
-            if let Ok(spring) = chrono::NaiveDate::parse_from_str(&cal_cfg.spring_start, "%Y-%m-%d") {
+            if let Ok(spring) = chrono::NaiveDate::parse_from_str(&cal_cfg.spring_start, "%Y-%m-%d")
+            {
                 semester_lines.push(format!("- 春学期開始: {}", cal_cfg.spring_start));
                 let days_since = (current_date - spring).num_days();
                 if (0..150).contains(&days_since) {
@@ -1506,18 +1847,35 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
         if is_local {
             // Local: only print flags that are true to save tokens
             let mut flags = String::new();
-            if e.is_cancelled { flags.push_str(" [休講]"); }
-            if e.is_makeup { flags.push_str(" [補講]"); }
-            if e.is_room_changed { flags.push_str(" [変更]"); }
+            if e.is_cancelled {
+                flags.push_str(" [休講]");
+            }
+            if e.is_makeup {
+                flags.push_str(" [補講]");
+            }
+            if e.is_room_changed {
+                flags.push_str(" [変更]");
+            }
             text.push_str(&format!(
                 "- {}曜{}限: {} [{}] 教室:{}{}\n",
-                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room, flags
+                day_int_to_str(e.day),
+                e.period,
+                e.name,
+                e.kgc_code,
+                e.room,
+                flags
             ));
         } else {
             text.push_str(&format!(
                 "- {}曜{}限: {} [{}] 教室:{} 休講:{} 補講:{} 変更:{}\n",
-                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room,
-                e.is_cancelled, e.is_makeup, e.is_room_changed
+                day_int_to_str(e.day),
+                e.period,
+                e.name,
+                e.kgc_code,
+                e.room,
+                e.is_cancelled,
+                e.is_makeup,
+                e.is_room_changed
             ));
         }
     }
@@ -1528,18 +1886,35 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
     for e in &raw.kgc_entries_next {
         if is_local {
             let mut flags = String::new();
-            if e.is_cancelled { flags.push_str(" [休講]"); }
-            if e.is_makeup { flags.push_str(" [補講]"); }
-            if e.is_room_changed { flags.push_str(" [変更]"); }
+            if e.is_cancelled {
+                flags.push_str(" [休講]");
+            }
+            if e.is_makeup {
+                flags.push_str(" [補講]");
+            }
+            if e.is_room_changed {
+                flags.push_str(" [変更]");
+            }
             text.push_str(&format!(
                 "- {}曜{}限: {} [{}] 教室:{}{}\n",
-                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room, flags
+                day_int_to_str(e.day),
+                e.period,
+                e.name,
+                e.kgc_code,
+                e.room,
+                flags
             ));
         } else {
             text.push_str(&format!(
                 "- {}曜{}限: {} [{}] 教室:{} 休講:{} 補講:{} 変更:{}\n",
-                day_int_to_str(e.day), e.period, e.name, e.kgc_code, e.room,
-                e.is_cancelled, e.is_makeup, e.is_room_changed
+                day_int_to_str(e.day),
+                e.period,
+                e.name,
+                e.kgc_code,
+                e.room,
+                e.is_cancelled,
+                e.is_makeup,
+                e.is_room_changed
             ));
         }
     }
@@ -1550,13 +1925,19 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
         for c in &raw.luna_courses {
             text.push_str(&format!(
                 "- {}曜{}限: {} [luna_id:{}] 教員:{}\n",
-                day_int_to_str(c.day), c.period, c.name, c.luna_id, c.teacher
+                day_int_to_str(c.day),
+                c.period,
+                c.name,
+                c.luna_id,
+                c.teacher
             ));
         }
     }
 
     // Shared kgc_code → course name mapping
-    let code_to_name: std::collections::HashMap<&str, &str> = raw.kgc_entries_current.iter()
+    let code_to_name: std::collections::HashMap<&str, &str> = raw
+        .kgc_entries_current
+        .iter()
         .chain(raw.kgc_entries_next.iter())
         .map(|e| (e.kgc_code.as_str(), e.name.as_str()))
         .collect();
@@ -1566,30 +1947,40 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
     let semester_week: i32 = if is_local {
         let mut w: i32 = 4;
         if !cal_cfg.spring_start.is_empty() {
-            if let Ok(spring) = chrono::NaiveDate::parse_from_str(&cal_cfg.spring_start, "%Y-%m-%d") {
+            if let Ok(spring) = chrono::NaiveDate::parse_from_str(&cal_cfg.spring_start, "%Y-%m-%d")
+            {
                 let d = (current_date - spring).num_days();
-                if (0..150).contains(&d) { w = (d / 7 + 1) as i32; }
+                if (0..150).contains(&d) {
+                    w = (d / 7 + 1) as i32;
+                }
             }
         }
         if !cal_cfg.fall_start.is_empty() {
             if let Ok(fall) = chrono::NaiveDate::parse_from_str(&cal_cfg.fall_start, "%Y-%m-%d") {
                 let d = (current_date - fall).num_days();
-                if (0..150).contains(&d) { w = (d / 7 + 1) as i32; }
+                if (0..150).contains(&d) {
+                    w = (d / 7 + 1) as i32;
+                }
             }
         }
         w
-    } else { 0 };
+    } else {
+        0
+    };
 
     if !raw.session_plans.is_empty() {
         text.push_str("\n### 授業計画\n");
         for (code, plans) in &raw.session_plans {
-            let course_label = code_to_name.get(code.as_str())
+            let course_label = code_to_name
+                .get(code.as_str())
                 .map(|n| format!("{} [{}]", n, code))
                 .unwrap_or_else(|| code.clone());
             text.push_str(&format!("#### {}\n", course_label));
             for p in plans {
                 // Local: only show sessions within ±2 of current week
-                if is_local && (p.session_num < semester_week - 2 || p.session_num > semester_week + 2) {
+                if is_local
+                    && (p.session_num < semester_week - 2 || p.session_num > semester_week + 2)
+                {
                     continue;
                 }
                 let mut line = format!("  第{}回:", p.session_num);
@@ -1619,20 +2010,29 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
         text.push_str("\n### KGC課程詳細情報\n");
         // Only fields relevant to schedule analysis (delivery mode, grading, notes)
         let important_labels = [
-            "授業形態", "授業方法", "授業スタイル",
-            "授業の進め方", "備考", "注意事項",
+            "授業形態",
+            "授業方法",
+            "授業スタイル",
+            "授業の進め方",
+            "備考",
+            "注意事項",
         ];
         for d in &raw.kgc_course_details {
-            let course_label = code_to_name.get(d.kgc_code.as_str())
+            let course_label = code_to_name
+                .get(d.kgc_code.as_str())
                 .map(|n| format!("{} [{}]", n, d.kgc_code))
                 .unwrap_or_else(|| d.kgc_code.clone());
             // Filter to important fields only
-            let relevant: Vec<_> = d.fields.iter()
+            let relevant: Vec<_> = d
+                .fields
+                .iter()
                 .filter(|(label, value)| {
                     !value.is_empty() && important_labels.iter().any(|k| label.contains(k))
                 })
                 .collect();
-            if relevant.is_empty() && d.delivery_mode.is_empty() { continue; }
+            if relevant.is_empty() && d.delivery_mode.is_empty() {
+                continue;
+            }
             text.push_str(&format!("#### {}\n", course_label));
             if !d.delivery_mode.is_empty() {
                 text.push_str(&format!("  授業形態: {}\n", d.delivery_mode));
@@ -1654,7 +2054,9 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
     // Local: skip counts entirely — details section covers the same info
     if !is_local && !raw.luna_counts.is_empty() {
         text.push_str("\n### Luna活動サマリー\n");
-        let luna_id_to_name: std::collections::HashMap<&str, &str> = raw.luna_courses.iter()
+        let luna_id_to_name: std::collections::HashMap<&str, &str> = raw
+            .luna_courses
+            .iter()
             .map(|c| (c.luna_id.as_str(), c.name.as_str()))
             .collect();
         for (id, c) in &raw.luna_counts {
@@ -1670,12 +2072,15 @@ fn build_ai_schedule_prompt(raw: &ScheduleRawData, is_local: bool) -> String {
     // ── Luna Activity Details (個別アイテム) ──
     if !raw.luna_activities.is_empty() {
         text.push_str("\n### Luna活動詳細\n");
-        let luna_id_to_name: std::collections::HashMap<&str, &str> = raw.luna_courses.iter()
+        let luna_id_to_name: std::collections::HashMap<&str, &str> = raw
+            .luna_courses
+            .iter()
             .map(|c| (c.luna_id.as_str(), c.name.as_str()))
             .collect();
 
         // Group activities by luna_id
-        let mut grouped: std::collections::HashMap<&str, Vec<&crate::db::LunaActivityRow>> = Default::default();
+        let mut grouped: std::collections::HashMap<&str, Vec<&crate::db::LunaActivityRow>> =
+            Default::default();
         for a in &raw.luna_activities {
             grouped.entry(a.luna_id.as_str()).or_default().push(a);
         }
@@ -1742,20 +2147,29 @@ fn parse_ai_schedule_response(
         cross_week_insights: Option<String>,
     }
 
-    
-
     let raw_value: serde_json::Value = serde_json::from_str(&json_str)
         .or_else(|_| {
             log::warn!("ai schedule: initial JSON parse failed, attempting truncation repair");
             let repaired = repair_truncated_json(&json_str);
             serde_json::from_str::<serde_json::Value>(&repaired)
         })
-        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&json_str, 200)))?;
+        .map_err(|e| {
+            format!(
+                "AI応答のJSON解析に失敗: {} — 応答: {}",
+                e,
+                safe_preview(&json_str, 200)
+            )
+        })?;
 
     let normalized = normalize_ai_schedule_json(raw_value);
 
-    let parsed: AiResponse = serde_json::from_value(normalized)
-        .map_err(|e| format!("AI応答のJSON解析に失敗: {} — 応答: {}", e, safe_preview(&json_str, 200)))?;
+    let parsed: AiResponse = serde_json::from_value(normalized).map_err(|e| {
+        format!(
+            "AI応答のJSON解析に失敗: {} — 応答: {}",
+            e,
+            safe_preview(&json_str, 200)
+        )
+    })?;
 
     if parsed.next_week.is_empty() && !next_week_label.is_empty() {
         log::warn!("ai schedule: next_week is empty — AI response may have been truncated");
@@ -1838,19 +2252,24 @@ fn normalize_ai_schedule_json(mut root: serde_json::Value) -> serde_json::Value 
     }
 
     if let Some(obj) = root.as_object_mut() {
-        let current_week = obj.remove("current_week").unwrap_or(serde_json::Value::Array(vec![]));
-        let next_week = obj.remove("next_week").unwrap_or(serde_json::Value::Array(vec![]));
-        let weekly_summary = obj.remove("weekly_summary").unwrap_or(serde_json::Value::Null);
-        let cross_week_insights = obj.remove("cross_week_insights").unwrap_or(serde_json::Value::Null);
+        let current_week = obj
+            .remove("current_week")
+            .unwrap_or(serde_json::Value::Array(vec![]));
+        let next_week = obj
+            .remove("next_week")
+            .unwrap_or(serde_json::Value::Array(vec![]));
+        let weekly_summary = obj
+            .remove("weekly_summary")
+            .unwrap_or(serde_json::Value::Null);
+        let cross_week_insights = obj
+            .remove("cross_week_insights")
+            .unwrap_or(serde_json::Value::Null);
 
         obj.insert(
             "current_week".to_string(),
             normalize_schedule_items(current_week),
         );
-        obj.insert(
-            "next_week".to_string(),
-            normalize_schedule_items(next_week),
-        );
+        obj.insert("next_week".to_string(), normalize_schedule_items(next_week));
         obj.insert(
             "weekly_summary".to_string(),
             serde_json::Value::String(value_to_string(weekly_summary)),
@@ -1873,12 +2292,18 @@ fn normalize_ai_todo_json(mut root: serde_json::Value) -> serde_json::Value {
     if let Some(obj) = root.as_object_mut() {
         // summary → string
         if let Some(v) = obj.remove("summary") {
-            obj.insert("summary".to_string(), serde_json::Value::String(value_to_string(v)));
+            obj.insert(
+                "summary".to_string(),
+                serde_json::Value::String(value_to_string(v)),
+            );
         }
 
         // suggestions → string array
         if let Some(v) = obj.remove("suggestions") {
-            obj.insert("suggestions".to_string(), serde_json::json!(value_to_string_vec(v)));
+            obj.insert(
+                "suggestions".to_string(),
+                serde_json::json!(value_to_string_vec(v)),
+            );
         }
 
         // important → array of {title: string, reason: string, index: number}
@@ -1894,7 +2319,10 @@ fn normalize_ai_todo_json(mut root: serde_json::Value) -> serde_json::Value {
                     "index": value_to_i32(m.remove("index").unwrap_or(serde_json::Value::Null)),
                 }))
             }).collect();
-            obj.insert("important".to_string(), serde_json::Value::Array(normalized));
+            obj.insert(
+                "important".to_string(),
+                serde_json::Value::Array(normalized),
+            );
         }
 
         // Remove internal working field
@@ -1911,7 +2339,10 @@ fn normalize_schedule_items(value: serde_json::Value) -> serde_json::Value {
         other => vec![other],
     };
 
-    let out: Vec<serde_json::Value> = arr.into_iter().filter_map(normalize_schedule_item).collect();
+    let out: Vec<serde_json::Value> = arr
+        .into_iter()
+        .filter_map(normalize_schedule_item)
+        .collect();
     serde_json::Value::Array(out)
 }
 
@@ -1942,7 +2373,13 @@ fn value_to_i32(v: serde_json::Value) -> i32 {
     match v {
         serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) as i32,
         serde_json::Value::String(s) => s.trim().parse::<i32>().unwrap_or(0),
-        serde_json::Value::Bool(b) => if b { 1 } else { 0 },
+        serde_json::Value::Bool(b) => {
+            if b {
+                1
+            } else {
+                0
+            }
+        }
         _ => 0,
     }
 }
@@ -1970,7 +2407,11 @@ fn value_to_string_vec(v: serde_json::Value) -> Vec<String> {
         serde_json::Value::Null => Vec::new(),
         other => {
             let s = value_to_string(other).trim().to_string();
-            if s.is_empty() { Vec::new() } else { vec![s] }
+            if s.is_empty() {
+                Vec::new()
+            } else {
+                vec![s]
+            }
         }
     }
 }
@@ -1980,9 +2421,16 @@ fn value_to_string(v: serde_json::Value) -> String {
         serde_json::Value::Null => String::new(),
         serde_json::Value::String(s) => s,
         serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Bool(b) => if b { "true".to_string() } else { "false".to_string() },
+        serde_json::Value::Bool(b) => {
+            if b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
         serde_json::Value::Array(a) => {
-            let parts: Vec<String> = a.into_iter()
+            let parts: Vec<String> = a
+                .into_iter()
                 .map(value_to_string)
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
@@ -1991,7 +2439,9 @@ fn value_to_string(v: serde_json::Value) -> String {
         }
         serde_json::Value::Object(mut m) => {
             // Prefer common textual keys if the model emits nested objects.
-            for key in ["text", "value", "name", "title", "content", "teacher", "room"] {
+            for key in [
+                "text", "value", "name", "title", "content", "teacher", "room",
+            ] {
                 if let Some(val) = m.remove(key) {
                     let s = value_to_string(val).trim().to_string();
                     if !s.is_empty() {
@@ -2115,10 +2565,21 @@ fn scan_json_structure(s: &str, offset: usize, mut f: impl FnMut(usize, char)) -
     let mut escape_next = false;
 
     for (i, ch) in s[offset..].char_indices() {
-        if escape_next { escape_next = false; continue; }
-        if ch == '\\' && in_string { escape_next = true; continue; }
-        if ch == '"' { in_string = !in_string; continue; }
-        if in_string { continue; }
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
         f(offset + i, ch);
     }
     in_string
@@ -2130,12 +2591,16 @@ fn find_matching_brace(text: &str, start: usize) -> Option<usize> {
     let mut depth: i32 = 0;
     let mut result = None;
     scan_json_structure(text, start, |i, ch| {
-        if result.is_some() { return; }
+        if result.is_some() {
+            return;
+        }
         match ch {
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
-                if depth == 0 { result = Some(i); }
+                if depth == 0 {
+                    result = Some(i);
+                }
             }
             _ => {}
         }
@@ -2162,7 +2627,9 @@ fn repair_truncated_json(input: &str) -> String {
     let mut cleaned = s.to_string();
     loop {
         let t = cleaned.trim_end();
-        if t.is_empty() { break; }
+        if t.is_empty() {
+            break;
+        }
         let last = t.as_bytes()[t.len() - 1];
         if last == b':' || last == b',' || last == b'\\' {
             cleaned = t[..t.len() - 1].to_string();
@@ -2194,18 +2661,26 @@ fn repair_truncated_json(input: &str) -> String {
 /// Close any unclosed JSON strings and bracket pairs.
 fn close_json_brackets(s: &str) -> String {
     let mut stack: Vec<char> = Vec::new();
-    let in_string = scan_json_structure(s, 0, |_, ch| {
-        match ch {
-            '{' => stack.push('{'),
-            '[' => stack.push('['),
-            '}' => { if stack.last() == Some(&'{') { stack.pop(); } }
-            ']' => { if stack.last() == Some(&'[') { stack.pop(); } }
-            _ => {}
+    let in_string = scan_json_structure(s, 0, |_, ch| match ch {
+        '{' => stack.push('{'),
+        '[' => stack.push('['),
+        '}' => {
+            if stack.last() == Some(&'{') {
+                stack.pop();
+            }
         }
+        ']' => {
+            if stack.last() == Some(&'[') {
+                stack.pop();
+            }
+        }
+        _ => {}
     });
 
     let mut result = s.to_string();
-    if in_string { result.push('"'); }
+    if in_string {
+        result.push('"');
+    }
     for &bracket in stack.iter().rev() {
         match bracket {
             '{' => result.push('}'),
@@ -2220,9 +2695,9 @@ fn close_json_brackets(s: &str) -> String {
 fn find_non_string_commas(s: &str) -> Vec<usize> {
     let mut positions = Vec::new();
     scan_json_structure(s, 0, |i, ch| {
-        if ch == ',' { positions.push(i); }
+        if ch == ',' {
+            positions.push(i);
+        }
     });
     positions
 }
-
-

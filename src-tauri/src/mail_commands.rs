@@ -2,26 +2,24 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 use crate::config;
-use crate::mail::{self, MailMessage, MailDetail, MailProfile, MailConfig, MailAttachment};
+use crate::mail::{self, MailAttachment, MailConfig, MailDetail, MailMessage, MailProfile};
 use crate::MailState;
 
 /// Decode JWT payload without signature verification (we trust Microsoft's token)
 fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
     let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() < 2 { return None; }
+    if parts.len() < 2 {
+        return None;
+    }
     // JWT payload is base64url-encoded
     let padded = match parts[1].len() % 4 {
         2 => format!("{}==", parts[1]),
         3 => format!("{}=", parts[1]),
         _ => parts[1].to_string(),
     };
-    let bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        parts[1],
-    ).or_else(|_| base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &padded,
-    )).ok()?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1])
+        .or_else(|_| base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &padded))
+        .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -44,13 +42,15 @@ pub async fn mail_check_session(state: State<'_, MailState>) -> Result<MailSessi
         if let Some(token) = &mail.token {
             if let Some(claims) = decode_jwt_claims(&token.access_token) {
                 // Microsoft JWT: "upn" or "unique_name" for email, "name" for display name
-                email = claims.get("upn")
+                email = claims
+                    .get("upn")
                     .or_else(|| claims.get("unique_name"))
                     .or_else(|| claims.get("preferred_username"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                display_name = claims.get("name")
+                display_name = claims
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -82,7 +82,8 @@ pub async fn mail_open_login(
         let mail = state.client.lock().await;
         mail.auth_url()
     };
-    let parsed_url: url::Url = auth_url.parse()
+    let parsed_url: url::Url = auth_url
+        .parse()
         .map_err(|e| format!("URL parse error: {}", e))?;
 
     let _win = tauri::WebviewWindowBuilder::new(
@@ -102,7 +103,11 @@ pub async fn mail_open_login(
                 log::info!("Intercepted Microsoft OAuth code (len={})", code.len());
                 let _ = tx.try_send(code.clone());
             } else if let Some(error) = pairs.get("error") {
-                log::error!("Microsoft OAuth error: {} - {}", error, pairs.get("error_description").unwrap_or(&String::new()));
+                log::error!(
+                    "Microsoft OAuth error: {} - {}",
+                    error,
+                    pairs.get("error_description").unwrap_or(&String::new())
+                );
             }
             return false; // Block navigation to localhost
         }
@@ -122,16 +127,21 @@ pub async fn mail_open_login(
                         log::info!("Microsoft mail login successful");
                         // Fetch profile to get email/name
                         let profile = mail.fetch_profile().await.ok();
-                        let email = profile.as_ref()
+                        let email = profile
+                            .as_ref()
                             .and_then(|p| p.mail.clone().or(p.user_principal_name.clone()))
                             .unwrap_or_default();
-                        let display_name = profile.as_ref()
+                        let display_name = profile
+                            .as_ref()
                             .and_then(|p| p.display_name.clone())
                             .unwrap_or_default();
-                        let _ = app_clone.emit("mail-login-success", serde_json::json!({
-                            "email": email,
-                            "displayName": display_name,
-                        }));
+                        let _ = app_clone.emit(
+                            "mail-login-success",
+                            serde_json::json!({
+                                "email": email,
+                                "displayName": display_name,
+                            }),
+                        );
                     }
                     Err(e) => {
                         log::error!("Microsoft mail login failed: {}", e);
@@ -183,7 +193,10 @@ pub async fn mail_fetch_profile(
     let (http, token) = prep?;
 
     // Phase 2: lock-free network I/O
-    let url = format!("{}/me?$select=displayName,mail,userPrincipalName", config::GRAPH_BASE);
+    let url = format!(
+        "{}/me?$select=displayName,mail,userPrincipalName",
+        config::GRAPH_BASE
+    );
     let body = match mail::graph_get_lockfree(&http, &url, &token).await {
         Ok(body) => body,
         Err((_, true)) => {
@@ -218,8 +231,8 @@ pub async fn mail_fetch_profile(
         }
     };
 
-    let data: MailProfile = serde_json::from_value(body)
-        .map_err(|e| format!("プロフィール解析失敗: {}", e))?;
+    let data: MailProfile =
+        serde_json::from_value(body).map_err(|e| format!("プロフィール解析失敗: {}", e))?;
     if let Ok(json) = serde_json::to_string(&data) {
         let _ = db.save_data_cache("mail_profile", &json);
     }
@@ -315,8 +328,8 @@ async fn fetch_inbox_impl(
         }
     };
 
-    let resp: mail::GraphListResponse<MailMessage> = serde_json::from_value(body)
-        .map_err(|e| format!("メール解析失敗: {}", e))?;
+    let resp: mail::GraphListResponse<MailMessage> =
+        serde_json::from_value(body).map_err(|e| format!("メール解析失敗: {}", e))?;
     if skip_val == 0 {
         if let Ok(json) = serde_json::to_string(&resp.value) {
             let _ = db.save_data_cache("mail_inbox", &json);
@@ -412,8 +425,8 @@ async fn fetch_message_impl(
         }
     };
 
-    let data: MailDetail = serde_json::from_value(body)
-        .map_err(|e| format!("メール詳細解析失敗: {}", e))?;
+    let data: MailDetail =
+        serde_json::from_value(body).map_err(|e| format!("メール詳細解析失敗: {}", e))?;
     if let Ok(json) = serde_json::to_string(&data) {
         let _ = db.save_data_cache(&cache_key, &json);
     }
@@ -443,7 +456,14 @@ pub async fn mail_save_config(
     }
     mail.config = config.clone();
     crate::mail::save_config(&config)?;
-    log::info!("Mail config saved (client_id: {})", if config.client_id.trim().is_empty() { "default" } else { &new_id });
+    log::info!(
+        "Mail config saved (client_id: {})",
+        if config.client_id.trim().is_empty() {
+            "default"
+        } else {
+            &new_id
+        }
+    );
     Ok(())
 }
 
@@ -472,5 +492,6 @@ pub async fn mail_download_attachment(
     if !mail.is_authenticated() {
         return Err(config::MAIL_AUTH_REQUIRED_MSG.into());
     }
-    mail.download_attachment(&message_id, &attachment_id, &file_name).await
+    mail.download_attachment(&message_id, &attachment_id, &file_name)
+        .await
 }

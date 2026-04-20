@@ -1,7 +1,9 @@
 use reqwest::Client;
 use std::sync::Arc;
 
-use crate::client::{build_http_client, data_dir, load_cookie_jar, new_cookie_client, save_cookie_jar};
+use crate::client::{
+    build_http_client, data_dir, load_cookie_jar, new_cookie_client, save_cookie_jar,
+};
 
 const KWIC_COOKIES_FILE: &str = "kwic_portal_cookies.json";
 
@@ -56,9 +58,7 @@ impl KwicClient {
     pub fn try_restore_session(&mut self) -> bool {
         match load_cookie_jar(KWIC_COOKIES_FILE) {
             Some(store) => {
-                let cookie_store = Arc::new(
-                    reqwest_cookie_store::CookieStoreMutex::new(store),
-                );
+                let cookie_store = Arc::new(reqwest_cookie_store::CookieStoreMutex::new(store));
                 self.http = build_http_client(cookie_store.clone());
                 self.cookie_store = cookie_store;
                 self.authenticated = true;
@@ -80,5 +80,4 @@ impl KwicClient {
         self.http = http;
         self.cookie_store = cookie_store;
     }
-
 }

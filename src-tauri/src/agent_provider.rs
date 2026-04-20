@@ -12,7 +12,7 @@ use crate::ai::{AiConfig, ChatMessage};
 use crate::local_ai;
 
 use std::collections::HashSet;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 // ─────────────────────── Cancel registry (remote) ───────────────────────
 
@@ -26,7 +26,10 @@ pub fn cancel_remote(gen_id: &str) {
 }
 
 fn is_remote_cancelled(gen_id: &str) -> bool {
-    REMOTE_CANCEL.lock().map(|s| s.contains(gen_id)).unwrap_or(false)
+    REMOTE_CANCEL
+        .lock()
+        .map(|s| s.contains(gen_id))
+        .unwrap_or(false)
 }
 
 fn clear_remote_cancel(gen_id: &str) {
@@ -35,17 +38,24 @@ fn clear_remote_cancel(gen_id: &str) {
     }
 }
 
+fn collect_gemini_text_parts(parts: Option<&serde_json::Value>) -> String {
+    parts
+        .and_then(|p| p.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
 // ─────────────────────── Provider enum ───────────────────────
 
 /// Resolved provider ready to run inference.
 pub enum AgentProvider {
-    Local {
-        model_id: String,
-        file_name: String,
-    },
-    Remote {
-        config: AiConfig,
-    },
+    Local { model_id: String, file_name: String },
+    Remote { config: AiConfig },
 }
 
 impl AgentProvider {
@@ -71,7 +81,9 @@ impl AgentProvider {
             .find(|m| m.id == cfg.local_model)
             .ok_or_else(|| AgentError::model(format!("不明なモデル: {}", cfg.local_model)))?;
         if !local_ai::is_model_downloaded(&info.file_name) {
-            return Err(AgentError::model("ローカルモデルがダウンロードされていません。"));
+            return Err(AgentError::model(
+                "ローカルモデルがダウンロードされていません。",
+            ));
         }
         Ok(Self::Local {
             model_id: info.id.clone(),
@@ -161,7 +173,7 @@ impl AgentProvider {
             }
             Self::Remote { config } => {
                 let gen_id = gen_id.to_string();
-                remote_stream_answer(config, messages, &gen_id, on_chunk)
+                remote_stream_answer(config, messages, &gen_id, on_chunk, think_budget_pct)
                     .await
                     .map_err(AgentError::model)
             }
@@ -217,10 +229,7 @@ async fn remote_openai_non_streaming(
     max_tokens: u32,
     temperature: f32,
 ) -> Result<String, String> {
-    let url = format!(
-        "{}/chat/completions",
-        config.base_url.trim_end_matches('/')
-    );
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": config.model,
         "messages": messages,
@@ -317,15 +326,19 @@ async fn remote_gemini_non_streaming(
     }
     let v: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("JSON解析失敗: {}", e))?;
-    v.get("candidates")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("content"))
-        .and_then(|c| c.get("parts"))
-        .and_then(|p| p.get(0))
-        .and_then(|p| p.get("text"))
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "AIからの応答がありません".into())
+    let content = collect_gemini_text_parts(
+        v.get("candidates")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("content"))
+            .and_then(|c| c.get("parts")),
+    );
+    if content.is_empty() {
+        return Err(format!(
+            "AIからの応答がありません: {}",
+            truncate(&text, 300)
+        ));
+    }
+    Ok(content)
 }
 
 // ─────────────────────── Remote: SSE streaming (answer) ──────────────────
@@ -335,18 +348,56 @@ async fn remote_stream_answer<F>(
     messages: Vec<ChatMessage>,
     gen_id: &str,
     on_chunk: F,
+    think_budget_pct: u32,
 ) -> Result<String, String>
 where
     F: FnMut(&str, bool) + Send + 'static,
 {
     clear_remote_cancel(gen_id);
-    let filtered = ThinkFilter::wrap(on_chunk);
+    let callback = Arc::new(Mutex::new(on_chunk));
+    let callback_for_stream = callback.clone();
+    let filtered = ThinkFilter::wrap(move |chunk: &str, is_think: bool| {
+        if let Ok(mut cb) = callback_for_stream.lock() {
+            (*cb)(chunk, is_think);
+        }
+    });
+    let stream_messages = messages.clone();
     let result = match config.provider.as_str() {
-        "gemini" => remote_gemini_stream(config, messages, gen_id, filtered).await,
-        _ => remote_openai_stream(config, messages, gen_id, filtered).await,
+        "gemini" => remote_gemini_stream(config, stream_messages, gen_id, filtered).await,
+        _ => remote_openai_stream(config, stream_messages, gen_id, filtered).await,
     };
     clear_remote_cancel(gen_id);
-    result
+    let answer = result?;
+    if answer.trim().is_empty() && !is_remote_cancelled(gen_id) {
+        log::warn!(
+            "[agent answer] streaming produced empty visible text; falling back to non-streaming provider={}",
+            config.provider
+        );
+        let fallback = remote_chat_completion(
+            config,
+            messages,
+            if config.max_tokens == 0 {
+                32768
+            } else {
+                config.max_tokens
+            },
+            config.temperature,
+        )
+        .await?;
+        if !fallback.is_empty() {
+            let callback_for_fallback = callback.clone();
+            let filtered = ThinkFilter::wrap(move |chunk: &str, is_think: bool| {
+                if let Ok(mut cb) = callback_for_fallback.lock() {
+                    (*cb)(chunk, is_think);
+                }
+            });
+            let mut filtered = filtered;
+            filtered(&fallback, false);
+        }
+        let _ = think_budget_pct;
+        return Ok(fallback);
+    }
+    Ok(answer)
 }
 
 /// Stateful `<think>...</think>` splitter: routes content inside the block to
@@ -360,7 +411,11 @@ struct ThinkFilter<F: FnMut(&str, bool) + Send + 'static> {
 
 impl<F: FnMut(&str, bool) + Send + 'static> ThinkFilter<F> {
     fn wrap(inner: F) -> impl FnMut(&str, bool) + Send + 'static {
-        let mut state = ThinkFilter { inner, buf: String::new(), in_think: false };
+        let mut state = ThinkFilter {
+            inner,
+            buf: String::new(),
+            in_think: false,
+        };
         move |chunk: &str, is_think: bool| {
             if is_think {
                 // Provider already classified this as reasoning — forward verbatim.
@@ -425,10 +480,14 @@ impl<F: FnMut(&str, bool) + Send + 'static> ThinkFilter<F> {
 /// Return the byte index up to which it's safe to emit, keeping `keep` bytes
 /// in reserve at the tail (so a partial tag isn't cut in half).
 fn holdback(s: &str, keep: usize) -> usize {
-    if s.len() <= keep { return 0; }
+    if s.len() <= keep {
+        return 0;
+    }
     let cutoff = s.len() - keep;
     let mut idx = cutoff;
-    while idx > 0 && !s.is_char_boundary(idx) { idx -= 1; }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
     idx
 }
 
@@ -442,10 +501,7 @@ async fn remote_openai_stream<F>(
 where
     F: FnMut(&str, bool) + Send + 'static,
 {
-    let url = format!(
-        "{}/chat/completions",
-        config.base_url.trim_end_matches('/')
-    );
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": config.model,
         "messages": messages,
@@ -604,17 +660,15 @@ where
 
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-                    if let Some(text) = v
-                        .get("candidates")
-                        .and_then(|c| c.get(0))
-                        .and_then(|c| c.get("content"))
-                        .and_then(|c| c.get("parts"))
-                        .and_then(|p| p.get(0))
-                        .and_then(|p| p.get("text"))
-                        .and_then(|t| t.as_str())
-                    {
-                        full_text.push_str(text);
-                        on_chunk(text, false);
+                    let text = collect_gemini_text_parts(
+                        v.get("candidates")
+                            .and_then(|c| c.get(0))
+                            .and_then(|c| c.get("content"))
+                            .and_then(|c| c.get("parts")),
+                    );
+                    if !text.is_empty() {
+                        full_text.push_str(&text);
+                        on_chunk(&text, false);
                     }
                 }
             }

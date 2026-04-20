@@ -57,7 +57,10 @@ impl AgentError {
     }
 
     pub fn tool(name: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self::ToolError { tool: name.into(), detail: detail.into() }
+        Self::ToolError {
+            tool: name.into(),
+            detail: detail.into(),
+        }
     }
 
     pub fn context(s: impl Into<String>) -> Self {

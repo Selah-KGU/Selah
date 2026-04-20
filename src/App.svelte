@@ -9,7 +9,6 @@
   import { listen } from "@tauri-apps/api/event";
   import { get } from "svelte/store";
   import { onMount, onDestroy } from "svelte";
-
   // Persistent latch: once the user has EVER logged in, always show Dashboard
   // (with cached data + re-auth badge). Only cleared by explicit logout.
   // The flag is SET in setAuthFromSession() (api.ts) and CLEARED in logout().

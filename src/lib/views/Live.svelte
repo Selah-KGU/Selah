@@ -1,0 +1,1327 @@
+<script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { invoke } from "@tauri-apps/api/core";
+  import { marked } from "marked";
+  import DOMPurify from "dompurify";
+  import {
+    getScheduleSnapshot,
+    getAiConfig,
+    isAiReady,
+    liveAppendTranscript,
+    liveCancelSession,
+    liveFinishSession,
+    liveFlushSummary,
+    liveGetSession,
+    livePeekDayCache,
+    liveStartSession,
+    type LiveCourseInfo,
+    type LiveSaveResult,
+    type LiveSessionSnapshot,
+  } from "../api";
+  import type { ScheduleResponse } from "../types";
+  import { DAY_NUM_LABELS, PERIOD_TIMES } from "../types";
+  import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
+
+  let scheduleData = $state<ScheduleResponse | null>(null);
+  let courseOptions = $state<CourseSlot[]>([]);
+  let selectedKey = $state("");
+  let snapshot = $state<LiveSessionSnapshot>({
+    active: false,
+    course: null,
+    started_at: null,
+    transcript_lines: [],
+    pending_lines: [],
+    summaries: [],
+  });
+  let partialText = $state("");
+  let sttListening = $state(false);
+  let busy = $state(false);
+  let pageLoading = $state(true);
+  let error = $state("");
+  let success = $state("");
+  let liveReady = $state(false);
+  let lastSaved = $state<LiveSaveResult | null>(null);
+  let showSaveNotif = $state(false);
+  let saveProgress = $state("");
+  let summaryViewIndex = $state(-1); // -1 = auto (latest)
+  let summaryExpanded = $state(false);
+  let flushTimer: ReturnType<typeof setInterval> | null = null;
+  let timeTimer: ReturnType<typeof setInterval> | null = null;
+  let now = $state(new Date());
+  let scrollEl: HTMLElement | null = null;
+
+  marked.setOptions({ breaks: true, gfm: true });
+
+  function renderMd(text: string): string {
+    return DOMPurify.sanitize(marked.parse(text) as string);
+  }
+
+  function extractOverallSummary(md: string): string {
+    const start = md.indexOf("### 全体要約");
+    if (start < 0) return "";
+    const afterHeader = md.indexOf("\n", start);
+    if (afterHeader < 0) return "";
+    const nextSection = md.indexOf("\n###", afterHeader + 1);
+    const end = nextSection >= 0 ? nextSection : md.indexOf("\n## ", afterHeader + 1);
+    return (end >= 0 ? md.slice(afterHeader + 1, end) : md.slice(afterHeader + 1)).trim();
+  }
+
+  function toggleSummaryExpand() {
+    summaryExpanded = !summaryExpanded;
+  }
+
+  const activeSummaryIdx = $derived(
+    summaryViewIndex < 0 || summaryViewIndex >= snapshot.summaries.length
+      ? snapshot.summaries.length - 1
+      : summaryViewIndex
+  );
+
+  let unlistenPartial: (() => void) | null = null;
+  let unlistenFinal: (() => void) | null = null;
+  let unlistenState: (() => void) | null = null;
+  let unlistenError: (() => void) | null = null;
+  let unlistenLive: (() => void) | null = null;
+  let unlistenSaved: (() => void) | null = null;
+
+  const hasContent = $derived(snapshot.transcript_lines.length > 0 || partialText.trim().length > 0);
+
+  const remainingLabel = $derived.by(() => {
+    if (!snapshot.active || !snapshot.course) return "";
+    const period = snapshot.course.period;
+    const pt = PERIOD_TIMES[period];
+    if (pt) {
+      const endMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), pt.endH, pt.endM).getTime();
+      const diff = endMs - now.getTime();
+      if (diff > 0) {
+        const totalSec = Math.floor(diff / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        if (h > 0) return `残 ${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        return `残 ${m}:${String(s).padStart(2, '0')}`;
+      }
+      return "終了";
+    }
+    return now.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  });
+
+  let userScrolledUp = $state(false);
+  let showScrollBtn = $state(false);
+  let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handleScroll() {
+    if (!scrollEl) return;
+    const distFromBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+    userScrolledUp = true;
+    showScrollBtn = distFromBottom > 200;
+    // Reset idle timer — resume auto-scroll after 30s of no scrolling
+    if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
+    scrollIdleTimer = setTimeout(() => {
+      userScrolledUp = false;
+      showScrollBtn = false;
+      scrollToBottom();
+    }, 30000);
+  }
+
+  function scrollToBottom() {
+    if (!scrollEl) return;
+    userScrolledUp = false;
+    showScrollBtn = false;
+    if (scrollIdleTimer) { clearTimeout(scrollIdleTimer); scrollIdleTimer = null; }
+    scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" });
+  }
+
+  $effect(() => {
+    // auto-scroll to bottom when lines change, unless user scrolled up
+    const _len = snapshot.transcript_lines.length;
+    const _partial = partialText;
+    if (scrollEl && !userScrolledUp) {
+      requestAnimationFrame(() => {
+        if (!scrollEl || userScrolledUp) return;
+        scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" });
+      });
+    }
+  });
+
+  const selectedCourse = $derived.by(() => {
+    if (!selectedKey) return null;
+    return courseOptions.find((course) => courseKey(course) === selectedKey) ?? null;
+  });
+
+  const canStart = $derived(!snapshot.active && !!selectedCourse && liveReady && !busy);
+  const canStop = $derived(snapshot.active && !busy);
+
+  // When the selected course changes (and session not active), load cached history
+  $effect(() => {
+    const course = selectedCourse;
+    if (snapshot.active || !course || showSaveNotif) return;
+    livePeekDayCache(toLiveCourse(course)).then((cached) => {
+      if (snapshot.active || showSaveNotif) return;
+      if (cached.transcript_lines.length > 0 || cached.summaries.length > 0) {
+        snapshot = cached;
+      } else if (snapshot.course) {
+        snapshot = { active: false, course: null, started_at: null, transcript_lines: [], pending_lines: [], summaries: [] };
+      }
+    }).catch(() => {});
+  });
+
+  function courseKey(course: CourseSlot): string {
+    return `${course.day}-${course.period}-${course.kgc_code || course.name}`;
+  }
+
+  function courseLabel(course: CourseSlot): string {
+    const time = PERIOD_TIMES[course.period];
+    const day = DAY_NUM_LABELS[course.day] ?? `${course.day}`;
+    const timeLabel = time ? `${time.start}-${time.end}` : `${course.period}限`;
+    const meta = [day, `${course.period}限`, timeLabel].filter(Boolean).join(" ");
+    return `${course.name} (${meta})`;
+  }
+
+  function toLiveCourse(course: CourseSlot): LiveCourseInfo {
+    const time = PERIOD_TIMES[course.period];
+    return {
+      course_name: course.name,
+      course_code: course.kgc_code,
+      room: course.room,
+      teacher: course.teacher,
+      day: course.day,
+      period: course.period,
+      time_label: time ? `${time.start}-${time.end}` : "",
+    };
+  }
+
+  function setMessage(kind: "error" | "success", message: string) {
+    if (kind === "error") {
+      error = message;
+      success = "";
+    } else {
+      success = message;
+      error = "";
+      setTimeout(() => { if (success === message) success = ""; }, 4000);
+    }
+  }
+
+  async function refreshSchedule() {
+    scheduleData = await getScheduleSnapshot();
+    const slots = buildCourseSlots(scheduleData).filter((course) => !course.is_cancelled);
+    courseOptions = [...slots].sort((a, b) => a.day - b.day || a.period - b.period || a.name.localeCompare(b.name));
+    if (snapshot.active && snapshot.course) {
+      const match = courseOptions.find((course) =>
+        course.name === snapshot.course?.course_name &&
+        course.period === snapshot.course?.period &&
+        course.day === snapshot.course?.day,
+      );
+      if (match) {
+        selectedKey = courseKey(match);
+        return;
+      }
+    }
+    const hero = getHeroCourses(courseOptions, new Date());
+    selectedKey = hero[0] ? courseKey(hero[0].entry) : (courseOptions[0] ? courseKey(courseOptions[0]) : "");
+  }
+
+  async function refreshReadiness() {
+    const cfg = await getAiConfig();
+    const ready = await isAiReady();
+    liveReady = cfg.ai_enabled !== false && (cfg.provider !== "local" || ready);
+    if (!liveReady) {
+      error = "LiveにはAIの準備が必要です。設定でAIを有効にしてください。";
+    }
+  }
+
+  async function ensureReadyToStart() {
+    await refreshReadiness();
+    if (!liveReady) throw new Error(error || "AIの準備ができていません");
+    await invoke<string>("stt_test_model");
+  }
+
+  async function startLive() {
+    if (!selectedCourse) return;
+    busy = true;
+    error = "";
+    success = "";
+    try {
+      await ensureReadyToStart();
+      snapshot = await liveStartSession(toLiveCourse(selectedCourse));
+      partialText = "";
+      lastSaved = null;
+      await invoke("stt_start_stream", { caller: "live" });
+      sttListening = true;
+      startFlushTimer();
+      setMessage("success", `Liveを開始: ${selectedCourse.name}`);
+    } catch (e: any) {
+      setMessage("error", e?.message || String(e));
+      try {
+        await liveCancelSession();
+      } catch {}
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function stopLive() {
+    busy = true;
+    error = "";
+    saveProgress = "録音を停止中…";
+    try {
+      try {
+        await invoke("stt_stop_stream");
+      } catch {}
+      sttListening = false;
+      partialText = "";
+      saveProgress = "AI要約を生成中…";
+      const flushed = await liveFlushSummary(true);
+      snapshot = flushed;
+      saveProgress = "ファイルに書き出し中…";
+      const saved = await liveFinishSession();
+      lastSaved = saved;
+      snapshot = await liveGetSession();
+      stopFlushTimer();
+      saveProgress = "";
+      showSaveNotif = true;
+      setTimeout(() => { showSaveNotif = false; }, 6000);
+    } catch (e: any) {
+      saveProgress = "";
+      setMessage("error", e?.message || String(e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function cancelLive() {
+    busy = true;
+    try {
+      try {
+        await invoke("stt_stop_stream");
+      } catch {}
+      await liveCancelSession();
+      snapshot = await liveGetSession();
+      partialText = "";
+      sttListening = false;
+      stopFlushTimer();
+      setMessage("success", "Liveセッションを破棄しました");
+    } catch (e: any) {
+      setMessage("error", e?.message || String(e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  function startFlushTimer() {
+    stopFlushTimer();
+    flushTimer = setInterval(async () => {
+      if (!snapshot.active || busy) return;
+      try {
+        snapshot = await liveFlushSummary(false);
+      } catch (e: any) {
+        error = e?.message || String(e);
+      }
+    }, 30000);
+  }
+
+  function stopFlushTimer() {
+    if (flushTimer) {
+      clearInterval(flushTimer);
+      flushTimer = null;
+    }
+  }
+
+  onMount(async () => {
+    try {
+      snapshot = await liveGetSession();
+      await Promise.all([refreshSchedule(), refreshReadiness()]);
+      try {
+        sttListening = await invoke<boolean>("stt_is_running");
+      } catch {
+        sttListening = false;
+      }
+      if (snapshot.active) startFlushTimer();
+
+      unlistenPartial = await listen<{ text: string; caller: string }>("stt-partial", (event) => {
+        if (event.payload.caller !== "live") return;
+        partialText = event.payload.text || "";
+      });
+      unlistenFinal = await listen<{ text: string; caller: string }>("stt-final", async (event) => {
+        if (event.payload.caller !== "live") return;
+        if (!snapshot.active) return;
+        partialText = "";
+        try {
+          snapshot = await liveAppendTranscript(event.payload.text || "");
+        } catch (e: any) {
+          error = e?.message || String(e);
+        }
+      });
+      unlistenState = await listen<{ state: string; caller: string }>("stt-state", (event) => {
+        if (event.payload.caller !== "live") return;
+        sttListening = event.payload.state === "initializing" || event.payload.state === "listening";
+      });
+      unlistenError = await listen<{ message: string; caller: string }>("stt-error", (event) => {
+        if (event.payload.caller !== "live") return;
+        sttListening = false;
+        error = event.payload.message;
+      });
+      unlistenLive = await listen<LiveSessionSnapshot>("live-session-updated", (event) => {
+        snapshot = event.payload;
+      });
+      unlistenSaved = await listen<LiveSaveResult>("live-session-saved", (event) => {
+        lastSaved = event.payload;
+      });
+      timeTimer = setInterval(() => {
+        now = new Date();
+      }, 1000);
+    } catch (e: any) {
+      error = e?.message || String(e);
+    } finally {
+      pageLoading = false;
+    }
+  });
+
+  onDestroy(() => {
+    stopFlushTimer();
+    if (timeTimer) clearInterval(timeTimer);
+    if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
+    unlistenPartial?.();
+    unlistenFinal?.();
+    unlistenState?.();
+    unlistenError?.();
+    unlistenLive?.();
+    unlistenSaved?.();
+  });
+</script>
+
+<div class="live-root view">
+  <!-- ─── Floating Top Capsule ─── -->
+  <header class="top-capsule">
+    <div class="capsule-inner">
+      <span class="live-badge" class:recording={snapshot.active && sttListening}>
+        <span class="live-dot"></span>
+        {snapshot.active ? (sttListening ? "REC" : (saveProgress ? "処理中" : "一時停止")) : "LIVE"}
+      </span>
+
+      {#if snapshot.active && snapshot.course}
+        <span class="capsule-divider"></span>
+        <span class="capsule-course">{snapshot.course.course_name}</span>
+        <span class="capsule-clock">{remainingLabel}</span>
+      {:else}
+        <select class="capsule-select" bind:value={selectedKey} disabled={pageLoading}>
+          {#if courseOptions.length === 0}
+            <option value="">授業候補なし</option>
+          {:else}
+            {#each courseOptions as course}
+              <option value={courseKey(course)}>{courseLabel(course)}</option>
+            {/each}
+          {/if}
+        </select>
+      {/if}
+
+      <div class="capsule-actions">
+        {#if !snapshot.active}
+          <button class="capsule-act primary" onclick={startLive} disabled={!canStart}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            開始
+          </button>
+        {:else}
+          <button class="capsule-act stop" onclick={stopLive} disabled={!canStop}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+            保存
+          </button>
+          <button class="capsule-act ghost" onclick={cancelLive} disabled={busy}>破棄</button>
+        {/if}
+      </div>
+    </div>
+
+    {#if !liveReady && !snapshot.active}
+      <div class="capsule-warn">AIの準備が必要です。設定でAIを有効にしてください。</div>
+    {/if}
+  </header>
+
+  <!-- ─── Main scrollable area ─── -->
+  <div class="main-scroll" bind:this={scrollEl} onscroll={handleScroll}>
+    <div class="scroll-spacer-top"></div>
+
+    <!-- Inline messages -->
+    {#if error}
+      <div class="inline-msg error">{error}</div>
+    {/if}
+    {#if success}
+      <div class="inline-msg success">{success}</div>
+    {/if}
+
+    <!-- ─── AI Summary Card ─── -->
+    {#if snapshot.summaries.length > 0}
+      {@const chunk = snapshot.summaries[activeSummaryIdx]}
+      {@const total = snapshot.summaries.length}
+      <div class="summary-card" class:expanded={summaryExpanded}>
+        <div class="summary-card-header">
+          <span class="toast-ai-badge"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><defs><linearGradient id="ai-g1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#c480e8"/><stop offset="100%" stop-color="#6bacf0"/></linearGradient></defs><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="url(#ai-g1)" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="url(#ai-g1)" stroke-linejoin="round" stroke-width="1"/></svg><span class="toast-badge-text">AI 要点</span></span>
+          {#if total > 1}
+            <div class="summary-time-pills">
+              {#each snapshot.summaries as s, idx}
+                <button
+                  class="time-pill"
+                  class:active={idx === activeSummaryIdx}
+                  onclick={(e) => { e.stopPropagation(); summaryViewIndex = idx; }}
+                >{s.range_label}</button>
+              {/each}
+            </div>
+          {:else}
+            <span class="toast-meta">{chunk.range_label}</span>
+          {/if}
+          <button class="toast-expand-btn" onclick={(e) => { e.stopPropagation(); toggleSummaryExpand(); }}>{summaryExpanded ? '収める' : '展開'}</button>
+        </div>
+        <div class="summary-card-body md">{@html renderMd(chunk.body)}</div>
+        {#if summaryExpanded}
+          <div class="summary-card-overlay" onclick={toggleSummaryExpand}>
+            <div class="summary-card-header">
+              <span class="toast-ai-badge"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><defs><linearGradient id="ai-g2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#c480e8"/><stop offset="100%" stop-color="#6bacf0"/></linearGradient></defs><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="url(#ai-g2)" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="url(#ai-g2)" stroke-linejoin="round" stroke-width="1"/></svg><span class="toast-badge-text">AI 要点</span></span>
+              {#if total > 1}
+                <div class="summary-time-pills">
+                  {#each snapshot.summaries as s, idx}
+                    <button
+                      class="time-pill"
+                      class:active={idx === activeSummaryIdx}
+                      onclick={(e) => { e.stopPropagation(); summaryViewIndex = idx; }}
+                    >{s.range_label}</button>
+                  {/each}
+                </div>
+              {:else}
+                <span class="toast-meta">{chunk.range_label}</span>
+              {/if}
+              <button class="toast-expand-btn" onclick={(e) => { e.stopPropagation(); toggleSummaryExpand(); }}>収める</button>
+            </div>
+            <div class="summary-card-full md">{@html renderMd(chunk.body)}</div>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- ─── Transcript: Lyrics-style scrolling ─── -->
+    <section class="lyrics-stage">
+      {#if pageLoading}
+        <div class="lyrics-empty">読み込み中…</div>
+      {:else if !hasContent}
+        <div class="lyrics-empty">
+          {#if snapshot.active && saveProgress}
+            <div class="save-capsule saving">
+              <span class="save-capsule-spinner"></span>
+              <span class="save-capsule-text">{saveProgress}</span>
+            </div>
+          {:else if snapshot.active}
+            <div class="waiting-vis">
+              <span class="vis-bar"></span>
+              <span class="vis-bar"></span>
+              <span class="vis-bar"></span>
+              <span class="vis-bar"></span>
+              <span class="vis-bar"></span>
+            </div>
+            <span>音声待機中…</span>
+          {:else}
+            <div class="empty-hero">
+              {#if saveProgress}
+                <div class="save-capsule saving">
+                  <span class="save-capsule-spinner"></span>
+                  <span class="save-capsule-text">{saveProgress}</span>
+                </div>
+              {:else if showSaveNotif && lastSaved}
+                <div class="save-capsule done">
+                  <svg class="save-capsule-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="url(#notif-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <defs><linearGradient id="notif-grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#c480e8"/><stop offset="100%" stop-color="#6bacf0"/></linearGradient></defs>
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+                  </svg>
+                  <span class="save-capsule-text">保存完了</span>
+                </div>
+                <div class="save-summary md">{@html renderMd(extractOverallSummary(lastSaved.markdown))}</div>
+              {:else}
+                <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.18">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="23"/>
+                  <line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+                <p>授業を選択して開始すると<br/>リアルタイム文字起こしがここに表示されます</p>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <div class="lyrics-track">
+          {#each snapshot.transcript_lines as line, i (line.at + '-' + i)}
+            {@const isLast = i === snapshot.transcript_lines.length - 1 && !partialText.trim()}
+            <div class="lyric-line" class:past={!isLast} class:active={isLast}>
+              <span class="lyric-time">{line.at}</span>
+              <span class="lyric-text">{line.text}</span>
+            </div>
+          {/each}
+          {#if partialText.trim()}
+            <div class="lyric-line active partial">
+              <span class="lyric-time">now</span>
+              <span class="lyric-text">{partialText.trim()}<span class="typing-cursor"></span></span>
+            </div>
+          {/if}
+        </div>
+        <div class="lyrics-count">{snapshot.transcript_lines.length}行</div>
+      {/if}
+    </section>
+
+
+
+    <div class="scroll-spacer-bottom"></div>
+  </div>
+
+  {#if showScrollBtn && hasContent}
+    <button class="scroll-to-bottom" onclick={scrollToBottom}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 13 12 18 17 13"/><line x1="12" y1="18" x2="12" y2="6"/></svg>
+      最新へ
+    </button>
+  {/if}
+</div>
+
+<style>
+  /* ═══════════════════════════════════════════════
+     Live — Capsule + Transcript-first Design
+     ═══════════════════════════════════════════════ */
+
+  .live-root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    width: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* ── Floating Top Capsule ── */
+  .top-capsule {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    max-width: min(620px, calc(100% - 24px));
+    width: auto;
+  }
+
+  .capsule-inner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px 5px 10px;
+    border-radius: 20px;
+    background: var(--glass-bg, rgba(255, 255, 255, 0.55));
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    border: 0.5px solid var(--glass-border);
+    box-shadow: var(--shadow-glass), 0 4px 20px rgba(0, 0, 0, 0.06);
+  }
+
+  .live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 3px 8px 3px 6px;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .live-badge.recording {
+    background: color-mix(in srgb, var(--red) 14%, transparent);
+    color: var(--red);
+  }
+  .live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+  .live-badge.recording .live-dot {
+    background: var(--red);
+    animation: pulse-dot 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.5); }
+    50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(255, 59, 48, 0); }
+  }
+
+  .capsule-divider {
+    width: 1px;
+    height: 16px;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+
+  .capsule-course {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+    min-width: 0;
+  }
+
+  .capsule-clock {
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .capsule-select {
+    padding: 4px 8px;
+    font-size: 12.5px;
+    font-family: inherit;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: transparent;
+    border: 0.5px solid color-mix(in srgb, var(--text-primary) 10%, transparent);
+    border-radius: 10px;
+    outline: none;
+    cursor: pointer;
+    max-width: 240px;
+    min-width: 0;
+    transition: border-color 0.15s;
+  }
+  .capsule-select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+
+  .capsule-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 2px;
+    flex-shrink: 0;
+  }
+
+  .capsule-act {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, transform 0.1s, opacity 0.15s;
+  }
+  .capsule-act:active { transform: scale(0.96); }
+  .capsule-act:disabled { opacity: 0.4; cursor: default; transform: none; }
+  .capsule-act.primary {
+    background: var(--blue);
+    color: var(--text-on-accent);
+  }
+  .capsule-act.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--blue) 85%, #000);
+  }
+  .capsule-act.stop {
+    background: color-mix(in srgb, var(--red) 14%, transparent);
+    color: var(--red);
+  }
+  .capsule-act.stop:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--red) 22%, transparent);
+  }
+  .capsule-act.ghost {
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 5px 8px;
+  }
+  .capsule-act.ghost:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  }
+
+  .capsule-warn {
+    margin-top: 6px;
+    padding: 6px 14px;
+    border-radius: 10px;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--orange, #e67700);
+    background: color-mix(in srgb, var(--orange, #e67700) 8%, var(--bg-card));
+    border: 0.5px solid color-mix(in srgb, var(--orange, #e67700) 18%, transparent);
+    text-align: center;
+  }
+
+  /* ── Main Scroll Area ── */
+  .main-scroll {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    padding: 0 16px;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+  }
+  .main-scroll::-webkit-scrollbar { display: none; }
+
+  .scroll-spacer-top { height: 56px; flex-shrink: 0; }
+  .scroll-spacer-bottom { height: 32px; flex-shrink: 0; }
+
+  /* ── Inline Messages ── */
+  .inline-msg {
+    padding: 9px 14px;
+    border-radius: 10px;
+    font-size: 12.5px;
+    font-weight: 500;
+    margin-bottom: 10px;
+    animation: toast-enter 0.25s ease-out;
+  }
+  .inline-msg.error {
+    background: color-mix(in srgb, var(--red) 10%, transparent);
+    color: var(--red);
+    border: 0.5px solid color-mix(in srgb, var(--red) 15%, transparent);
+  }
+  .inline-msg.success {
+    background: color-mix(in srgb, var(--green) 10%, transparent);
+    color: var(--green);
+    border: 0.5px solid color-mix(in srgb, var(--green) 15%, transparent);
+  }
+
+  /* ── Summary Card (single floating card) ── */
+  .summary-card {
+    position: sticky;
+    top: 56px;
+    z-index: 10;
+    margin-bottom: 14px;
+    background: color-mix(in srgb, var(--bg-card) 100%, #f8f4fc);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border: 0.5px solid rgba(175, 82, 222, 0.22);
+    border-radius: 14px;
+    padding: 10px 16px;
+    box-shadow: 0 2px 16px rgba(175, 82, 222, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+    animation: card-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+    overflow: hidden;
+    transition: box-shadow 0.3s ease;
+  }
+  .summary-card.expanded {
+    overflow: visible;
+    box-shadow: 0 4px 24px rgba(175, 82, 222, 0.12), 0 1px 3px rgba(0, 0, 0, 0.04);
+  }
+
+  .summary-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+  }
+  .toast-ai-badge {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .toast-badge-text {
+    font-size: 12px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #c480e8, #6bacf0);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: 0.3px;
+    line-height: 1;
+  }
+
+  /* Time-block pill navigation */
+  .summary-time-pills {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .time-pill {
+    all: unset;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    padding: 2px 8px;
+    border-radius: 20px;
+    border: 0.5px solid color-mix(in srgb, var(--text-tertiary) 20%, transparent);
+    transition: all 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .time-pill:hover {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--text-secondary);
+    transform: scale(1.04);
+  }
+  .time-pill.active {
+    background: linear-gradient(135deg, rgba(196, 128, 232, 0.12), rgba(107, 172, 240, 0.12));
+    border-color: rgba(175, 82, 222, 0.3);
+    color: var(--text-primary);
+    font-weight: 600;
+    transform: scale(1.06);
+  }
+
+  .toast-meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-left: auto;
+  }
+  .toast-expand-btn {
+    all: unset;
+    cursor: pointer;
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 500;
+    opacity: 0.8;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: auto;
+    transition: background 0.12s;
+  }
+  .toast-expand-btn:hover {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    opacity: 1;
+  }
+
+  /* Collapsed body: show bullet titles only (before ---) */
+  .summary-card-body {
+    margin: 0;
+    font-size: 13.5px;
+    font-weight: 400;
+    line-height: 1.65;
+    color: var(--text-primary);
+    overflow: hidden;
+  }
+  /* Hide everything after the <hr> in collapsed mode */
+  .summary-card-body :global(hr),
+  .summary-card-body :global(hr ~ *) {
+    display: none;
+  }
+
+  /* Expanded overlay */
+  .summary-card-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    padding: 10px 16px;
+    background: #f9f6fc;
+    border: 0.5px solid rgba(175, 82, 222, 0.22);
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(175, 82, 222, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+    z-index: 30;
+    cursor: pointer;
+    animation: overlay-expand 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+    transform-origin: top center;
+  }
+  :global(.dark) .summary-card-overlay {
+    background: #1e1a24;
+  }
+  .summary-card-full {
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: var(--text-primary);
+  }
+  /* In expanded view, list-style none for explanation section below hr */
+  .summary-card-full :global(hr ~ ul),
+  .summary-card-full :global(hr ~ ol) {
+    list-style: none;
+    padding-left: 0;
+  }
+
+  /* Markdown in card body and overlay */
+  .summary-card-body.md :global(hr),
+  .summary-card-full.md :global(hr) {
+    margin: 8px 0;
+    border: none;
+    border-top: 0.5px solid var(--glass-border);
+  }
+  .summary-card-body.md :global(p),
+  .summary-card-full.md :global(p) { margin: 0 0 4px; }
+  .summary-card-body.md :global(p:last-child),
+  .summary-card-full.md :global(p:last-child) { margin-bottom: 0; }
+  .summary-card-body.md :global(ul), .summary-card-body.md :global(ol),
+  .summary-card-full.md :global(ul), .summary-card-full.md :global(ol) { margin: 0 0 4px; padding-left: 16px; }
+  .summary-card-body.md :global(li),
+  .summary-card-full.md :global(li) { margin-bottom: 2px; }
+  .summary-card-body.md :global(h1), .summary-card-body.md :global(h2), .summary-card-body.md :global(h3),
+  .summary-card-body.md :global(h4), .summary-card-body.md :global(h5),
+  .summary-card-full.md :global(h1), .summary-card-full.md :global(h2), .summary-card-full.md :global(h3),
+  .summary-card-full.md :global(h4), .summary-card-full.md :global(h5) {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 6px 0 3px;
+    color: var(--text-primary);
+  }
+  .summary-card-body.md :global(h1:first-child), .summary-card-body.md :global(h2:first-child),
+  .summary-card-body.md :global(h3:first-child),
+  .summary-card-full.md :global(h1:first-child), .summary-card-full.md :global(h2:first-child),
+  .summary-card-full.md :global(h3:first-child) { margin-top: 0; }
+  .summary-card-body.md :global(code),
+  .summary-card-full.md :global(code) {
+    background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+    padding: 1px 4px;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+  .summary-card-body.md :global(pre),
+  .summary-card-full.md :global(pre) {
+    background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+    padding: 8px 10px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .summary-card-body.md :global(pre code),
+  .summary-card-full.md :global(pre code) { background: transparent; padding: 0; }
+  .summary-card-body.md :global(blockquote),
+  .summary-card-full.md :global(blockquote) {
+    margin: 4px 0;
+    padding-left: 10px;
+    border-left: 2px solid var(--border);
+    color: var(--text-secondary);
+  }
+  .summary-card-body.md :global(strong),
+  .summary-card-full.md :global(strong) { font-weight: 600; }
+  .summary-card-body.md :global(a),
+  .summary-card-full.md :global(a) { color: var(--accent); text-decoration: none; }
+  .summary-card-body.md :global(a:hover),
+  .summary-card-full.md :global(a:hover) { text-decoration: underline; }
+
+  @keyframes toast-enter {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes card-enter {
+    from {
+      opacity: 0;
+      transform: translateY(-10px) scale(0.96);
+      filter: blur(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+    }
+  }
+
+  @keyframes overlay-expand {
+    from {
+      opacity: 0;
+      transform: scaleY(0.92) translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: scaleY(1) translateY(0);
+    }
+  }
+
+  /* ── Lyrics Stage ── */
+  .lyrics-stage {
+    min-height: 50vh;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .lyrics-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+    min-height: 50vh;
+  }
+
+  .empty-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    text-align: center;
+  }
+  .empty-hero p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-tertiary);
+    line-height: 1.7;
+  }
+
+  /* ── Waiting Visualizer (audio bars) ── */
+  .waiting-vis {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 28px;
+  }
+  .vis-bar {
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+    opacity: 0.5;
+    animation: vis-wave 1.2s ease-in-out infinite;
+  }
+  .vis-bar:nth-child(1) { height: 8px; animation-delay: 0s; }
+  .vis-bar:nth-child(2) { height: 16px; animation-delay: 0.15s; }
+  .vis-bar:nth-child(3) { height: 22px; animation-delay: 0.3s; }
+  .vis-bar:nth-child(4) { height: 14px; animation-delay: 0.45s; }
+  .vis-bar:nth-child(5) { height: 10px; animation-delay: 0.6s; }
+  @keyframes vis-wave {
+    0%, 100% { transform: scaleY(0.4); opacity: 0.35; }
+    50% { transform: scaleY(1); opacity: 0.7; }
+  }
+
+  /* ── Lyrics Track ── */
+  .lyrics-track {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 20px 8px 5vh;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .lyric-line {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    transition:
+      opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      filter 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      background 0.3s ease;
+    animation: lyric-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @keyframes lyric-enter {
+    from {
+      opacity: 0;
+      transform: translateY(14px) scale(0.97);
+      filter: blur(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+    }
+  }
+
+  /* Past lines: faded, smaller */
+  .lyric-line.past {
+    opacity: 0.38;
+    transform: scale(0.97);
+  }
+  .lyric-line.past:hover {
+    opacity: 0.65;
+    background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  }
+
+  /* Active line: full brightness, larger, emphasized */
+  .lyric-line.active {
+    opacity: 1;
+    transform: scale(1);
+  }
+  .lyric-line.active .lyric-text {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+  }
+  .lyric-line.active .lyric-time {
+    color: var(--accent);
+    opacity: 1;
+  }
+
+  /* Partial (live recognition) glow */
+  .lyric-line.partial {
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border: 0.5px solid color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .lyric-line.partial .lyric-text {
+    background: linear-gradient(90deg, var(--text-primary) 60%, var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .lyric-time {
+    font-size: 11px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    opacity: 0.7;
+    flex-shrink: 0;
+    min-width: 38px;
+    text-align: right;
+    letter-spacing: -0.01em;
+    transition: color 0.3s, opacity 0.3s;
+  }
+
+  .lyric-text {
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.6;
+    color: var(--text-primary);
+    word-break: break-word;
+    transition:
+      font-size 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+      font-weight 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+      color 0.3s ease;
+  }
+
+  /* Typing cursor */
+  .typing-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    background: var(--accent);
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    border-radius: 1px;
+    animation: cursor-blink 1s steps(2, start) infinite;
+  }
+  @keyframes cursor-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* Line count badge */
+  .lyrics-count {
+    position: sticky;
+    bottom: 8px;
+    align-self: flex-end;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    background: var(--glass-bg, rgba(255, 255, 255, 0.6));
+    backdrop-filter: blur(12px) var(--glass-saturate);
+    -webkit-backdrop-filter: blur(12px) var(--glass-saturate);
+    padding: 3px 10px;
+    border-radius: 8px;
+    border: 0.5px solid var(--glass-border);
+    pointer-events: none;
+    margin-right: 8px;
+  }
+
+  /* ── Save Capsule Notification ── */
+  .save-capsule {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    border-radius: 100px;
+    animation: capsule-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .save-capsule.saving {
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+    border: 0.5px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
+  }
+  .save-capsule.done {
+    background: linear-gradient(135deg, rgba(196, 128, 232, 0.08), rgba(107, 172, 240, 0.08));
+    border: 0.5px solid rgba(175, 82, 222, 0.22);
+  }
+  .save-capsule-icon {
+    flex-shrink: 0;
+  }
+  .save-capsule-text {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .save-capsule.done .save-capsule-text {
+    background: linear-gradient(135deg, #c480e8, #6bacf0);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .save-capsule-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .save-summary {
+    margin-top: 12px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    text-align: center;
+    max-width: 320px;
+    animation: capsule-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+  }
+
+  @keyframes capsule-in {
+    from {
+      opacity: 0;
+      transform: scale(0.9) translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    .capsule-course { max-width: 120px; }
+    .capsule-select { max-width: 160px; }
+    .capsule-clock { font-size: 12px; }
+    .capsule-inner { gap: 4px; padding: 4px 4px 4px 8px; }
+  }
+
+  h3, p { margin: 0; }
+
+  /* ── Scroll to Bottom Button ── */
+  .scroll-to-bottom {
+    position: absolute;
+    bottom: 16px;
+    left: 0;
+    right: 0;
+    margin: 0 auto;
+    width: fit-content;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--glass-bg, rgba(255, 255, 255, 0.7));
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    border: 0.5px solid var(--glass-border);
+    border-radius: 100px;
+    box-shadow: var(--shadow-glass), 0 2px 8px rgba(0, 0, 0, 0.06);
+    cursor: pointer;
+    z-index: 15;
+    animation: capsule-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .scroll-to-bottom:hover {
+    transform: scale(1.04);
+    box-shadow: var(--shadow-glass), 0 4px 14px rgba(0, 0, 0, 0.1);
+  }
+  .scroll-to-bottom:active {
+    transform: scale(0.97);
+  }
+</style>

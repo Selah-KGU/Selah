@@ -58,4 +58,5 @@ pub const KGC_AUTH_REQUIRED_MSG: &str = "ログインしてください";
 /// Shared error messages used across multiple modules
 pub const TOO_MANY_WINDOWS_MSG: &str = "開いているウィンドウが多すぎます。いくつか閉じてください。";
 pub const MAIL_AUTH_REQUIRED_MSG: &str = "メールにログインしてください";
-pub const MAIL_SESSION_EXPIRED_MSG: &str = "メールセッションが期限切れです。再ログインしてください。";
+pub const MAIL_SESSION_EXPIRED_MSG: &str =
+    "メールセッションが期限切れです。再ログインしてください。";

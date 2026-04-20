@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use sha2::{Sha256, Digest};
 
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -14,11 +14,21 @@ const CONFIG_FILE: &str = "google_calendar_config.json";
 const CALENDAR_SUMMARY: &str = "Selah 時間割";
 
 fn default_client_id() -> String {
-    crate::embedded_keys::decode(&[0x40, 0x5D, 0x55, 0x57, 0x58, 0x1D, 0x5C, 0x46, 0x5D, 0x5B, 0x00, 0x44, 0x05, 0x0A, 0x5E, 0x12, 0x14, 0x19, 0x59, 0x5B, 0x15, 0x5A, 0x47, 0x00, 0x0E, 0x59, 0x02, 0x5D, 0x5B, 0x57, 0x01, 0x00, 0x01, 0x51, 0x5A, 0x14, 0x52, 0x10, 0x5D, 0x50, 0x58, 0x5D, 0x54, 0x1C, 0x57, 0x03, 0x15, 0x1F, 0x4F, 0x0F, 0x42, 0x04, 0x10, 0x05, 0x06, 0x58, 0x41, 0x55, 0x40, 0x55, 0x1C, 0x0B, 0x18, 0x04, 0x06, 0x59, 0x45, 0x14, 0x06, 0x0E])
+    crate::embedded_keys::decode(&[
+        0x40, 0x5D, 0x55, 0x57, 0x58, 0x1D, 0x5C, 0x46, 0x5D, 0x5B, 0x00, 0x44, 0x05, 0x0A, 0x5E,
+        0x12, 0x14, 0x19, 0x59, 0x5B, 0x15, 0x5A, 0x47, 0x00, 0x0E, 0x59, 0x02, 0x5D, 0x5B, 0x57,
+        0x01, 0x00, 0x01, 0x51, 0x5A, 0x14, 0x52, 0x10, 0x5D, 0x50, 0x58, 0x5D, 0x54, 0x1C, 0x57,
+        0x03, 0x15, 0x1F, 0x4F, 0x0F, 0x42, 0x04, 0x10, 0x05, 0x06, 0x58, 0x41, 0x55, 0x40, 0x55,
+        0x1C, 0x0B, 0x18, 0x04, 0x06, 0x59, 0x45, 0x14, 0x06, 0x0E,
+    ])
 }
 
 fn default_client_secret() -> String {
-    crate::embedded_keys::decode(&[0x34, 0x2A, 0x2F, 0x32, 0x38, 0x75, 0x46, 0x38, 0x0B, 0x2C, 0x1A, 0x59, 0x69, 0x7E, 0x5B, 0x31, 0x0D, 0x5A, 0x0E, 0x12, 0x67, 0x28, 0x42, 0x0C, 0x56, 0x49, 0x73, 0x62, 0x5B, 0x51, 0x43, 0x01, 0x03, 0x2E, 0x10])
+    crate::embedded_keys::decode(&[
+        0x34, 0x2A, 0x2F, 0x32, 0x38, 0x75, 0x46, 0x38, 0x0B, 0x2C, 0x1A, 0x59, 0x69, 0x7E, 0x5B,
+        0x31, 0x0D, 0x5A, 0x0E, 0x12, 0x67, 0x28, 0x42, 0x0C, 0x56, 0x49, 0x73, 0x62, 0x5B, 0x51,
+        0x43, 0x01, 0x03, 0x2E, 0x10,
+    ])
 }
 
 /// Google Calendar OAuth settings.
@@ -70,9 +80,15 @@ pub struct GoogleCalStatus {
     pub synced_events: usize,
 }
 
-fn token_path() -> PathBuf { crate::client::data_dir().join(TOKEN_FILE) }
-fn sync_state_path() -> PathBuf { crate::client::data_dir().join(SYNC_STATE_FILE) }
-fn config_path() -> PathBuf { crate::client::data_dir().join(CONFIG_FILE) }
+fn token_path() -> PathBuf {
+    crate::client::data_dir().join(TOKEN_FILE)
+}
+fn sync_state_path() -> PathBuf {
+    crate::client::data_dir().join(SYNC_STATE_FILE)
+}
+fn config_path() -> PathBuf {
+    crate::client::data_dir().join(CONFIG_FILE)
+}
 
 pub fn load_config() -> GoogleCalConfig {
     let path = config_path();
@@ -113,13 +129,15 @@ pub fn save_config(config: &GoogleCalConfig) -> Result<(), String> {
 }
 
 fn save_config_to_disk(config: &GoogleCalConfig) -> Result<(), String> {
-    let data = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("設定の保存に失敗: {}", e))?;
+    let data =
+        serde_json::to_string_pretty(config).map_err(|e| format!("設定の保存に失敗: {}", e))?;
     let path = config_path();
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("設定ファイルの書き込みに失敗: {}", e))?;
+    std::fs::write(&path, &data).map_err(|e| format!("設定ファイルの書き込みに失敗: {}", e))?;
     #[cfg(unix)]
-    { let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)); }
+    {
+        let _ =
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    }
     Ok(())
 }
 
@@ -127,15 +145,17 @@ fn load_sync_state() -> SyncState {
     let path = sync_state_path();
     if path.exists() {
         if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Ok(state) = serde_json::from_str(&data) { return state; }
+            if let Ok(state) = serde_json::from_str(&data) {
+                return state;
+            }
         }
     }
     SyncState::default()
 }
 
 fn save_sync_state(state: &SyncState) -> Result<(), String> {
-    let data = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("同期状態の保存に失敗: {}", e))?;
+    let data =
+        serde_json::to_string_pretty(state).map_err(|e| format!("同期状態の保存に失敗: {}", e))?;
     std::fs::write(sync_state_path(), &data)
         .map_err(|e| format!("同期状態ファイルの書き込みに失敗: {}", e))?;
     Ok(())
@@ -153,31 +173,35 @@ fn generate_pkce() -> (String, String) {
     let mut hasher = Sha256::new();
     hasher.update(verifier.as_bytes());
     let hash = hasher.finalize();
-    let challenge = base64::Engine::encode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        hash,
-    );
+    let challenge = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, hash);
     (verifier, challenge)
 }
 
 /// Parse week_label like "2026/03/30(月)～2026/04/05(日)" to get Monday's date
-static WEEK_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(\d{4})/(\d{2})/(\d{2})").expect("valid hardcoded regex")
-});
+static WEEK_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(\d{4})/(\d{2})/(\d{2})").expect("valid hardcoded regex"));
 
 fn parse_week_start(week_label: &str) -> Result<chrono::NaiveDate, String> {
     let re = &*WEEK_RE;
-    let caps = re.captures(week_label)
+    let caps = re
+        .captures(week_label)
         .ok_or_else(|| format!("週ラベルを解析できません: {}", week_label))?;
     let y: i32 = caps[1].parse().map_err(|e| format!("year: {}", e))?;
     let m: u32 = caps[2].parse().map_err(|e| format!("month: {}", e))?;
     let d: u32 = caps[3].parse().map_err(|e| format!("day: {}", e))?;
-    chrono::NaiveDate::from_ymd_opt(y, m, d)
-        .ok_or_else(|| format!("無効な日付: {}/{}/{}", y, m, d))
+    chrono::NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| format!("無効な日付: {}/{}/{}", y, m, d))
 }
 
 fn day_offset(day: &str) -> i64 {
-    match day { "月" => 0, "火" => 1, "水" => 2, "木" => 3, "金" => 4, "土" => 5, _ => 0 }
+    match day {
+        "月" => 0,
+        "火" => 1,
+        "水" => 2,
+        "木" => 3,
+        "金" => 4,
+        "土" => 5,
+        _ => 0,
+    }
 }
 
 pub struct GoogleCalendarClient {
@@ -242,7 +266,9 @@ impl GoogleCalendarClient {
         let _ = std::fs::remove_file(token_path()); // clean up legacy file
     }
 
-    pub fn is_authenticated(&self) -> bool { self.token.is_some() }
+    pub fn is_authenticated(&self) -> bool {
+        self.token.is_some()
+    }
 
     pub fn auth_url(&mut self, port: u16) -> Result<String, String> {
         if self.config.client_id.trim().is_empty() {
@@ -265,9 +291,13 @@ impl GoogleCalendarClient {
     }
 
     pub async fn exchange_code(&mut self, code: &str) -> Result<(), String> {
-        let verifier = self.pkce_verifier.take()
+        let verifier = self
+            .pkce_verifier
+            .take()
             .ok_or("PKCE verifier missing. Please retry login.")?;
-        let redirect_uri = self.redirect_uri.take()
+        let redirect_uri = self
+            .redirect_uri
+            .take()
             .ok_or("Redirect URI missing. Please retry login.")?;
         let client_id = self.config.client_id.trim().to_string();
         let client_secret = self.config.client_secret.trim().to_string();
@@ -283,25 +313,38 @@ impl GoogleCalendarClient {
             params.push(("client_secret", client_secret.as_str()));
         }
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(GOOGLE_TOKEN_URL)
             .form(&params)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("トークン交換失敗: {}", e))?;
 
         let status = resp.status();
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("レスポンス解析失敗: {}", e))?;
         if !status.is_success() {
-            let err = body["error_description"].as_str()
-                .or(body["error"].as_str()).unwrap_or("unknown error");
+            let err = body["error_description"]
+                .as_str()
+                .or(body["error"].as_str())
+                .unwrap_or("unknown error");
             return Err(format!("Google認証エラー: {}", err));
         }
 
         self.token = Some(TokenData {
-            access_token: body["access_token"].as_str().ok_or("access_token missing")?.into(),
-            refresh_token: body["refresh_token"].as_str().ok_or("refresh_token missing")?.into(),
-            expires_at: chrono::Utc::now().timestamp() + body["expires_in"].as_i64().unwrap_or(3600),
+            access_token: body["access_token"]
+                .as_str()
+                .ok_or("access_token missing")?
+                .into(),
+            refresh_token: body["refresh_token"]
+                .as_str()
+                .ok_or("refresh_token missing")?
+                .into(),
+            expires_at: chrono::Utc::now().timestamp()
+                + body["expires_in"].as_i64().unwrap_or(3600),
         });
         self.save_token();
         log::info!("Google Calendar token obtained");
@@ -309,7 +352,9 @@ impl GoogleCalendarClient {
     }
 
     pub async fn refresh_token(&mut self) -> Result<(), String> {
-        let refresh = self.token.as_ref()
+        let refresh = self
+            .token
+            .as_ref()
             .map(|t| t.refresh_token.clone())
             .ok_or("リフレッシュトークンがありません")?;
         let client_id = self.config.client_id.trim().to_string();
@@ -324,26 +369,36 @@ impl GoogleCalendarClient {
             params.push(("client_secret", client_secret.as_str()));
         }
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(GOOGLE_TOKEN_URL)
             .form(&params)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("トークン更新失敗: {}", e))?;
 
         let status = resp.status();
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("レスポンス解析失敗: {}", e))?;
         if !status.is_success() {
             self.clear_token();
-            let err = body["error_description"].as_str()
-                .or(body["error"].as_str()).unwrap_or("unknown error");
+            let err = body["error_description"]
+                .as_str()
+                .or(body["error"].as_str())
+                .unwrap_or("unknown error");
             return Err(format!("トークン更新失敗: {}", err));
         }
 
         self.token = Some(TokenData {
-            access_token: body["access_token"].as_str().ok_or("access_token missing")?.into(),
+            access_token: body["access_token"]
+                .as_str()
+                .ok_or("access_token missing")?
+                .into(),
             refresh_token: body["refresh_token"].as_str().unwrap_or(&refresh).into(),
-            expires_at: chrono::Utc::now().timestamp() + body["expires_in"].as_i64().unwrap_or(3600),
+            expires_at: chrono::Utc::now().timestamp()
+                + body["expires_in"].as_i64().unwrap_or(3600),
         });
         self.save_token();
         Ok(())
@@ -353,24 +408,36 @@ impl GoogleCalendarClient {
         if self.token.is_none() {
             return Err("Google Calendarにログインしてください".into());
         }
-        let needs_refresh = self.token.as_ref()
+        let needs_refresh = self
+            .token
+            .as_ref()
             .map(|t| chrono::Utc::now().timestamp() >= t.expires_at - 60)
             .unwrap_or(true);
         if needs_refresh {
             self.refresh_token().await?;
         }
-        Ok(self.token.as_ref()
+        Ok(self
+            .token
+            .as_ref()
             .ok_or("token lost after refresh")?
-            .access_token.clone())
+            .access_token
+            .clone())
     }
 
     /// Find or create the "Selah 時間割" calendar
     async fn ensure_calendar(&mut self) -> Result<String, String> {
         if !self.sync_state.calendar_id.is_empty() {
             let token = self.ensure_token().await?;
-            let resp = self.http
-                .get(format!("{}/calendars/{}", GCAL_API_BASE, urlencoding::encode(&self.sync_state.calendar_id)))
-                .bearer_auth(&token).send().await
+            let resp = self
+                .http
+                .get(format!(
+                    "{}/calendars/{}",
+                    GCAL_API_BASE,
+                    urlencoding::encode(&self.sync_state.calendar_id)
+                ))
+                .bearer_auth(&token)
+                .send()
+                .await
                 .map_err(|e| format!("カレンダー確認失敗: {}", e))?;
             if resp.status().is_success() {
                 return Ok(self.sync_state.calendar_id.clone());
@@ -380,11 +447,16 @@ impl GoogleCalendarClient {
         }
 
         let token = self.ensure_token().await?;
-        let resp = self.http
+        let resp = self
+            .http
             .get(format!("{}/users/me/calendarList", GCAL_API_BASE))
-            .bearer_auth(&token).send().await
+            .bearer_auth(&token)
+            .send()
+            .await
             .map_err(|e| format!("カレンダー一覧取得失敗: {}", e))?;
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("カレンダー一覧レスポンス解析失敗: {}", e))?;
         if let Some(items) = body["items"].as_array() {
             for item in items {
@@ -399,19 +471,26 @@ impl GoogleCalendarClient {
         }
 
         let token = self.ensure_token().await?;
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/calendars", GCAL_API_BASE))
             .bearer_auth(&token)
             .json(&serde_json::json!({ "summary": CALENDAR_SUMMARY, "timeZone": "Asia/Tokyo" }))
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("カレンダー作成失敗: {}", e))?;
         if !resp.status().is_success() {
             let err: serde_json::Value = resp.json().await.unwrap_or_default();
             return Err(format!("カレンダー作成失敗: {}", err));
         }
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("カレンダー作成レスポンス解析失敗: {}", e))?;
-        let cal_id = body["id"].as_str().ok_or("カレンダーID取得失敗")?.to_string();
+        let cal_id = body["id"]
+            .as_str()
+            .ok_or("カレンダーID取得失敗")?
+            .to_string();
         self.sync_state.calendar_id = cal_id.clone();
         self.sync_state.event_map.clear();
         save_sync_state(&self.sync_state)?;
@@ -434,22 +513,32 @@ impl GoogleCalendarClient {
         let mut desired: std::collections::HashMap<String, &CalendarSyncEntry> =
             std::collections::HashMap::new();
         for entry in &entries {
-            if entry.is_cancelled { continue; }
+            if entry.is_cancelled {
+                continue;
+            }
             let date = monday + chrono::Duration::days(day_offset(&entry.day));
             let key = format!("{}-{}", date.format("%Y-%m-%d"), entry.period);
             desired.insert(key, entry);
         }
 
         // Keys belonging to this week (Mon..Sat)
-        let week_prefixes: Vec<String> = (0..6).map(|off| {
-            (monday + chrono::Duration::days(off)).format("%Y-%m-%d").to_string()
-        }).collect();
+        let week_prefixes: Vec<String> = (0..6)
+            .map(|off| {
+                (monday + chrono::Duration::days(off))
+                    .format("%Y-%m-%d")
+                    .to_string()
+            })
+            .collect();
         let is_this_week = |k: &str| week_prefixes.iter().any(|p| k.starts_with(p));
 
         // Delete stale events from this week
-        let old_keys: Vec<String> = self.sync_state.event_map.keys()
+        let old_keys: Vec<String> = self
+            .sync_state
+            .event_map
+            .keys()
             .filter(|k| is_this_week(k))
-            .cloned().collect();
+            .cloned()
+            .collect();
         let mut deleted = 0usize;
         for key in &old_keys {
             if !desired.contains_key(key) {
@@ -480,7 +569,9 @@ impl GoogleCalendarClient {
 
             if let Some(existing_id) = self.sync_state.event_map.get(key).cloned() {
                 match self.update_event(&cal_id, &existing_id, &event_body).await {
-                    Ok(_) => { updated += 1; }
+                    Ok(_) => {
+                        updated += 1;
+                    }
                     Err(_) => {
                         self.sync_state.event_map.remove(key);
                         if let Ok(id) = self.create_event(&cal_id, &event_body).await {
@@ -496,32 +587,72 @@ impl GoogleCalendarClient {
         }
 
         save_sync_state(&self.sync_state)?;
-        let week_count = self.sync_state.event_map.keys().filter(|k| is_this_week(k)).count();
-        log::info!("Google Calendar sync: created={}, updated={}, deleted={}", created, updated, deleted);
-        Ok(format!("Google Calendar: {}件同期 (新規{} / 更新{} / 削除{})", week_count, created, updated, deleted))
+        let week_count = self
+            .sync_state
+            .event_map
+            .keys()
+            .filter(|k| is_this_week(k))
+            .count();
+        log::info!(
+            "Google Calendar sync: created={}, updated={}, deleted={}",
+            created,
+            updated,
+            deleted
+        );
+        Ok(format!(
+            "Google Calendar: {}件同期 (新規{} / 更新{} / 削除{})",
+            week_count, created, updated, deleted
+        ))
     }
 
-    async fn create_event(&mut self, cal_id: &str, body: &serde_json::Value) -> Result<String, String> {
+    async fn create_event(
+        &mut self,
+        cal_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<String, String> {
         let token = self.ensure_token().await?;
-        let resp = self.http
-            .post(format!("{}/calendars/{}/events", GCAL_API_BASE, urlencoding::encode(cal_id)))
-            .bearer_auth(&token).json(body).send().await
+        let resp = self
+            .http
+            .post(format!(
+                "{}/calendars/{}/events",
+                GCAL_API_BASE,
+                urlencoding::encode(cal_id)
+            ))
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
             .map_err(|e| format!("イベント作成失敗: {}", e))?;
         if !resp.status().is_success() {
             let err: serde_json::Value = resp.json().await.unwrap_or_default();
             return Err(format!("イベント作成失敗: {}", err));
         }
-        let result: serde_json::Value = resp.json().await
+        let result: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("イベント作成レスポンス解析失敗: {}", e))?;
         Ok(result["id"].as_str().unwrap_or("").to_string())
     }
 
-    async fn update_event(&mut self, cal_id: &str, event_id: &str, body: &serde_json::Value) -> Result<(), String> {
+    async fn update_event(
+        &mut self,
+        cal_id: &str,
+        event_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), String> {
         let token = self.ensure_token().await?;
-        let resp = self.http
-            .put(format!("{}/calendars/{}/events/{}", GCAL_API_BASE,
-                urlencoding::encode(cal_id), urlencoding::encode(event_id)))
-            .bearer_auth(&token).json(body).send().await
+        let resp = self
+            .http
+            .put(format!(
+                "{}/calendars/{}/events/{}",
+                GCAL_API_BASE,
+                urlencoding::encode(cal_id),
+                urlencoding::encode(event_id)
+            ))
+            .bearer_auth(&token)
+            .json(body)
+            .send()
+            .await
             .map_err(|e| format!("イベント更新失敗: {}", e))?;
         if !resp.status().is_success() {
             let err: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -532,10 +663,17 @@ impl GoogleCalendarClient {
 
     async fn delete_event(&mut self, cal_id: &str, event_id: &str) -> Result<(), String> {
         let token = self.ensure_token().await?;
-        let resp = self.http
-            .delete(format!("{}/calendars/{}/events/{}", GCAL_API_BASE,
-                urlencoding::encode(cal_id), urlencoding::encode(event_id)))
-            .bearer_auth(&token).send().await
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/calendars/{}/events/{}",
+                GCAL_API_BASE,
+                urlencoding::encode(cal_id),
+                urlencoding::encode(event_id)
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
             .map_err(|e| format!("イベント削除失敗: {}", e))?;
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::GONE {
             let err: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -559,9 +697,16 @@ impl GoogleCalendarClient {
         }
         if delete_calendar {
             let token = self.ensure_token().await?;
-            let resp = self.http
-                .delete(format!("{}/calendars/{}", GCAL_API_BASE, urlencoding::encode(&cal_id)))
-                .bearer_auth(&token).send().await
+            let resp = self
+                .http
+                .delete(format!(
+                    "{}/calendars/{}",
+                    GCAL_API_BASE,
+                    urlencoding::encode(&cal_id)
+                ))
+                .bearer_auth(&token)
+                .send()
+                .await
                 .map_err(|e| format!("カレンダー削除失敗: {}", e))?;
             if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
                 let err: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -574,7 +719,9 @@ impl GoogleCalendarClient {
             let event_ids: Vec<(String, String)> = self.sync_state.event_map.drain().collect();
             let mut deleted = 0;
             for (_, eid) in &event_ids {
-                if self.delete_event(&cal_id, eid).await.is_ok() { deleted += 1; }
+                if self.delete_event(&cal_id, eid).await.is_ok() {
+                    deleted += 1;
+                }
             }
             save_sync_state(&self.sync_state)?;
             Ok(format!("{}件のイベントを削除しました", deleted))

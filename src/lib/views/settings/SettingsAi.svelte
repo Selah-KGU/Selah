@@ -12,6 +12,14 @@
     downloaded: boolean;
   }
 
+  interface SttModel {
+    id: string;
+    name: string;
+    size_label: string;
+    file_size_mb: number;
+    downloaded: boolean;
+  }
+
   interface AiConfig {
     ai_enabled: boolean;
     provider: string;
@@ -50,6 +58,17 @@
   let modelList = $state<LocalModel[]>([]);
   let downloading = $state(false);
   let downloadProgress = $state<{ modelId: string; name: string; percent: number; downloaded: number; total: number } | null>(null);
+  let sttModelList = $state<SttModel[]>([]);
+  let selectedSttModel = $state("sensevoice-ja-en");
+  let sttLanguage = $state("ja");
+  let sttDownloading = $state(false);
+  let sttDownloadProgress = $state<{ modelId: string; name: string; percent: number; downloaded: number; total: number } | null>(null);
+  let sttTestBusy = $state(false);
+  let sttTestMsg = $state("");
+  let sttTestOk = $state<boolean | null>(null);
+  let floatingOrbEnabled = $state("false");
+  let nativeOrbLoaded = false;
+  let lastSavedFloatingOrbEnabled = "false";
 
   let statusMsg = $state("");
   let statusType = $state<"success" | "error" | "loading" | "">("");
@@ -60,6 +79,7 @@
   let localTestOk = $state<boolean | null>(null);
 
   let unlistenDlProgress: (() => void) | null = null;
+  let unlistenSttDlProgress: (() => void) | null = null;
 
   function isLocal() { return aiProvider === "local"; }
 
@@ -115,6 +135,14 @@
     }
   }
 
+  async function loadSttModelList() {
+    try {
+      sttModelList = await invoke<SttModel[]>("list_stt_models");
+    } catch (e) {
+      console.error("Failed to load STT models:", e);
+    }
+  }
+
   async function startDownload(modelId: string) {
     if (downloading) return;
     downloading = true;
@@ -140,6 +168,30 @@
     invoke("cancel_model_download").catch(() => {});
   }
 
+  async function startSttDownload(modelId: string) {
+    if (sttDownloading) return;
+    sttDownloading = true;
+    const m = sttModelList.find(x => x.id === modelId);
+    if (!m) return;
+    sttDownloadProgress = { modelId, name: m.name, percent: 0, downloaded: 0, total: 0 };
+    try {
+      await invoke("download_stt_model", { modelId });
+      showStatus(m.name + " のダウンロードが完了しました", "success");
+      await loadSttModelList();
+      selectedSttModel = modelId;
+    } catch (e) {
+      if (String(e) === "cancelled") showStatus("STT モデルのダウンロードを中止しました", "error");
+      else showStatus("STT ダウンロードエラー: " + friendlyError(e), "error");
+    } finally {
+      sttDownloading = false;
+      sttDownloadProgress = null;
+    }
+  }
+
+  function cancelSttDownload() {
+    invoke("cancel_stt_model_download").catch(() => {});
+  }
+
   async function deleteModel(modelId: string) {
     if (!confirm("このモデルを削除しますか？")) return;
     try {
@@ -152,9 +204,21 @@
     }
   }
 
+  async function deleteSttModel(modelId: string) {
+    if (!confirm("この STT モデルを削除しますか？")) return;
+    try {
+      await invoke("delete_stt_model", { modelId });
+      showStatus("STT モデルを削除しました", "success");
+      await loadSttModelList();
+    } catch (e) {
+      showStatus("削除エラー: " + String(e), "error");
+    }
+  }
+
   async function loadConfig() {
     try {
       const c = await invoke<any>("get_ai_config");
+      const stt = await invoke<any>("get_stt_config");
       aiEnabled = c.ai_enabled !== false ? "true" : "false";
       aiProvider = c.provider || "local";
       selectedLocalModel = c.local_model || "qwen3.5-2b";
@@ -165,7 +229,14 @@
       temperature = c.temperature != null ? c.temperature : 0.7;
       replyLanguage = c.reply_language || "ja";
       aiRefreshInterval = c.ai_refresh_interval != null ? c.ai_refresh_interval : 360;
+      selectedSttModel = stt?.selected_model || "sensevoice-ja-en";
+      sttLanguage = stt?.language || "ja";
+      const nativeAgent = await invoke<{ floating_orb_enabled?: boolean }>("get_native_agent_config");
+      floatingOrbEnabled = nativeAgent?.floating_orb_enabled ? "true" : "false";
+      lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+      nativeOrbLoaded = true;
       await loadModelList();
+      await loadSttModelList();
     } catch (e) {
       console.error("Failed to load config:", e);
     }
@@ -175,6 +246,11 @@
     saveBusy = true;
     try {
       await invoke("save_ai_config", { config: getConfig() });
+      await invoke("save_stt_config", { config: { selected_model: selectedSttModel, language: sttLanguage } });
+      await invoke("save_native_agent_config", {
+        config: { floating_orb_enabled: floatingOrbEnabled === "true" },
+      });
+      lastSavedFloatingOrbEnabled = floatingOrbEnabled;
       updateAiReadiness().catch(() => {});
     } catch (e) {
       throw e;
@@ -214,6 +290,23 @@
     }
   }
 
+  async function testSttModel() {
+    sttTestBusy = true;
+    sttTestOk = null;
+    sttTestMsg = "STT モデルを読み込み中...";
+    try {
+      await invoke("save_stt_config", { config: { selected_model: selectedSttModel, language: sttLanguage } });
+      const r = await invoke<string>("stt_test_model");
+      sttTestOk = true;
+      sttTestMsg = r;
+    } catch (e) {
+      sttTestOk = false;
+      sttTestMsg = "エラー: " + (typeof e === "string" ? e : (e as any)?.message || JSON.stringify(e));
+    } finally {
+      sttTestBusy = false;
+    }
+  }
+
   onMount(async () => {
     await loadConfig();
     unlistenDlProgress = await listen<{ percent: number; downloaded: number; total: number }>(
@@ -223,12 +316,29 @@
         downloadProgress = { ...downloadProgress, percent: ev.payload.percent ?? downloadProgress.percent, downloaded: ev.payload.downloaded ?? 0, total: ev.payload.total ?? 0 };
       }
     );
+    unlistenSttDlProgress = await listen<{ percent: number; downloaded: number; total: number }>(
+      "stt-model-download-progress",
+      (ev) => {
+        if (!sttDownloadProgress) return;
+        sttDownloadProgress = { ...sttDownloadProgress, percent: ev.payload.percent ?? sttDownloadProgress.percent, downloaded: ev.payload.downloaded ?? 0, total: ev.payload.total ?? 0 };
+      }
+    );
   });
 
-  onDestroy(() => { unlistenDlProgress?.(); });
+  onDestroy(() => { unlistenDlProgress?.(); unlistenSttDlProgress?.(); });
 
   // React to provider/value changes to apply defaults
   $effect(() => { onProviderSwitch(); void aiProvider; });
+  $effect(() => {
+    if (!nativeOrbLoaded) return;
+    if (floatingOrbEnabled === lastSavedFloatingOrbEnabled) return;
+    lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+    invoke("save_native_agent_config", {
+      config: { floating_orb_enabled: floatingOrbEnabled === "true" },
+    }).catch((e) => {
+      console.error("Failed to save native agent config:", e);
+    });
+  });
 </script>
 
 <div class="hero-card">
@@ -267,6 +377,20 @@
       <div class="hint">
         {isLocal() ? "ローカルモデルはデバイス上で実行されます。" : "API 利用時のみ、キー・モデル名・ベース URL・max tokens・temperature が有効です。"}
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="card-label">Agent フローティング</div>
+<div class="card">
+  <div class="row">
+    <span class="row-label">ネイティブフローティング入口</span>
+    <div class="row-input">
+      <select bind:value={floatingOrbEnabled}>
+        <option value="false">無効</option>
+        <option value="true">有効</option>
+      </select>
+      <div class="hint">有効にしたときだけ、macOS ネイティブの Agent フローティングカプセルを使えます。無効にすると、開いている入口もすぐ閉じます。</div>
     </div>
   </div>
 </div>
@@ -411,6 +535,67 @@
     </div>
   </div>
 {/if}
+
+<div class="card-label">音声文字起こし</div>
+<div class="card">
+  <div class="row">
+    <span class="row-label">認識言語</span>
+    <div class="row-input">
+      <select bind:value={sttLanguage}>
+        <option value="ja">日本語</option>
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+        <option value="ko">한국어</option>
+        <option value="yue">広東語</option>
+        <option value="auto">自動検出</option>
+      </select>
+      <div class="hint">音声認識の対象言語を選択します。「自動検出」は誤認識する場合があります。</div>
+    </div>
+  </div>
+  {#each sttModelList as m}
+    <div class="model-row">
+      <input type="radio" class="model-radio" name="sttModel" value={m.id} bind:group={selectedSttModel} />
+      <div class="model-info">
+        <div class="model-name">{m.name}</div>
+        <div class="model-meta">{m.size_label}</div>
+      </div>
+      <span class="model-badge" class:downloaded={m.downloaded}>
+        {m.downloaded ? "DL済み" : m.file_size_mb + "MB"}
+      </span>
+      <div class="model-actions">
+        {#if !m.downloaded}
+          <button class="btn-test" onclick={() => startSttDownload(m.id)} disabled={sttDownloading}>ダウンロード</button>
+        {:else}
+          <button class="btn-test danger" onclick={() => deleteSttModel(m.id)}>削除</button>
+        {/if}
+      </div>
+    </div>
+  {/each}
+  {#if sttModelList.length === 0}
+    <div class="model-empty">STT モデル情報を読み込み中...</div>
+  {/if}
+</div>
+{#if sttDownloadProgress}
+  <div class="card download-progress">
+    <div class="dl-head">
+      <span class="dl-name">{sttDownloadProgress.name}</span>
+      <span class="dl-percent">{sttDownloadProgress.percent}%</span>
+      <button class="btn-test danger" onclick={cancelSttDownload}>中止</button>
+    </div>
+    <div class="dl-bar"><div class="dl-fill" style="width:{sttDownloadProgress.percent}%"></div></div>
+    {#if sttDownloadProgress.total}
+      <div class="dl-size">{(sttDownloadProgress.downloaded / 1048576).toFixed(1)} / {(sttDownloadProgress.total / 1048576).toFixed(1)} MB</div>
+    {/if}
+  </div>
+{/if}
+<div class="action-row">
+  <button class="btn-test" onclick={testSttModel} disabled={sttTestBusy}>
+    {sttTestBusy ? "テスト中..." : "STT 初期化テスト"}
+  </button>
+  {#if sttTestMsg}
+    <span class="hint" class:ok={sttTestOk === true} class:ng={sttTestOk === false}>{sttTestMsg}</span>
+  {/if}
+</div>
 
 {#if statusMsg}
   <div class="status-msg {statusType}" style="margin-top:10px;">{statusMsg}</div>

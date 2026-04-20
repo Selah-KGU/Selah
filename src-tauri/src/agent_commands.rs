@@ -17,7 +17,12 @@ pub struct AgentConversationSummary {
 
 impl From<AgentConversationRow> for AgentConversationSummary {
     fn from(r: AgentConversationRow) -> Self {
-        Self { id: r.id, title: r.title, created_at: r.created_at, updated_at: r.updated_at }
+        Self {
+            id: r.id,
+            title: r.title,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
     }
 }
 
@@ -35,9 +40,13 @@ pub struct AgentMessageDto {
 
 impl From<AgentMessageRow> for AgentMessageDto {
     fn from(r: AgentMessageRow) -> Self {
-        let images = r.images_json.as_deref()
+        let images = r
+            .images_json
+            .as_deref()
             .and_then(|s| serde_json::from_str::<Vec<ImagePart>>(s).ok());
-        let tool_result = r.tool_result_json.as_deref()
+        let tool_result = r
+            .tool_result_json
+            .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
         Self {
             id: r.id,
@@ -56,7 +65,11 @@ impl From<AgentMessageRow> for AgentMessageDto {
 pub fn agent_list_conversations(
     db: State<'_, Database>,
 ) -> Result<Vec<AgentConversationSummary>, String> {
-    Ok(db.agent_list_conversations()?.into_iter().map(Into::into).collect())
+    Ok(db
+        .agent_list_conversations()?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 #[tauri::command]
@@ -75,7 +88,11 @@ pub fn agent_load_messages(
     db: State<'_, Database>,
     conv_id: String,
 ) -> Result<Vec<AgentMessageDto>, String> {
-    Ok(db.agent_load_messages(&conv_id)?.into_iter().map(Into::into).collect())
+    Ok(db
+        .agent_load_messages(&conv_id)?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 #[tauri::command]
@@ -95,10 +112,7 @@ pub fn agent_cancel(conv_id: String) {
 }
 
 #[tauri::command]
-pub fn agent_delete_conversation(
-    db: State<'_, Database>,
-    conv_id: String,
-) -> Result<(), String> {
+pub fn agent_delete_conversation(db: State<'_, Database>, conv_id: String) -> Result<(), String> {
     db.agent_delete_conversation(&conv_id)
 }
 

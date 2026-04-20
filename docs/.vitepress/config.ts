@@ -15,7 +15,7 @@ export default defineConfig({
       { text: 'ガイド', link: '/guide/' },
       { text: '機能紹介', link: '/guide/features' },
       {
-        text: 'v0.8.3',
+        text: 'v1.0.0',
         items: [
           { text: 'リリースノート', link: 'https://github.com/mirai-mamori/Selah/releases' },
         ],
@@ -64,7 +64,7 @@ export default defineConfig({
     ],
     footer: {
       message: '<a href="/privacy">プライバシーポリシー</a> | <a href="/terms">利用規約</a> | MIT License',
-      copyright: 'Copyright 2025 mirai-mamori',
+      copyright: 'Copyright 2025-2026 mirai-mamori',
     },
     search: {
       provider: 'local',

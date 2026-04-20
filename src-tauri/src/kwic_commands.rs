@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
-use tauri::{State, Manager};
-use std::sync::{atomic::{AtomicU32, Ordering}, LazyLock};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    LazyLock,
+};
+use tauri::{Manager, State};
 
 use crate::client;
 use crate::config;
@@ -22,20 +25,32 @@ async fn kwic_http(state: &KwicState) -> Result<reqwest::Client, String> {
 async fn kwic_get(http: &reqwest::Client, path: &str) -> Result<String, String> {
     let url = format!("{}{}", config::KWIC_BASE, path);
     client::fetch_with_redirect(
-        http, &url, config::KWIC_BASE,
-        kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
-    ).await
+        http,
+        &url,
+        config::KWIC_BASE,
+        kwic_client::KWIC_SESSION_EXPIRED_MSG,
+        kwic_client::is_kwic_session_expired,
+    )
+    .await
 }
 
 /// KWIC POST: submit a form without holding the lock.
-async fn kwic_post(http: &reqwest::Client, path: &str, params: &[(&str, &str)]) -> Result<String, String> {
+async fn kwic_post(
+    http: &reqwest::Client,
+    path: &str,
+    params: &[(&str, &str)],
+) -> Result<String, String> {
     let url = format!("{}{}", config::KWIC_BASE, path);
     client::post_form_with_redirect(
-        http, &url, config::KWIC_BASE,
-        kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
+        http,
+        &url,
+        config::KWIC_BASE,
+        kwic_client::KWIC_SESSION_EXPIRED_MSG,
+        kwic_client::is_kwic_session_expired,
         params.iter().copied(),
         &[],
-    ).await
+    )
+    .await
 }
 
 // ============ Cached Selectors ============
@@ -51,7 +66,10 @@ sel!(SEL_NOTICE_A, ".portal-notice-li a.portal-notice-li-a");
 sel!(SEL_MAINLINK_A, ".portal-mainlink-li a");
 sel!(SEL_INFO_A, "a.portal-info-content-li-a");
 sel!(SEL_INFO_DATE, ".portal-subblock-infolist-left-item2 > div");
-sel!(SEL_INFO_TITLE, ".portal-subblock-infolist-left-item2 > span");
+sel!(
+    SEL_INFO_TITLE,
+    ".portal-subblock-infolist-left-item2 > span"
+);
 sel!(SEL_INFO_CATEGORY, ".portal-subblock-infolist-right");
 
 sel!(SEL_CSRF, r#"input[name="_csrf"]"#);
@@ -65,12 +83,21 @@ sel!(SEL_FILE_OBJECT, ".file-object");
 sel!(SEL_FILE_NAME, ".downloadFile, .fileName");
 sel!(SEL_OBJECT_NAME, ".objectName");
 sel!(SEL_SUBPORTAL_TITLE, ".subportal-title-txt");
-sel!(SEL_SUBPORTAL_LINK, "li.subportal-block-relation-list-li a.subportal-block-txtlink-li-b");
+sel!(
+    SEL_SUBPORTAL_LINK,
+    "li.subportal-block-relation-list-li a.subportal-block-txtlink-li-b"
+);
 sel!(SEL_SYSTEM_IMAGE, "img.systemlink-image");
 sel!(SEL_SUBPORTAL_LI, "li.subportal-block-info-list-li");
 sel!(SEL_SUBPORTAL_CAT, ".subportal-block-list-li-txt-info1");
-sel!(SEL_SUBPORTAL_TITLE_SPAN, ".subportal-block-list-li-txt-info2 span.link-txt");
-sel!(SEL_SUBPORTAL_DATE, ".subportal-block-list-li-txt-info3 span");
+sel!(
+    SEL_SUBPORTAL_TITLE_SPAN,
+    ".subportal-block-list-li-txt-info2 span.link-txt"
+);
+sel!(
+    SEL_SUBPORTAL_DATE,
+    ".subportal-block-list-li-txt-info3 span"
+);
 sel!(SEL_SUBPORTAL_DEPT, ".subportal-block-list-li-txt-info4");
 
 // Tab-specific notification selectors
@@ -78,7 +105,6 @@ sel!(SEL_TAB1_LI, "#portalinfocontent1 li.portal-info-content-li");
 sel!(SEL_TAB2_LI, "#portalinfocontent2 li.portal-info-content-li");
 sel!(SEL_TAB3_LI, "#portalinfocontent3 li.portal-info-content-li");
 sel!(SEL_TAB4_LI, "#portalinfocontent4 li.portal-info-content-li");
-
 
 // ============ Types ============
 
@@ -145,9 +171,14 @@ pub async fn kwic_check_session(state: State<'_, KwicState>) -> Result<bool, Str
     // Validate against server without holding the lock
     let url = format!("{}/portal/home", crate::config::KWIC_BASE);
     match crate::client::fetch_with_redirect(
-        &http, &url, crate::config::KWIC_BASE,
-        crate::kwic_client::KWIC_SESSION_EXPIRED_MSG, crate::kwic_client::is_kwic_session_expired,
-    ).await {
+        &http,
+        &url,
+        crate::config::KWIC_BASE,
+        crate::kwic_client::KWIC_SESSION_EXPIRED_MSG,
+        crate::kwic_client::is_kwic_session_expired,
+    )
+    .await
+    {
         Ok(_) => {
             let kwic = state.client.lock().await;
             kwic.save_session();
@@ -172,7 +203,10 @@ pub async fn kwic_fetch_home(
         Ok(http) => match kwic_get(&http, "/portal/home").await {
             Ok(html) => {
                 #[cfg(debug_assertions)]
-                { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-home.html"), &html); }
+                {
+                    let _ =
+                        std::fs::write(std::env::temp_dir().join("kwic-portal-home.html"), &html);
+                }
 
                 let sections = parse_portal_home(&html);
 
@@ -269,18 +303,29 @@ pub async fn kwic_fetch_detail(
             };
 
             // 2. POST to portal detail endpoint
-            match kwic_post(&http, "/portal/home/information/detail", &[
-                ("_csrf", &csrf),
-                ("informationId", &information_id),
-                ("informationType", &information_type),
-                ("personCategoryCd", &person_category_cd),
-                ("categoryCd", &category_cd),
-                ("selectCategoryCd", &category_cd),
-                ("pageViewListNum", "10"),
-            ]).await {
+            match kwic_post(
+                &http,
+                "/portal/home/information/detail",
+                &[
+                    ("_csrf", &csrf),
+                    ("informationId", &information_id),
+                    ("informationType", &information_type),
+                    ("personCategoryCd", &person_category_cd),
+                    ("categoryCd", &category_cd),
+                    ("selectCategoryCd", &category_cd),
+                    ("pageViewListNum", "10"),
+                ],
+            )
+            .await
+            {
                 Ok(detail_html) => {
                     #[cfg(debug_assertions)]
-                    { let _ = std::fs::write(std::env::temp_dir().join("kwic-portal-detail.html"), &detail_html); }
+                    {
+                        let _ = std::fs::write(
+                            std::env::temp_dir().join("kwic-portal-detail.html"),
+                            &detail_html,
+                        );
+                    }
 
                     let data = parse_detail_html(&detail_html);
                     if let Ok(json) = serde_json::to_string(&data) {
@@ -346,7 +391,13 @@ pub async fn kwic_fetch_subportal(
             match kwic_get(&http, &path).await {
                 Ok(html) => {
                     #[cfg(debug_assertions)]
-                    { let _ = std::fs::write(std::env::temp_dir().join(format!("kwic-portal-subportal-{}.html", tag_cd)), &html); }
+                    {
+                        let _ = std::fs::write(
+                            std::env::temp_dir()
+                                .join(format!("kwic-portal-subportal-{}.html", tag_cd)),
+                            &html,
+                        );
+                    }
 
                     let data = parse_subportal(&html);
                     if let Ok(json) = serde_json::to_string(&data) {
@@ -387,8 +438,11 @@ pub async fn kwic_open_detail_window(
     person_category_cd: String,
     category_cd: String,
 ) -> Result<(), String> {
-    let existing = app.webview_windows().keys()
-        .filter(|k| k.starts_with("kwic-detail-")).count();
+    let existing = app
+        .webview_windows()
+        .keys()
+        .filter(|k| k.starts_with("kwic-detail-"))
+        .count();
     if existing >= 10 {
         return Err(config::TOO_MANY_WINDOWS_MSG.into());
     }
@@ -405,16 +459,12 @@ pub async fn kwic_open_detail_window(
         encoded_id, encoded_type, encoded_person, encoded_cat, encoded_title,
     );
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::App(url_str.into()),
-    )
-    .title(&title)
-    .inner_size(520.0, 600.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_str.into()))
+        .title(&title)
+        .inner_size(520.0, 600.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
 
     Ok(())
 }
@@ -449,7 +499,8 @@ pub async fn kwic_open_link(
             // After SAML completes, KWIC sets session cookies and redirects to /portal/home.
             // Our initialization_script then redirects to the actual target URL.
             let saml_url: url::Url = config::KWIC_SAML_URL
-                .parse().expect("hardcoded KWIC SAML URL is valid");
+                .parse()
+                .expect("hardcoded KWIC SAML URL is valid");
 
             // Escape the target URL for safe embedding in JS
             let escaped_url = url
@@ -478,22 +529,23 @@ pub async fn kwic_open_link(
                 &label,
                 tauri::WebviewUrl::External(saml_url),
                 &title,
-                1000.0, 750.0,
+                1000.0,
+                750.0,
                 &[&redirect_script],
             )?;
         } else {
             // Other kwansei.ac.jp domains (kg-course, library, etc.)
             // These redirect directly to Okta SSO, which auto-authenticates
             // via shared WKWebView cookies. No special handling needed.
-            let parsed: url::Url = url.parse()
-                .map_err(|e| format!("URL parse error: {}", e))?;
+            let parsed: url::Url = url.parse().map_err(|e| format!("URL parse error: {}", e))?;
 
             crate::webview_toolbar::create_browser_window(
                 &app,
                 &label,
                 tauri::WebviewUrl::External(parsed),
                 &title,
-                1000.0, 750.0,
+                1000.0,
+                750.0,
                 &[],
             )?;
         }
@@ -532,22 +584,27 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
     // 1. Parse pinned important links (注目コンテンツ)
     {
         let sel = &*SEL_NOTICE_A;
-        let items: Vec<KwicPortalItem> = document.select(sel).filter_map(|a| {
-            let title: String = a.text().collect::<Vec<_>>().join(" ").trim().to_string();
-            let href = a.value().attr("href").unwrap_or_default();
-            if title.is_empty() { return None; }
-            Some(KwicPortalItem {
-                id: String::new(),
-                title,
-                date: String::new(),
-                category: "注目".to_string(),
-                url: href.to_string(),
-                important: true,
-                information_type: String::new(),
-                person_category_cd: String::new(),
-                category_cd: String::new(),
+        let items: Vec<KwicPortalItem> = document
+            .select(sel)
+            .filter_map(|a| {
+                let title: String = a.text().collect::<Vec<_>>().join(" ").trim().to_string();
+                let href = a.value().attr("href").unwrap_or_default();
+                if title.is_empty() {
+                    return None;
+                }
+                Some(KwicPortalItem {
+                    id: String::new(),
+                    title,
+                    date: String::new(),
+                    category: "注目".to_string(),
+                    url: href.to_string(),
+                    important: true,
+                    information_type: String::new(),
+                    person_category_cd: String::new(),
+                    category_cd: String::new(),
+                })
             })
-        }).collect();
+            .collect();
         if !items.is_empty() {
             sections.push(KwicPortalSection {
                 title: "注目コンテンツ".to_string(),
@@ -565,14 +622,17 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
     ];
 
     for (sel, tab_title) in &tabs {
-        let items: Vec<KwicPortalItem> = document.select(sel).filter_map(|li| {
-            parse_info_item(&li).map(|(mut item, d2, d3, d4)| {
-                item.information_type = d2;
-                item.person_category_cd = d3;
-                item.category_cd = d4;
-                item
+        let items: Vec<KwicPortalItem> = document
+            .select(sel)
+            .filter_map(|li| {
+                parse_info_item(&li).map(|(mut item, d2, d3, d4)| {
+                    item.information_type = d2;
+                    item.person_category_cd = d3;
+                    item.category_cd = d4;
+                    item
+                })
             })
-        }).collect();
+            .collect();
         if !items.is_empty() {
             sections.push(KwicPortalSection {
                 title: tab_title.to_string(),
@@ -584,26 +644,31 @@ fn parse_portal_home(html: &str) -> Vec<KwicPortalSection> {
     // 3. Parse main link categories (メインリンク)
     {
         let sel = &*SEL_MAINLINK_A;
-        let items: Vec<KwicPortalItem> = document.select(sel).filter_map(|a| {
-            let title: String = a.text().collect::<Vec<_>>().join(" ").trim().to_string();
-            let href = a.value().attr("href").unwrap_or_default();
-            if title.is_empty() { return None; }
-            Some(KwicPortalItem {
-                id: String::new(),
-                title,
-                date: String::new(),
-                category: "リンク".to_string(),
-                url: if href.starts_with("http") {
-                    href.to_string()
-                } else {
-                    format!("{}{}",config::KWIC_BASE, href)
-                },
-                important: false,
-                information_type: String::new(),
-                person_category_cd: String::new(),
-                category_cd: String::new(),
+        let items: Vec<KwicPortalItem> = document
+            .select(sel)
+            .filter_map(|a| {
+                let title: String = a.text().collect::<Vec<_>>().join(" ").trim().to_string();
+                let href = a.value().attr("href").unwrap_or_default();
+                if title.is_empty() {
+                    return None;
+                }
+                Some(KwicPortalItem {
+                    id: String::new(),
+                    title,
+                    date: String::new(),
+                    category: "リンク".to_string(),
+                    url: if href.starts_with("http") {
+                        href.to_string()
+                    } else {
+                        format!("{}{}", config::KWIC_BASE, href)
+                    },
+                    important: false,
+                    information_type: String::new(),
+                    person_category_cd: String::new(),
+                    category_cd: String::new(),
+                })
             })
-        }).collect();
+            .collect();
         if !items.is_empty() {
             sections.push(KwicPortalSection {
                 title: "メインリンク".to_string(),
@@ -626,33 +691,50 @@ fn parse_info_item(li: &scraper::ElementRef) -> Option<(KwicPortalItem, String, 
     let data4 = a.value().attr("data4").unwrap_or_default().to_string();
 
     // Date: .portal-subblock-infolist-left-item2 > div
-    let date = li.select(&SEL_INFO_DATE).next()
+    let date = li
+        .select(&SEL_INFO_DATE)
+        .next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
     // Title: .portal-subblock-infolist-left-item2 > span
-    let title = li.select(&SEL_INFO_TITLE).next()
+    let title = li
+        .select(&SEL_INFO_TITLE)
+        .next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
-    if title.is_empty() { return None; }
+    if title.is_empty() {
+        return None;
+    }
 
     // Category/department: .portal-subblock-infolist-right
-    let category = li.select(&SEL_INFO_CATEGORY).next()
+    let category = li
+        .select(&SEL_INFO_CATEGORY)
+        .next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
-    Some((KwicPortalItem {
-        id: id.clone(),
-        title,
-        date,
-        category,
-        url: format!("{}/portal/home/information/detail?informationId={}&directLink=1", config::KWIC_BASE, id),
-        important: false,
-        information_type: String::new(),
-        person_category_cd: String::new(),
-        category_cd: String::new(),
-    }, data2, data3, data4))
+    Some((
+        KwicPortalItem {
+            id: id.clone(),
+            title,
+            date,
+            category,
+            url: format!(
+                "{}/portal/home/information/detail?informationId={}&directLink=1",
+                config::KWIC_BASE,
+                id
+            ),
+            important: false,
+            information_type: String::new(),
+            person_category_cd: String::new(),
+            category_cd: String::new(),
+        },
+        data2,
+        data3,
+        data4,
+    ))
 }
 
 /// Extract CSRF token from KWIC Portal HTML
@@ -672,13 +754,15 @@ fn parse_detail_html(html: &str) -> KwicNotificationDetail {
     let doc = Html::parse_document(html);
 
     let text_of = |sel: &scraper::Selector| -> String {
-        doc.select(sel).next()
+        doc.select(sel)
+            .next()
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default()
     };
 
     let html_of = |sel: &scraper::Selector| -> String {
-        doc.select(sel).next()
+        doc.select(sel)
+            .next()
             .map(|el| el.inner_html().trim().to_string())
             .unwrap_or_default()
     };
@@ -717,13 +801,19 @@ fn parse_detail_html(html: &str) -> KwicNotificationDetail {
     // Attachments: .file-object elements → .downloadFile (name), .objectName (object path)
     let mut attachments = Vec::new();
     for fo in doc.select(&SEL_FILE_OBJECT) {
-        let name = fo.select(&SEL_FILE_NAME).next()
+        let name = fo
+            .select(&SEL_FILE_NAME)
+            .next()
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default();
-        let object_name = fo.select(&SEL_OBJECT_NAME).next()
+        let object_name = fo
+            .select(&SEL_OBJECT_NAME)
+            .next()
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default();
-        if name.is_empty() { continue; }
+        if name.is_empty() {
+            continue;
+        }
         let url = format!(
             "{}/portal/home/information/detail/download?downloadFileName={}&objectName={}&downloadMode=1",
             config::KWIC_BASE,
@@ -757,7 +847,9 @@ fn parse_subportal(html: &str) -> KwicSubportalData {
     let doc = Html::parse_document(html);
 
     // Page title: .subportal-title-txt
-    let page_title = doc.select(&SEL_SUBPORTAL_TITLE).next()
+    let page_title = doc
+        .select(&SEL_SUBPORTAL_TITLE)
+        .next()
         .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
         .unwrap_or_default();
 
@@ -767,22 +859,32 @@ fn parse_subportal(html: &str) -> KwicSubportalData {
     for a in doc.select(&SEL_SUBPORTAL_LINK) {
         let title: String = a.text().collect::<Vec<_>>().join("").trim().to_string();
         let href = a.value().attr("href").unwrap_or_default();
-        if title.is_empty() || href.is_empty() || href == "#" { continue; }
-        if href.starts_with("javascript:") { continue; }
+        if title.is_empty() || href.is_empty() || href == "#" {
+            continue;
+        }
+        if href.starts_with("javascript:") {
+            continue;
+        }
         let url = if href.starts_with("http") {
             href.to_string()
         } else {
-            format!("{}{}",config::KWIC_BASE, href)
+            format!("{}{}", config::KWIC_BASE, href)
         };
-        let icon_url = a.select(&SEL_SYSTEM_IMAGE).next()
+        let icon_url = a
+            .select(&SEL_SYSTEM_IMAGE)
+            .next()
             .and_then(|img| img.value().attr("src"))
-            .map(|src| if src.starts_with("http") {
-                src.to_string()
-            } else {
-                format!("{}{}",config::KWIC_BASE, src)
+            .map(|src| {
+                if src.starts_with("http") {
+                    src.to_string()
+                } else {
+                    format!("{}{}", config::KWIC_BASE, src)
+                }
             })
             .unwrap_or_default();
-        if links.iter().any(|l: &KwicSubportalLink| l.url == url) { continue; }
+        if links.iter().any(|l: &KwicSubportalLink| l.url == url) {
+            continue;
+        }
         links.push(KwicSubportalLink {
             title,
             url,
@@ -804,20 +906,41 @@ fn parse_subportal(html: &str) -> KwicSubportalData {
             None => continue,
         };
 
-        let id = title_el.value().attr("data1").unwrap_or_default().to_string();
-        let data2 = title_el.value().attr("data2").unwrap_or_default().to_string();
-        let title = title_el.text().collect::<Vec<_>>().join("").trim().to_string();
-        if title.is_empty() { continue; }
+        let id = title_el
+            .value()
+            .attr("data1")
+            .unwrap_or_default()
+            .to_string();
+        let data2 = title_el
+            .value()
+            .attr("data2")
+            .unwrap_or_default()
+            .to_string();
+        let title = title_el
+            .text()
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string();
+        if title.is_empty() {
+            continue;
+        }
 
-        let category = li.select(&SEL_SUBPORTAL_CAT).next()
+        let category = li
+            .select(&SEL_SUBPORTAL_CAT)
+            .next()
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default();
 
-        let date = li.select(&SEL_SUBPORTAL_DATE).next()
+        let date = li
+            .select(&SEL_SUBPORTAL_DATE)
+            .next()
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default();
 
-        let dept = li.select(&SEL_SUBPORTAL_DEPT).next()
+        let dept = li
+            .select(&SEL_SUBPORTAL_DEPT)
+            .next()
             .map(|el| el.text().collect::<Vec<_>>().join("").trim().to_string())
             .unwrap_or_default();
 

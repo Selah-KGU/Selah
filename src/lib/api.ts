@@ -1106,6 +1106,71 @@ export async function aiChat(messages: AiChatMessage[]): Promise<string> {
   return invoke<string>("ai_chat", { messages });
 }
 
+export interface LiveCourseInfo {
+  course_name: string;
+  course_code: string;
+  room: string;
+  teacher: string;
+  day: number;
+  period: number;
+  time_label: string;
+}
+
+export interface LiveTranscriptLine {
+  text: string;
+  at: string;
+}
+
+export interface LiveSummaryChunk {
+  title: string;
+  range_label: string;
+  body: string;
+  line_count: number;
+}
+
+export interface LiveSessionSnapshot {
+  active: boolean;
+  course: LiveCourseInfo | null;
+  started_at: string | null;
+  transcript_lines: LiveTranscriptLine[];
+  pending_lines: LiveTranscriptLine[];
+  summaries: LiveSummaryChunk[];
+}
+
+export interface LiveSaveResult {
+  path: string;
+  markdown: string;
+  snapshot: LiveSessionSnapshot;
+}
+
+export async function liveGetSession(): Promise<LiveSessionSnapshot> {
+  return invoke<LiveSessionSnapshot>("live_get_session");
+}
+
+export async function livePeekDayCache(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
+  return invoke<LiveSessionSnapshot>("live_peek_day_cache", { course });
+}
+
+export async function liveStartSession(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
+  return invoke<LiveSessionSnapshot>("live_start_session", { course });
+}
+
+export async function liveAppendTranscript(text: string): Promise<LiveSessionSnapshot> {
+  return invoke<LiveSessionSnapshot>("live_append_transcript", { text });
+}
+
+export async function liveFlushSummary(force: boolean = false): Promise<LiveSessionSnapshot> {
+  return invoke<LiveSessionSnapshot>("live_flush_summary", { force });
+}
+
+export async function liveCancelSession(): Promise<void> {
+  return invoke<void>("live_cancel_session");
+}
+
+export async function liveFinishSession(): Promise<LiveSaveResult> {
+  return invoke<LiveSaveResult>("live_finish_session");
+}
+
 export async function openSettingsWindow(panel?: string): Promise<void> {
   const { activeTab, activeSettingsPanel } = await import("./stores");
   if (panel) activeSettingsPanel.set(panel as any);
@@ -1114,6 +1179,14 @@ export async function openSettingsWindow(panel?: string): Promise<void> {
 
 export async function openProfileEditWindow(): Promise<void> {
   return invoke<void>("open_profile_edit_window");
+}
+
+export async function openAgentFloatWindow(): Promise<void> {
+  return invoke<void>("open_agent_float_window");
+}
+
+export async function showMainAgentWindow(): Promise<void> {
+  return invoke<void>("show_main_agent_window");
 }
 
 // ============ Background Polling ============

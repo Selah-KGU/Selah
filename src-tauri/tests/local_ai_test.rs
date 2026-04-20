@@ -1,9 +1,9 @@
+use app_lib::ai::ChatMessage;
 /// Integration test — runs the real Qwen3.5-2B model with realistic schedule data.
 /// Run with: cargo test --test local_ai_test -- --nocapture
 ///
 /// This test is ignored by default because it requires ~1.2 GB model to be downloaded.
 use app_lib::local_ai::{run_inference, InferenceRequest, SamplerConfig};
-use app_lib::ai::ChatMessage;
 
 const SYSTEM_PROMPT: &str = r#"あなたは関西学院大学の学生向けスケジュール分析AIです。
 提供データ（KGC + Luna）から2週間分の時間割を作成し、JSONのみで返してください。
@@ -147,7 +147,11 @@ fn test_schedule_generation() {
 
     match result {
         Ok(output) => {
-            eprintln!("\n=== Output ({:.1}s, {} chars) ===", elapsed.as_secs_f64(), output.len());
+            eprintln!(
+                "\n=== Output ({:.1}s, {} chars) ===",
+                elapsed.as_secs_f64(),
+                output.len()
+            );
             eprintln!("{}", output);
 
             // Basic checks
@@ -168,7 +172,11 @@ fn test_schedule_generation() {
                     if let Some(think_end) = output.find("</think>") {
                         let think_len = think_end - think_start;
                         let total_len = output.len();
-                        eprintln!("Think block: {} chars ({:.0}% of output)", think_len, think_len as f64 / total_len as f64 * 100.0);
+                        eprintln!(
+                            "Think block: {} chars ({:.0}% of output)",
+                            think_len,
+                            think_len as f64 / total_len as f64 * 100.0
+                        );
                     } else {
                         eprintln!("WARNING: <think> opened but never closed!");
                     }

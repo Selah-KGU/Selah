@@ -1,11 +1,15 @@
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::config;
 
 fn default_ms_client_id() -> String {
-    crate::embedded_keys::decode(&[0x4A, 0x00, 0x59, 0x07, 0x51, 0x19, 0x09, 0x14, 0x44, 0x06, 0x15, 0x53, 0x04, 0x1F, 0x02, 0x16, 0x52, 0x5F, 0x4C, 0x0A, 0x15, 0x09, 0x12, 0x44, 0x55, 0x1E, 0x01, 0x06, 0x06, 0x55, 0x41, 0x5C, 0x08, 0x56, 0x5D, 0x1E])
+    crate::embedded_keys::decode(&[
+        0x4A, 0x00, 0x59, 0x07, 0x51, 0x19, 0x09, 0x14, 0x44, 0x06, 0x15, 0x53, 0x04, 0x1F, 0x02,
+        0x16, 0x52, 0x5F, 0x4C, 0x0A, 0x15, 0x09, 0x12, 0x44, 0x55, 0x1E, 0x01, 0x06, 0x06, 0x55,
+        0x41, 0x5C, 0x08, 0x56, 0x5D, 0x1E,
+    ])
 }
 
 const MS_REDIRECT_URI: &str = "http://localhost";
@@ -22,7 +26,6 @@ pub struct MailConfig {
     /// Azure AD Application (client) ID. Empty = use default.
     pub client_id: String,
 }
-
 
 impl MailConfig {
     /// Returns the effective client_id (user-configured or default)
@@ -55,8 +58,7 @@ pub fn save_config(config: &MailConfig) -> Result<(), String> {
     let path = config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("Failed to write mail config: {}", e))?;
+    std::fs::write(&path, &data).map_err(|e| format!("Failed to write mail config: {}", e))?;
     Ok(())
 }
 
@@ -153,7 +155,12 @@ pub struct MailClient {
 
 /// Validate a Graph API message ID (alphanumeric, hyphens, underscores, equals, dots).
 pub(crate) fn validate_message_id(id: &str) -> Result<(), String> {
-    if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=.".contains(c)) {
+    if id.is_empty()
+        || id.len() > 200
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_=.".contains(c))
+    {
         return Err("無効なメッセージIDです".into());
     }
     Ok(())
@@ -161,7 +168,12 @@ pub(crate) fn validate_message_id(id: &str) -> Result<(), String> {
 
 /// Validate a Graph API attachment ID.
 fn validate_attachment_id(id: &str) -> Result<(), String> {
-    if id.is_empty() || id.len() > 600 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_=.+/".contains(c)) {
+    if id.is_empty()
+        || id.len() > 600
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_=.+/".contains(c))
+    {
         return Err("無効な添付ファイルIDです".into());
     }
     Ok(())
@@ -173,7 +185,11 @@ impl MailClient {
             .user_agent(crate::client::USER_AGENT)
             .build()
             .expect("failed to build mail HTTP client");
-        Self { http, token: None, config: load_config() }
+        Self {
+            http,
+            token: None,
+            config: load_config(),
+        }
     }
 
     /// Try to load saved token — keychain first, then migrate from legacy JSON file
@@ -240,7 +256,8 @@ impl MailClient {
             ("scope", MS_SCOPES),
         ];
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/token", config::MS_AUTHORITY))
             .form(&params)
             .send()
@@ -248,18 +265,26 @@ impl MailClient {
             .map_err(|e| format!("トークン交換失敗: {}", e))?;
 
         let status = resp.status();
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("レスポンス解析失敗: {}", e))?;
 
         if !status.is_success() {
-            let err_desc = body["error_description"].as_str().unwrap_or("unknown error");
+            let err_desc = body["error_description"]
+                .as_str()
+                .unwrap_or("unknown error");
             return Err(format!("認証エラー: {}", err_desc));
         }
 
-        let access_token = body["access_token"].as_str()
-            .ok_or("access_token missing")?.to_string();
-        let refresh_token = body["refresh_token"].as_str()
-            .ok_or("refresh_token missing")?.to_string();
+        let access_token = body["access_token"]
+            .as_str()
+            .ok_or("access_token missing")?
+            .to_string();
+        let refresh_token = body["refresh_token"]
+            .as_str()
+            .ok_or("refresh_token missing")?
+            .to_string();
         let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
         let expires_at = chrono::Utc::now().timestamp() + expires_in;
 
@@ -275,7 +300,9 @@ impl MailClient {
 
     /// Refresh the access token using refresh_token
     pub async fn refresh_token(&mut self) -> Result<(), String> {
-        let refresh = self.token.as_ref()
+        let refresh = self
+            .token
+            .as_ref()
             .map(|t| t.refresh_token.clone())
             .ok_or("リフレッシュトークンがありません")?;
 
@@ -287,7 +314,8 @@ impl MailClient {
             ("scope", MS_SCOPES),
         ];
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/token", config::MS_AUTHORITY))
             .form(&params)
             .send()
@@ -295,19 +323,27 @@ impl MailClient {
             .map_err(|e| format!("トークン更新失敗: {}", e))?;
 
         let status = resp.status();
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("レスポンス解析失敗: {}", e))?;
 
         if !status.is_success() {
-            let err_desc = body["error_description"].as_str().unwrap_or("unknown error");
+            let err_desc = body["error_description"]
+                .as_str()
+                .unwrap_or("unknown error");
             self.clear_token();
             return Err(format!("トークン更新失敗: {}", err_desc));
         }
 
-        let access_token = body["access_token"].as_str()
-            .ok_or("access_token missing")?.to_string();
-        let refresh_token = body["refresh_token"].as_str()
-            .unwrap_or(&refresh).to_string();
+        let access_token = body["access_token"]
+            .as_str()
+            .ok_or("access_token missing")?
+            .to_string();
+        let refresh_token = body["refresh_token"]
+            .as_str()
+            .unwrap_or(&refresh)
+            .to_string();
         let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
         let expires_at = chrono::Utc::now().timestamp() + expires_in;
 
@@ -329,7 +365,12 @@ impl MailClient {
             // Token expired or about to expire, refresh
             self.refresh_token().await?;
         }
-        Ok(self.token.as_ref().ok_or("token lost after refresh")?.access_token.clone())
+        Ok(self
+            .token
+            .as_ref()
+            .ok_or("token lost after refresh")?
+            .access_token
+            .clone())
     }
 
     /// Prepare an HTTP client + valid access token for lock-free network I/O.
@@ -343,7 +384,8 @@ impl MailClient {
     async fn graph_get(&mut self, url: &str) -> Result<serde_json::Value, String> {
         let access_token = self.ensure_token().await?;
 
-        let resp = self.http
+        let resp = self
+            .http
             .get(url)
             .bearer_auth(&access_token)
             .send()
@@ -354,8 +396,14 @@ impl MailClient {
         if status.as_u16() == 401 {
             // Token might have been revoked, try refresh once
             self.refresh_token().await?;
-            let new_token = self.token.as_ref().ok_or("token lost after refresh")?.access_token.clone();
-            let resp2 = self.http
+            let new_token = self
+                .token
+                .as_ref()
+                .ok_or("token lost after refresh")?
+                .access_token
+                .clone();
+            let resp2 = self
+                .http
                 .get(url)
                 .bearer_auth(&new_token)
                 .send()
@@ -365,7 +413,10 @@ impl MailClient {
                 self.clear_token();
                 return Err(config::MAIL_SESSION_EXPIRED_MSG.into());
             }
-            return resp2.json().await.map_err(|e| format!("レスポンス解析失敗: {}", e));
+            return resp2
+                .json()
+                .await
+                .map_err(|e| format!("レスポンス解析失敗: {}", e));
         }
 
         if !status.is_success() {
@@ -373,12 +424,19 @@ impl MailClient {
             return Err(format!("Graph APIエラー ({}): {}", status, body));
         }
 
-        resp.json().await.map_err(|e| format!("レスポンス解析失敗: {}", e))
+        resp.json()
+            .await
+            .map_err(|e| format!("レスポンス解析失敗: {}", e))
     }
 
     /// Fetch user's mail profile
     pub async fn fetch_profile(&mut self) -> Result<MailProfile, String> {
-        let body = self.graph_get(&format!("{}/me?$select=displayName,mail,userPrincipalName", config::GRAPH_BASE)).await?;
+        let body = self
+            .graph_get(&format!(
+                "{}/me?$select=displayName,mail,userPrincipalName",
+                config::GRAPH_BASE
+            ))
+            .await?;
         serde_json::from_value(body).map_err(|e| format!("プロフィール解析失敗: {}", e))
     }
 
@@ -389,8 +447,8 @@ impl MailClient {
             config::GRAPH_BASE, top, skip,
         );
         let body = self.graph_get(&url).await?;
-        let resp: GraphListResponse<MailMessage> = serde_json::from_value(body)
-            .map_err(|e| format!("メール解析失敗: {}", e))?;
+        let resp: GraphListResponse<MailMessage> =
+            serde_json::from_value(body).map_err(|e| format!("メール解析失敗: {}", e))?;
         Ok(resp.value)
     }
 
@@ -411,7 +469,8 @@ impl MailClient {
         let access_token = self.ensure_token().await?;
         let url = format!("{}/me/messages/{}", config::GRAPH_BASE, message_id);
         let body = serde_json::json!({"isRead": true});
-        let resp = self.http
+        let resp = self
+            .http
             .patch(&url)
             .bearer_auth(&access_token)
             .json(&body)
@@ -430,7 +489,8 @@ impl MailClient {
     /// GET request to Graph API returning raw bytes (for attachment downloads)
     async fn graph_get_bytes(&mut self, url: &str) -> Result<Vec<u8>, String> {
         let access_token = self.ensure_token().await?;
-        let resp = self.http
+        let resp = self
+            .http
             .get(url)
             .bearer_auth(&access_token)
             .send()
@@ -439,8 +499,14 @@ impl MailClient {
         let status = resp.status();
         if status.as_u16() == 401 {
             self.refresh_token().await?;
-            let new_token = self.token.as_ref().ok_or("token lost after refresh")?.access_token.clone();
-            let resp2 = self.http
+            let new_token = self
+                .token
+                .as_ref()
+                .ok_or("token lost after refresh")?
+                .access_token
+                .clone();
+            let resp2 = self
+                .http
                 .get(url)
                 .bearer_auth(&new_token)
                 .send()
@@ -450,25 +516,36 @@ impl MailClient {
                 self.clear_token();
                 return Err(config::MAIL_SESSION_EXPIRED_MSG.into());
             }
-            return resp2.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("レスポンス読み込み失敗: {}", e));
+            return resp2
+                .bytes()
+                .await
+                .map(|b| b.to_vec())
+                .map_err(|e| format!("レスポンス読み込み失敗: {}", e));
         }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(format!("Graph APIエラー ({}): {}", status, body));
         }
-        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("レスポンス読み込み失敗: {}", e))
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| format!("レスポンス読み込み失敗: {}", e))
     }
 
     /// Fetch attachment metadata for a message (no content bytes)
-    pub async fn fetch_attachments(&mut self, message_id: &str) -> Result<Vec<MailAttachment>, String> {
+    pub async fn fetch_attachments(
+        &mut self,
+        message_id: &str,
+    ) -> Result<Vec<MailAttachment>, String> {
         validate_message_id(message_id)?;
         let url = format!(
             "{}/me/messages/{}/attachments?$select=id,name,contentType,size",
-            config::GRAPH_BASE, message_id,
+            config::GRAPH_BASE,
+            message_id,
         );
         let body = self.graph_get(&url).await?;
-        let resp: GraphListResponse<MailAttachment> = serde_json::from_value(body)
-            .map_err(|e| format!("添付ファイル解析失敗: {}", e))?;
+        let resp: GraphListResponse<MailAttachment> =
+            serde_json::from_value(body).map_err(|e| format!("添付ファイル解析失敗: {}", e))?;
         Ok(resp.value)
     }
 
@@ -489,9 +566,19 @@ impl MailClient {
             .and_then(|n| n.to_str())
             .unwrap_or("attachment")
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || ".-_ ()[]".contains(c) { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || ".-_ ()[]".contains(c) {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
-        let safe_name = if safe_name.is_empty() { "attachment".to_string() } else { safe_name };
+        let safe_name = if safe_name.is_empty() {
+            "attachment".to_string()
+        } else {
+            safe_name
+        };
 
         let url = format!(
             "{}/me/messages/{}/attachments/{}/$value",
@@ -507,9 +594,13 @@ impl MailClient {
         let mut dest = downloads_dir.join(&safe_name);
         if dest.exists() {
             let stem = std::path::Path::new(&safe_name)
-                .file_stem().and_then(|s| s.to_str()).unwrap_or("attachment");
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("attachment");
             let ext = std::path::Path::new(&safe_name)
-                .extension().and_then(|s| s.to_str()).unwrap_or("");
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
             let mut i = 1u32;
             loop {
                 let candidate = if ext.is_empty() {
@@ -518,13 +609,14 @@ impl MailClient {
                     format!("{} ({}).{}", stem, i, ext)
                 };
                 dest = downloads_dir.join(&candidate);
-                if !dest.exists() { break; }
+                if !dest.exists() {
+                    break;
+                }
                 i += 1;
             }
         }
 
-        std::fs::write(&dest, &data)
-            .map_err(|e| format!("ファイル保存失敗: {}", e))?;
+        std::fs::write(&dest, &data).map_err(|e| format!("ファイル保存失敗: {}", e))?;
 
         let path_str = dest.to_string_lossy().to_string();
         crate::commands::record_download(&safe_name, &path_str, None, "mail", data.len() as u64);

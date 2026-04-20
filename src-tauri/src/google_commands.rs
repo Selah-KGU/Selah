@@ -36,8 +36,10 @@ pub async fn gcal_open_login(
     // Bind a local TCP listener on a random available port
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("ローカルサーバー起動失敗: {}", e))?;
-    let port = std_listener.local_addr()
-        .map_err(|e| format!("ポート取得失敗: {}", e))?.port();
+    let port = std_listener
+        .local_addr()
+        .map_err(|e| format!("ポート取得失敗: {}", e))?
+        .port();
 
     let auth_url = {
         let mut gcal = state.client.lock().await;
@@ -48,7 +50,10 @@ pub async fn gcal_open_login(
     tokio::spawn(async move {
         // Convert to async listener (no polling loop, proper event-driven accept)
         if let Err(e) = std_listener.set_nonblocking(true) {
-            let _ = ready_tx.send(Err(format!("ローカルサーバー初期化失敗(set_nonblocking): {}", e)));
+            let _ = ready_tx.send(Err(format!(
+                "ローカルサーバー初期化失敗(set_nonblocking): {}",
+                e
+            )));
             return;
         }
         let listener = match tokio::net::TcpListener::from_std(std_listener) {
@@ -63,11 +68,17 @@ pub async fn gcal_open_login(
 
         let code = tokio::time::timeout(std::time::Duration::from_secs(300), async {
             loop {
-                let (stream, _) = listener.accept().await
+                let (stream, _) = listener
+                    .accept()
+                    .await
                     .map_err(|e| (format!("接続受信失敗: {}", e), None))?;
 
-                let std_stream = stream.into_std()
-                    .map_err(|e| (format!("stream変換失敗: {}", e), None::<std::net::TcpStream>))?;
+                let std_stream = stream.into_std().map_err(|e| {
+                    (
+                        format!("stream変換失敗: {}", e),
+                        None::<std::net::TcpStream>,
+                    )
+                })?;
 
                 match parse_oauth_callback(std_stream) {
                     Ok(ok) => break Ok(ok),
@@ -80,7 +91,8 @@ pub async fn gcal_open_login(
                     Err(other) => break Err(other),
                 }
             }
-        }).await;
+        })
+        .await;
 
         match code {
             Ok(Ok((auth_code, stream))) => {
@@ -101,7 +113,9 @@ pub async fn gcal_open_login(
             }
             Ok(Err((e, stream))) => {
                 log::error!("Google OAuth callback error: {}", e);
-                if let Some(s) = stream { send_oauth_response(s, false, Some(&e)); }
+                if let Some(s) = stream {
+                    send_oauth_response(s, false, Some(&e));
+                }
                 let _ = app_clone.emit("gcal-login-error", &e);
             }
             Err(_) => {
@@ -119,7 +133,8 @@ pub async fn gcal_open_login(
 
     // Open system browser via sandbox-safe opener plugin after listener is ready
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_url(&auth_url, None::<&str>)
+    app.opener()
+        .open_url(&auth_url, None::<&str>)
         .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
 
     Ok(())
@@ -127,11 +142,14 @@ pub async fn gcal_open_login(
 
 /// Parse the OAuth callback request, extract code, but don't send response yet.
 /// Returns (code, stream) on success, or (error, optionally stream) on failure.
-fn parse_oauth_callback(mut stream: std::net::TcpStream) -> Result<(String, std::net::TcpStream), (String, Option<std::net::TcpStream>)> {
+fn parse_oauth_callback(
+    mut stream: std::net::TcpStream,
+) -> Result<(String, std::net::TcpStream), (String, Option<std::net::TcpStream>)> {
     use std::io::Read;
 
     let mut buf = [0u8; 4096];
-    let n = stream.read(&mut buf)
+    let n = stream
+        .read(&mut buf)
         .map_err(|e| (format!("リクエスト読み取り失敗: {}", e), None))?;
     let request = String::from_utf8_lossy(&buf[..n]);
 
@@ -155,7 +173,10 @@ fn parse_oauth_callback(mut stream: std::net::TcpStream) -> Result<(String, std:
     } else if params.get("error").is_none() {
         Err(("oauth_code_missing".into(), Some(stream)))
     } else {
-        let err = params.get("error").cloned().unwrap_or_else(|| "不明なエラー".into());
+        let err = params
+            .get("error")
+            .cloned()
+            .unwrap_or_else(|| "不明なエラー".into());
         Err((err, Some(stream)))
     }
 }
@@ -189,16 +210,23 @@ body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content
 h1{font-size:20px;margin:0 0 8px}p{font-size:14px;color:#86868b;margin:0}
 </style></head><body><div class="card"><h1>Google Calendar 認証完了</h1><p>このタブを閉じてください。</p></div></body></html>"#.to_string())
     } else {
-        let escaped_error = error.unwrap_or("不明なエラー")
-            .replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
-        ("400 Bad Request", format!(
-            r#"<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        let escaped_error = error
+            .unwrap_or("不明なエラー")
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        (
+            "400 Bad Request",
+            format!(
+                r#"<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 body{{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f7;color:#1d1d1f}}
 .card{{text-align:center;padding:40px;border-radius:16px;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
 h1{{font-size:20px;margin:0 0 8px;color:#ff3b30}}p{{font-size:14px;color:#86868b;margin:0}}
 </style></head><body><div class="card"><h1>認証エラー</h1><p>{}</p></div></body></html>"#,
-            escaped_error
-        ))
+                escaped_error
+            ),
+        )
     };
 
     let response = format!(

@@ -33,7 +33,9 @@ static MODEL_CATALOG: LazyLock<Vec<ModelInfo>> = LazyLock::new(|| {
             size_label: "Qwen 3.5 2B".into(),
             param_size: "2B".into(),
             file_name: "Qwen3.5-2B-Q4_K_M.gguf".into(),
-            download_url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf".into(),
+            download_url:
+                "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+                    .into(),
             file_size_mb: 1280,
         },
         ModelInfo {
@@ -42,7 +44,9 @@ static MODEL_CATALOG: LazyLock<Vec<ModelInfo>> = LazyLock::new(|| {
             size_label: "Qwen 3.5 4B".into(),
             param_size: "4B".into(),
             file_name: "Qwen3.5-4B-Q4_K_M.gguf".into(),
-            download_url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf".into(),
+            download_url:
+                "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+                    .into(),
             file_size_mb: 2740,
         },
     ]
@@ -69,7 +73,11 @@ pub fn model_path(file_name: &str) -> PathBuf {
 
 pub fn is_model_downloaded(file_name: &str) -> bool {
     let path = model_path(file_name);
-    path.exists() && path.metadata().map(|m| m.len() > 1_000_000).unwrap_or(false)
+    path.exists()
+        && path
+            .metadata()
+            .map(|m| m.len() > 1_000_000)
+            .unwrap_or(false)
 }
 
 // ============ Model download ============
@@ -82,10 +90,7 @@ pub fn cancel_download() {
     }
 }
 
-pub fn download_model(
-    app: &tauri::AppHandle,
-    model: &ModelInfo,
-) -> Result<(), String> {
+pub fn download_model(app: &tauri::AppHandle, model: &ModelInfo) -> Result<(), String> {
     // Reset cancel flag
     if let Ok(mut flag) = DOWNLOAD_CANCEL.lock() {
         *flag = false;
@@ -104,9 +109,7 @@ pub fn download_model(
     // Support resume: check if partial file exists
     let mut resume_from: u64 = 0;
     if tmp.exists() {
-        resume_from = std::fs::metadata(&tmp)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        resume_from = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
     }
 
     let mut req = client.get(url);
@@ -114,7 +117,8 @@ pub fn download_model(
         req = req.header("Range", format!("bytes={}-", resume_from));
     }
 
-    let resp = req.send()
+    let resp = req
+        .send()
         .map_err(|e| format!("ダウンロード開始失敗: {}", e))?;
 
     if !resp.status().is_success() && resp.status().as_u16() != 206 {
@@ -140,8 +144,7 @@ pub fn download_model(
             .open(&tmp)
             .map_err(|e| format!("ファイルオープン失敗: {}", e))?
     } else {
-        std::fs::File::create(&tmp)
-            .map_err(|e| format!("ファイル作成失敗: {}", e))?
+        std::fs::File::create(&tmp).map_err(|e| format!("ファイル作成失敗: {}", e))?
     };
 
     let mut writer = std::io::BufWriter::new(file);
@@ -161,12 +164,16 @@ pub fn download_model(
             }
         }
 
-        let n = reader.read(&mut buf)
+        let n = reader
+            .read(&mut buf)
             .map_err(|e| format!("ダウンロード読み取りエラー: {}", e))?;
 
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
 
-        writer.write_all(&buf[..n])
+        writer
+            .write_all(&buf[..n])
             .map_err(|e| format!("ファイル書き込みエラー: {}", e))?;
 
         downloaded += n as u64;
@@ -182,21 +189,24 @@ pub fn download_model(
         }
     }
 
-    writer.flush()
+    writer
+        .flush()
         .map_err(|e| format!("ファイルフラッシュエラー: {}", e))?;
     drop(writer);
 
     // Rename .part -> final
-    std::fs::rename(&tmp, &dest)
-        .map_err(|e| format!("ファイルリネームエラー: {}", e))?;
+    std::fs::rename(&tmp, &dest).map_err(|e| format!("ファイルリネームエラー: {}", e))?;
 
     // Final progress
-    let _ = app.emit("model-download-progress", serde_json::json!({
-        "downloaded": downloaded,
-        "total": total_size,
-        "percent": 100,
-        "done": true,
-    }));
+    let _ = app.emit(
+        "model-download-progress",
+        serde_json::json!({
+            "downloaded": downloaded,
+            "total": total_size,
+            "percent": 100,
+            "done": true,
+        }),
+    );
 
     Ok(())
 }
@@ -232,15 +242,22 @@ static CANCEL_FLAGS: LazyLock<Mutex<std::collections::HashSet<String>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 pub fn cancel_inference(gen_id: &str) {
-    if let Ok(mut set) = CANCEL_FLAGS.lock() { set.insert(gen_id.to_string()); }
+    if let Ok(mut set) = CANCEL_FLAGS.lock() {
+        set.insert(gen_id.to_string());
+    }
 }
 
 fn is_cancelled(gen_id: &str) -> bool {
-    CANCEL_FLAGS.lock().map(|s| s.contains(gen_id)).unwrap_or(false)
+    CANCEL_FLAGS
+        .lock()
+        .map(|s| s.contains(gen_id))
+        .unwrap_or(false)
 }
 
 fn clear_cancel(gen_id: &str) {
-    if let Ok(mut set) = CANCEL_FLAGS.lock() { set.remove(gen_id); }
+    if let Ok(mut set) = CANCEL_FLAGS.lock() {
+        set.remove(gen_id);
+    }
 }
 
 // ── Public API ──
@@ -271,7 +288,10 @@ impl Default for SamplerConfig {
 impl SamplerConfig {
     /// Low-creativity config for deterministic planning output.
     pub fn deterministic(temperature: f32) -> Self {
-        Self { temperature, ..Default::default() }
+        Self {
+            temperature,
+            ..Default::default()
+        }
     }
 
     fn build_sampler(&self) -> LlamaSampler {
@@ -307,9 +327,13 @@ pub fn run_inference_streaming<F: FnMut(&str, bool)>(
     req: InferenceRequest,
     on_chunk: F,
 ) -> Result<String, String> {
-    if !req.gen_id.is_empty() { clear_cancel(&req.gen_id); }
+    if !req.gen_id.is_empty() {
+        clear_cancel(&req.gen_id);
+    }
     let result = run_local_inference(&req, Some(on_chunk));
-    if !req.gen_id.is_empty() { clear_cancel(&req.gen_id); }
+    if !req.gen_id.is_empty() {
+        clear_cancel(&req.gen_id);
+    }
     result
 }
 
@@ -322,24 +346,30 @@ fn run_local_inference<F: FnMut(&str, bool)>(
     req: &InferenceRequest,
     mut on_token: Option<F>,
 ) -> Result<String, String> {
-    let mut lock = ENGINE.lock().map_err(|_| "エンジンロック取得失敗".to_string())?;
+    let mut lock = ENGINE
+        .lock()
+        .map_err(|_| "エンジンロック取得失敗".to_string())?;
     let engine = ensure_engine(&mut lock)?;
     ensure_model(engine, &req.model_id, &req.file_name)?;
     let (model, _) = engine.model.as_ref().unwrap();
 
     // Tokenize ChatML prompt (with optional assistant prefill).
     let prompt = format_chatml(&req.messages, &req.prefill);
-    let tokens = model.str_to_token(&prompt, AddBos::Always)
+    let tokens = model
+        .str_to_token(&prompt, AddBos::Always)
         .map_err(|e| format!("トークン化失敗: {}", e))?;
     let n_tokens = tokens.len();
     if n_tokens as u32 >= N_CTX {
-        return Err(format!("入力が長すぎます（{}トークン / 上限{}）", n_tokens, N_CTX));
+        return Err(format!(
+            "入力が長すぎます（{}トークン / 上限{}）",
+            n_tokens, N_CTX
+        ));
     }
 
     // Context + prefill.
-    let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(std::num::NonZeroU32::new(N_CTX));
-    let mut ctx = model.new_context(&engine.backend, ctx_params)
+    let ctx_params = LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(N_CTX));
+    let mut ctx = model
+        .new_context(&engine.backend, ctx_params)
         .map_err(|e| format!("コンテキスト作成失敗: {}", e))?;
     prefill(&mut ctx, &tokens)?;
 
@@ -348,11 +378,19 @@ fn run_local_inference<F: FnMut(&str, bool)>(
 
     // Budget.
     let remaining = (N_CTX as usize).saturating_sub(n_tokens);
-    let max_gen = if req.max_tokens == 0 { remaining } else { (req.max_tokens as usize).min(remaining) };
+    let max_gen = if req.max_tokens == 0 {
+        remaining
+    } else {
+        (req.max_tokens as usize).min(remaining)
+    };
 
     // Think-block tracking (token level).
-    let think_open = model.str_to_token("<think>", AddBos::Never).unwrap_or_default();
-    let think_close = model.str_to_token("</think>\n", AddBos::Never).unwrap_or_default();
+    let think_open = model
+        .str_to_token("<think>", AddBos::Never)
+        .unwrap_or_default();
+    let think_close = model
+        .str_to_token("</think>\n", AddBos::Never)
+        .unwrap_or_default();
     let stop_tokens = [
         model.str_to_token("<|im_end|>", AddBos::Never).ok(),
         model.str_to_token("<|endoftext|>", AddBos::Never).ok(),
@@ -371,11 +409,17 @@ fn run_local_inference<F: FnMut(&str, bool)>(
     let mut batch = LlamaBatch::new(PREFILL_CHUNK, 1);
 
     for _ in 0..max_gen {
-        if streaming && !req.gen_id.is_empty() && is_cancelled(&req.gen_id) { break; }
+        if streaming && !req.gen_id.is_empty() && is_cancelled(&req.gen_id) {
+            break;
+        }
 
         let token = sampler.sample(&ctx, -1);
-        if model.is_eog_token(token) { break; }
-        if is_stop_token(&stop_tokens, token) { break; }
+        if model.is_eog_token(token) {
+            break;
+        }
+        if is_stop_token(&stop_tokens, token) {
+            break;
+        }
 
         output_tokens.push(token);
 
@@ -386,18 +430,24 @@ fn run_local_inference<F: FnMut(&str, bool)>(
         if think_state.should_force_close(&think_close) {
             think_state.force_close();
             decode_single(&mut ctx, &mut batch, token, &mut n_cur)?;
-            if streaming { emit_piece(model, token, &mut stream, on_token.as_mut()); }
+            if streaming {
+                emit_piece(model, token, &mut stream, on_token.as_mut());
+            }
 
             for &close_tok in &think_close {
                 output_tokens.push(close_tok);
                 decode_single(&mut ctx, &mut batch, close_tok, &mut n_cur)?;
-                if streaming { emit_piece(model, close_tok, &mut stream, on_token.as_mut()); }
+                if streaming {
+                    emit_piece(model, close_tok, &mut stream, on_token.as_mut());
+                }
             }
             continue;
         }
 
         decode_single(&mut ctx, &mut batch, token, &mut n_cur)?;
-        if streaming { emit_piece(model, token, &mut stream, on_token.as_mut()); }
+        if streaming {
+            emit_piece(model, token, &mut stream, on_token.as_mut());
+        }
     }
 
     if streaming {
@@ -418,18 +468,28 @@ fn run_local_inference<F: FnMut(&str, bool)>(
 fn ensure_engine(lock: &mut Option<InferenceEngine>) -> Result<&mut InferenceEngine, String> {
     if lock.is_none() {
         log::debug!("[local_ai] Initializing inference backend");
-        let mut backend = LlamaBackend::init()
-            .map_err(|e| format!("バックエンド初期化失敗: {}", e))?;
+        let mut backend =
+            LlamaBackend::init().map_err(|e| format!("バックエンド初期化失敗: {}", e))?;
         backend.void_logs();
-        *lock = Some(InferenceEngine { backend, model: None });
+        *lock = Some(InferenceEngine {
+            backend,
+            model: None,
+        });
     }
     Ok(lock.as_mut().unwrap())
 }
 
-fn ensure_model(engine: &mut InferenceEngine, model_id: &str, file_name: &str) -> Result<(), String> {
+fn ensure_model(
+    engine: &mut InferenceEngine,
+    model_id: &str,
+    file_name: &str,
+) -> Result<(), String> {
     let need_load = match engine.model.as_ref() {
         Some((_, id)) if id == model_id => false,
-        Some((_, id)) => { log::debug!("[local_ai] Switching model: {} -> {}", id, model_id); true }
+        Some((_, id)) => {
+            log::debug!("[local_ai] Switching model: {} -> {}", id, model_id);
+            true
+        }
         None => true,
     };
     if need_load {
@@ -439,8 +499,9 @@ fn ensure_model(engine: &mut InferenceEngine, model_id: &str, file_name: &str) -
             return Err(format!("モデルファイルが見つかりません: {}", file_name));
         }
         log::debug!("[local_ai] Loading model: {} from {:?}", model_id, path);
-        let model = LlamaModel::load_from_file(&engine.backend, &path, &LlamaModelParams::default())
-            .map_err(|e| format!("モデル読み込み失敗: {}", e))?;
+        let model =
+            LlamaModel::load_from_file(&engine.backend, &path, &LlamaModelParams::default())
+                .map_err(|e| format!("モデル読み込み失敗: {}", e))?;
         engine.model = Some((model, model_id.to_string()));
         log::info!("[local_ai] Model ready: {}", model_id);
     }
@@ -450,7 +511,10 @@ fn ensure_model(engine: &mut InferenceEngine, model_id: &str, file_name: &str) -
 // ── ChatML formatting ──
 
 fn format_chatml(messages: &[crate::ai::ChatMessage], prefill: &str) -> String {
-    let cap: usize = messages.iter().map(|m| m.role.len() + m.content.len() + 30).sum();
+    let cap: usize = messages
+        .iter()
+        .map(|m| m.role.len() + m.content.len() + 30)
+        .sum();
     let mut s = String::with_capacity(cap + 20 + prefill.len());
     for msg in messages {
         s.push_str("<|im_start|>");
@@ -477,7 +541,8 @@ fn prefill(
         batch.clear();
         let start = chunk_idx * PREFILL_CHUNK;
         for (j, &tok) in chunk.iter().enumerate() {
-            batch.add(tok, (start + j) as i32, &[0], j == chunk.len() - 1)
+            batch
+                .add(tok, (start + j) as i32, &[0], j == chunk.len() - 1)
                 .map_err(|_| "バッチ追加失敗".to_string())?;
         }
         ctx.decode(&mut batch)
@@ -495,7 +560,8 @@ fn decode_single(
     n_cur: &mut usize,
 ) -> Result<(), String> {
     batch.clear();
-    batch.add(token, *n_cur as i32, &[0], true)
+    batch
+        .add(token, *n_cur as i32, &[0], true)
         .map_err(|_| "バッチ追加失敗".to_string())?;
     ctx.decode(batch)
         .map_err(|e| format!("デコード失敗: {}", e))?;
@@ -508,11 +574,16 @@ fn is_stop_token(
     token: llama_cpp_2::token::LlamaToken,
 ) -> bool {
     stop_tokens.iter().any(|st| {
-        st.as_ref().map(|toks| toks.len() == 1 && toks[0] == token).unwrap_or(false)
+        st.as_ref()
+            .map(|toks| toks.len() == 1 && toks[0] == token)
+            .unwrap_or(false)
     })
 }
 
-fn detokenize_all(model: &LlamaModel, tokens: &[llama_cpp_2::token::LlamaToken]) -> Result<String, String> {
+fn detokenize_all(
+    model: &LlamaModel,
+    tokens: &[llama_cpp_2::token::LlamaToken],
+) -> Result<String, String> {
     #[allow(deprecated)]
     let output = tokens
         .iter()
@@ -535,7 +606,10 @@ struct ThinkState {
 
 impl ThinkState {
     fn new(budget: usize) -> Self {
-        Self { budget, ..Default::default() }
+        Self {
+            budget,
+            ..Default::default()
+        }
     }
 
     fn update(
@@ -584,7 +658,9 @@ struct StreamState {
 
 impl StreamState {
     fn flush<F: FnMut(&str, bool)>(&mut self, on_chunk: Option<&mut F>) {
-        if self.pending.is_empty() { return; }
+        if self.pending.is_empty() {
+            return;
+        }
         if let Some(cb) = on_chunk {
             cb(&self.pending, self.in_think);
         }
@@ -604,7 +680,9 @@ fn emit_piece<F: FnMut(&str, bool)>(
     on_chunk: Option<&mut F>,
 ) {
     #[allow(deprecated)]
-    let piece = model.token_to_str(token, Special::Tokenize).unwrap_or_default();
+    let piece = model
+        .token_to_str(token, Special::Tokenize)
+        .unwrap_or_default();
     process_stream_piece(&piece, stream, on_chunk);
 }
 
@@ -619,26 +697,40 @@ fn process_stream_piece<F: FnMut(&str, bool)>(
             if let Some(pos) = stream.pending.find("</think>") {
                 if pos > 0 {
                     let to_emit: String = stream.pending.drain(..pos).collect();
-                    if let Some(cb) = on_chunk.as_deref_mut() { cb(&to_emit, true); }
+                    if let Some(cb) = on_chunk.as_deref_mut() {
+                        cb(&to_emit, true);
+                    }
                 }
                 stream.pending.drain(..("</think>".len()));
                 stream.in_think = false;
                 continue;
             }
-            emit_safe(&mut stream.pending, true, &mut stream.visible, &mut on_chunk);
+            emit_safe(
+                &mut stream.pending,
+                true,
+                &mut stream.visible,
+                &mut on_chunk,
+            );
             break;
         } else {
             if let Some(pos) = stream.pending.find("<think>") {
                 if pos > 0 {
                     let to_emit: String = stream.pending.drain(..pos).collect();
                     stream.visible.push_str(&to_emit);
-                    if let Some(cb) = on_chunk.as_deref_mut() { cb(&to_emit, false); }
+                    if let Some(cb) = on_chunk.as_deref_mut() {
+                        cb(&to_emit, false);
+                    }
                 }
                 stream.pending.drain(..("<think>".len()));
                 stream.in_think = true;
                 continue;
             }
-            emit_safe(&mut stream.pending, false, &mut stream.visible, &mut on_chunk);
+            emit_safe(
+                &mut stream.pending,
+                false,
+                &mut stream.visible,
+                &mut on_chunk,
+            );
             break;
         }
     }
@@ -651,16 +743,26 @@ fn emit_safe<F: FnMut(&str, bool)>(
     visible: &mut String,
     on_chunk: &mut Option<&mut F>,
 ) {
-    if pending.len() <= GUARD_WINDOW { return; }
+    if pending.len() <= GUARD_WINDOW {
+        return;
+    }
     let split = floor_char_boundary(pending, pending.len() - GUARD_WINDOW);
-    if split == 0 { return; }
+    if split == 0 {
+        return;
+    }
     let to_emit: String = pending.drain(..split).collect();
-    if !is_think { visible.push_str(&to_emit); }
-    if let Some(cb) = on_chunk.as_deref_mut() { cb(&to_emit, is_think); }
+    if !is_think {
+        visible.push_str(&to_emit);
+    }
+    if let Some(cb) = on_chunk.as_deref_mut() {
+        cb(&to_emit, is_think);
+    }
 }
 
 fn floor_char_boundary(s: &str, idx: usize) -> usize {
     let mut i = idx.min(s.len());
-    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
     i
 }

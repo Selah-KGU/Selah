@@ -1,37 +1,41 @@
-pub mod ai;
 mod agent;
 mod agent_commands;
 mod agent_error;
 mod agent_prompts;
 mod agent_provider;
 mod agent_tools;
+pub mod ai;
 mod auth;
 mod client;
-pub(crate) mod config;
 mod commands;
+pub(crate) mod config;
 mod cookie_bridge;
 mod db;
+mod embedded_keys;
+mod google_calendar;
+mod google_commands;
 pub(crate) mod keychain;
 mod kwic_client;
 mod kwic_commands;
+mod live;
 pub mod local_ai;
 mod luna_client;
 mod luna_commands;
 mod luna_parser;
 mod mail;
 mod mail_commands;
-mod embedded_keys;
-mod read_state;
-mod google_calendar;
-mod google_commands;
+#[cfg(target_os = "macos")]
+mod macos_native_agent;
 mod parser;
+mod read_state;
+mod stt;
 mod syllabus;
 mod timetable;
 mod tray;
 mod webview_toolbar;
 
-use tokio::sync::Mutex;
 use tauri::Manager;
+use tokio::sync::Mutex;
 
 // ── Decoupled per-service states (independent locking, zero cross-service contention) ──
 
@@ -87,7 +91,11 @@ fn mark_notification_read(db: tauri::State<'_, db::Database>, source: String, id
 }
 
 #[tauri::command]
-fn mark_batch_notification_read(db: tauri::State<'_, db::Database>, source: String, ids: Vec<String>) {
+fn mark_batch_notification_read(
+    db: tauri::State<'_, db::Database>,
+    source: String,
+    ids: Vec<String>,
+) {
     read_state::mark_batch_read(&db, &source, ids);
 }
 
@@ -112,7 +120,11 @@ fn get_data_cache(db: tauri::State<'_, db::Database>, key: String) -> Option<Str
 }
 
 #[tauri::command]
-fn save_data_cache(db: tauri::State<'_, db::Database>, key: String, json: String) -> Result<(), String> {
+fn save_data_cache(
+    db: tauri::State<'_, db::Database>,
+    key: String,
+    json: String,
+) -> Result<(), String> {
     db.save_data_cache(&key, &json)
 }
 
@@ -139,16 +151,18 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_opener::init())?;
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
-                    .level(if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Info })
+                    .level(if cfg!(debug_assertions) {
+                        log::LevelFilter::Debug
+                    } else {
+                        log::LevelFilter::Info
+                    })
                     .level_for("selectors", log::LevelFilter::Warn)
                     .level_for("html5ever", log::LevelFilter::Warn)
                     .targets([
-                        tauri_plugin_log::Target::new(
-                            tauri_plugin_log::TargetKind::Stderr,
-                        ),
-                        tauri_plugin_log::Target::new(
-                            tauri_plugin_log::TargetKind::LogDir { file_name: Some("kwic".into()) },
-                        ),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stderr),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                            file_name: Some("kwic".into()),
+                        }),
                     ])
                     .build(),
             )?;
@@ -162,13 +176,27 @@ pub fn run() {
             mail_client.try_restore_token();
             let mut gcal_client = google_calendar::GoogleCalendarClient::new();
             gcal_client.try_restore_token();
-            app.manage(KgcState { client: Mutex::new(kgc), gate: Mutex::new(()) });
-            app.manage(LunaState { client: Mutex::new(luna) });
-            app.manage(KwicState { client: Mutex::new(kwic) });
-            app.manage(MailState { client: Mutex::new(mail_client) });
-            app.manage(GCalState { client: Mutex::new(gcal_client) });
-            app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(std::collections::HashMap::new())));
+            app.manage(KgcState {
+                client: Mutex::new(kgc),
+                gate: Mutex::new(()),
+            });
+            app.manage(LunaState {
+                client: Mutex::new(luna),
+            });
+            app.manage(KwicState {
+                client: Mutex::new(kwic),
+            });
+            app.manage(MailState {
+                client: Mutex::new(mail_client),
+            });
+            app.manage(GCalState {
+                client: Mutex::new(gcal_client),
+            });
+            app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )));
             app.manage(ThemeState(std::sync::Mutex::new("system".to_string())));
+            app.manage(live::LiveState::new());
 
             // Initialize SQLite database for timetable enrichment
             let data_dir = dirs::data_dir()
@@ -182,6 +210,14 @@ pub fn run() {
             app.manage(tray_status.clone());
             tray::setup_tray(app.handle())?;
             tray::start_tray_cycle(app.handle(), tray_status);
+            #[cfg(target_os = "macos")]
+            {
+                macos_native_agent::setup(app.handle());
+                let native_agent_cfg = commands::load_native_agent_config();
+                if native_agent_cfg.floating_orb_enabled {
+                    let _ = macos_native_agent::open_orb(app.handle());
+                }
+            }
 
             // Hide main window on close instead of quitting (keep in tray)
             if let Some(win) = app.get_webview_window("main") {
@@ -302,11 +338,31 @@ pub fn run() {
             ai::request_ai_refresh,
             ai::test_notification,
             ai::debug_test_notification,
+            stt::get_stt_config,
+            stt::save_stt_config,
+            stt::list_stt_models,
+            stt::download_stt_model,
+            stt::delete_stt_model,
+            stt::cancel_stt_model_download,
+            stt::stt_test_model,
+            stt::stt_start_stream,
+            stt::stt_stop_stream,
+            stt::stt_is_running,
+            stt::stt_get_active_caller,
+            live::live_get_session,
+            live::live_peek_day_cache,
+            live::live_start_session,
+            live::live_append_transcript,
+            live::live_flush_summary,
+            live::live_cancel_session,
+            live::live_finish_session,
             commands::get_download_config,
             commands::save_download_config,
             commands::select_download_dir,
             commands::get_notification_config,
             commands::save_notification_config,
+            commands::get_native_agent_config,
+            commands::save_native_agent_config,
             commands::get_calendar_config,
             commands::save_calendar_config,
             commands::list_downloads,
@@ -318,8 +374,9 @@ pub fn run() {
             commands::open_downloads_window,
             tray::update_tray,
             tray::set_tray_status_items,
-            tray::get_tray_popup_data,
             tray::show_main_window,
+            tray::show_main_agent_window,
+            tray::open_agent_float_window,
             tray::quit_app,
             get_app_theme,
             set_app_theme,
@@ -334,6 +391,7 @@ pub fn run() {
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,
             webview_toolbar::browser_get_url,
+            webview_toolbar::browser_report_page_text,
             agent_commands::agent_list_conversations,
             agent_commands::agent_create_conversation,
             agent_commands::agent_load_messages,

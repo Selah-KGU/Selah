@@ -1,19 +1,29 @@
 use scraper::{Html, Selector};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 // ============ Common Selectors ============
 
-pub(crate) static SEL_TR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("tr").expect("valid selector"));
-pub(crate) static SEL_TD: LazyLock<Selector> = LazyLock::new(|| Selector::parse("td").expect("valid selector"));
-pub(crate) static SEL_TH: LazyLock<Selector> = LazyLock::new(|| Selector::parse("th").expect("valid selector"));
-pub(crate) static SEL_HIDDEN_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).expect("valid selector"));
-pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output").expect("valid selector"));
-static SEL_TABLE_OUTPUT_SEISEKIT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("table.output_seisekiT").expect("valid selector"));
-static SEL_INPUT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("input").expect("valid selector"));
-static SEL_SELECT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("select").expect("valid selector"));
-static SEL_OPTION_SELECTED: LazyLock<Selector> = LazyLock::new(|| Selector::parse("option[selected]").expect("valid selector"));
-static SESSION_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"第([\d,～~・-]+)回|Session\s+([\d,～~-]+)").unwrap());
+pub(crate) static SEL_TR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("tr").expect("valid selector"));
+pub(crate) static SEL_TD: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("td").expect("valid selector"));
+pub(crate) static SEL_TH: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("th").expect("valid selector"));
+pub(crate) static SEL_HIDDEN_INPUT: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(r#"input[type="hidden"]"#).expect("valid selector"));
+pub(crate) static SEL_TABLE_OUTPUT: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("table.output").expect("valid selector"));
+static SEL_TABLE_OUTPUT_SEISEKIT: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("table.output_seisekiT").expect("valid selector"));
+static SEL_INPUT: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("input").expect("valid selector"));
+static SEL_SELECT: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("select").expect("valid selector"));
+static SEL_OPTION_SELECTED: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("option[selected]").expect("valid selector"));
+static SESSION_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"第([\d,～~・-]+)回|Session\s+([\d,～~-]+)").unwrap());
 static NUM_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\d+").unwrap());
 
 // ============ Shared ============
@@ -79,19 +89,29 @@ pub fn parse_student_info(html: &str) -> StudentInfo {
                 let label = th.text().collect::<String>();
                 let label = label.trim();
                 // Each <th> pairs with the <td> at the same index
-                let td_text = tds.get(ti)
+                let td_text = tds
+                    .get(ti)
                     .map(|td| td.text().collect::<String>().trim().to_string())
                     .unwrap_or_default();
-                if td_text.is_empty() { continue; }
-                if label.contains("学生氏名") || label == "氏名" || label.contains("Student Name") {
+                if td_text.is_empty() {
+                    continue;
+                }
+                if label.contains("学生氏名") || label == "氏名" || label.contains("Student Name")
+                {
                     if info.name.is_empty() {
                         parse_name_field(&td_text, &mut info);
                     }
                 } else if label.contains("学生番号") && info.student_id.is_empty() {
                     info.student_id = td_text;
-                } else if label.contains("学部") && !label.contains("学科") && info.faculty.is_empty() {
+                } else if label.contains("学部")
+                    && !label.contains("学科")
+                    && info.faculty.is_empty()
+                {
                     info.faculty = td_text;
-                } else if label.contains("学科") && !label.contains("学部") && info.department.is_empty() {
+                } else if label.contains("学科")
+                    && !label.contains("学部")
+                    && info.department.is_empty()
+                {
                     info.department = td_text;
                 } else if label.contains("学生区分") && info.student_type.is_empty() {
                     info.student_type = td_text;
@@ -99,18 +119,29 @@ pub fn parse_student_info(html: &str) -> StudentInfo {
                     info.affiliation_type = td_text;
                 } else if label.contains("学生状態") && info.status.is_empty() {
                     info.status = td_text;
-                } else if (label == "クラス" || label.contains("クラス/")) && info.class.is_empty() {
+                } else if (label == "クラス" || label.contains("クラス/")) && info.class.is_empty()
+                {
                     info.class = td_text;
-                } else if (label.contains("専攻") || label.contains("コース")) && info.major.is_empty() {
+                } else if (label.contains("専攻") || label.contains("コース"))
+                    && info.major.is_empty()
+                {
                     info.major = td_text;
-                } else if (label.contains("住所") || label.contains("電話番号")) && info.address.is_empty() && td_text.len() > 5 {
+                } else if (label.contains("住所") || label.contains("電話番号"))
+                    && info.address.is_empty()
+                    && td_text.len() > 5
+                {
                     info.address = td_text;
                 }
             }
         }
     }
 
-    log::debug!("parse_student_info: id={}, name={}, faculty={}", info.student_id, info.name, info.faculty);
+    log::debug!(
+        "parse_student_info: id={}, name={}, faculty={}",
+        info.student_id,
+        info.name,
+        info.faculty
+    );
     info
 }
 
@@ -119,8 +150,13 @@ fn parse_name_field(v: &str, info: &mut StudentInfo) {
     let paren_pos = v.find('(').or_else(|| v.find('（'));
     if let Some(pos) = paren_pos {
         info.name = v[..pos].trim().to_string();
-        let en = v[pos..].trim_matches(|c: char| c == '(' || c == ')' || c == '（' || c == '）').trim().to_string();
-        if !en.is_empty() { info.name_en = en; }
+        let en = v[pos..]
+            .trim_matches(|c: char| c == '(' || c == ')' || c == '（' || c == '）')
+            .trim()
+            .to_string();
+        if !en.is_empty() {
+            info.name_en = en;
+        }
     } else {
         info.name = v.trim().to_string();
     }
@@ -158,7 +194,10 @@ pub fn parse_timetable(html: &str) -> TimetableData {
     // Parse timetable from hidden inputs: lstStdTsCht_st[N]
     // hdnTmtxCd = day letter (A=Mon..F=Sat) + period (1-7)
     // lblSbjKnjNm = course name, lblClrNm = room
-    let mut timetable_data: std::collections::HashMap<String, std::collections::HashMap<String, String>> = Default::default();
+    let mut timetable_data: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, String>,
+    > = Default::default();
 
     for el in doc.select(&SEL_HIDDEN_INPUT) {
         let name = el.value().attr("name").unwrap_or("");
@@ -168,20 +207,34 @@ pub fn parse_timetable(html: &str) -> TimetableData {
             if let Some(bracket_pos) = rest.find(']') {
                 let idx = &rest[..bracket_pos];
                 if let Some(field) = rest[bracket_pos..].strip_prefix("].") {
-                    timetable_data.entry(idx.to_string()).or_default().insert(field.to_string(), value.to_string());
+                    timetable_data
+                        .entry(idx.to_string())
+                        .or_default()
+                        .insert(field.to_string(), value.to_string());
                 }
             }
         }
     }
 
-    let day_map = [('A', "月"), ('B', "火"), ('C', "水"), ('D', "木"), ('E', "金"), ('F', "土")];
+    let day_map = [
+        ('A', "月"),
+        ('B', "火"),
+        ('C', "水"),
+        ('D', "木"),
+        ('E', "金"),
+        ('F', "土"),
+    ];
 
     for fields in timetable_data.values() {
         // hdn* fields have the full (untruncated) values; lbl* may be truncated by the server
-        let course_name = fields.get("hdnSbjKnjNm").cloned()
+        let course_name = fields
+            .get("hdnSbjKnjNm")
+            .cloned()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| fields.get("lblSbjKnjNm").cloned().unwrap_or_default());
-        let room = fields.get("hdnClrNm").cloned()
+        let room = fields
+            .get("hdnClrNm")
+            .cloned()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| fields.get("lblClrNm").cloned().unwrap_or_default());
         let tmtx = fields.get("hdnTmtxCd").cloned().unwrap_or_default();
@@ -218,7 +271,11 @@ pub fn parse_timetable(html: &str) -> TimetableData {
         // Parse hdnTmtxCd: first char = day letter, rest = period number
         let day_char = tmtx.chars().next().unwrap_or(' ');
         let period_str = &tmtx[1..];
-        let day = day_map.iter().find(|(c, _)| *c == day_char).map(|(_, d)| d.to_string()).unwrap_or_default();
+        let day = day_map
+            .iter()
+            .find(|(c, _)| *c == day_char)
+            .map(|(_, d)| d.to_string())
+            .unwrap_or_default();
         let period: i32 = period_str.parse().unwrap_or(0);
 
         if !day.is_empty() && (1..=7).contains(&period) {
@@ -238,9 +295,21 @@ pub fn parse_timetable(html: &str) -> TimetableData {
 
     // Sort by day order then period
     let day_order = |d: &str| -> i32 {
-        match d { "月" => 0, "火" => 1, "水" => 2, "木" => 3, "金" => 4, "土" => 5, _ => 6 }
+        match d {
+            "月" => 0,
+            "火" => 1,
+            "水" => 2,
+            "木" => 3,
+            "金" => 4,
+            "土" => 5,
+            _ => 6,
+        }
     };
-    entries.sort_by(|a, b| day_order(&a.day).cmp(&day_order(&b.day)).then(a.period.cmp(&b.period)));
+    entries.sort_by(|a, b| {
+        day_order(&a.day)
+            .cmp(&day_order(&b.day))
+            .then(a.period.cmp(&b.period))
+    });
 
     // Extract week label and Struts token for navigation
     let week_label = hidden_input(&doc, "lblSpcfProd");
@@ -262,20 +331,33 @@ pub fn parse_timetable(html: &str) -> TimetableData {
             continue;
         }
         // For duplicate names, keep the first one
-        form_fields.entry(name.to_string()).or_insert_with(|| value.to_string());
+        form_fields
+            .entry(name.to_string())
+            .or_insert_with(|| value.to_string());
     }
     // Also collect <select> values
     for select_el in doc.select(&SEL_SELECT) {
         let name = select_el.value().attr("name").unwrap_or("").trim();
         if !name.is_empty() {
-            let value = select_el.select(&SEL_OPTION_SELECTED).next()
+            let value = select_el
+                .select(&SEL_OPTION_SELECTED)
+                .next()
                 .and_then(|o| o.value().attr("value"))
-                .unwrap_or("").trim();
-            form_fields.entry(name.to_string()).or_insert_with(|| value.to_string());
+                .unwrap_or("")
+                .trim();
+            form_fields
+                .entry(name.to_string())
+                .or_insert_with(|| value.to_string());
         }
     }
 
-    TimetableData { student, entries, week_label, struts_token, form_fields }
+    TimetableData {
+        student,
+        entries,
+        week_label,
+        struts_token,
+        form_fields,
+    }
 }
 
 // ============ Grades / Curriculum (ARF140) ============
@@ -306,7 +388,8 @@ pub fn parse_grades(html: &str) -> GradesData {
     // Each row has: hdnLv (level), lblRqgpNm (name), lblRqgpLlCrnum (required),
     // lblRqgpAcqTacCrnum (enrolled+acquired), lblRqgpTacCrnum (enrolled), lblRqgpAcqCrnum (acquired)
     // Collect all hidden inputs and group by index
-    let mut rows_map: std::collections::BTreeMap<usize, std::collections::HashMap<String, String>> = std::collections::BTreeMap::new();
+    let mut rows_map: std::collections::BTreeMap<usize, std::collections::HashMap<String, String>> =
+        std::collections::BTreeMap::new();
 
     for input in doc.select(&SEL_HIDDEN_INPUT) {
         let name = input.value().attr("name").unwrap_or("");
@@ -328,7 +411,10 @@ pub fn parse_grades(html: &str) -> GradesData {
         let field = &rest[bracket_end + 1..];
         let field = field.strip_prefix('.').unwrap_or(field);
 
-        rows_map.entry(idx).or_default().insert(field.to_string(), value);
+        rows_map
+            .entry(idx)
+            .or_default()
+            .insert(field.to_string(), value);
     }
 
     // Also check for deficit: red background on td cells
@@ -353,11 +439,15 @@ pub fn parse_grades(html: &str) -> GradesData {
         if name.is_empty() {
             continue;
         }
-        let level: i32 = fields.get("hdnLv")
+        let level: i32 = fields
+            .get("hdnLv")
             .and_then(|v| v.parse().ok())
             .unwrap_or(1);
         let required = fields.get("lblRqgpLlCrnum").cloned().unwrap_or_default();
-        let enrolled_acquired = fields.get("lblRqgpAcqTacCrnum").cloned().unwrap_or_default();
+        let enrolled_acquired = fields
+            .get("lblRqgpAcqTacCrnum")
+            .cloned()
+            .unwrap_or_default();
         let enrolled = fields.get("lblRqgpTacCrnum").cloned().unwrap_or_default();
         let acquired = fields.get("lblRqgpAcqCrnum").cloned().unwrap_or_default();
 
@@ -383,27 +473,52 @@ pub fn parse_grades(html: &str) -> GradesData {
     if curriculum.is_empty() {
         let mut headers: Vec<String> = Vec::new();
         for tr in doc.select(&SEL_TR) {
-            let ths: Vec<String> = tr.select(&SEL_TH)
-                .map(|el| el.text().collect::<String>().trim().to_string()).collect();
-            if ths.iter().any(|t| t.contains("必要単位") || t.contains("修得")) {
+            let ths: Vec<String> = tr
+                .select(&SEL_TH)
+                .map(|el| el.text().collect::<String>().trim().to_string())
+                .collect();
+            if ths
+                .iter()
+                .any(|t| t.contains("必要単位") || t.contains("修得"))
+            {
                 headers = ths;
                 continue;
             }
-            if headers.is_empty() { continue; }
-            let tds: Vec<String> = tr.select(&SEL_TD)
-                .map(|el| el.text().collect::<String>().trim().to_string()).collect();
-            if tds.is_empty() { continue; }
-            let row_ths: Vec<String> = tr.select(&SEL_TH)
-                .map(|el| el.text().collect::<String>().trim().to_string()).collect();
-            let category = if !row_ths.is_empty() { row_ths[0].clone() }
-                else if !tds.is_empty() { tds[0].clone() }
-                else { continue; };
-            if category.is_empty() { continue; }
+            if headers.is_empty() {
+                continue;
+            }
+            let tds: Vec<String> = tr
+                .select(&SEL_TD)
+                .map(|el| el.text().collect::<String>().trim().to_string())
+                .collect();
+            if tds.is_empty() {
+                continue;
+            }
+            let row_ths: Vec<String> = tr
+                .select(&SEL_TH)
+                .map(|el| el.text().collect::<String>().trim().to_string())
+                .collect();
+            let category = if !row_ths.is_empty() {
+                row_ths[0].clone()
+            } else if !tds.is_empty() {
+                tds[0].clone()
+            } else {
+                continue;
+            };
+            if category.is_empty() {
+                continue;
+            }
             let col = |name: &str| -> String {
                 for (i, h) in headers.iter().enumerate() {
                     if h.contains(name) {
-                        let td_offset = if !row_ths.is_empty() { i.saturating_sub(1) } else { i };
-                        if td_offset < tds.len() { return tds[td_offset].clone(); }
+                        let td_offset = if !row_ths.is_empty() {
+                            i.saturating_sub(1)
+                        } else {
+                            i
+                        };
+                        if td_offset < tds.len() {
+                            return tds[td_offset].clone();
+                        }
                     }
                 }
                 String::new()
@@ -420,7 +535,10 @@ pub fn parse_grades(html: &str) -> GradesData {
         }
     }
 
-    GradesData { student, curriculum }
+    GradesData {
+        student,
+        curriculum,
+    }
 }
 
 // ============ Cancellations (APB020) ============
@@ -459,7 +577,10 @@ pub fn parse_cancellations(html: &str) -> CancellationsData {
             .collect();
 
         // Detect header row
-        if ths.iter().any(|t| t.contains("休講日付") || t.contains("休講時限")) {
+        if ths
+            .iter()
+            .any(|t| t.contains("休講日付") || t.contains("休講時限"))
+        {
             headers = ths;
             continue;
         }
@@ -551,7 +672,10 @@ pub fn parse_makeup_classes(html: &str) -> MakeupData {
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
-        if ths.iter().any(|t| t.contains("補講日付") || t.contains("補講時限")) {
+        if ths
+            .iter()
+            .any(|t| t.contains("補講日付") || t.contains("補講時限"))
+        {
             headers = ths;
             continue;
         }
@@ -571,10 +695,9 @@ pub fn parse_makeup_classes(html: &str) -> MakeupData {
 
         let col = |name: &str| -> String {
             for (i, h) in headers.iter().enumerate() {
-                if h.contains(name)
-                    && i > 0 && i - 1 < tds.len() {
-                        return tds[i - 1].clone();
-                    }
+                if h.contains(name) && i > 0 && i - 1 < tds.len() {
+                    return tds[i - 1].clone();
+                }
             }
             String::new()
         };
@@ -636,7 +759,8 @@ pub fn parse_room_changes(html: &str) -> RoomChangesData {
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
-        if ths.iter().any(|t| t.contains("変更日付")) && ths.iter().any(|t| t.contains("授業名称")) {
+        if ths.iter().any(|t| t.contains("変更日付")) && ths.iter().any(|t| t.contains("授業名称"))
+        {
             headers = ths;
             continue;
         }
@@ -656,10 +780,9 @@ pub fn parse_room_changes(html: &str) -> RoomChangesData {
 
         let col = |name: &str| -> String {
             for (i, h) in headers.iter().enumerate() {
-                if h.contains(name)
-                    && i > 0 && i - 1 < tds.len() {
-                        return tds[i - 1].clone();
-                    }
+                if h.contains(name) && i > 0 && i - 1 < tds.len() {
+                    return tds[i - 1].clone();
+                }
             }
             String::new()
         };
@@ -766,17 +889,29 @@ pub fn parse_registration(html: &str) -> RegistrationData {
 
     // Language options from hidden inputs
     let mut language_options = Vec::new();
-    let mut opt_names: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
-    let mut opt_values: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+    let mut opt_names: std::collections::BTreeMap<usize, String> =
+        std::collections::BTreeMap::new();
+    let mut opt_values: std::collections::BTreeMap<usize, String> =
+        std::collections::BTreeMap::new();
     for el in doc.select(&SEL_HIDDEN_INPUT) {
         let name = el.value().attr("name").unwrap_or("");
         let value = el.value().attr("value").unwrap_or("").trim().to_string();
         if name.contains("lblTacOptAstNm") {
-            if let Some(idx) = name.split('[').nth(1).and_then(|s| s.split(']').next()).and_then(|s| s.parse::<usize>().ok()) {
+            if let Some(idx) = name
+                .split('[')
+                .nth(1)
+                .and_then(|s| s.split(']').next())
+                .and_then(|s| s.parse::<usize>().ok())
+            {
                 opt_names.insert(idx, value);
             }
         } else if name.contains("lblTacOptValNm") {
-            if let Some(idx) = name.split('[').nth(1).and_then(|s| s.split(']').next()).and_then(|s| s.parse::<usize>().ok()) {
+            if let Some(idx) = name
+                .split('[')
+                .nth(1)
+                .and_then(|s| s.split(']').next())
+                .and_then(|s| s.parse::<usize>().ok())
+            {
                 opt_values.insert(idx, value);
             }
         }
@@ -784,7 +919,10 @@ pub fn parse_registration(html: &str) -> RegistrationData {
     for (idx, oname) in &opt_names {
         if let Some(oval) = opt_values.get(idx) {
             if !oname.is_empty() && !oval.is_empty() {
-                language_options.push(LanguageOption { name: oname.clone(), value: oval.clone() });
+                language_options.push(LanguageOption {
+                    name: oname.clone(),
+                    value: oval.clone(),
+                });
             }
         }
     }
@@ -896,8 +1034,12 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                     if line.contains("学期") || *line == "通年" {
                         semester = line.to_string();
                     } else if line.contains("単位") {
-                        credits = line.trim_start_matches('(').trim_start_matches('（')
-                            .trim_end_matches(')').trim_end_matches('）').to_string();
+                        credits = line
+                            .trim_start_matches('(')
+                            .trim_start_matches('（')
+                            .trim_end_matches(')')
+                            .trim_end_matches('）')
+                            .to_string();
                     } else if line.contains("キャンパス") {
                         campus = line.to_string();
                     } else if course_name.is_empty() && !line.contains("科目の") {
@@ -910,7 +1052,8 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                 }
 
                 // Try to get room from hidden input
-                let room_inputs: Vec<_> = td.select(&SEL_HIDDEN_INPUT)
+                let room_inputs: Vec<_> = td
+                    .select(&SEL_HIDDEN_INPUT)
                     .filter(|el| {
                         el.value().attr("name").unwrap_or("").contains("lblClrNm")
                             && !el.value().attr("name").unwrap_or("").contains("lblClrNm2")
@@ -922,8 +1065,10 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                 // Fallback: last text line if not yet assigned
                 if room.is_empty() {
                     if let Some(last) = lines.last() {
-                        if !last.contains("単位") && !last.contains("キャンパス")
-                            && !last.contains("学期") && !last.contains("科目の")
+                        if !last.contains("単位")
+                            && !last.contains("キャンパス")
+                            && !last.contains("学期")
+                            && !last.contains("科目の")
                         {
                             room = last.to_string();
                         }
@@ -931,9 +1076,13 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                 }
 
                 // Get full subject name from hidden input if truncated
-                let full_name_inputs: Vec<_> = td.select(&SEL_HIDDEN_INPUT)
+                let full_name_inputs: Vec<_> = td
+                    .select(&SEL_HIDDEN_INPUT)
                     .filter(|el| {
-                        el.value().attr("name").unwrap_or("").contains("lblSbjNmTmtx2")
+                        el.value()
+                            .attr("name")
+                            .unwrap_or("")
+                            .contains("lblSbjNmTmtx2")
                     })
                     .collect();
                 if let Some(el) = full_name_inputs.first() {
@@ -946,7 +1095,9 @@ pub fn parse_registration(html: &str) -> RegistrationData {
                 let day = days.get(i % days.len()).unwrap_or(&"").to_string();
 
                 // Extract course code from ARF020 link (LSN_CD=XXXXX)
-                let course_code = cell_html.split("LSN_CD=").nth(1)
+                let course_code = cell_html
+                    .split("LSN_CD=")
+                    .nth(1)
                     .and_then(|s| s.split('&').next())
                     .unwrap_or("")
                     .to_string();
@@ -1042,7 +1193,10 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
-        if ths.iter().any(|t| t.contains("タイトル") || t.contains("お知らせ") || t.contains("掲示日")) {
+        if ths
+            .iter()
+            .any(|t| t.contains("タイトル") || t.contains("お知らせ") || t.contains("掲示日"))
+        {
             headers = ths;
             continue;
         }
@@ -1084,8 +1238,11 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
             continue;
         }
 
-        let date_i = col_idx("掲示日").or(col_idx("日付")).unwrap_or(headers.len().saturating_sub(1));
-        let date = tds.get(date_i)
+        let date_i = col_idx("掲示日")
+            .or(col_idx("日付"))
+            .unwrap_or(headers.len().saturating_sub(1));
+        let date = tds
+            .get(date_i)
             .map(|td| td.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
@@ -1121,9 +1278,17 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
     let doc = Html::parse_document(html);
 
     let candidates = ["table.output", "table.form", "table.tbl", "table"];
-    let textbook_skip = ["教科書", "参考書", "参考文献", "Reference books", "Required texts"];
+    let textbook_skip = [
+        "教科書",
+        "参考書",
+        "参考文献",
+        "Reference books",
+        "Required texts",
+    ];
     for selector_str in &candidates {
-        let Ok(table_sel) = Selector::parse(selector_str) else { continue };
+        let Ok(table_sel) = Selector::parse(selector_str) else {
+            continue;
+        };
         let mut fields = Vec::new();
         for table in doc.select(&table_sel) {
             for tr in table.select(&SEL_TR) {
@@ -1132,8 +1297,11 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
                 for (ti, th) in ths.iter().enumerate() {
                     let label = th.text().collect::<String>().trim().to_string();
                     // Skip textbook rows — handled by parse_textbooks()
-                    if textbook_skip.iter().any(|kw| label.contains(kw)) { continue; }
-                    let value = tds.get(ti)
+                    if textbook_skip.iter().any(|kw| label.contains(kw)) {
+                        continue;
+                    }
+                    let value = tds
+                        .get(ti)
                         .map(|td| td.text().collect::<String>().trim().to_string())
                         .unwrap_or_default();
                     if !label.is_empty() {
@@ -1153,13 +1321,13 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
 /// Structured textbook/reference entry from syllabus detail page.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TextbookEntry {
-    pub category: String,   // "教科書" or "参考書"
+    pub category: String, // "教科書" or "参考書"
     pub author: String,
     pub title: String,
     pub publisher: String,
     pub year: String,
     pub isbn: String,
-    pub text: String,       // plain-text fallback (for simple format)
+    pub text: String, // plain-text fallback (for simple format)
 }
 
 /// Parse structured textbook tables from a syllabus detail page.
@@ -1169,15 +1337,25 @@ pub struct TextbookEntry {
 pub fn parse_textbooks(html: &str) -> Vec<TextbookEntry> {
     let doc = Html::parse_document(html);
     let mut entries = Vec::new();
-    let textbook_keywords = ["教科書", "参考書", "参考文献", "Reference books", "Required texts"];
+    let textbook_keywords = [
+        "教科書",
+        "参考書",
+        "参考文献",
+        "Reference books",
+        "Required texts",
+    ];
 
     let candidates = ["table.output", "table.form", "table.tbl", "table"];
     for sel_str in &candidates {
-        let Ok(table_sel) = Selector::parse(sel_str) else { continue };
+        let Ok(table_sel) = Selector::parse(sel_str) else {
+            continue;
+        };
         let mut found_any = false;
         for table in doc.select(&table_sel) {
             let rows: Vec<_> = table.select(&SEL_TR).collect();
-            if rows.is_empty() { continue; }
+            if rows.is_empty() {
+                continue;
+            }
 
             // Check if any th in this table matches textbook keywords
             let mut category = String::new();
@@ -1208,36 +1386,54 @@ pub fn parse_textbooks(html: &str) -> Vec<TextbookEntry> {
                             let tds: Vec<_> = tr.select(&SEL_TD).collect();
                             if tds.len() >= 3 {
                                 let first_td = tds[0].text().collect::<String>();
-                                if first_td.contains("著者") || first_td.contains("Author") || first_td.contains("タイトル") {
+                                if first_td.contains("著者")
+                                    || first_td.contains("Author")
+                                    || first_td.contains("タイトル")
+                                {
                                     is_structured = true;
                                 }
                             }
                             break;
                         }
                     }
-                    if !category.is_empty() { break; }
+                    if !category.is_empty() {
+                        break;
+                    }
                 }
-                if !category.is_empty() { break; }
+                if !category.is_empty() {
+                    break;
+                }
             }
 
-            if category.is_empty() { continue; }
+            if category.is_empty() {
+                continue;
+            }
             found_any = true;
 
             if is_structured {
                 // Parse structured rows: skip header rows (those with <th> or bgcolor header tds)
                 for tr in &rows {
                     let ths: Vec<_> = tr.select(&SEL_TH).collect();
-                    if !ths.is_empty() { continue; } // skip header rows
+                    if !ths.is_empty() {
+                        continue;
+                    } // skip header rows
 
                     let tds: Vec<_> = tr.select(&SEL_TD).collect();
-                    if tds.is_empty() { continue; }
+                    if tds.is_empty() {
+                        continue;
+                    }
 
                     // Check if this is a header row (bgcolor tds)
                     if let Some(bg) = tds[0].value().attr("bgcolor") {
-                        if !bg.is_empty() { continue; }
+                        if !bg.is_empty() {
+                            continue;
+                        }
                     }
                     let first_text = tds[0].text().collect::<String>();
-                    if first_text.trim().contains("著者") || first_text.trim().contains("Author") { continue; }
+                    if first_text.trim().contains("著者") || first_text.trim().contains("Author")
+                    {
+                        continue;
+                    }
 
                     // Data row: author, title, publisher, year, isbn
                     let get_td = |i: usize| -> String {
@@ -1251,11 +1447,17 @@ pub fn parse_textbooks(html: &str) -> Vec<TextbookEntry> {
                     let year = get_td(3).trim().replace(" ", "");
                     let isbn = get_td(4);
 
-                    if author.is_empty() && title.is_empty() { continue; }
+                    if author.is_empty() && title.is_empty() {
+                        continue;
+                    }
 
                     entries.push(TextbookEntry {
                         category: category.clone(),
-                        author, title, publisher, year, isbn,
+                        author,
+                        title,
+                        publisher,
+                        year,
+                        isbn,
                         text: String::new(),
                     });
                 }
@@ -1267,23 +1469,37 @@ pub fn parse_textbooks(html: &str) -> Vec<TextbookEntry> {
                     for (ti, th) in ths.iter().enumerate() {
                         let th_text = th.text().collect::<String>();
                         let is_textbook = textbook_keywords.iter().any(|kw| th_text.contains(kw));
-                        if !is_textbook { continue; }
-                        let value = tds.get(ti)
+                        if !is_textbook {
+                            continue;
+                        }
+                        let value = tds
+                            .get(ti)
                             .map(|td| td.text().collect::<String>().trim().to_string())
                             .unwrap_or_default();
-                        if value.is_empty() { continue; }
-                        let cat = if th_text.contains("参考") { "参考書" } else { "教科書" };
+                        if value.is_empty() {
+                            continue;
+                        }
+                        let cat = if th_text.contains("参考") {
+                            "参考書"
+                        } else {
+                            "教科書"
+                        };
                         entries.push(TextbookEntry {
                             category: cat.to_string(),
-                            author: String::new(), title: String::new(),
-                            publisher: String::new(), year: String::new(), isbn: String::new(),
+                            author: String::new(),
+                            title: String::new(),
+                            publisher: String::new(),
+                            year: String::new(),
+                            isbn: String::new(),
                             text: value,
                         });
                     }
                 }
             }
         }
-        if found_any { break; }
+        if found_any {
+            break;
+        }
     }
 
     entries
@@ -1315,29 +1531,41 @@ pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
 
     let candidates = ["table.output", "table.form", "table.tbl", "table"];
     for selector_str in &candidates {
-        let Ok(table_sel) = Selector::parse(selector_str) else { continue };
+        let Ok(table_sel) = Selector::parse(selector_str) else {
+            continue;
+        };
         for table in doc.select(&table_sel) {
             for tr in table.select(&SEL_TR) {
                 let ths: Vec<_> = tr.select(&SEL_TH).collect();
                 let tds: Vec<_> = tr.select(&SEL_TD).collect();
 
-                let all_cells: Vec<String> = ths.iter().chain(tds.iter())
+                let all_cells: Vec<String> = ths
+                    .iter()
+                    .chain(tds.iter())
                     .map(|el| el.text().collect::<String>())
                     .collect();
                 let full_text = all_cells.join(" ");
 
                 if let Some(caps) = SESSION_RE.captures(&full_text) {
-                    let range_str = caps.get(1).or(caps.get(2)).map(|m| m.as_str()).unwrap_or("");
+                    let range_str = caps
+                        .get(1)
+                        .or(caps.get(2))
+                        .map(|m| m.as_str())
+                        .unwrap_or("");
                     let session_nums = expand_session_range(range_str, &NUM_RE);
-                    if session_nums.is_empty() { continue; }
+                    if session_nums.is_empty() {
+                        continue;
+                    }
 
                     // ── th_header: everything after the session number marker ──
-                    let th_full: String = ths.iter()
+                    let th_full: String = ths
+                        .iter()
                         .map(|el| el.text().collect::<String>())
                         .collect::<Vec<_>>()
                         .join(" ");
                     let th_header = {
-                        let last_end = SESSION_RE.find_iter(&th_full)
+                        let last_end = SESSION_RE
+                            .find_iter(&th_full)
                             .last()
                             .map(|m| m.end())
                             .unwrap_or(0);
@@ -1349,7 +1577,8 @@ pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
                     };
 
                     // ── All td cells as raw text ──
-                    let td_texts: Vec<String> = tds.iter()
+                    let td_texts: Vec<String> = tds
+                        .iter()
                         .map(|td| td.text().collect::<String>().trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
@@ -1370,7 +1599,9 @@ pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
                         topic = td_texts[0].clone();
                     } else if td_texts.is_empty() && ths.len() > 1 {
                         // Fallback: use th cells after the first
-                        topic = ths.iter().skip(1)
+                        topic = ths
+                            .iter()
+                            .skip(1)
                             .map(|el| el.text().collect::<String>().trim().to_string())
                             .collect::<Vec<_>>()
                             .join(" ");
@@ -1403,12 +1634,13 @@ pub fn parse_session_plans(html: &str) -> Vec<SessionPlan> {
 /// Normalizes fullwidth digits (０-９) to ASCII before parsing.
 fn expand_session_range(range_str: &str, num_re: &regex::Regex) -> Vec<i32> {
     // Normalize fullwidth digits to ASCII (０→0, １→1, ... ９→9)
-    let normalized: String = range_str.chars().map(|c| {
-        match c {
+    let normalized: String = range_str
+        .chars()
+        .map(|c| match c {
             '\u{FF10}'..='\u{FF19}' => char::from(b'0' + (c as u32 - 0xFF10) as u8),
             _ => c,
-        }
-    }).collect();
+        })
+        .collect();
 
     let nums: Vec<i32> = num_re
         .find_iter(&normalized)
@@ -1463,7 +1695,9 @@ pub fn detect_delivery_mode_from_detail(html: &str) -> String {
 
     let candidates = ["table.output", "table.form", "table.tbl", "table"];
     for selector_str in &candidates {
-        let Ok(table_sel) = Selector::parse(selector_str) else { continue };
+        let Ok(table_sel) = Selector::parse(selector_str) else {
+            continue;
+        };
         for table in doc.select(&table_sel) {
             for tr in table.select(&SEL_TR) {
                 let ths: Vec<_> = tr.select(&SEL_TH).collect();
@@ -1505,7 +1739,12 @@ mod session_plan_tests {
         }
         let html = std::fs::read_to_string(path).unwrap();
         let plans = parse_session_plans(&html);
-        assert_eq!(plans.len(), 15, "Expected 15 session plans, got {}", plans.len());
+        assert_eq!(
+            plans.len(),
+            15,
+            "Expected 15 session plans, got {}",
+            plans.len()
+        );
         assert_eq!(plans[0].session_num, 1);
         assert_eq!(plans[14].session_num, 15);
         assert!(!plans[0].topic.is_empty());
@@ -1516,9 +1755,11 @@ mod session_plan_tests {
         let num_re = regex::Regex::new(r"\d+").unwrap();
         assert_eq!(expand_session_range("１", &num_re), vec![1]);
         assert_eq!(expand_session_range("１５", &num_re), vec![15]);
-        assert_eq!(expand_session_range("１～１５", &num_re), (1..=15).collect::<Vec<_>>());
+        assert_eq!(
+            expand_session_range("１～１５", &num_re),
+            (1..=15).collect::<Vec<_>>()
+        );
         assert_eq!(expand_session_range("3", &num_re), vec![3]);
         assert_eq!(expand_session_range("1-3", &num_re), vec![1, 2, 3]);
     }
 }
-

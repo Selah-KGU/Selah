@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
+  import { fade, scale } from "svelte/transition";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
@@ -18,11 +19,12 @@
     type AgentMessage,
     type AgentStreamEvent,
   } from "../api";
-  import { agentConversations, agentActiveConvId } from "../stores";
+  import { agentConversations, agentActiveConvId, agentReady } from "../stores";
   import { invoke } from "@tauri-apps/api/core";
   import type { AiConfig } from "../stores";
 
   type UIMessage = AgentMessage & { _streaming?: boolean };
+  type ActionMode = "send" | "mic" | "stop";
 
   let conversations = $state<AgentConversationSummary[]>([]);
   let activeConvId = $state<string | null>(null);
@@ -30,9 +32,18 @@
   let inputText = $state("");
 
   let sending = $state(false);
+  let sttListening = $state(false);
+  let sttBaseText = $state("");
+  let sttCommittedText = $state("");
+  let sttPartialText = $state("");
+  let sttStopRequested = $state(false);
   let toolChips = $state<{ id: number; name: string; state: "running" | "ok" | "err"; preview?: string }[]>([]);
   let chipCounter = 0;
   let unlisten: UnlistenFn | null = null;
+  let unlistenSttPartial: UnlistenFn | null = null;
+  let unlistenSttFinal: UnlistenFn | null = null;
+  let unlistenSttState: UnlistenFn | null = null;
+  let unlistenSttError: UnlistenFn | null = null;
   let msgListEl: HTMLElement | null = null;
   let thinkTraceEl: HTMLElement | null = null;
   let autoFollow = $state(true);
@@ -47,6 +58,13 @@
     return !!last && last.role === "assistant" && last._streaming === true && !!last.content;
   });
   const showStatus = $derived(sending && !assistantIsStreaming);
+  const showVoiceAction = $derived(
+    sttListening ||
+    !!sttCommittedText.trim() ||
+    !!sttPartialText.trim() ||
+    ($agentReady && !inputText.trim())
+  );
+  const actionMode = $derived<ActionMode>(sending ? "stop" : showVoiceAction ? "mic" : "send");
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -275,6 +293,10 @@
       },
     ];
     inputText = "";
+    sttBaseText = "";
+    sttCommittedText = "";
+    sttPartialText = "";
+    sttStopRequested = false;
     sending = true;
     toolChips = [];
     thinkBuffer = "";
@@ -316,6 +338,55 @@
     }
   }
 
+  function mergeSttText(base: string, committed: string, partial: string): string {
+    const spoken = [committed.trim(), partial.trim()].filter(Boolean).join(" ").trim();
+    if (!spoken) return base;
+    if (!base) return spoken;
+    if (/\s$/.test(base)) return `${base}${spoken}`;
+    return `${base}\n${spoken}`;
+  }
+
+  let preemptedCaller = $state<string | null>(null);
+
+  async function toggleStt() {
+    if (sttListening) {
+      await stopStt();
+      return;
+    }
+    try {
+      sttBaseText = inputText;
+      sttCommittedText = "";
+      sttPartialText = "";
+      sttStopRequested = false;
+      const prev = await invoke<string | null>("stt_start_stream", { caller: "agent", preempt: true });
+      preemptedCaller = prev;
+    } catch (e) {
+      alert(`音声入力を開始できませんでした。\n\n${e}`);
+    }
+  }
+
+  async function stopStt() {
+    try {
+      sttStopRequested = true;
+      await invoke("stt_stop_stream");
+    } catch (e) {
+      console.warn("stt stop", e);
+      sttStopRequested = false;
+    }
+  }
+
+  async function resumePreempted() {
+    if (preemptedCaller) {
+      const caller = preemptedCaller;
+      preemptedCaller = null;
+      try {
+        await invoke("stt_start_stream", { caller });
+      } catch {
+        // Previous session's page may have ended; that's fine
+      }
+    }
+  }
+
 
 
   // ── Auto-scroll ──
@@ -345,6 +416,20 @@
     autoFollow = near;
   }
 
+  function onMessageAreaClick(e: MouseEvent) {
+    const target = e.target instanceof HTMLElement ? e.target.closest("a") : null;
+    if (!(target instanceof HTMLAnchorElement)) return;
+    if (!target.closest(".assistant-bubble .md")) return;
+    const href = target.getAttribute("href");
+    if (!href) return;
+    if (!href.startsWith("http://") && !href.startsWith("https://")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    invoke("open_external_url", { url: href }).catch((err) => {
+      console.error("open_external_url failed:", err);
+    });
+  }
+
   // ── History dropdown ──
 
   function onDocClick(e: MouseEvent) {
@@ -360,6 +445,43 @@
     document.addEventListener("mousedown", onDocClick);
     await refreshConfig();
     await refreshConversations();
+    try {
+      sttListening = await invoke<boolean>("stt_is_running");
+    } catch {
+      sttListening = false;
+    }
+    unlistenSttPartial = await listen<{ text: string; caller: string }>("stt-partial", (ev) => {
+      if (ev.payload.caller !== "agent") return;
+      sttPartialText = ev.payload.text || "";
+      inputText = mergeSttText(sttBaseText, sttCommittedText, sttPartialText);
+    });
+    unlistenSttFinal = await listen<{ text: string; caller: string }>("stt-final", (ev) => {
+      if (ev.payload.caller !== "agent") return;
+      sttCommittedText = ev.payload.text || sttCommittedText;
+      sttPartialText = "";
+      inputText = mergeSttText(sttBaseText, sttCommittedText, "");
+    });
+    unlistenSttState = await listen<{ state: string; caller: string }>("stt-state", (ev) => {
+      if (ev.payload.caller !== "agent") return;
+      const wasListening = sttListening;
+      sttListening = ev.payload.state === "initializing" || ev.payload.state === "listening";
+      if (!sttListening) {
+        sttPartialText = "";
+        inputText = mergeSttText(sttBaseText, sttCommittedText, "");
+        const shouldAutoSend = wasListening && sttStopRequested && !!sttCommittedText.trim();
+        sttStopRequested = false;
+        if (shouldAutoSend) {
+          tick().then(() => send());
+        }
+        resumePreempted();
+      }
+    });
+    unlistenSttError = await listen<{ message: string; caller: string }>("stt-error", (ev) => {
+      if (ev.payload.caller !== "agent") return;
+      sttListening = false;
+      sttStopRequested = false;
+      alert(`音声入力エラー\n\n${ev.payload.message}`);
+    });
     if (!activeConvId && conversations.length > 0) {
       await selectConversation(conversations[0].id);
     }
@@ -368,6 +490,11 @@
   onDestroy(() => {
     document.removeEventListener("mousedown", onDocClick);
     if (unlisten) unlisten();
+    unlistenSttPartial?.();
+    unlistenSttFinal?.();
+    unlistenSttState?.();
+    unlistenSttError?.();
+    if (sttListening) invoke("stt_stop_stream").catch(() => {});
     if (activeConvId && sending) agentCancel(activeConvId).catch(() => {});
   });
 
@@ -437,6 +564,28 @@
 
   function dismissQuote() {
     quotedMessage = null;
+  }
+
+  function actionTitle(mode: ActionMode): string {
+    if (mode === "stop") return "停止";
+    if (mode === "mic") return sttListening ? "音声入力を停止" : "音声入力を開始";
+    return "送る";
+  }
+
+  function actionDisabled(mode: ActionMode): boolean {
+    return mode === "send" && !inputText.trim();
+  }
+
+  function handleActionClick() {
+    if (actionMode === "stop") {
+      cancel();
+      return;
+    }
+    if (actionMode === "mic") {
+      toggleStt();
+      return;
+    }
+    send();
   }
 </script>
 
@@ -524,6 +673,7 @@
     <div
       class="msg-list"
       bind:this={msgListEl}
+      onclick={onMessageAreaClick}
       onscroll={onScroll}
       role="log"
       aria-live="polite"
@@ -643,17 +793,37 @@
             ></textarea>
           </div>
         </div>
-        {#if sending}
-          <button class="action-capsule stop" onclick={cancel} title="停止">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-            <span>停止</span>
+        <div class="action-slot">
+          <button
+            class="action-capsule"
+            class:stop={actionMode === "stop"}
+            class:mic={actionMode === "mic"}
+            class:recording={actionMode === "mic" && sttListening}
+            onclick={handleActionClick}
+            disabled={actionDisabled(actionMode)}
+            title={actionTitle(actionMode)}
+          >
+            <span class="action-capsule-stack" aria-hidden="true">
+              <span class="action-face" class:visible={actionMode === "send"}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                <span>送る</span>
+              </span>
+              <span class="action-face" class:visible={actionMode === "mic"}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/>
+                  <path d="M19 11a7 7 0 0 1-14 0"/>
+                  <path d="M12 18v3"/>
+                  <path d="M8 21h8"/>
+                </svg>
+                <span>{sttListening ? "停止" : "音声"}</span>
+              </span>
+              <span class="action-face" class:visible={actionMode === "stop"}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                <span>停止</span>
+              </span>
+            </span>
           </button>
-        {:else}
-          <button class="action-capsule" onclick={send} disabled={!inputText.trim()}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            <span>送る</span>
-          </button>
-        {/if}
+        </div>
       </div>
     </div>
   </section>
@@ -901,10 +1071,11 @@
   .bubble {
     position: relative;
     max-width: 76%;
-    padding: 10px 14px;
+    padding: 11px 15px;
     border-radius: 16px;
-    font-size: 13.5px;
-    line-height: 1.65;
+    font-size: 15.5px;
+    line-height: 1.72;
+    letter-spacing: -0.012em;
     word-wrap: break-word;
     overflow-wrap: anywhere;
     user-select: text;
@@ -942,18 +1113,17 @@
     background: color-mix(in srgb, var(--text-primary) 7%, transparent);
     padding: 2px 5px;
     border-radius: 5px;
-    font-size: 0.88em;
+    font-size: 0.84em;
   }
   .md :global(pre) {
     background: color-mix(in srgb, var(--text-primary) 5%, transparent);
     padding: 10px 12px;
     border-radius: 10px;
     overflow-x: auto;
-    font-size: 12.5px;
+    font-size: 13.5px;
   }
   .md :global(pre code) { background: transparent; padding: 0; }
   .md :global(blockquote) {
-    border-left: 2px solid color-mix(in srgb, var(--accent) 30%, var(--glass-border));
     margin: 0 0 8px;
     padding-left: 10px;
     color: var(--text-secondary);
@@ -1207,6 +1377,12 @@
     gap: 8px;
   }
 
+  .action-slot {
+    position: relative;
+    flex: 0 0 104px;
+    width: 104px;
+  }
+
   .composer-island {
     flex: 1;
     min-width: 0;
@@ -1233,16 +1409,17 @@
 
   textarea {
     flex: 1;
-    min-height: 22px;
+    min-height: 24px;
     max-height: 180px;
     resize: none;
     border: none;
     background: transparent;
     color: var(--text-primary);
-    padding: 4px 4px;
-    font-size: 13.5px;
+    padding: 5px 4px;
+    font-size: 15.5px;
     font-family: inherit;
-    line-height: 1.5;
+    line-height: 1.58;
+    letter-spacing: -0.012em;
     outline: none;
   }
   textarea::placeholder { color: var(--text-tertiary); }
@@ -1252,33 +1429,188 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 0 16px;
-    border-radius: 18px;
+    width: 100%;
+    min-height: 50px;
+    padding: 0 18px;
+    border-radius: 999px;
     background: var(--glass-bg, rgba(255, 255, 255, 0.5));
     backdrop-filter: var(--glass-blur) var(--glass-saturate);
     -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
     border: 0.5px solid var(--glass-border);
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08), 0 0 0.5px rgba(0, 0, 0, 0.06), var(--glass-highlight);
     color: var(--accent);
-    font-size: 13px;
-    font-weight: 500;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.012em;
     cursor: pointer;
     flex-shrink: 0;
     white-space: nowrap;
-    transition: background 0.15s, transform 0.1s, color 0.15s;
+    transform-origin: 50% 50%;
+    overflow: hidden;
+    isolation: isolate;
+    transition:
+      background 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+      color 0.2s ease,
+      box-shadow 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.28s ease,
+      opacity 0.18s ease;
   }
+
+  .action-capsule::before {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    border-radius: inherit;
+    background:
+      radial-gradient(120% 90% at 50% 0%, rgba(255,255,255,0.22), transparent 58%),
+      linear-gradient(180deg, rgba(255,255,255,0.1), rgba(255,255,255,0.02));
+    opacity: 0.92;
+    pointer-events: none;
+    z-index: 0;
+    transition: opacity 0.28s ease, transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .action-capsule::after {
+    content: "";
+    position: absolute;
+    top: -35%;
+    bottom: -35%;
+    left: -42%;
+    width: 42%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-18%) skewX(-18deg);
+    z-index: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .action-capsule-stack {
+    position: relative;
+    display: block;
+    width: 100%;
+    min-height: 22px;
+    z-index: 1;
+  }
+
+  .action-face {
+    position: absolute;
+    inset: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    opacity: 0;
+    filter: blur(6px);
+    transform: scale(0.94);
+    pointer-events: none;
+    transition:
+      opacity 0.2s ease,
+      transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+      filter 0.28s ease;
+    will-change: opacity, transform, filter;
+  }
+
+  .action-face.visible {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+
+  .action-face span {
+    white-space: nowrap;
+  }
+
+  .action-face :global(svg) {
+    transition:
+      transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.22s ease,
+      filter 0.24s ease;
+  }
+
+  .action-face.visible :global(svg) {
+    transform: scale(1);
+    opacity: 1;
+    filter: blur(0);
+  }
+
+  .action-face:not(.visible) :global(svg) {
+    transform: scale(0.86);
+    opacity: 0.35;
+    filter: blur(3px);
+  }
+
   .action-capsule:hover {
-    background: color-mix(in srgb, var(--accent) 10%, var(--glass-bg, rgba(255, 255, 255, 0.5)));
+    background: color-mix(in srgb, var(--accent) 11%, var(--glass-bg, rgba(255, 255, 255, 0.5)));
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.1), 0 0 0.5px rgba(0, 0, 0, 0.06), var(--glass-highlight);
+    transform: scale(1.012);
   }
-  .action-capsule:active { transform: scale(0.95); }
+  .action-capsule:hover::before {
+    opacity: 1;
+    transform: scale(1.01);
+  }
+  .action-capsule:hover::after {
+    opacity: 1;
+    animation: capsuleSheen 820ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .action-capsule:active { transform: scale(0.985); }
   .action-capsule.stop { color: var(--red); }
   .action-capsule.stop:hover {
     background: color-mix(in srgb, var(--red) 10%, var(--glass-bg, rgba(255, 255, 255, 0.5)));
+  }
+  .action-capsule.mic.recording {
+    background: linear-gradient(180deg, color-mix(in srgb, var(--red) 90%, #ffffff 10%), color-mix(in srgb, var(--red) 82%, #0f0f10 18%));
+    color: #fff;
+    border-color: color-mix(in srgb, var(--red) 52%, rgba(255,255,255,0.2));
+    box-shadow: 0 10px 28px rgba(255, 59, 48, 0.22), inset 0 1px 0 rgba(255,255,255,0.15);
+    animation: voiceCapsulePulse 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
   }
   .action-capsule:disabled {
     opacity: 0.35;
     cursor: not-allowed;
   }
   .action-capsule:disabled:active { transform: none; }
+
+  @media (max-width: 560px) {
+    .action-slot {
+      flex-basis: 96px;
+      width: 96px;
+    }
+
+    .action-capsule {
+      min-height: 46px;
+      padding: 0 14px;
+    }
+  }
+
+  @keyframes voiceCapsulePulse {
+    0%, 100% {
+      box-shadow: 0 10px 28px rgba(255, 59, 48, 0.2), inset 0 1px 0 rgba(255,255,255,0.14);
+      transform: translateY(0) scale(1);
+    }
+    45% {
+      box-shadow: 0 14px 34px rgba(255, 59, 48, 0.28), inset 0 1px 0 rgba(255,255,255,0.18);
+      transform: translateY(-1px) scale(1.014);
+    }
+    70% {
+      box-shadow: 0 12px 30px rgba(255, 59, 48, 0.24), inset 0 1px 0 rgba(255,255,255,0.16);
+      transform: translateY(0) scale(1.006);
+    }
+  }
+
+  @keyframes capsuleSheen {
+    0% {
+      transform: translateX(-24%) skewX(-18deg);
+      opacity: 0;
+    }
+    18% {
+      opacity: 0.55;
+    }
+    100% {
+      transform: translateX(330%) skewX(-18deg);
+      opacity: 0;
+    }
+  }
 </style>

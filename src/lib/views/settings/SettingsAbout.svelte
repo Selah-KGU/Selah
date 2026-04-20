@@ -240,12 +240,12 @@
     border-color: var(--red);
   }
 
-  @keyframes shake-0 {
+  @keyframes -global-shake-0 {
     0%, 100% { transform: translateX(0); }
     25% { transform: translateX(-3px); }
     75% { transform: translateX(3px); }
   }
-  @keyframes shake-1 {
+  @keyframes -global-shake-1 {
     0%, 100% { transform: translateX(0); }
     25% { transform: translateX(3px); }
     75% { transform: translateX(-3px); }

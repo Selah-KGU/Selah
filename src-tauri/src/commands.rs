@@ -1,20 +1,20 @@
+use crate::client;
+use crate::config;
+use crate::cookie_bridge;
+use crate::kwic_client;
+use crate::luna_client;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use tauri::State;
-use tauri::{Emitter, Manager};
+use std::sync::Arc;
+use std::sync::LazyLock;
 #[cfg(debug_assertions)]
 use std::time::Instant;
-use std::sync::LazyLock;
-use std::sync::Arc;
-use crate::config;
-use crate::client;
-use crate::cookie_bridge;
-use crate::luna_client;
-use crate::kwic_client;
-use regex::Regex;
+use tauri::State;
+use tauri::{Emitter, Manager};
 
 use crate::auth;
 use crate::parser;
-use crate::{KgcState, LunaState, KwicState};
+use crate::{KgcState, KwicState, LunaState};
 
 /// Briefly lock KGC client, check auth and clone http. Releases lock immediately.
 async fn kgc_http(state: &KgcState) -> Result<reqwest::Client, String> {
@@ -32,17 +32,28 @@ pub(crate) async fn kgc_get(http: &reqwest::Client, path: &str) -> Result<String
 }
 
 /// KGC POST: submit a form without holding the lock.
-pub(crate) async fn kgc_post(http: &reqwest::Client, path: &str, params: &[(String, String)]) -> Result<String, String> {
+pub(crate) async fn kgc_post(
+    http: &reqwest::Client,
+    path: &str,
+    params: &[(String, String)],
+) -> Result<String, String> {
     let url = format!("{}{}", config::KG_COURSE_BASE, path);
     client::post_form_with_redirect(
-        http, &url, config::KG_COURSE_BASE,
-        client::SESSION_EXPIRED_MSG, client::is_session_expired_body,
+        http,
+        &url,
+        config::KG_COURSE_BASE,
+        client::SESSION_EXPIRED_MSG,
+        client::is_session_expired_body,
         params.iter().map(|(k, v)| (k.as_str(), v.as_str())),
         &[
-            ("Referer", &format!("{}/uniasv2/ARF010.do", config::KG_COURSE_BASE)),
+            (
+                "Referer",
+                &format!("{}/uniasv2/ARF010.do", config::KG_COURSE_BASE),
+            ),
             ("Origin", config::KG_COURSE_BASE),
         ],
-    ).await
+    )
+    .await
 }
 
 /// KGC fetch with gate + auth check, returning raw HTML (no early-return on error).
@@ -57,9 +68,13 @@ async fn kgc_try_fetch(state: &KgcState, path: &str) -> Result<String, String> {
     }
     let url = format!("{}{}", config::KG_COURSE_BASE, path);
     client::fetch_with_redirect(
-        &http, &url, config::KG_COURSE_BASE,
-        client::SESSION_EXPIRED_MSG, client::is_session_expired_body,
-    ).await
+        &http,
+        &url,
+        config::KG_COURSE_BASE,
+        client::SESSION_EXPIRED_MSG,
+        client::is_session_expired_body,
+    )
+    .await
 }
 
 /// Fetch from KGC with DB cache fallback.
@@ -90,7 +105,9 @@ macro_rules! kgc_fetch_cached {
         match kgc_try_fetch(&$state, $path).await {
             Ok(html) => {
                 #[cfg(debug_assertions)]
-                { let _ = std::fs::write(std::env::temp_dir().join($dump), &html); }
+                {
+                    let _ = std::fs::write(std::env::temp_dir().join($dump), &html);
+                }
                 let data = $parser(&html);
                 if let Ok(json) = serde_json::to_string(&data) {
                     let _ = $db.save_data_cache($cache_key, &json);
@@ -128,9 +145,7 @@ pub struct SessionStatus {
 /// 5. Navigate to Luna SAML entry → same cookie extraction
 /// 6. Navigate to KWIC SAML entry → same cookie extraction
 #[tauri::command]
-pub async fn open_login_window(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn open_login_window(app: tauri::AppHandle) -> Result<(), String> {
     let kgc_entry = format!("{}/uniasv2/UnSSOLoginControl2", config::KG_COURSE_BASE);
     log::info!("Cookie Bridge: opening login webview to {}", &kgc_entry);
 
@@ -183,7 +198,9 @@ pub async fn open_login_window(
         // ===== Phase 1: KG-Course =====
         match tokio::time::timeout(std::time::Duration::from_secs(120), rx.recv()).await {
             Ok(Some(_host)) => {
-                log::info!("Cookie Bridge: Phase 1 - KG-Course SAML complete, extracting cookies...");
+                log::info!(
+                    "Cookie Bridge: Phase 1 - KG-Course SAML complete, extracting cookies..."
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
 
                 let kgc_state = app_clone.state::<KgcState>();
@@ -194,7 +211,8 @@ pub async fn open_login_window(
                     "kg-course.kwansei.ac.jp",
                     &cookie_store,
                     config::KG_COURSE_BASE,
-                ).await;
+                )
+                .await;
                 if let Err(e) = inject_result {
                     log::warn!("Cookie Bridge: cookie extraction failed: {}", e);
                     let _ = app_clone.emit("login-error", &e);
@@ -206,14 +224,25 @@ pub async fn open_login_window(
 
                 // Verify session without holding mutex across network call
                 let http = kgc_state.client.lock().await.http.clone();
-                let verify_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
+                let verify_url = format!(
+                    "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
+                    config::KG_COURSE_BASE
+                );
                 match client::fetch_page_with(&http, &verify_url).await {
                     Ok(html) => {
                         let info = parser::parse_student_info(&html);
-                        log::info!("Cookie Bridge: student info: id={}, name={}", info.student_id, info.name);
+                        log::info!(
+                            "Cookie Bridge: student info: id={}, name={}",
+                            info.student_id,
+                            info.name
+                        );
                         let session = auth::AuthSession {
                             username: info.student_id.clone(),
-                            display_name: if info.name.is_empty() { "\u{30e6}\u{30fc}\u{30b6}\u{30fc}".to_string() } else { info.name },
+                            display_name: if info.name.is_empty() {
+                                "\u{30e6}\u{30fc}\u{30b6}\u{30fc}".to_string()
+                            } else {
+                                info.name
+                            },
                             student_id: info.student_id,
                             faculty: info.faculty,
                             department: info.department,
@@ -281,16 +310,22 @@ pub async fn open_login_window(
                         "luna.kwansei.ac.jp",
                         &cookie_store,
                         config::LUNA_BASE,
-                    ).await;
+                    )
+                    .await;
                     match result {
                         Ok(()) => {
                             // Verify session against server before marking authenticated
                             let http = luna_state.client.lock().await.http.clone();
                             let verify_url = format!("{}/lms/timetable", config::LUNA_BASE);
                             match client::fetch_with_redirect(
-                                &http, &verify_url, config::LUNA_BASE,
-                                luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
-                            ).await {
+                                &http,
+                                &verify_url,
+                                config::LUNA_BASE,
+                                luna_client::LUNA_SESSION_EXPIRED_MSG,
+                                luna_client::is_luna_session_expired,
+                            )
+                            .await
+                            {
                                 Ok(_) => {
                                     let mut luna = luna_state.client.lock().await;
                                     luna.authenticated = true;
@@ -300,7 +335,10 @@ pub async fn open_login_window(
                                     let _ = app_clone.emit("luna-login-success", ());
                                 }
                                 Err(e) => {
-                                    log::warn!("Cookie Bridge: Luna session verification failed: {}", e);
+                                    log::warn!(
+                                        "Cookie Bridge: Luna session verification failed: {}",
+                                        e
+                                    );
                                     let _ = app_clone.emit("luna-login-error", &e);
                                 }
                             }
@@ -346,26 +384,37 @@ pub async fn open_login_window(
                         "kwic.kwansei.ac.jp",
                         &cookie_store,
                         config::KWIC_BASE,
-                    ).await;
+                    )
+                    .await;
                     match result {
                         Ok(()) => {
                             // Verify session against server before marking authenticated
                             let http = kwic_state.client.lock().await.http.clone();
                             let verify_url = format!("{}/portal/home", config::KWIC_BASE);
                             match client::fetch_with_redirect(
-                                &http, &verify_url, config::KWIC_BASE,
-                                kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
-                            ).await {
+                                &http,
+                                &verify_url,
+                                config::KWIC_BASE,
+                                kwic_client::KWIC_SESSION_EXPIRED_MSG,
+                                kwic_client::is_kwic_session_expired,
+                            )
+                            .await
+                            {
                                 Ok(_) => {
                                     let mut kwic = kwic_state.client.lock().await;
                                     kwic.authenticated = true;
                                     kwic.save_session();
                                     drop(kwic);
-                                    log::info!("Cookie Bridge: KWIC Portal login successful (verified)");
+                                    log::info!(
+                                        "Cookie Bridge: KWIC Portal login successful (verified)"
+                                    );
                                     let _ = app_clone.emit("kwic-login-success", ());
                                 }
                                 Err(e) => {
-                                    log::warn!("Cookie Bridge: KWIC session verification failed: {}", e);
+                                    log::warn!(
+                                        "Cookie Bridge: KWIC session verification failed: {}",
+                                        e
+                                    );
                                     let _ = app_clone.emit("kwic-login-error", &e);
                                 }
                             }
@@ -439,7 +488,12 @@ pub async fn delete_all_local_data(
     }
 
     // 2. Delete keychain secrets
-    let keychain_keys = ["ai_api_key", "gcal_token", "gcal_client_secret", "ms_mail_token"];
+    let keychain_keys = [
+        "ai_api_key",
+        "gcal_token",
+        "gcal_client_secret",
+        "ms_mail_token",
+    ];
     for key in &keychain_keys {
         crate::keychain::delete_secret(key);
     }
@@ -457,9 +511,7 @@ pub async fn delete_all_local_data(
 }
 
 #[tauri::command]
-pub async fn check_session(
-    state: State<'_, KgcState>,
-) -> Result<SessionStatus, String> {
+pub async fn check_session(state: State<'_, KgcState>) -> Result<SessionStatus, String> {
     log::info!("check_session: called");
     let _kgc_gate = state.gate.lock().await;
     // Single lock: try restore if needed, then clone snapshot
@@ -475,7 +527,11 @@ pub async fn check_session(
 
     let session = match session_snapshot {
         Some(s) => {
-            log::info!("check_session: validating user={} sid={}", s.username, s.student_id);
+            log::info!(
+                "check_session: validating user={} sid={}",
+                s.username,
+                s.student_id
+            );
             s
         }
         None => {
@@ -492,7 +548,10 @@ pub async fn check_session(
     };
 
     // Validate session against the server without holding the lock
-    let verify_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
+    let verify_url = format!(
+        "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
+        config::KG_COURSE_BASE
+    );
     log::info!("check_session: fetching verify page...");
     match client::fetch_page_with(&http, &verify_url).await {
         Ok(html) => {
@@ -517,10 +576,17 @@ pub async fn check_session(
 
             // Update user info if needed, then always persist cookies
             // (server may have rotated session cookies during validation)
-            let needs_update = session.student_id.is_empty() || session.display_name == "\u{30e6}\u{30fc}\u{30b6}\u{30fc}";
+            let needs_update = session.student_id.is_empty()
+                || session.display_name == "\u{30e6}\u{30fc}\u{30b6}\u{30fc}";
             let mut client = state.client.lock().await;
             if needs_update {
-                log::info!("Reparsed student info: id={}, name={}, faculty={}, dept={}", info.student_id, info.name, info.faculty, info.department);
+                log::info!(
+                    "Reparsed student info: id={}, name={}, faculty={}, dept={}",
+                    info.student_id,
+                    info.name,
+                    info.faculty,
+                    info.department
+                );
                 if let Some(s) = &mut client.session {
                     if !info.student_id.is_empty() {
                         s.username = info.student_id.clone();
@@ -560,7 +626,11 @@ pub async fn check_session(
         }
         Err(e) => {
             if e == client::SESSION_EXPIRED_MSG {
-                log::info!("check_session: session expired (server confirmed), disk user={} sid={}", session.username, session.student_id);
+                log::info!(
+                    "check_session: session expired (server confirmed), disk user={} sid={}",
+                    session.username,
+                    session.student_id
+                );
                 let mut client = state.client.lock().await;
                 client.clear_session();
             } else {
@@ -586,7 +656,11 @@ pub async fn validate_session(state: State<'_, KgcState>) -> Result<SessionStatu
     // Clone what we need, then release the lock before network I/O
     let (http, is_auth, session_snapshot) = {
         let client = state.client.lock().await;
-        (client.http.clone(), client.is_authenticated(), client.session.clone())
+        (
+            client.http.clone(),
+            client.is_authenticated(),
+            client.session.clone(),
+        )
     };
 
     if !is_auth {
@@ -601,7 +675,10 @@ pub async fn validate_session(state: State<'_, KgcState>) -> Result<SessionStatu
     }
 
     // Actually try to fetch a page to check if server session is still valid
-    let verify_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
+    let verify_url = format!(
+        "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
+        config::KG_COURSE_BASE
+    );
     match client::fetch_page_with(&http, &verify_url).await {
         Ok(html) => {
             // Verify the page actually contains user data.
@@ -623,7 +700,8 @@ pub async fn validate_session(state: State<'_, KgcState>) -> Result<SessionStatu
             // Persist cookies — the server may have rotated/renewed session cookies
             let client = state.client.lock().await;
             client.save_session();
-            let session = session_snapshot.as_ref()
+            let session = session_snapshot
+                .as_ref()
                 .ok_or_else(|| "session lost after fetch".to_string())?;
             Ok(SessionStatus {
                 valid: true,
@@ -652,33 +730,92 @@ pub async fn validate_session(state: State<'_, KgcState>) -> Result<SessionStatu
 }
 
 #[tauri::command]
-pub async fn fetch_grades(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::GradesData, String> {
-    kgc_fetch_cached!(state, db, "grades", "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020", parser::parse_grades, "kgc-grades.html")
+pub async fn fetch_grades(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<parser::GradesData, String> {
+    kgc_fetch_cached!(
+        state,
+        db,
+        "grades",
+        "/uniasv2/ARF140.do?REQ_PRFR_MNU_ID=MNUIDSTD0102020",
+        parser::parse_grades,
+        "kgc-grades.html"
+    )
 }
 
 #[tauri::command]
-pub async fn fetch_cancellations(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::CancellationsData, String> {
-    kgc_fetch_cached!(state, db, "cancellations", "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011", parser::parse_cancellations, "kgc-cancellations.html")
+pub async fn fetch_cancellations(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<parser::CancellationsData, String> {
+    kgc_fetch_cached!(
+        state,
+        db,
+        "cancellations",
+        "/uniasv2/APB020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101011",
+        parser::parse_cancellations,
+        "kgc-cancellations.html"
+    )
 }
 
 #[tauri::command]
-pub async fn fetch_makeup_classes(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::MakeupData, String> {
-    kgc_fetch_cached!(state, db, "makeup", "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012", parser::parse_makeup_classes, "kgc-makeup.html")
+pub async fn fetch_makeup_classes(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<parser::MakeupData, String> {
+    kgc_fetch_cached!(
+        state,
+        db,
+        "makeup",
+        "/uniasv2/APC020PLS01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0101012",
+        parser::parse_makeup_classes,
+        "kgc-makeup.html"
+    )
 }
 
 #[tauri::command]
-pub async fn fetch_room_changes(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::RoomChangesData, String> {
-    kgc_fetch_cached!(state, db, "rooms", "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013", parser::parse_room_changes, "kgc-roomchanges.html")
+pub async fn fetch_room_changes(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<parser::RoomChangesData, String> {
+    kgc_fetch_cached!(
+        state,
+        db,
+        "rooms",
+        "/uniasv2/APA960.do?REQ_PRFR_MNU_ID=MNUIDSTD0101013",
+        parser::parse_room_changes,
+        "kgc-roomchanges.html"
+    )
 }
 
 #[tauri::command]
-pub async fn fetch_registration(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::RegistrationData, String> {
-    kgc_fetch_cached!(state, db, "registration", "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012", parser::parse_registration, "kgc-registration.html")
+pub async fn fetch_registration(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<parser::RegistrationData, String> {
+    kgc_fetch_cached!(
+        state,
+        db,
+        "registration",
+        "/uniasv2/ARD010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102012",
+        parser::parse_registration,
+        "kgc-registration.html"
+    )
 }
 
 #[tauri::command]
-pub async fn fetch_exam_timetable(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::ExamTimetableData, String> {
-    kgc_fetch_cached!(state, db, "exam_timetable", "/uniasv2/ARF010PVL01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0102019", parser::parse_exam_timetable)
+pub async fn fetch_exam_timetable(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<parser::ExamTimetableData, String> {
+    kgc_fetch_cached!(
+        state,
+        db,
+        "exam_timetable",
+        "/uniasv2/ARF010PVL01Action.do?REQ_PRFR_MNU_ID=MNUIDSTD0102019",
+        parser::parse_exam_timetable
+    )
 }
 
 #[tauri::command]
@@ -701,7 +838,11 @@ pub async fn fetch_page(state: State<'_, KgcState>, path: String) -> Result<Stri
 }
 
 #[tauri::command]
-pub async fn fetch_course_detail(state: State<'_, KgcState>, db: State<'_, crate::db::Database>, path: String) -> Result<parser::CourseDetail, String> {
+pub async fn fetch_course_detail(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+    path: String,
+) -> Result<parser::CourseDetail, String> {
     if !path.starts_with("/uniasv2/") {
         return Err("許可されていないパスです".into());
     }
@@ -736,8 +877,11 @@ pub async fn open_detail_window(
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     // Cap concurrent detail windows to prevent resource exhaustion
-    let existing = app.webview_windows().keys()
-        .filter(|k| k.starts_with("detail-")).count();
+    let existing = app
+        .webview_windows()
+        .keys()
+        .filter(|k| k.starts_with("detail-"))
+        .count();
     if existing >= 10 {
         return Err(config::TOO_MANY_WINDOWS_MSG.into());
     }
@@ -747,18 +891,17 @@ pub async fn open_detail_window(
 
     let encoded_path = urlencoding::encode(&path);
     let encoded_name = urlencoding::encode(&course_name);
-    let url_str = format!("luna-detail.html?mode=kgc&path={}&name={}", encoded_path, encoded_name);
+    let url_str = format!(
+        "luna-detail.html?mode=kgc&path={}&name={}",
+        encoded_path, encoded_name
+    );
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::App(url_str.into()),
-    )
-    .title(&course_name)
-    .inner_size(480.0, 560.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_str.into()))
+        .title(&course_name)
+        .inner_size(480.0, 560.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
 
     Ok(())
 }
@@ -773,8 +916,7 @@ pub async fn open_external_url(
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    let parsed_url: url::Url = url.parse()
-        .map_err(|e| format!("URL parse error: {}", e))?;
+    let parsed_url: url::Url = url.parse().map_err(|e| format!("URL parse error: {}", e))?;
 
     // Only allow http/https URLs
     let scheme = parsed_url.scheme();
@@ -791,7 +933,8 @@ pub async fn open_external_url(
         &label,
         tauri::WebviewUrl::External(parsed_url),
         &win_title,
-        900.0, 640.0,
+        900.0,
+        640.0,
         &[],
     )?;
 
@@ -801,22 +944,20 @@ pub async fn open_external_url(
 /// Open a URL in the system default browser (Safari, Chrome, etc.)
 #[tauri::command]
 pub async fn open_in_system_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let parsed: url::Url = url.parse()
-        .map_err(|e| format!("URL parse error: {}", e))?;
+    let parsed: url::Url = url.parse().map_err(|e| format!("URL parse error: {}", e))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
         return Err(format!("Unsupported URL scheme: {}", scheme));
     }
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_url(&url, None::<&str>)
+    app.opener()
+        .open_url(&url, None::<&str>)
         .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn open_profile_edit_window(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn open_profile_edit_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_window("profile-edit") {
         let _ = win.set_focus();
         return Ok(());
@@ -831,7 +972,8 @@ pub async fn open_profile_edit_window(
         "profile-edit",
         tauri::WebviewUrl::External(url),
         "個人情報編集",
-        1000.0, 720.0,
+        1000.0,
+        720.0,
         &[],
     )?;
 
@@ -839,9 +981,7 @@ pub async fn open_profile_edit_window(
 }
 
 #[tauri::command]
-pub async fn open_facility_reservation(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn open_facility_reservation(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_window("facility-rsv") {
         let _ = win.set_focus();
         return Ok(());
@@ -856,7 +996,8 @@ pub async fn open_facility_reservation(
         "facility-rsv",
         tauri::WebviewUrl::External(url),
         "施設予約",
-        1100.0, 780.0,
+        1100.0,
+        780.0,
         &[],
     )?;
 
@@ -864,9 +1005,7 @@ pub async fn open_facility_reservation(
 }
 
 #[tauri::command]
-pub async fn open_registration_window(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn open_registration_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_window("registration") {
         let _ = win.set_focus();
         return Ok(());
@@ -883,7 +1022,8 @@ pub async fn open_registration_window(
         "registration",
         tauri::WebviewUrl::External(url),
         "履修登録",
-        1100.0, 780.0,
+        1100.0,
+        780.0,
         &[],
     )?;
 
@@ -891,7 +1031,10 @@ pub async fn open_registration_window(
 }
 
 #[tauri::command]
-pub async fn fetch_student_profile(state: State<'_, KgcState>, db: State<'_, crate::db::Database>) -> Result<parser::StudentInfo, String> {
+pub async fn fetch_student_profile(
+    state: State<'_, KgcState>,
+    db: State<'_, crate::db::Database>,
+) -> Result<parser::StudentInfo, String> {
     let (http, is_auth) = {
         let client = state.client.lock().await;
         (client.http.clone(), client.is_authenticated())
@@ -907,7 +1050,10 @@ pub async fn fetch_student_profile(state: State<'_, KgcState>, db: State<'_, cra
         return Err(config::KGC_AUTH_REQUIRED_MSG.into());
     }
     // Fetch timetable page for basic info (name, id, faculty, department)
-    let url1 = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
+    let url1 = format!(
+        "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
+        config::KG_COURSE_BASE
+    );
     let mut info = match client::fetch_page_with(&http, &url1).await {
         Ok(html) => parser::parse_student_info(&html),
         Err(e) => {
@@ -922,20 +1068,45 @@ pub async fn fetch_student_profile(state: State<'_, KgcState>, db: State<'_, cra
         }
     };
     // Fetch student info page for extra fields (student_type, status, etc.)
-    let url2 = format!("{}/uniasv2/GGA110.do?REQ_PRFR_MNU_ID=MNUIDSTD0104011", config::KG_COURSE_BASE);
+    let url2 = format!(
+        "{}/uniasv2/GGA110.do?REQ_PRFR_MNU_ID=MNUIDSTD0104011",
+        config::KG_COURSE_BASE
+    );
     if let Ok(html) = client::fetch_page_with(&http, &url2).await {
         let extra = parser::parse_student_info(&html);
-        if info.student_id.is_empty() && !extra.student_id.is_empty() { info.student_id = extra.student_id; }
-        if info.name.is_empty() && !extra.name.is_empty() { info.name = extra.name; }
-        if !extra.name_en.is_empty() { info.name_en = extra.name_en; }
-        if info.faculty.is_empty() && !extra.faculty.is_empty() { info.faculty = extra.faculty; }
-        if info.department.is_empty() && !extra.department.is_empty() { info.department = extra.department; }
-        if !extra.student_type.is_empty() { info.student_type = extra.student_type; }
-        if !extra.affiliation_type.is_empty() { info.affiliation_type = extra.affiliation_type; }
-        if !extra.status.is_empty() { info.status = extra.status; }
-        if !extra.class.is_empty() { info.class = extra.class; }
-        if !extra.major.is_empty() { info.major = extra.major; }
-        if !extra.address.is_empty() { info.address = extra.address; }
+        if info.student_id.is_empty() && !extra.student_id.is_empty() {
+            info.student_id = extra.student_id;
+        }
+        if info.name.is_empty() && !extra.name.is_empty() {
+            info.name = extra.name;
+        }
+        if !extra.name_en.is_empty() {
+            info.name_en = extra.name_en;
+        }
+        if info.faculty.is_empty() && !extra.faculty.is_empty() {
+            info.faculty = extra.faculty;
+        }
+        if info.department.is_empty() && !extra.department.is_empty() {
+            info.department = extra.department;
+        }
+        if !extra.student_type.is_empty() {
+            info.student_type = extra.student_type;
+        }
+        if !extra.affiliation_type.is_empty() {
+            info.affiliation_type = extra.affiliation_type;
+        }
+        if !extra.status.is_empty() {
+            info.status = extra.status;
+        }
+        if !extra.class.is_empty() {
+            info.class = extra.class;
+        }
+        if !extra.major.is_empty() {
+            info.major = extra.major;
+        }
+        if !extra.address.is_empty() {
+            info.address = extra.address;
+        }
     }
     // Cache the result
     if let Ok(json) = serde_json::to_string(&info) {
@@ -1064,7 +1235,6 @@ fn chrono_now() -> String {
     format!("{:02}:{:02}:{:02}", hours, mins, s)
 }
 
-
 #[tauri::command]
 pub async fn search_syllabus(
     params: crate::syllabus::SyllabusSearchParams,
@@ -1077,15 +1247,29 @@ pub async fn search_syllabus(
         "/uniasv2/UnSSOLoginControl2?REQ_LOGIN_NO=2&REQ_ACTION_DO=/AGA030.do&REQ_PRFR_MNU_ID=MNUIDSTD0103011",
     ).await?;
     let token = extract_struts_token(&search_html)?;
-    let year = extract_year_from_search_page(&search_html)
-        .unwrap_or_else(|| params.year_from.clone());
+    let year =
+        extract_year_from_search_page(&search_html).unwrap_or_else(|| params.year_from.clone());
 
     let form_params = vec![
         ("org.apache.struts.taglib.html.TOKEN".into(), token),
         ("selTypeCalLsnOpcFcy".into(), "0".into()),
-        ("txtLsnOpcFcy".into(), if params.year_from.is_empty() { year.clone() } else { params.year_from.clone() }),
+        (
+            "txtLsnOpcFcy".into(),
+            if params.year_from.is_empty() {
+                year.clone()
+            } else {
+                params.year_from.clone()
+            },
+        ),
         ("selTypeCalLsnEndFcy".into(), "0".into()),
-        ("txtLsnEndFcy".into(), if params.year_to.is_empty() { year } else { params.year_to.clone() }),
+        (
+            "txtLsnEndFcy".into(),
+            if params.year_to.is_empty() {
+                year
+            } else {
+                params.year_to.clone()
+            },
+        ),
         ("selTacTrmCd".into(), params.term.clone()),
         ("selOpcCmpsCd".into(), params.campus.clone()),
         ("selLsnMngPostCd".into(), params.department.clone()),
@@ -1117,7 +1301,12 @@ pub async fn search_syllabus(
     }
 
     let first_page = crate::syllabus::parse_search_results_public(&html)?;
-    log::info!("Search page 1: {} entries, page {}/{}", first_page.entries.len(), first_page.current_page, first_page.total_pages);
+    log::info!(
+        "Search page 1: {} entries, page {}/{}",
+        first_page.entries.len(),
+        first_page.current_page,
+        first_page.total_pages
+    );
 
     if first_page.total_pages <= 1 {
         return Ok(first_page);
@@ -1131,30 +1320,51 @@ pub async fn search_syllabus(
     for page in 2..=total_pages {
         let mut form_params = extract_all_form_inputs(&current_html);
         form_params.retain(|(k, _)| {
-            !k.starts_with("ESearch") && !k.starts_with("ENarrowSearch")
-            && !k.starts_with("EBack") && !k.starts_with("ENext")
-            && !k.starts_with("EPrev") && !k.starts_with("ERefer")
-            && !k.starts_with("ERegister") && !k.starts_with("EPageSet")
+            !k.starts_with("ESearch")
+                && !k.starts_with("ENarrowSearch")
+                && !k.starts_with("EBack")
+                && !k.starts_with("ENext")
+                && !k.starts_with("EPrev")
+                && !k.starts_with("ERefer")
+                && !k.starts_with("ERegister")
+                && !k.starts_with("EPageSet")
         });
         form_params.push(("ENext.x".into(), "10".into()));
         form_params.push(("ENext.y".into(), "10".into()));
 
-        log::info!("Fetching page {} with {} form params", page, form_params.len());
+        log::info!(
+            "Fetching page {} with {} form params",
+            page,
+            form_params.len()
+        );
 
         let next_html = kgc_post(&http, "/uniasv2/AGA030PLS01EventAction.do", &form_params).await?;
 
         match crate::syllabus::parse_search_results_public(&next_html) {
             Ok(page_result) => {
-                log::info!("Search page {}: {} entries", page, page_result.entries.len());
-                if page_result.entries.is_empty() { break; }
+                log::info!(
+                    "Search page {}: {} entries",
+                    page,
+                    page_result.entries.len()
+                );
+                if page_result.entries.is_empty() {
+                    break;
+                }
                 all_entries.extend(page_result.entries);
                 current_html = next_html;
             }
-            Err(e) => { log::warn!("Failed to parse page {}: {}", page, e); break; }
+            Err(e) => {
+                log::warn!("Failed to parse page {}: {}", page, e);
+                break;
+            }
         }
     }
 
-    log::info!("Search total: {} entries across {} pages", all_entries.len(), total_pages);
+    log::info!(
+        "Search total: {} entries across {} pages",
+        all_entries.len(),
+        total_pages
+    );
     Ok(crate::syllabus::SyllabusSearchResult {
         total_count: all_entries.len(),
         entries: all_entries,
@@ -1305,7 +1515,9 @@ pub async fn toggle_syllabus_bookmark(
 
     // Find the target row's register index
     let parsed = crate::syllabus::parse_search_results_public(&html)?;
-    let target_entry = parsed.entries.iter()
+    let target_entry = parsed
+        .entries
+        .iter()
         .find(|e| e.class_code == class_code)
         .ok_or_else(|| format!("科目コード {} が見つかりません", class_code))?;
     let target_index = target_entry.register_index.clone();
@@ -1315,11 +1527,15 @@ pub async fn toggle_syllabus_bookmark(
 
     // Remove action buttons and search-dispatch flag
     form_params.retain(|(k, _)| {
-        !k.starts_with("ESearch") && !k.starts_with("ENarrowSearch")
-        && !k.starts_with("EBack") && !k.starts_with("ENext")
-        && !k.starts_with("EPrev") && !k.starts_with("ERefer")
-        && !k.starts_with("ERegister") && !k.starts_with("EPageSet")
-        && k != "hdnEsearch"
+        !k.starts_with("ESearch")
+            && !k.starts_with("ENarrowSearch")
+            && !k.starts_with("EBack")
+            && !k.starts_with("ENext")
+            && !k.starts_with("EPrev")
+            && !k.starts_with("ERefer")
+            && !k.starts_with("ERegister")
+            && !k.starts_with("EPageSet")
+            && k != "hdnEsearch"
     });
 
     // Set the target register index and add ERegister action
@@ -1328,13 +1544,21 @@ pub async fn toggle_syllabus_bookmark(
     form_params.push(("ERegister.x".into(), "10".into()));
     form_params.push(("ERegister.y".into(), "10".into()));
 
-    log::info!("Bookmark toggle: class_code={}, eregisterIndex={}, params_count={}",
-        class_code, target_index, form_params.len());
+    log::info!(
+        "Bookmark toggle: class_code={}, eregisterIndex={}, params_count={}",
+        class_code,
+        target_index,
+        form_params.len()
+    );
 
     let toggle_html = kgc_post(&http, "/uniasv2/AGA030PLS01EventAction.do", &form_params).await?;
 
     let success = !toggle_html.contains("UNM000480E") && !toggle_html.contains("不正アクセス");
-    log::info!("Bookmark toggle result: success={}, len={}", success, toggle_html.len());
+    log::info!(
+        "Bookmark toggle result: success={}, len={}",
+        success,
+        toggle_html.len()
+    );
 
     Ok(success)
 }
@@ -1355,7 +1579,9 @@ pub async fn open_syllabus_detail(
     // Parse results to obtain the fresh ereferIndex for this course
     let results = crate::syllabus::parse_search_results_public(&html)
         .map_err(|e| format!("検索結果の解析に失敗: {}", e))?;
-    let target_entry = results.entries.iter()
+    let target_entry = results
+        .entries
+        .iter()
         .find(|e| e.class_code == class_code)
         .ok_or("授業が見つかりませんでした")?;
     let fresh_refer_index = target_entry.refer_index.clone();
@@ -1367,22 +1593,32 @@ pub async fn open_syllabus_detail(
     let token_key = "org.apache.struts.taglib.html.TOKEN";
     let token_count = form_params.iter().filter(|(k, _)| k == token_key).count();
     if token_count > 1 {
-        let last_token = form_params.iter().rev()
-            .find(|(k, _)| k == token_key).map(|(_, v)| v.clone());
+        let last_token = form_params
+            .iter()
+            .rev()
+            .find(|(k, _)| k == token_key)
+            .map(|(_, v)| v.clone());
         form_params.retain(|(k, _)| k != token_key);
         if let Some(tok) = last_token {
             form_params.insert(0, (token_key.into(), tok));
         }
-        log::warn!("open_syllabus_detail: deduped Struts tokens: {} -> 1", token_count);
+        log::warn!(
+            "open_syllabus_detail: deduped Struts tokens: {} -> 1",
+            token_count
+        );
     }
 
     // Remove action buttons and search-dispatch flag
     form_params.retain(|(k, _)| {
-        !k.starts_with("ESearch") && !k.starts_with("ENarrowSearch")
-        && !k.starts_with("EBack") && !k.starts_with("ENext")
-        && !k.starts_with("EPrev") && !k.starts_with("ERefer")
-        && !k.starts_with("ERegister") && !k.starts_with("EPageSet")
-        && k != "hdnEsearch"
+        !k.starts_with("ESearch")
+            && !k.starts_with("ENarrowSearch")
+            && !k.starts_with("EBack")
+            && !k.starts_with("ENext")
+            && !k.starts_with("EPrev")
+            && !k.starts_with("ERefer")
+            && !k.starts_with("ERegister")
+            && !k.starts_with("EPageSet")
+            && k != "hdnEsearch"
     });
 
     // Set the target refer index and add ERefer action
@@ -1391,13 +1627,21 @@ pub async fn open_syllabus_detail(
     form_params.push(("ERefer.x".into(), "10".into()));
     form_params.push(("ERefer.y".into(), "10".into()));
 
-    log::info!("Syllabus detail: ereferIndex={}, params_count={}", fresh_refer_index, form_params.len());
+    log::info!(
+        "Syllabus detail: ereferIndex={}, params_count={}",
+        fresh_refer_index,
+        form_params.len()
+    );
 
     let detail_html = kgc_post(&http, "/uniasv2/AGA030PLS01EventAction.do", &form_params).await?;
 
     // Parse as course detail
     let detail = crate::parser::parse_course_detail(&detail_html);
-    log::info!("Syllabus detail: {} fields (HTML {} bytes)", detail.fields.len(), detail_html.len());
+    log::info!(
+        "Syllabus detail: {} fields (HTML {} bytes)",
+        detail.fields.len(),
+        detail_html.len()
+    );
 
     // Store detail data in app state for the window to retrieve
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1419,23 +1663,24 @@ pub async fn open_syllabus_detail(
     // Open detail window — pass label in URL so the window can retrieve its own data
     let encoded_name = urlencoding::encode(&course_name);
     let encoded_label = urlencoding::encode(&label);
-    let url_str = format!("luna-detail.html?mode=syllabus&name={}&wlabel={}", encoded_name, encoded_label);
+    let url_str = format!(
+        "luna-detail.html?mode=syllabus&name={}&wlabel={}",
+        encoded_name, encoded_label
+    );
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::App(url_str.into()),
-    )
-    .title(&course_name)
-    .inner_size(480.0, 560.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_str.into()))
+        .title(&course_name)
+        .inner_size(480.0, 560.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
 
     Ok(())
 }
 
-pub struct SyllabusDetailData(pub std::sync::Mutex<std::collections::HashMap<String, crate::parser::CourseDetail>>);
+pub struct SyllabusDetailData(
+    pub std::sync::Mutex<std::collections::HashMap<String, crate::parser::CourseDetail>>,
+);
 
 #[tauri::command]
 pub async fn get_syllabus_detail(
@@ -1460,22 +1705,34 @@ pub async fn get_kgc_syllabus_fields(
     }))
 }
 
-static STRUTS_TOKEN_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#).expect("valid regex"));
-static STRUTS_TOKEN_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="([^"]+)"[^>]*name="org\.apache\.struts\.taglib\.html\.TOKEN""#).expect("valid regex"));
+static STRUTS_TOKEN_RE1: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"name="org\.apache\.struts\.taglib\.html\.TOKEN"[^>]*value="([^"]+)""#)
+        .expect("valid regex")
+});
+static STRUTS_TOKEN_RE2: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"value="([^"]+)"[^>]*name="org\.apache\.struts\.taglib\.html\.TOKEN""#)
+        .expect("valid regex")
+});
 
 pub(crate) fn extract_struts_token(html: &str) -> Result<String, String> {
-    STRUTS_TOKEN_RE1.captures(html)
+    STRUTS_TOKEN_RE1
+        .captures(html)
         .or_else(|| STRUTS_TOKEN_RE2.captures(html))
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
         .ok_or_else(|| "Strutsトークンが見つかりません".into())
 }
 
-static YEAR_RE1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"name="txtLsnOpcFcy"[^>]*value="(\d{4})""#).expect("valid regex"));
-static YEAR_RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"value="(\d{4})"[^>]*name="txtLsnOpcFcy""#).expect("valid regex"));
+static YEAR_RE1: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"name="txtLsnOpcFcy"[^>]*value="(\d{4})""#).expect("valid regex")
+});
+static YEAR_RE2: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"value="(\d{4})"[^>]*name="txtLsnOpcFcy""#).expect("valid regex")
+});
 
 pub(crate) fn extract_year_from_search_page(html: &str) -> Option<String> {
-    YEAR_RE1.captures(html)
+    YEAR_RE1
+        .captures(html)
         .or_else(|| YEAR_RE2.captures(html))
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
@@ -1493,7 +1750,10 @@ pub(crate) fn extract_named_form_inputs(html: &str, form_name: &str) -> Vec<(Str
     let selector = format!("form[name=\"{}\"]", form_name);
     let params = extract_form_inputs_impl(html, &selector);
     if params.is_empty() {
-        log::warn!("extract_named_form_inputs: form '{}' not found, falling back to all forms", form_name);
+        log::warn!(
+            "extract_named_form_inputs: form '{}' not found, falling back to all forms",
+            form_name
+        );
         extract_form_inputs_impl(html, "form")
     } else {
         params
@@ -1520,9 +1780,10 @@ fn extract_form_inputs_impl(html: &str, form_selector: &str) -> Vec<(String, Str
         }
         // For checkboxes/radios, only include if checked
         if (input_type == "checkbox" || input_type == "radio")
-            && el.value().attr("checked").is_none() {
-                continue;
-            }
+            && el.value().attr("checked").is_none()
+        {
+            continue;
+        }
         let value = el.value().attr("value").unwrap_or("").to_string();
         params.push((name, value));
     }
@@ -1579,10 +1840,7 @@ pub async fn get_session_expiry(
     let kgc_exp = state.client.lock().await.soonest_cookie_expiry_secs();
     let luna_exp = client::soonest_cookie_expiry(&luna_state.client.lock().await.cookie_store);
     let kwic_exp = client::soonest_cookie_expiry(&kwic_state.client.lock().await.cookie_store);
-    let min = [kgc_exp, luna_exp, kwic_exp]
-        .into_iter()
-        .flatten()
-        .min();
+    let min = [kgc_exp, luna_exp, kwic_exp].into_iter().flatten().min();
     Ok(min)
 }
 
@@ -1609,9 +1867,8 @@ async fn headless_saml_refresh(
 ) -> Result<bool, String> {
     log::info!("headless_{}: starting (Cookie Bridge)", label);
 
-    let win = match cookie_bridge::headless_saml_window(
-        app, label, saml_url, sp_domain, 20,
-    ).await? {
+    let win = match cookie_bridge::headless_saml_window(app, label, saml_url, sp_domain, 20).await?
+    {
         Some(w) => w,
         None => return Ok(false),
     };
@@ -1619,8 +1876,13 @@ async fn headless_saml_refresh(
     cookie_bridge::extract_and_inject(app, sp_domain, cookie_store, base_url).await?;
 
     let result = client::fetch_with_redirect(
-        http, verify_url, base_url, session_expired_msg, is_session_expired,
-    ).await;
+        http,
+        verify_url,
+        base_url,
+        session_expired_msg,
+        is_session_expired,
+    )
+    .await;
     let _ = win.close();
 
     match result {
@@ -1629,48 +1891,68 @@ async fn headless_saml_refresh(
             Ok(true)
         }
         Err(e) => {
-            log::warn!("headless_{}: cookie injection succeeded but session invalid: {}", label, e);
+            log::warn!(
+                "headless_{}: cookie injection succeeded but session invalid: {}",
+                label,
+                e
+            );
             Err(e)
         }
     }
 }
 
-async fn headless_kgc_refresh(
-    app: &tauri::AppHandle,
-    state: &KgcState,
-) -> Result<bool, String> {
+async fn headless_kgc_refresh(app: &tauri::AppHandle, state: &KgcState) -> Result<bool, String> {
     log::info!("headless_kgc_refresh: starting (Cookie Bridge)");
     let _kgc_gate = state.gate.lock().await;
 
     let entry_url = format!("{}/uniasv2/UnSSOLoginControl2", config::KG_COURSE_BASE);
     let win = match cookie_bridge::headless_saml_window(
-        app, "kgc-headless", &entry_url, "kg-course.kwansei.ac.jp", 20,
-    ).await? {
+        app,
+        "kgc-headless",
+        &entry_url,
+        "kg-course.kwansei.ac.jp",
+        20,
+    )
+    .await?
+    {
         Some(w) => w,
         None => return Ok(false),
     };
 
     let cookie_store = state.client.lock().await.cookie_store.clone();
     cookie_bridge::extract_and_inject(
-        app, "kg-course.kwansei.ac.jp", &cookie_store, config::KG_COURSE_BASE,
-    ).await?;
+        app,
+        "kg-course.kwansei.ac.jp",
+        &cookie_store,
+        config::KG_COURSE_BASE,
+    )
+    .await?;
 
     let http = state.client.lock().await.http.clone();
-    let verify_url = format!("{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014", config::KG_COURSE_BASE);
+    let verify_url = format!(
+        "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
+        config::KG_COURSE_BASE
+    );
     match crate::client::fetch_page_with(&http, &verify_url).await {
         Ok(html) => {
             let info = parser::parse_student_info(&html);
             // Empty student info means the page came back without real data
             // (server-side session stale despite cookie accepted)
             if info.student_id.is_empty() && info.name.is_empty() {
-                log::warn!("headless_kgc_refresh: page returned empty student info (stale session)");
+                log::warn!(
+                    "headless_kgc_refresh: page returned empty student info (stale session)"
+                );
                 let _ = win.close();
                 return Ok(false);
             }
             let mut client = state.client.lock().await;
             client.session = Some(auth::AuthSession {
                 username: info.student_id.clone(),
-                display_name: if info.name.is_empty() { "\u{30e6}\u{30fc}\u{30b6}\u{30fc}".to_string() } else { info.name },
+                display_name: if info.name.is_empty() {
+                    "\u{30e6}\u{30fc}\u{30b6}\u{30fc}".to_string()
+                } else {
+                    info.name
+                },
                 student_id: info.student_id,
                 faculty: info.faculty,
                 department: info.department,
@@ -1691,10 +1973,7 @@ async fn headless_kgc_refresh(
 }
 
 /// Attempt a silent (headless) Luna session refresh via an invisible WebView.
-async fn headless_luna_refresh(
-    app: &tauri::AppHandle,
-    state: &LunaState,
-) -> Result<bool, String> {
+async fn headless_luna_refresh(app: &tauri::AppHandle, state: &LunaState) -> Result<bool, String> {
     let luna = state.client.lock().await;
     let cookie_store = luna.cookie_store.clone();
     let http = luna.http.clone();
@@ -1702,10 +1981,18 @@ async fn headless_luna_refresh(
 
     let verify_url = format!("{}/lms/timetable", config::LUNA_BASE);
     let ok = headless_saml_refresh(
-        app, "luna-headless", config::LUNA_SAML_URL, "luna.kwansei.ac.jp",
-        config::LUNA_BASE, &verify_url, &cookie_store, &http,
-        luna_client::LUNA_SESSION_EXPIRED_MSG, luna_client::is_luna_session_expired,
-    ).await?;
+        app,
+        "luna-headless",
+        config::LUNA_SAML_URL,
+        "luna.kwansei.ac.jp",
+        config::LUNA_BASE,
+        &verify_url,
+        &cookie_store,
+        &http,
+        luna_client::LUNA_SESSION_EXPIRED_MSG,
+        luna_client::is_luna_session_expired,
+    )
+    .await?;
     if ok {
         let mut luna = state.client.lock().await;
         luna.authenticated = true;
@@ -1715,10 +2002,7 @@ async fn headless_luna_refresh(
 }
 
 /// Attempt a silent (headless) KWIC Portal session refresh via an invisible WebView.
-async fn headless_kwic_refresh(
-    app: &tauri::AppHandle,
-    state: &KwicState,
-) -> Result<bool, String> {
+async fn headless_kwic_refresh(app: &tauri::AppHandle, state: &KwicState) -> Result<bool, String> {
     let kwic = state.client.lock().await;
     let cookie_store = kwic.cookie_store.clone();
     let http = kwic.http.clone();
@@ -1726,10 +2010,18 @@ async fn headless_kwic_refresh(
 
     let verify_url = format!("{}/portal/home", config::KWIC_BASE);
     let ok = headless_saml_refresh(
-        app, "kwic-headless", config::KWIC_SAML_URL, "kwic.kwansei.ac.jp",
-        config::KWIC_BASE, &verify_url, &cookie_store, &http,
-        kwic_client::KWIC_SESSION_EXPIRED_MSG, kwic_client::is_kwic_session_expired,
-    ).await?;
+        app,
+        "kwic-headless",
+        config::KWIC_SAML_URL,
+        "kwic.kwansei.ac.jp",
+        config::KWIC_BASE,
+        &verify_url,
+        &cookie_store,
+        &http,
+        kwic_client::KWIC_SESSION_EXPIRED_MSG,
+        kwic_client::is_kwic_session_expired,
+    )
+    .await?;
     if ok {
         let mut kwic = state.client.lock().await;
         kwic.authenticated = true;
@@ -1769,7 +2061,12 @@ pub async fn sync_session(
             let kgc_ok = kgc_res.unwrap_or(false);
             let luna_ok = luna_res.unwrap_or(false);
             let kwic_ok = kwic_res.unwrap_or(false);
-            log::info!("sync_session(all): kgc={}, luna={}, kwic={}", kgc_ok, luna_ok, kwic_ok);
+            log::info!(
+                "sync_session(all): kgc={}, luna={}, kwic={}",
+                kgc_ok,
+                luna_ok,
+                kwic_ok
+            );
             // Return true if ANY service succeeded (Okta is alive, app is usable)
             Ok(kgc_ok || luna_ok || kwic_ok)
         }
@@ -1815,8 +2112,14 @@ pub async fn fetch_weather() -> Result<WeatherData, String> {
 
     let tomorrow = if daily["time"].as_array().is_some_and(|a| a.len() >= 2) {
         Some(WeatherTomorrow {
-            temp_max: daily["temperature_2m_max"][1].as_f64().unwrap_or(0.0).round() as i32,
-            temp_min: daily["temperature_2m_min"][1].as_f64().unwrap_or(0.0).round() as i32,
+            temp_max: daily["temperature_2m_max"][1]
+                .as_f64()
+                .unwrap_or(0.0)
+                .round() as i32,
+            temp_min: daily["temperature_2m_min"][1]
+                .as_f64()
+                .unwrap_or(0.0)
+                .round() as i32,
             weather_code: daily["weather_code"][1].as_i64().unwrap_or(0) as i32,
         })
     } else {
@@ -1892,8 +2195,7 @@ fn save_download_config_to_disk(config: &DownloadConfig) -> Result<(), String> {
     let path = download_config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("Failed to write download config: {}", e))?;
+    std::fs::write(&path, &data).map_err(|e| format!("Failed to write download config: {}", e))?;
     Ok(())
 }
 
@@ -1989,17 +2291,77 @@ pub fn save_notification_config(config: NotificationConfig) -> Result<(), String
     save_notification_config_to_disk(&config)
 }
 
+// ─── Native Agent Config ──────────────────────────────────────
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NativeAgentConfig {
+    pub floating_orb_enabled: bool,
+}
+
+impl Default for NativeAgentConfig {
+    fn default() -> Self {
+        Self {
+            floating_orb_enabled: false,
+        }
+    }
+}
+
+fn native_agent_config_path() -> std::path::PathBuf {
+    client::data_dir().join("native_agent_config.json")
+}
+
+pub fn load_native_agent_config() -> NativeAgentConfig {
+    let path = native_agent_config_path();
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str(&data) {
+                return cfg;
+            }
+        }
+    }
+    NativeAgentConfig::default()
+}
+
+fn save_native_agent_config_to_disk(config: &NativeAgentConfig) -> Result<(), String> {
+    let path = native_agent_config_path();
+    let data = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("JSON serialization error: {}", e))?;
+    std::fs::write(&path, &data)
+        .map_err(|e| format!("Failed to write native agent config: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_native_agent_config() -> NativeAgentConfig {
+    load_native_agent_config()
+}
+
+#[tauri::command]
+pub fn save_native_agent_config(app: tauri::AppHandle, config: NativeAgentConfig) -> Result<(), String> {
+    save_native_agent_config_to_disk(&config)?;
+
+    #[cfg(target_os = "macos")]
+    if config.floating_orb_enabled {
+        let _ = crate::macos_native_agent::open_orb(&app);
+    } else {
+        let _ = crate::macos_native_agent::close_orb(&app);
+    }
+
+    Ok(())
+}
+
 // ─── Calendar Config ───────────────────────────────────────────
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CalendarConfig {
-    pub spring_start: String,     // e.g. "2026-04-03"
-    pub fall_start: String,       // e.g. "2026-09-21"
+    pub spring_start: String, // e.g. "2026-04-03"
+    pub fall_start: String,   // e.g. "2026-09-21"
     pub syscal_enabled: bool,
     pub syscal_auto_sync: bool,
     pub gcal_auto_sync: bool,
-    pub cal_sync_interval: u32,   // hours (6, 12, 24, 48, 72)
+    pub cal_sync_interval: u32, // hours (6, 12, 24, 48, 72)
 }
 
 impl Default for CalendarConfig {
@@ -2035,8 +2397,7 @@ fn save_calendar_config_to_disk(config: &CalendarConfig) -> Result<(), String> {
     let path = calendar_config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("Failed to write calendar config: {}", e))?;
+    std::fs::write(&path, &data).map_err(|e| format!("Failed to write calendar config: {}", e))?;
     Ok(())
 }
 
@@ -2048,7 +2409,10 @@ pub fn get_calendar_config() -> CalendarConfig {
 #[tauri::command]
 pub fn save_calendar_config(config: CalendarConfig) -> Result<(), String> {
     // Validate date formats if provided
-    for (label, val) in [("春学期開始日", &config.spring_start), ("秋学期開始日", &config.fall_start)] {
+    for (label, val) in [
+        ("春学期開始日", &config.spring_start),
+        ("秋学期開始日", &config.fall_start),
+    ] {
         if !val.is_empty() {
             if chrono::NaiveDate::parse_from_str(val, "%Y-%m-%d").is_err() {
                 return Err(format!("{}の日付形式が不正です (YYYY-MM-DD)", label));
@@ -2060,12 +2424,19 @@ pub fn save_calendar_config(config: CalendarConfig) -> Result<(), String> {
 
 /// Sanitize a string to be safe as a directory/file name component.
 fn sanitize_path_component(name: &str) -> String {
-    let s: String = name.chars().map(|c| match c {
-        '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
-        _ => c,
-    }).collect();
+    let s: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            _ => c,
+        })
+        .collect();
     let trimmed = s.trim().trim_matches('.');
-    if trimmed.is_empty() { "_".into() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "_".into()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Simplify a course name for use as a folder name.
@@ -2080,11 +2451,13 @@ fn simplify_course_name(name: &str) -> String {
         // e.g. "日本語教育センター 51001004 " or "国際学部_International Studies 34001001 "
         regex::Regex::new(r"^.+\s\d{7,8}\s+").unwrap()
     });
-    static RE_BRACKET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"[\[［]\d+[\]］]").unwrap()
-    });
+    static RE_BRACKET: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"[\[［]\d+[\]］]").unwrap());
     static RE_PAREN_SUFFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"[（(][^)）]*(?:学期|限|クラス|組|セメスター|Quarter|Semester)[^)）]*[)）]\s*$").unwrap()
+        regex::Regex::new(
+            r"[（(][^)）]*(?:学期|限|クラス|組|セメスター|Quarter|Semester)[^)）]*[)）]\s*$",
+        )
+        .unwrap()
     });
     // Strip department + course code prefix first
     let s = RE_DEPT_CODE.replace(name, "");
@@ -2093,13 +2466,19 @@ fn simplify_course_name(name: &str) -> String {
     // Collapse whitespace
     let s: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let s = s.trim().to_string();
-    if s.is_empty() { name.trim().to_string() } else { s }
+    if s.is_empty() {
+        name.trim().to_string()
+    } else {
+        s
+    }
 }
 
 /// Default download base directory: ~/Documents/Selah (created if needed).
 pub fn default_download_dir() -> std::path::PathBuf {
     let doc = dirs::document_dir().unwrap_or_else(|| {
-        dirs::home_dir().map(|h| h.join("Documents")).unwrap_or_else(std::env::temp_dir)
+        dirs::home_dir()
+            .map(|h| h.join("Documents"))
+            .unwrap_or_else(std::env::temp_dir)
     });
     let dir = doc.join("Selah");
     let _ = std::fs::create_dir_all(&dir);
@@ -2137,11 +2516,11 @@ pub struct DownloadRecord {
     pub filename: String,
     pub path: String,
     pub course_name: String,
-    pub source: String,   // "luna", "mail", etc.
+    pub source: String, // "luna", "mail", etc.
     pub size_bytes: u64,
-    pub downloaded_at: i64,  // unix millis
+    pub downloaded_at: i64, // unix millis
     #[serde(default)]
-    pub file_exists: bool,   // populated at query time, not persisted
+    pub file_exists: bool, // populated at query time, not persisted
 }
 
 fn download_history_path() -> std::path::PathBuf {
@@ -2162,21 +2541,29 @@ pub fn load_download_history() -> Vec<DownloadRecord> {
 
 fn save_download_history(records: &[DownloadRecord]) -> Result<(), String> {
     let path = download_history_path();
-    let data = serde_json::to_string(records)
-        .map_err(|e| format!("JSON serialization error: {}", e))?;
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("Failed to write download history: {}", e))?;
+    let data =
+        serde_json::to_string(records).map_err(|e| format!("JSON serialization error: {}", e))?;
+    std::fs::write(&path, &data).map_err(|e| format!("Failed to write download history: {}", e))?;
     Ok(())
 }
 
 /// Record a new download in the history. Called from save_to_downloads.
-pub fn record_download(filename: &str, path: &str, course_name: Option<&str>, source: &str, size_bytes: u64) {
+pub fn record_download(
+    filename: &str,
+    path: &str,
+    course_name: Option<&str>,
+    source: &str,
+    size_bytes: u64,
+) {
     let mut records = load_download_history();
     let record = DownloadRecord {
-        id: format!("{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()),
+        id: format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ),
         filename: filename.to_string(),
         path: path.to_string(),
         course_name: course_name.unwrap_or("").to_string(),
@@ -2221,9 +2608,8 @@ pub fn scan_download_dir() -> Vec<DownloadRecord> {
 
     let mut records = load_download_history();
     // Build set of known paths for O(1) lookup
-    let known_paths: std::collections::HashSet<String> = records.iter()
-        .map(|r| r.path.clone())
-        .collect();
+    let known_paths: std::collections::HashSet<String> =
+        records.iter().map(|r| r.path.clone()).collect();
 
     // Walk the base directory (max 2 levels deep for course subfolders)
     let mut discovered: Vec<DownloadRecord> = Vec::new();
@@ -2236,7 +2622,8 @@ pub fn scan_download_dir() -> Vec<DownloadRecord> {
                 }
             } else if path.is_dir() {
                 // Course subfolder
-                let folder_name = path.file_name()
+                let folder_name = path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
@@ -2244,7 +2631,9 @@ pub fn scan_download_dir() -> Vec<DownloadRecord> {
                     for sub in sub_entries.flatten() {
                         let sub_path = sub.path();
                         if sub_path.is_file() {
-                            if let Some(rec) = try_discover_file(&sub_path, &folder_name, &known_paths) {
+                            if let Some(rec) =
+                                try_discover_file(&sub_path, &folder_name, &known_paths)
+                            {
                                 discovered.push(rec);
                             }
                         }
@@ -2286,8 +2675,11 @@ fn try_discover_file(
         return None;
     }
     let metadata = std::fs::metadata(path).ok()?;
-    let modified = metadata.modified().ok()?
-        .duration_since(std::time::UNIX_EPOCH).ok()?
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
         .as_millis() as i64;
 
     Some(DownloadRecord {
@@ -2303,7 +2695,10 @@ fn try_discover_file(
 }
 
 #[tauri::command]
-pub fn check_file_downloaded(filename: String, course_name: Option<String>) -> Option<DownloadRecord> {
+pub fn check_file_downloaded(
+    filename: String,
+    course_name: Option<String>,
+) -> Option<DownloadRecord> {
     let records = load_download_history();
     let target = filename.to_lowercase();
     let mut found: Option<DownloadRecord> = None;
@@ -2336,24 +2731,36 @@ pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), S
     }
     // Security: restrict to the app's default (~/Documents/Selah), the system
     // Downloads folder, or a user-configured download directory.
-    let canonical = p.canonicalize().map_err(|e| format!("パスが無効です: {}", e))?;
-    let app_default = default_download_dir().canonicalize()
+    let canonical = p
+        .canonicalize()
+        .map_err(|e| format!("パスが無効です: {}", e))?;
+    let app_default = default_download_dir()
+        .canonicalize()
         .unwrap_or_else(|_| default_download_dir());
     let sys_downloads = dirs::download_dir().unwrap_or_else(|| {
-        dirs::home_dir().map(|h| h.join("Downloads")).unwrap_or_else(std::env::temp_dir)
+        dirs::home_dir()
+            .map(|h| h.join("Downloads"))
+            .unwrap_or_else(std::env::temp_dir)
     });
     let dl_config = load_download_config();
-    let custom_dir = if dl_config.download_dir.is_empty() { None } else {
-        std::path::Path::new(&dl_config.download_dir).canonicalize().ok()
+    let custom_dir = if dl_config.download_dir.is_empty() {
+        None
+    } else {
+        std::path::Path::new(&dl_config.download_dir)
+            .canonicalize()
+            .ok()
     };
     let allowed = canonical.starts_with(&app_default)
         || canonical.starts_with(&sys_downloads)
-        || custom_dir.as_ref().is_some_and(|d| canonical.starts_with(d));
+        || custom_dir
+            .as_ref()
+            .is_some_and(|d| canonical.starts_with(d));
     if !allowed {
         return Err("ダウンロードフォルダ外のファイルは開けません".into());
     }
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_path(canonical.to_string_lossy(), None::<&str>)
+    app.opener()
+        .open_path(canonical.to_string_lossy(), None::<&str>)
         .map_err(|e| format!("ファイルを開けませんでした: {}", e))?;
     Ok(())
 }

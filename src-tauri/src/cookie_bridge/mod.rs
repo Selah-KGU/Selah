@@ -39,8 +39,7 @@ async fn extract_cookies_for_domain(
         .into_iter()
         .filter(|c| {
             let cookie_domain = c.domain.trim_start_matches('.');
-            cookie_domain == domain_owned
-                || domain_owned.ends_with(&format!(".{}", cookie_domain))
+            cookie_domain == domain_owned || domain_owned.ends_with(&format!(".{}", cookie_domain))
         })
         .collect())
 }
@@ -131,7 +130,11 @@ pub async fn extract_and_inject(
     Ok(())
 }
 
-const OKTA_HOSTS: &[&str] = &["sso.kwansei.ac.jp", "idp.kwansei.ac.jp", "sts.kwansei.ac.jp"];
+const OKTA_HOSTS: &[&str] = &[
+    "sso.kwansei.ac.jp",
+    "idp.kwansei.ac.jp",
+    "sts.kwansei.ac.jp",
+];
 
 fn is_okta_login_page(url: &url::Url) -> bool {
     let host = url.host_str().unwrap_or("");
@@ -174,7 +177,10 @@ pub async fn headless_saml_window(
             log::info!("{}: page loaded on SP domain", label_for_log);
             let _ = tx.try_send(true);
         } else if is_okta_login_page(url) {
-            log::info!("{}: Okta login page detected - session expired", label_for_log);
+            log::info!(
+                "{}: Okta login page detected - session expired",
+                label_for_log
+            );
             let _ = tx.try_send(false);
         }
     })

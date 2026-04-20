@@ -29,24 +29,46 @@ base64 = "0.22"
 url = "2"
 urlencoding = "2.1.3"
 dirs = "6"
+lopdf = "0.35"
 cookie_store = "0.21"
 reqwest_cookie_store = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 sha2 = "0.10"
+cpal = "0.15.3"
+bzip2 = "0.4"
+tar = "0.4"
+sherpa-onnx = "1.12.39"
 tauri-plugin-notification = "2.3.3"
 notify-rust = "4"
 time = { version = "0.3.41", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-opener = "2.5.3"
 rfd = "0.15"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 objc2 = "0.6.4"
 block2 = "0.6.2"
-objc2-foundation = { version = "0.3.2", features = ["NSHTTPCookie", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3.2", features = [
+  "NSApplication",
+  "NSAppearance",
+  "NSButton",
+  "NSColor",
+  "NSEvent",
+  "NSGraphics",
+  "NSImage",
+  "NSPanel",
+  "NSResponder",
+  "NSScreen",
+  "NSTextField",
+  "NSView",
+  "NSWindow"
+] }
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSHTTPCookie", "NSArray", "NSString"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebsiteDataStore", "WKHTTPCookieStore", "block2"] }
 llama-cpp-2 = { version = "0.1", features = ["metal"] }
 

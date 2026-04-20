@@ -29,7 +29,11 @@ mod tests {
         let bytes = xor(plain.as_bytes());
         format!(
             "&[{}]",
-            bytes.iter().map(|b| format!("0x{:02X}", b)).collect::<Vec<_>>().join(", ")
+            bytes
+                .iter()
+                .map(|b| format!("0x{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     }
 

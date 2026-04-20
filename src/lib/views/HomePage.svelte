@@ -5,9 +5,10 @@
   import type { NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
   import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, fetchWeather } from "../api";
   import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
-  import type { LunaTodoItem, LunaNotification, ScheduleResponse, KgcCourseRow, LunaCourseRow } from "../types";
+  import type { LunaTodoItem, LunaNotification, ScheduleResponse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
   import { invoke } from "@tauri-apps/api/core";
+  import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
 
   // ============ Types ============
 
@@ -39,35 +40,10 @@
 
   // ============ State ============
 
-  // Local merged type to mimic old UnifiedEntry shape
-  interface HomeEntry {
-    name: string;
-    day: number;
-    period: number;
-    room: string;
-    detail_path: string;
-    is_cancelled: boolean;
-    luna_id: string;
-    teacher: string;
-  }
-
   let timetableData = $state<ScheduleResponse | null>(null);
   let todoItems = $state<LunaTodoItem[]>([]);
 
-  // Merge KGC+Luna into flat entry list for homepage widgets
-  let homeEntries = $derived.by((): HomeEntry[] => {
-    if (!timetableData) return [];
-    const kgc = timetableData.raw.kgc_entries_current;
-    const luna = timetableData.raw.luna_courses;
-    return kgc.map(k => {
-      const l = luna.find(lc => lc.day === k.day && lc.period === k.period);
-      return {
-        name: k.name, day: k.day, period: k.period, room: k.room,
-        detail_path: k.detail_path, is_cancelled: k.is_cancelled,
-        luna_id: l?.luna_id ?? "", teacher: l?.teacher ?? "",
-      };
-    });
-  });
+  let homeEntries = $derived.by((): CourseSlot[] => buildCourseSlots(timetableData));
   let kgcNotifs = $state<NotificationEntry[]>([]);
   let lunaNotifs = $state<LunaNotification[]>([]);
   let kwicHome = $state<KwicPortalHome | null>(null);
@@ -243,27 +219,7 @@
     return `今日はあと${remaining.length}コマ`;
   });
 
-  let heroClasses = $derived.by(() => {
-    if (!homeEntries.length) return [];
-    const jsDow = now.getDay();
-    const todayDay = jsDow === 0 ? 7 : jsDow;
-    const nowMin = now.getHours() * 60 + now.getMinutes();
-    const todayClasses = homeEntries
-      .filter(e => e.day === todayDay && !e.is_cancelled)
-      .sort((a, b) => a.period - b.period);
-    const result: { entry: HomeEntry; time: typeof PERIOD_TIMES[number]; live: boolean }[] = [];
-    for (const entry of todayClasses) {
-      const pt = PERIOD_TIMES[entry.period];
-      if (!pt) continue;
-      const startMin = pt.startH * 60 + pt.startM;
-      const endMin = pt.endH * 60 + pt.endM;
-      if (nowMin < endMin) {
-        result.push({ entry, time: pt, live: nowMin >= startMin });
-        if (result.length >= 2) break;
-      }
-    }
-    return result;
-  });
+  let heroClasses = $derived.by(() => getHeroCourses(homeEntries, now));
 
   let upcomingDays = $derived.by(() => {
     if (!homeEntries.length) {
@@ -273,7 +229,7 @@
     const nowMin = now.getHours() * 60 + now.getMinutes();
 
     // Build map: unified day number (1=Mon..6=Sat) -> non-cancelled entries
-    const dayMap = new Map<number, HomeEntry[]>();
+    const dayMap = new Map<number, CourseSlot[]>();
     for (const e of homeEntries) {
       if (e.is_cancelled) continue;
       const arr = dayMap.get(e.day) ?? [];
@@ -281,7 +237,7 @@
       dayMap.set(e.day, arr);
     }
 
-    const result: { label: string; relLabel: string; entries: HomeEntry[] }[] = [];
+    const result: { label: string; relLabel: string; entries: CourseSlot[] }[] = [];
 
     // Scan up to 14 days ahead, find first 2 days that have classes
     for (let offset = 0; offset < 14 && result.length < 2; offset++) {
@@ -991,7 +947,7 @@ suggestionsのルール：
     activeTab.set(tab);
   }
 
-  async function openDetail(entry: HomeEntry) {
+  async function openDetail(entry: CourseSlot) {
     // Prefer Luna if authenticated and course has luna_id
     if ($lunaAuthState.authenticated && entry.luna_id) {
       try {

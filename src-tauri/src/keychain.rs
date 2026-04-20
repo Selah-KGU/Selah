@@ -12,8 +12,7 @@ fn secrets_dir() -> std::path::PathBuf {
 #[cfg(debug_assertions)]
 pub fn set_secret(key: &str, value: &str) -> Result<(), String> {
     let path = secrets_dir().join(key);
-    std::fs::write(&path, value)
-        .map_err(|e| format!("Failed to write secret file: {}", e))
+    std::fs::write(&path, value).map_err(|e| format!("Failed to write secret file: {}", e))
 }
 
 #[cfg(debug_assertions)]
