@@ -28,6 +28,16 @@ pub struct AiConfig {
     pub reply_language: String,
     /// Auto-refresh interval for AI analysis in minutes (60..1440, 0 = disabled)
     pub ai_refresh_interval: u32,
+    #[serde(default = "default_live_summary_interval_minutes")]
+    pub live_summary_interval_minutes: u32,
+}
+
+fn default_live_summary_interval_minutes() -> u32 {
+    5
+}
+
+fn normalize_ai_config(config: &mut AiConfig) {
+    config.live_summary_interval_minutes = config.live_summary_interval_minutes.clamp(5, 30);
 }
 
 // Custom Debug — mask API key in log output
@@ -51,6 +61,10 @@ impl std::fmt::Debug for AiConfig {
             .field("temperature", &self.temperature)
             .field("reply_language", &self.reply_language)
             .field("ai_refresh_interval", &self.ai_refresh_interval)
+            .field(
+                "live_summary_interval_minutes",
+                &self.live_summary_interval_minutes,
+            )
             .finish()
     }
 }
@@ -68,6 +82,7 @@ impl Default for AiConfig {
             temperature: 0.7,
             reply_language: "ja".into(),
             ai_refresh_interval: 360,
+            live_summary_interval_minutes: default_live_summary_interval_minutes(),
         }
     }
 }
@@ -193,6 +208,7 @@ fn load_config() -> AiConfig {
         cfg.api_key = key;
     }
 
+    normalize_ai_config(&mut cfg);
     cfg
 }
 
@@ -457,6 +473,7 @@ pub fn save_ai_config(app: tauri::AppHandle, mut config: AiConfig) -> Result<(),
     config.base_url = config.base_url.trim().to_string();
     config.model = config.model.trim().to_string();
     config.local_model = config.local_model.trim().to_string();
+    normalize_ai_config(&mut config);
 
     // Validate based on provider
     match config.provider.as_str() {

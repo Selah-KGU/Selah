@@ -1,7 +1,6 @@
 
 <script lang="ts" generics="T">
 import type { Snippet } from "svelte";
-import { onMount, onDestroy } from "svelte";
 
 interface Column<T> {
   key: string;
@@ -21,31 +20,9 @@ interface Props {
 }
 
 let { data, columns, rowKey, cellSnippet, onrowclick }: Props = $props();
-
-let tableWrapEl: HTMLDivElement | null = null;
-function handleArrowScroll(e: KeyboardEvent) {
-  if (!tableWrapEl) return;
-  if (e.key === "ArrowLeft") {
-    tableWrapEl.scrollLeft -= 40;
-    e.preventDefault();
-  } else if (e.key === "ArrowRight") {
-    tableWrapEl.scrollLeft += 40;
-    e.preventDefault();
-  }
-}
-onMount(() => {
-  // 可选：自动聚焦
-  // tableWrapEl?.focus();
-});
-onDestroy(() => {});
 </script>
 
-<div
-  class="table-wrap"
-  tabindex="0"
-  onkeydown={handleArrowScroll}
-  bind:this={tableWrapEl}
->
+<div class="table-wrap">
   <table>
     <thead>
       <tr>

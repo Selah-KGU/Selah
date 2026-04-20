@@ -22,10 +22,10 @@ pub mod local_ai;
 mod luna_client;
 mod luna_commands;
 mod luna_parser;
-mod mail;
-mod mail_commands;
 #[cfg(target_os = "macos")]
 mod macos_native_agent;
+mod mail;
+mod mail_commands;
 mod parser;
 mod read_state;
 mod stt;
@@ -355,6 +355,7 @@ pub fn run() {
             live::live_append_transcript,
             live::live_flush_summary,
             live::live_cancel_session,
+            live::live_clear_day_cache,
             live::live_finish_session,
             commands::get_download_config,
             commands::save_download_config,

@@ -5,8 +5,8 @@
   import { mailCheckSession, mailOpenLogin, mailFetchInbox, mailFetchMessage, mailFetchProfile, mailFetchAttachments, mailDownloadAttachment } from "../api";
   import type { MailMessage, MailDetail, MailAttachment } from "../api";
   import Icon from "../Icon.svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import DOMPurify from "dompurify";
+  import { externalLinkDelegate } from "../externalLinkDelegate";
 
   let loading = $state(true);
   let error = $state("");
@@ -228,18 +228,6 @@
     return `${hrs}時間前に更新`;
   }
 
-  function handleBodyClick(e: MouseEvent) {
-    const target = (e.target as HTMLElement)?.closest("a");
-    if (!target) return;
-    const href = target.getAttribute("href");
-    if (!href) return;
-    if (href.startsWith("http://") || href.startsWith("https://")) {
-      e.preventDefault();
-      e.stopPropagation();
-      invoke("open_external_url", { url: href }).catch(console.error);
-    }
-  }
-
   let unreadCount = $derived(messages.filter(m => !m.isRead).length);
   $effect(() => { unreadMailCount.set(unreadCount); });
   let agoText = $derived(updatedAgoText());
@@ -337,7 +325,7 @@
               </div>
             {/if}
           </div>
-          <div class="detail-body" onclick={handleBodyClick}>
+          <div class="detail-body" use:externalLinkDelegate>
             {#if selectedMessage.body?.content}
               {#if selectedMessage.body.contentType === "html"}
                 {@html DOMPurify.sanitize(selectedMessage.body.content, {

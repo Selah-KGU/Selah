@@ -441,6 +441,24 @@
   .attachment.downloaded .att-redownload { display:inline; opacity:0.4; font-size:11px; cursor:pointer; margin-left:4px; }
   .attachment.downloaded .att-redownload:hover { opacity:0.8; }
   .attachment.link-item { color:var(--text-primary); }
+  .sec-grid.live-notes-grid { grid-template-columns:repeat(4,1fr); }
+  .live-note-card {
+    height:40px;
+    min-height:40px;
+    padding:10px 12px;
+    flex-direction:row;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+  }
+  .live-note-main { display:flex; align-items:center; min-width:0; }
+  .live-note-sub { font-size:13px; color:var(--text-primary); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  @media (max-width: 980px) {
+    .sec-grid.live-notes-grid { grid-template-columns:repeat(3,1fr); }
+  }
+  @media (max-width: 560px) {
+    .sec-grid.live-notes-grid { grid-template-columns:repeat(2,1fr); }
+  }
   .link-badge { display:inline-block; font-size:10px; font-weight:700; letter-spacing:0.02em; padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; color:#fff; }
   .link-badge.zoom { background:#2d8cff; }
   .link-badge.panopto { background:#00a651; }
@@ -1483,6 +1501,11 @@
       }
       h += '</div>';
 
+      h += '<div class="sec" id="live-notes-sec" style="display:none">';
+      h += '<div class="sec-head"><span class="sec-label">LIVE \u30ce\u30fc\u30c8</span></div>';
+      h += '<div id="live-notes-body"></div>';
+      h += '</div>';
+
       // Reports
       var repCount = data.reports ? data.reports.length : 0;
       var pendingReps = data.reports ? data.reports.filter(function(r) { return r.status && r.status.indexOf('\u672a') >= 0; }).length : 0;
@@ -1609,8 +1632,6 @@
         h += '</div></div>';
       }
 
-
-
       // KG Detail
       if (kgcPath) {
         h += '<div class="sec">';
@@ -1640,6 +1661,7 @@
       document.getElementById('titlebar').querySelectorAll('[data-luna-course-url]').forEach(function(b) {
         b.addEventListener('click', function() { invoke('open_external_url', { url: b.dataset.lunaCourseUrl }); });
       });
+      loadCourseLiveNotes(_currentCourseName || data.course_name || '');
 
       // Announcements
       c.querySelectorAll('[data-ann-id]').forEach(function(b) {
@@ -2000,6 +2022,87 @@
       var st = document.querySelector('.status') || Object.assign(document.createElement('div'), { className: 'status' });
       st.textContent = msg; st.style.color = color || 'var(--red)';
       document.getElementById('content').appendChild(st);
+    }
+
+    function normalizeCourseName(text) {
+      return String(text || '')
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/[　]/g, '')
+        .trim();
+    }
+
+    function simplifyCourseName(text) {
+      return String(text || '')
+        .replace(/^.+\s\d{7,8}\s+/, '')
+        .replace(/[\[［]\d+[\]］]/g, '')
+        .replace(/[（(][^)）]*(?:学期|限|クラス|組|セメスター|Quarter|Semester)[^)）]*[)）]\s*$/i, '')
+        .trim();
+    }
+
+    function formatLiveNoteDate(rec) {
+      var filename = String(rec && rec.filename || '');
+      var m = filename.match(/^(\d{4})(\d{2})(\d{2})_/);
+      if (m) return m[1] + '/' + m[2] + '/' + m[3];
+      var ts = Number(rec && rec.downloaded_at || 0);
+      if (!isNaN(ts) && ts > 0) {
+        var d = new Date(ts);
+        if (!isNaN(d.getTime())) {
+          return d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0');
+        }
+      }
+      return '日付不明';
+    }
+
+    async function loadCourseLiveNotes(courseName) {
+      var sec = document.getElementById('live-notes-sec');
+      var body = document.getElementById('live-notes-body');
+      if (!sec || !body || !courseName) return;
+      var invoke = window.__TAURI__?.core?.invoke;
+      if (!invoke) return;
+      try {
+        var records = await invoke('scan_download_dir');
+        var target = normalizeCourseName(courseName);
+        var targetSimple = normalizeCourseName(simplifyCourseName(courseName));
+        var notes = (records || []).filter(function(rec) {
+          var rawName = String(rec && rec.course_name || '');
+          var name = normalizeCourseName(rawName);
+          var nameSimple = normalizeCourseName(simplifyCourseName(rawName));
+          var filename = String(rec && rec.filename || '');
+          var hay = normalizeCourseName([rawName, filename, rec && rec.path || ''].join(' '));
+          if (!(rec && rec.file_exists) || filename.indexOf('_live.md') < 0) return false;
+          if (name && (name === target || name === targetSimple || target.indexOf(name) >= 0 || name.indexOf(target) >= 0)) return true;
+          if (nameSimple && (nameSimple === target || nameSimple === targetSimple || targetSimple.indexOf(nameSimple) >= 0 || nameSimple.indexOf(targetSimple) >= 0)) return true;
+          return (!!target && hay.indexOf(target) >= 0) || (!!targetSimple && hay.indexOf(targetSimple) >= 0);
+        });
+        if (!notes.length) return;
+        var seen = {};
+        notes = notes.filter(function(note) {
+          var key = String(note && note.path || '');
+          if (!key || seen[key]) return false;
+          seen[key] = true;
+          return true;
+        });
+        notes.sort(function(a, b) { return Number(b.downloaded_at || 0) - Number(a.downloaded_at || 0); });
+        var h = '<div class="sec-grid live-notes-grid">';
+        for (var i = 0; i < notes.length; i++) {
+          var note = notes[i];
+          h += '<button class="item-card live-note-card" data-live-note-path="' + escapeHtml(note.path || '') + '">';
+          h += '<span class="live-note-main"><span class="live-note-sub">' + escapeHtml(formatLiveNoteDate(note)) + '</span></span>';
+          h += '<span style="flex:none;opacity:0.5">' + ICONS.external + '</span></button>';
+        }
+        h += '</div>';
+        body.innerHTML = h;
+        sec.style.display = '';
+        body.querySelectorAll('[data-live-note-path]').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var path = btn.dataset.liveNotePath;
+            if (path) invoke('open_downloaded_file', { path: path });
+          });
+        });
+      } catch (e) {
+        console.warn('live notes load failed:', e);
+      }
     }
 
     // KGC / Syllabus Detail (key-value fields)

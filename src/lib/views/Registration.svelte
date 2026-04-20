@@ -121,7 +121,7 @@
                 <div class="credit-bar-bg">
                   <div
                     class="credit-bar-fill"
-                    class:warning={creditPct(cs.enrolled, cs.limit) > 85}
+                    class:near-limit={creditPct(cs.enrolled, cs.limit) > 85}
                     style="width:{creditPct(cs.enrolled, cs.limit)}%"
                   ></div>
                 </div>
@@ -256,7 +256,7 @@
     height: 100%; border-radius: 2px;
     background: var(--accent, #002855); transition: width 0.4s ease;
   }
-  .credit-bar-fill.warning { background: #ff9500; }
+  .credit-bar-fill.near-limit { background: var(--green, #34c759); }
 
   .schedule-layout {
     display: flex; gap: 10px;

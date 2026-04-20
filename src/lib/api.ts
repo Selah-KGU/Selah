@@ -15,7 +15,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
@@ -1013,7 +1013,7 @@ export async function openSyllabusDetail(classCode: string, courseName: string):
 // ---------- AI API ----------
 
 export async function getAiConfig(): Promise<AiConfig> {
-  if (_isDemo()) return { ai_enabled: false, api_key: "demo", model: "demo", provider: "local", local_model: "", base_url: "", max_tokens: 0, temperature: 0, reply_language: "ja", ai_refresh_interval: 0 };
+  if (_isDemo()) return { ai_enabled: false, api_key: "demo", model: "demo", provider: "local", local_model: "", base_url: "", max_tokens: 0, temperature: 0, reply_language: "ja", ai_refresh_interval: 0, live_summary_interval_minutes: 5 };
   return invoke<AiConfig>("get_ai_config");
 }
 
@@ -1167,12 +1167,15 @@ export async function liveCancelSession(): Promise<void> {
   return invoke<void>("live_cancel_session");
 }
 
+export async function liveClearDayCache(course: LiveCourseInfo): Promise<void> {
+  return invoke<void>("live_clear_day_cache", { course });
+}
+
 export async function liveFinishSession(): Promise<LiveSaveResult> {
   return invoke<LiveSaveResult>("live_finish_session");
 }
 
 export async function openSettingsWindow(panel?: string): Promise<void> {
-  const { activeTab, activeSettingsPanel } = await import("./stores");
   if (panel) activeSettingsPanel.set(panel as any);
   activeTab.set("settings");
 }

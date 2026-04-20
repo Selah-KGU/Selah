@@ -258,7 +258,11 @@ fn build_sense_voice_config(model: &SttModelInfo) -> Result<OfflineRecognizerCon
     }
 
     let stt_cfg = load_config();
-    let lang = if stt_cfg.language.is_empty() { "ja".to_string() } else { stt_cfg.language };
+    let lang = if stt_cfg.language.is_empty() {
+        "ja".to_string()
+    } else {
+        stt_cfg.language
+    };
     let mut config = OfflineRecognizerConfig::default();
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
         model: Some(model_path.to_string_lossy().into_owned()),
@@ -349,11 +353,23 @@ fn emit_error(app: &tauri::AppHandle, message: impl Into<String>, caller: &str) 
 }
 
 fn emit_partial(app: &tauri::AppHandle, text: String, caller: &str) {
-    let _ = app.emit("stt-partial", SttEventPayload { text, caller: caller.to_string() });
+    let _ = app.emit(
+        "stt-partial",
+        SttEventPayload {
+            text,
+            caller: caller.to_string(),
+        },
+    );
 }
 
 fn emit_final(app: &tauri::AppHandle, text: String, caller: &str) {
-    let _ = app.emit("stt-final", SttEventPayload { text, caller: caller.to_string() });
+    let _ = app.emit(
+        "stt-final",
+        SttEventPayload {
+            text,
+            caller: caller.to_string(),
+        },
+    );
 }
 
 fn decode_samples(recognizer: &OfflineRecognizer, sample_rate: i32, samples: &[f32]) -> String {
@@ -453,7 +469,12 @@ fn choose_input_config(
     Ok((cfg, channels))
 }
 
-fn run_stt_session(app: tauri::AppHandle, session_id: u64, stop_rx: mpsc::Receiver<()>, caller: &str) {
+fn run_stt_session(
+    app: tauri::AppHandle,
+    session_id: u64,
+    stop_rx: mpsc::Receiver<()>,
+    caller: &str,
+) {
     let result: Result<(), String> = (|| {
         let model = selected_model_from_config()?;
         if !is_stt_model_downloaded(&model) {
@@ -692,12 +713,23 @@ pub fn stt_is_running() -> bool {
 
 #[tauri::command]
 pub fn stt_get_active_caller() -> Option<String> {
-    STT_SESSION.lock().ok().and_then(|s| s.as_ref().map(|sess| sess.caller.clone()))
+    STT_SESSION
+        .lock()
+        .ok()
+        .and_then(|s| s.as_ref().map(|sess| sess.caller.clone()))
 }
 
 #[tauri::command]
-pub fn stt_start_stream(app: tauri::AppHandle, caller: String, preempt: Option<bool>) -> Result<Option<String>, String> {
-    let caller = if caller.is_empty() { "unknown".to_string() } else { caller };
+pub fn stt_start_stream(
+    app: tauri::AppHandle,
+    caller: String,
+    preempt: Option<bool>,
+) -> Result<Option<String>, String> {
+    let caller = if caller.is_empty() {
+        "unknown".to_string()
+    } else {
+        caller
+    };
     let mut lock = STT_SESSION
         .lock()
         .map_err(|_| "STT state lock failed".to_string())?;

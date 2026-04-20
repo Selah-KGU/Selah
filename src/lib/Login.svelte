@@ -1,7 +1,6 @@
 <script lang="ts">
   import { openLoginWindow, setAuthFromSession, startBackgroundPolling } from "./api";
   import { authState } from "./stores";
-  import { activateDemo, populateDemoCache } from "./demo";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
   import selahLogoUrl from "../assets/logo.png";
@@ -29,7 +28,8 @@
     }
   }
 
-  function confirmDemo() {
+  async function confirmDemo() {
+    const { activateDemo, populateDemoCache } = await import("./demo");
     showDemoConfirm = false;
     populateDemoCache();
     activateDemo();
@@ -38,6 +38,16 @@
 
   function cancelDemo() {
     showDemoConfirm = false;
+  }
+
+  function stopClickPropagation(node: HTMLDivElement) {
+    const onClick = (event: MouseEvent) => event.stopPropagation();
+    node.addEventListener("click", onClick);
+    return {
+      destroy() {
+        node.removeEventListener("click", onClick);
+      }
+    };
   }
 
   onMount(async () => {
@@ -87,7 +97,7 @@
 <div class="login-container">
   <div class="login-card">
     <div class="login-header">
-      <span class="login-logo" aria-label="Selah" onclick={handleLogoClick} role="button" tabindex="-1"><img src={selahLogoUrl} alt="Selah" /></span>
+      <button type="button" class="login-logo" aria-label="Selah" onclick={handleLogoClick}><img src={selahLogoUrl} alt="Selah" /></button>
     </div>
 
     <div class="login-body">
@@ -126,8 +136,8 @@
 </div>
 
 {#if showDemoConfirm}
-<div class="demo-overlay" onclick={cancelDemo} onkeydown={()=>{}} role="presentation">
-  <div class="demo-dialog" onclick={(e)=>e.stopPropagation()} onkeydown={()=>{}} role="dialog" aria-modal="true">
+<div class="demo-overlay" onclick={cancelDemo} role="presentation">
+  <div class="demo-dialog" use:stopClickPropagation role="dialog" aria-modal="true" tabindex="-1">
     <div class="demo-dialog-title">演示モード</div>
     <div class="demo-dialog-body">テストデータで演示モードに入ります。実際のログインは行われません。</div>
     <div class="demo-dialog-actions">
@@ -167,6 +177,10 @@
     height: 60px;
     display: inline-flex;
     align-items: center;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
   }
   .login-logo img {
     height: 60px;

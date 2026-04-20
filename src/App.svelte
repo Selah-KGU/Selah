@@ -5,7 +5,6 @@
   import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, registerTask, updateTask, invalidateCache } from "./lib/stores";
   import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
-  import { restoreDemo, isDemoMode } from "./lib/demo";
   import { listen } from "@tauri-apps/api/event";
   import { get } from "svelte/store";
   import { onMount, onDestroy } from "svelte";
@@ -41,6 +40,16 @@
     f.backoffUntil = Date.now() + delay;
   }
 
+  async function restoreDemoState(): Promise<boolean> {
+    const { restoreDemo } = await import("./lib/demo");
+    return restoreDemo();
+  }
+
+  async function isDemoModeEnabled(): Promise<boolean> {
+    const { isDemoMode } = await import("./lib/demo");
+    return isDemoMode();
+  }
+
   onMount(async () => {
     // Handle logout triggered from settings window (or other windows)
     unlistenLogout = await listen("logout", async () => {
@@ -55,7 +64,7 @@
     });
 
     // Demo mode: restore from previous session, skip real network calls
-    if (restoreDemo()) {
+    if (await restoreDemoState()) {
       restoring = false;
       return;
     }
@@ -114,7 +123,7 @@
   }
 
   async function doValidate() {
-    if (isDemoMode()) return;
+    if (await isDemoModeEnabled()) return;
     // Allow validation when session is expired (need to attempt recovery)
     if ((!get(authState).authenticated && !get(sessionExpired)) || validating || get(reloginInProgress)) return;
     const now = Date.now();

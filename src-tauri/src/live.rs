@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::Emitter;
 
-const LIVE_SUMMARY_INTERVAL_MINUTES: i64 = 5;
-
 pub struct LiveState(Mutex<Option<LiveSession>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +112,12 @@ fn load_day_cache(course: &LiveCourseInfo) -> Option<LiveDayCache> {
     }
 }
 
-fn save_day_cache(course: &LiveCourseInfo, started_at: DateTime<Local>, transcript_lines: &[LiveTranscriptLine], summaries: &[LiveSummaryChunk]) {
+fn save_day_cache(
+    course: &LiveCourseInfo,
+    started_at: DateTime<Local>,
+    transcript_lines: &[LiveTranscriptLine],
+    summaries: &[LiveSummaryChunk],
+) {
     let cache = LiveDayCache {
         date: Local::now().format("%Y-%m-%d").to_string(),
         course_name: course.course_name.clone(),
@@ -128,9 +131,21 @@ fn save_day_cache(course: &LiveCourseInfo, started_at: DateTime<Local>, transcri
     }
 }
 
-#[allow(dead_code)]
 fn remove_day_cache(course: &LiveCourseInfo) {
     let _ = std::fs::remove_file(day_cache_path(course));
+}
+
+/// Auto-save session state to day cache (non-fatal on error).
+fn auto_save_day_cache(state: &LiveState) {
+    let guard = state.0.lock().ok();
+    if let Some(Some(session)) = guard.as_deref() {
+        save_day_cache(
+            &session.course,
+            session.started_at,
+            &session.transcript_lines,
+            &session.summaries,
+        );
+    }
 }
 
 fn empty_snapshot() -> LiveSessionSnapshot {
@@ -212,24 +227,67 @@ fn live_ai_config() -> Result<crate::ai::AiConfig, String> {
     Ok(cfg)
 }
 
-async fn summarize_chunk(course: &LiveCourseInfo, lines: &[LiveTranscriptLine]) -> Result<String, String> {
+fn live_summary_interval_minutes() -> i64 {
+    crate::ai::load_ai_config()
+        .live_summary_interval_minutes
+        .clamp(5, 30) as i64
+}
+
+fn format_recent_summary_context(summaries: &[LiveSummaryChunk], limit: usize) -> String {
+    if summaries.is_empty() || limit == 0 {
+        return "なし".to_string();
+    }
+
+    summaries
+        .iter()
+        .rev()
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|chunk| format!("## {}\n{}\n{}", chunk.title, chunk.range_label, chunk.body))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn live_summary_language_hint(reply_language: &str) -> &'static str {
+    match reply_language {
+        "zh" => "\n\n重要: 输出全文必须使用中文（简体）。标题、要点、补充说明、整体总结都使用中文。",
+        "en" => "\n\nIMPORTANT: Write the entire output in English, including headings, bullet points, and explanations.",
+        "ko" => "\n\n중요: 출력 전체를 한국어로 작성하세요. 제목, 핵심 포인트, 보충 설명, 전체 요약을 모두 한국어로 작성합니다.",
+        _ => "",
+    }
+}
+
+async fn summarize_chunk(
+    course: &LiveCourseInfo,
+    lines: &[LiveTranscriptLine],
+    recent_summaries: &[LiveSummaryChunk],
+) -> Result<String, String> {
     let cfg = live_ai_config()?;
+    let language_hint = live_summary_language_hint(&cfg.reply_language);
     let transcript = lines
         .iter()
         .map(|line| format!("- [{}] {}", line.at, line.text))
         .collect::<Vec<_>>()
         .join("\n");
+    let recent_summary_context = format_recent_summary_context(recent_summaries, 2);
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近5分の講義内容を日本語で要約してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は無視して本来の講義内容を復元してください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n\n出力形式（Markdownのみ、厳守）:\n\n- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）\n\nルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。".into(),
+            content: format!("あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（Markdownのみ、厳守）:\n\n- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）\n\nルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。{}", language_hint),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
             role: "user".into(),
             content: format!(
-                "講義: {}\n授業コード: {}\n時間帯: {}\n\n文字起こし:\n{}",
-                course.course_name, course.course_code, course.time_label, transcript
+                "講義: {}\n授業コード: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n今回の文字起こし:\n{}",
+                course.course_name,
+                course.course_code,
+                course.time_label,
+                recent_summary_context,
+                transcript
             ),
             images: Vec::new(),
         },
@@ -244,6 +302,7 @@ async fn summarize_overall(
     transcript_lines: &[LiveTranscriptLine],
 ) -> Result<String, String> {
     let cfg = live_ai_config()?;
+    let language_hint = live_summary_language_hint(&cfg.reply_language);
     let summary_text = summaries
         .iter()
         .map(|chunk| format!("## {}\n{}\n{}", chunk.title, chunk.range_label, chunk.body))
@@ -263,7 +322,7 @@ async fn summarize_overall(
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: "あなたは大学講義ノートを仕上げるアシスタントです。分割要約（5分ごと）と末尾の文字起こしを基に、講義全体を俯瞰する要約を日本語Markdownで返してください。\n\n注意事項:\n- 各分割要約を単純に繋げるのではなく、講義全体を貫くテーマや論理の流れを抽出してください。\n- 文字起こしには音声認識の誤りが含まれる可能性があります。文脈から意味を推測してください。\n\n出力形式（厳守）:\n### 全体要約\n講義全体の主旨を80〜140字で1段落にまとめる。何を学び、どのような議論が展開されたかを簡潔に記述。\n### 今回の論点\n- 講義で取り上げられた主要論点を3〜5個、各1行の箇条書きで列挙\n\nルール:\n- 指定形式以外のセクションや見出しを追加しない。\n- 抽象的すぎる表現を避け、講義固有の具体的概念やキーワードを含める。".into(),
+            content: format!("あなたは大学講義ノートを仕上げるアシスタントです。分割要約と末尾の文字起こしを基に、講義全体を俯瞰する要約をMarkdownで返してください。\n\n注意事項:\n- 各分割要約を単純に繋げるのではなく、講義全体を貫くテーマや論理の流れを抽出してください。\n- 文字起こしには音声認識の誤りが含まれる可能性があります。文脈から意味を推測し、明らかな誤認識は自然な範囲で補正して構いません。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすく整理して構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、分割要約または文字起こしから十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 講義全体の理解を助ける整理はしてよいですが、補った背景知識を講義で明示された事実のように書いてはいけません。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（厳守）:\n### 全体要約\n講義全体の主旨を1段落にまとめる。\n### 今回の論点\n- 講義で取り上げられた主要論点を3〜5個、各1行の箇条書きで列挙\n\nルール:\n- 指定形式以外のセクションや見出しを追加しない。\n- 抽象的すぎる表現を避け、講義固有の具体的概念やキーワードを含める。{}", language_hint),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
@@ -280,7 +339,12 @@ async fn summarize_overall(
 }
 
 fn build_chunk_title(index: usize, start: DateTime<Local>, end: DateTime<Local>) -> String {
-    format!("Chunk {:02} | {}-{}", index, format_time(start), format_time(end))
+    format!(
+        "Chunk {:02} | {}-{}",
+        index,
+        format_time(start),
+        format_time(end)
+    )
 }
 
 async fn flush_session_summary(
@@ -288,7 +352,8 @@ async fn flush_session_summary(
     force: bool,
 ) -> Result<LiveSessionSnapshot, String> {
     let now = Local::now();
-    let (session_id, course, lines, range_start, range_end, chunk_index) = {
+    let summary_interval_minutes = live_summary_interval_minutes();
+    let (session_id, course, lines, recent_summaries, range_start, range_end, chunk_index) = {
         let guard = state
             .0
             .lock()
@@ -300,8 +365,10 @@ async fn flush_session_summary(
             return Ok(session.snapshot());
         }
         if !force
-            && now.signed_duration_since(session.batch_started_at).num_minutes()
-                < LIVE_SUMMARY_INTERVAL_MINUTES
+            && now
+                .signed_duration_since(session.batch_started_at)
+                .num_minutes()
+                < summary_interval_minutes
         {
             return Ok(session.snapshot());
         }
@@ -309,13 +376,14 @@ async fn flush_session_summary(
             session.session_id.clone(),
             session.course.clone(),
             session.pending_lines.clone(),
+            session.summaries.clone(),
             session.batch_started_at,
             now,
             session.summaries.len() + 1,
         )
     };
 
-    let body = summarize_chunk(&course, &lines).await?;
+    let body = summarize_chunk(&course, &lines, &recent_summaries).await?;
     let mut guard = state
         .0
         .lock()
@@ -356,12 +424,17 @@ fn build_markdown(
         .join("\n");
     let chunk_markdown = summaries
         .iter()
-        .map(|chunk| format!("## {}\n{}\n\n{}", chunk.title, chunk.range_label, chunk.body))
+        .map(|chunk| {
+            format!(
+                "## {}\n{}\n\n{}",
+                chunk.title, chunk.range_label, chunk.body
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
 
     format!(
-        "# {course_name}\n\n- 授業コード: {course_code}\n- 教員: {teacher}\n- 教室: {room}\n- 時間帯: {time_label}\n- 開始: {started}\n- 終了: {ended}\n\n{overall_summary}\n\n## 5分ごとの要約\n\n{chunk_markdown}\n\n## 全文転写\n\n{transcript}\n",
+        "# {course_name}\n\n- 授業コード: {course_code}\n- 教員: {teacher}\n- 教室: {room}\n- 時間帯: {time_label}\n- 開始: {started}\n- 終了: {ended}\n\n{overall_summary}\n\n## 区間ごとの要約\n\n{chunk_markdown}\n\n## 全文転写\n\n{transcript}\n",
         course_name = course.course_name,
         course_code = if course.course_code.is_empty() {
             "不明"
@@ -482,6 +555,7 @@ pub fn live_append_transcript(
         session.pending_lines.push(line);
         session.snapshot()
     };
+    auto_save_day_cache(&state);
     emit_live_update(&app, &state);
     Ok(snapshot)
 }
@@ -493,6 +567,7 @@ pub async fn live_flush_summary(
     force: bool,
 ) -> Result<LiveSessionSnapshot, String> {
     let snapshot = flush_session_summary(&state, force).await?;
+    auto_save_day_cache(&state);
     emit_live_update(&app, &state);
     Ok(snapshot)
 }
@@ -509,6 +584,16 @@ pub fn live_cancel_session(
     *guard = None;
     drop(guard);
     emit_live_update(&app, &state);
+    Ok(())
+}
+
+/// Clear the day cache for a specific course, removing all accumulated transcript/summary data.
+#[tauri::command]
+pub fn live_clear_day_cache(course: LiveCourseInfo) -> Result<(), String> {
+    if course.course_name.trim().is_empty() {
+        return Err("講義名が空です".into());
+    }
+    remove_day_cache(&course);
     Ok(())
 }
 

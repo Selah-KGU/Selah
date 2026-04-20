@@ -31,6 +31,7 @@
     temperature: number;
     reply_language: string;
     ai_refresh_interval: number;
+    live_summary_interval_minutes: number;
   }
 
   const MODEL_PRESETS: Record<string, string[]> = {
@@ -54,6 +55,7 @@
   let temperature = $state(0.7);
   let replyLanguage = $state("ja");
   let aiRefreshInterval = $state(360);
+  let liveSummaryInterval = $state(5);
 
   let modelList = $state<LocalModel[]>([]);
   let downloading = $state(false);
@@ -96,6 +98,7 @@
       temperature: Number(temperature),
       reply_language: replyLanguage,
       ai_refresh_interval: Number(aiRefreshInterval) || 0,
+      live_summary_interval_minutes: Number(liveSummaryInterval) || 5,
     };
   }
 
@@ -229,6 +232,7 @@
       temperature = c.temperature != null ? c.temperature : 0.7;
       replyLanguage = c.reply_language || "ja";
       aiRefreshInterval = c.ai_refresh_interval != null ? c.ai_refresh_interval : 360;
+      liveSummaryInterval = c.live_summary_interval_minutes != null ? c.live_summary_interval_minutes : 5;
       selectedSttModel = stt?.selected_model || "sensevoice-ja-en";
       sttLanguage = stt?.language || "ja";
       const nativeAgent = await invoke<{ floating_orb_enabled?: boolean }>("get_native_agent_config");
@@ -350,11 +354,11 @@
   </div>
   <div class="hero-text">
     <h2 class="panel-title">AI 設定</h2>
-    <p class="panel-desc">ローカルモデルまたは外部 API を使って、時間割・課題・お知らせを分析します。</p>
+    <p class="panel-desc">AI の有効化、推論方式、モデル、応答言語、自動更新をまとめて管理します。ローカル実行と外部 API のどちらでも、時間割・課題・通知・LIVE 要約まわりの AI 機能をここで整えられます。</p>
   </div>
 </div>
 
-<div class="card-label">AI 機能</div>
+<div class="card-label">AI アシスタント</div>
 <div class="card">
   <div class="row">
     <span class="row-label">AI 機能</span>
@@ -363,41 +367,78 @@
         <option value="true">有効</option>
         <option value="false">無効</option>
       </select>
-      <div class="hint">有効にすると、時間割・課題・お知らせなどのAI分析機能が利用できます。</div>
+      <div class="hint">有効にすると、時間割・課題・通知・LIVE まわりの AI 機能が使えるようになります。</div>
     </div>
   </div>
-  <div class="row">
-    <span class="row-label">推論方法</span>
-    <div class="row-input">
-      <select bind:value={aiProvider}>
-        <option value="local">ローカルモデル</option>
-        <option value="openai">OpenAI API</option>
-        <option value="gemini">Google Gemini API</option>
-      </select>
-      <div class="hint">
-        {isLocal() ? "ローカルモデルはデバイス上で実行されます。" : "API 利用時のみ、キー・モデル名・ベース URL・max tokens・temperature が有効です。"}
+  {#if aiEnabled === "true"}
+    <div class="row">
+      <span class="row-label">回答言語</span>
+      <div class="row-input">
+        <select bind:value={replyLanguage}>
+          <option value="ja">日本語</option>
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+          <option value="ko">한국어</option>
+        </select>
+        <div class="hint">AI の回答や要約をどの言語で返すかを指定します。</div>
       </div>
     </div>
-  </div>
-</div>
-
-<div class="card-label">Agent フローティング</div>
-<div class="card">
-  <div class="row">
-    <span class="row-label">ネイティブフローティング入口</span>
-    <div class="row-input">
-      <select bind:value={floatingOrbEnabled}>
-        <option value="false">無効</option>
-        <option value="true">有効</option>
-      </select>
-      <div class="hint">有効にしたときだけ、macOS ネイティブの Agent フローティングカプセルを使えます。無効にすると、開いている入口もすぐ閉じます。</div>
+    <div class="row">
+      <span class="row-label">更新間隔</span>
+      <div class="row-input">
+        <select bind:value={aiRefreshInterval}>
+          <option value={0}>無効</option>
+          <option value={60}>1時間</option>
+          <option value={120}>2時間</option>
+          <option value={180}>3時間</option>
+          <option value={360}>6時間</option>
+          <option value={720}>12時間</option>
+          <option value={1440}>24時間</option>
+        </select>
+        <div class="hint">AI 通知分析と AI 課題分析を自動で再計算する間隔です。</div>
+      </div>
     </div>
-  </div>
+    <div class="row">
+      <span class="row-label">LIVE 要約の生成間隔</span>
+      <div class="row-input">
+        <select bind:value={liveSummaryInterval}>
+          <option value={5}>5分</option>
+          <option value={10}>10分</option>
+          <option value={15}>15分</option>
+          <option value={20}>20分</option>
+          <option value={25}>25分</option>
+          <option value={30}>30分</option>
+        </select>
+        <div class="hint">LIVEページで自動的に分割要約を作る間隔です。要約の言語は上の「回答言語」に従います。</div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 {#if aiEnabled === "true"}
+  <div class="card-label">AI アシスタントの推論</div>
+  <div class="card section-intro-card">
+    <div class="section-intro">
+      ホーム・課題・通知・LIVE 要約で使う推論設定です。{isLocal() ? "ローカルモデルなら端末内で完結します。" : "外部 API を使う場合は接続先とモデルをここで調整します。"}
+    </div>
+  </div>
+  <div class="card">
+    <div class="row">
+      <span class="row-label">推論方法</span>
+      <div class="row-input">
+        <select bind:value={aiProvider}>
+          <option value="local">ローカルモデル</option>
+          <option value="openai">OpenAI API</option>
+          <option value="gemini">Google Gemini API</option>
+        </select>
+        <div class="hint">
+          {isLocal() ? "ローカルモデルはこのデバイス上で実行されます。通信なしで使いたいときに向いています。" : "API 利用時のみ、API キー・モデル名・ベース URL・最大トークン・Temperature が有効です。"}
+        </div>
+      </div>
+    </div>
+  </div>
   {#if isLocal()}
-    <div class="card-label">ローカルモデル</div>
+    <div class="card-label">AI アシスタントのモデル</div>
     <div class="card">
       {#each modelList as m}
         <div class="model-row">
@@ -449,7 +490,7 @@
       {/if}
     </div>
   {:else}
-    <div class="card-label">API モデル設定</div>
+    <div class="card-label">AI アシスタントの API 設定</div>
     <div class="card">
       <div class="row">
         <span class="row-label">API キー</span>
@@ -501,45 +542,26 @@
     </div>
   {/if}
 
-  <div class="card-label">回答設定</div>
-  <div class="card">
-    <div class="row">
-      <span class="row-label">回答言語</span>
-      <div class="row-input">
-        <select bind:value={replyLanguage}>
-          <option value="ja">日本語</option>
-          <option value="zh">中文</option>
-          <option value="en">English</option>
-          <option value="ko">한국어</option>
-        </select>
-      </div>
-    </div>
-  </div>
-
-  <div class="card-label">自動更新</div>
-  <div class="card">
-    <div class="row">
-      <span class="row-label">更新間隔</span>
-      <div class="row-input">
-        <select bind:value={aiRefreshInterval}>
-          <option value={0}>無効</option>
-          <option value={60}>1時間</option>
-          <option value={120}>2時間</option>
-          <option value={180}>3時間</option>
-          <option value={360}>6時間</option>
-          <option value={720}>12時間</option>
-          <option value={1440}>24時間</option>
-        </select>
-        <div class="hint">AI通知分析・AI課題分析を自動的に更新する間隔</div>
-      </div>
-    </div>
-  </div>
 {/if}
 
-<div class="card-label">音声文字起こし</div>
+<div class="card-label">Agent フローティング</div>
 <div class="card">
   <div class="row">
-    <span class="row-label">認識言語</span>
+    <span class="row-label">フローティング入口</span>
+    <div class="row-input">
+      <select bind:value={floatingOrbEnabled}>
+        <option value="false">無効</option>
+        <option value="true">有効</option>
+      </select>
+      <div class="hint">macOS ネイティブの Agent フローティング入口を使います。無効にすると、表示中の入口もすぐ閉じます。</div>
+    </div>
+  </div>
+</div>
+
+<div class="card-label">AI 音声文字起こし</div>
+<div class="card">
+  <div class="row">
+    <span class="row-label">AI 音声認識言語</span>
     <div class="row-input">
       <select bind:value={sttLanguage}>
         <option value="ja">日本語</option>
@@ -590,7 +612,7 @@
 {/if}
 <div class="action-row">
   <button class="btn-test" onclick={testSttModel} disabled={sttTestBusy}>
-    {sttTestBusy ? "テスト中..." : "STT 初期化テスト"}
+    {sttTestBusy ? "テスト中..." : "AI 音声文字起こしテスト"}
   </button>
   {#if sttTestMsg}
     <span class="hint" class:ok={sttTestOk === true} class:ng={sttTestOk === false}>{sttTestMsg}</span>
@@ -602,6 +624,15 @@
 {/if}
 
 <style>
+  .section-intro-card {
+    padding: 12px 14px;
+  }
+  .section-intro {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+  }
+
   .model-row {
     padding: 10px 14px;
     border-top: 0.5px solid var(--border);

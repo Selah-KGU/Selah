@@ -282,7 +282,7 @@
   <div class="card" style="padding:10px 14px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
     <ol style="margin:0;padding-left:18px;">
       <li>
-        <a href="#" style="color:var(--blue);" onclick={(e) => { e.preventDefault(); openConsole(); }}>console.cloud.google.com</a>
+        <a href="https://console.cloud.google.com" style="color:var(--blue);" onclick={(e) => { e.preventDefault(); openConsole(); }}>console.cloud.google.com</a>
         で新しいプロジェクトを作成
       </li>
       <li>「API とサービス」 → 「ライブラリ」 → <strong>Google Calendar API</strong> を有効化</li>

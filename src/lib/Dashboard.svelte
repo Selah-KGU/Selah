@@ -38,7 +38,7 @@
     { id: "mail", label: "メール", icon: "envelope" },
     { id: "ict-tools", label: "ツール", icon: "square.grid.2x2" },
     { id: "timetable", label: "時間割", icon: "calendar", section: "授業" },
-    { id: "live", label: "ライブ", icon: "broadcast" },
+    { id: "live", label: "LIVE", icon: "broadcast" },
     { id: "todo", label: "TODO", icon: "checkmark.circle" },
     { id: "grades", label: "成績照会", icon: "chart.bar" },
     { id: "registration", label: "履修登録", icon: "list.clipboard" },

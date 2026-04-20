@@ -1065,7 +1065,7 @@
       </div>
     </div>
     {#if legendHover}
-      <div class="legend-tooltip" onmouseenter={() => legendHover = true} onmouseleave={() => legendHover = false}>
+      <div class="legend-tooltip" role="tooltip" onmouseenter={() => legendHover = true} onmouseleave={() => legendHover = false}>
         <div class="legend-row"><span class="dot" style="background:var(--accent)"></span><span>通常授業</span></div>
         <div class="legend-row"><span class="dot" style="background:#ff3b30"></span><span>休講（この週は授業なし）</span></div>
         <div class="legend-row"><span class="dot" style="background:#34c759"></span><span>補講（追加の授業）</span></div>

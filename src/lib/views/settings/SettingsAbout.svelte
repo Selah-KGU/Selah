@@ -70,13 +70,14 @@
 
 <div class="card">
   <div class="about-hero">
-    <img
-      class="about-icon"
-      src={logoUrl}
-      alt="Selah"
-      onclick={handleVersionTap}
-      draggable="false"
-    />
+    <button type="button" class="about-icon-btn" onclick={handleVersionTap} aria-label="開発モードを有効化">
+      <img
+        class="about-icon"
+        src={logoUrl}
+        alt="Selah"
+        draggable="false"
+      />
+    </button>
     <div class="about-name">Selah</div>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -158,10 +159,18 @@
   :global(.settings-main .about-icon) {
     width: 72px;
     height: 72px;
-    margin-bottom: 10px;
-    cursor: default;
     -webkit-user-select: none;
     user-select: none;
+  }
+  :global(.settings-main .about-icon-btn) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin-bottom: 10px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
   }
   :global(.settings-main .about-name) {
     font-size: 16px;

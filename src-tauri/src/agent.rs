@@ -202,7 +202,7 @@ async fn run_turn(
     .await;
 
     // 4. Execute tools.
-    let tool_results = execute_tools(app, conv_id, &db, &plan).await;
+    let tool_results = execute_tools(app, conv_id, &db, &plan, &user_text).await;
 
     // 5. Phase 2 — stream answer.
     let answer = answer_phase(
@@ -587,8 +587,14 @@ async fn execute_tools(
     conv_id: &str,
     db: &Database,
     plan: &Plan,
+    user_text: &str,
 ) -> Vec<(String, Value)> {
     let mut results = Vec::new();
+    let mut auto_read_done = false;
+    let plan_already_reads_file = plan
+        .tools
+        .iter()
+        .any(|call| call.name == "read_downloaded_file");
     for call in plan.tools.iter().take(CFG.max_tools) {
         emit(app, conv_id, &StreamEvent::ToolCall { name: &call.name });
         let started = std::time::Instant::now();
@@ -639,6 +645,70 @@ async fn execute_tools(
         );
 
         results.push((call.name.clone(), result));
+
+        if !auto_read_done
+            && !plan_already_reads_file
+            && should_auto_read_live_note(user_text, &call.name)
+        {
+            let preferred_courses = preferred_live_courses(user_text, &results);
+            if let Some(path) =
+                pick_live_markdown_path(&results[results.len() - 1].1, &preferred_courses)
+            {
+                let auto_args = json!({ "path": path });
+                emit(
+                    app,
+                    conv_id,
+                    &StreamEvent::ToolCall {
+                        name: "read_downloaded_file",
+                    },
+                );
+                let auto_started = std::time::Instant::now();
+                log::debug!(
+                    "[agent tool] auto-follow name=read_downloaded_file args={}",
+                    serde_json::to_string(&auto_args).unwrap_or_default()
+                );
+                let auto_result = match tokio::time::timeout(
+                    std::time::Duration::from_secs(CFG.tool_timeout_secs),
+                    agent_tools::dispatch(app, "read_downloaded_file", &auto_args),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => json!({
+                        "error": format!("tool timed out after {}s", CFG.tool_timeout_secs),
+                    }),
+                };
+                let auto_ok = auto_result.get("error").is_none();
+                let auto_preview = preview_of(&auto_result);
+                log::debug!(
+                    "[agent tool] finish name=read_downloaded_file ok={} elapsed_ms={} preview={}",
+                    auto_ok,
+                    auto_started.elapsed().as_millis(),
+                    truncate_for_log(&auto_preview, 200)
+                );
+                emit(
+                    app,
+                    conv_id,
+                    &StreamEvent::ToolResult {
+                        name: "read_downloaded_file",
+                        preview: &auto_preview,
+                        ok: auto_ok,
+                    },
+                );
+                let auto_json =
+                    serde_json::to_string(&auto_result).unwrap_or_else(|_| "{}".into());
+                let _ = db.agent_append_message(
+                    conv_id,
+                    "tool",
+                    "",
+                    None,
+                    Some("read_downloaded_file"),
+                    Some(&auto_json),
+                );
+                results.push(("read_downloaded_file".into(), auto_result));
+                auto_read_done = true;
+            }
+        }
     }
     results
 }
@@ -1260,6 +1330,156 @@ fn recent_downloaded_file_path(history: &[crate::db::AgentMessageRow]) -> Option
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
+}
+
+fn should_auto_read_live_note(user_text: &str, tool_name: &str) -> bool {
+    if tool_name != "list_downloaded_files" {
+        return false;
+    }
+    let norm = normalize_planner_text(user_text);
+    contains_any(
+        &norm,
+        &[
+            "讲义",
+            "講義",
+            "讲了什么",
+            "講了什麼",
+            "说了什么",
+            "說了什麼",
+            "上课内容",
+            "上課內容",
+            "这节课",
+            "這節課",
+            "授業内容",
+            "講義内容",
+            "ノート",
+            "课堂笔记",
+            "課堂筆記",
+            "内容",
+            "要点",
+            "重點",
+            "live",
+        ],
+    )
+}
+
+fn preferred_live_courses(user_text: &str, results: &[(String, Value)]) -> Vec<String> {
+    let norm = normalize_planner_text(user_text);
+    let wants_afternoon = contains_any(&norm, &["下午", "午後", "afternoon"]);
+    let wants_morning = contains_any(&norm, &["上午", "午前", "morning"]);
+
+    results
+        .iter()
+        .find_map(|(name, value)| {
+            if name != "list_today_classes" {
+                return None;
+            }
+            let classes = value.get("classes")?.as_array()?;
+            let mut picked: Vec<(i64, String)> = classes
+                .iter()
+                .filter(|class| {
+                    if class
+                        .get("cancelled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        return false;
+                    }
+                    let period = class.get("period").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if wants_afternoon {
+                        return period >= 3;
+                    }
+                    if wants_morning {
+                        return period > 0 && period <= 2;
+                    }
+                    true
+                })
+                .filter_map(|class| {
+                    let period = class.get("period").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let name = class.get("name").and_then(|v| v.as_str())?.trim();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    Some((period, name.to_string()))
+                })
+                .collect();
+
+            if wants_afternoon {
+                picked.sort_by_key(|(period, _)| *period);
+            }
+
+            Some(picked.into_iter().map(|(_, name)| name).collect::<Vec<_>>())
+        })
+        .unwrap_or_default()
+}
+
+fn pick_live_markdown_path(result: &Value, preferred_courses: &[String]) -> Option<String> {
+    let files = result.get("files")?.as_array()?;
+    let preferred_norms = preferred_courses
+        .iter()
+        .map(|name| normalize_planner_text(name))
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+
+    fn score(file: &Value, preferred_norms: &[String]) -> i64 {
+        let filename = file
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let path = file
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let source = file
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let joined = normalize_planner_text(&format!("{} {}", filename, path));
+
+        let mut score = 0_i64;
+        if source == "live" {
+            score += 5;
+        }
+        if filename.ends_with(".md") {
+            score += 2;
+        }
+        if filename.contains("_live.md") || path.contains("_live.md") {
+            score += 6;
+        }
+        if filename.contains("live") || path.contains("live") {
+            score += 2;
+        }
+        for course in preferred_norms {
+            if joined.contains(course) {
+                score += 20;
+            }
+        }
+        if let Some(downloaded_at) = file.get("downloaded_at").and_then(|v| v.as_i64()) {
+            score += downloaded_at / 1_000_000_000;
+        }
+        score
+    }
+
+    files
+        .iter()
+        .filter_map(|file| {
+            let path = file.get("path").and_then(|v| v.as_str())?;
+            let filename = file
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let path_lower = path.to_lowercase();
+            if !filename.ends_with(".md") && !path_lower.ends_with(".md") {
+                return None;
+            }
+            Some((score(file, &preferred_norms), path.to_string()))
+        })
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, path)| path)
 }
 
 fn is_follow_up_with_context(history: &[crate::db::AgentMessageRow], norm: &str) -> bool {

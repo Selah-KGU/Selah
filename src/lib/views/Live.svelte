@@ -10,6 +10,7 @@
     isAiReady,
     liveAppendTranscript,
     liveCancelSession,
+    liveClearDayCache,
     liveFinishSession,
     liveFlushSummary,
     liveGetSession,
@@ -24,6 +25,7 @@
   import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
 
   let scheduleData = $state<ScheduleResponse | null>(null);
+  let allCourseOptions = $state<CourseSlot[]>([]);
   let courseOptions = $state<CourseSlot[]>([]);
   let selectedKey = $state("");
   let snapshot = $state<LiveSessionSnapshot>({
@@ -47,6 +49,7 @@
   let summaryViewIndex = $state(-1); // -1 = auto (latest)
   let summaryExpanded = $state(false);
   let flushTimer: ReturnType<typeof setInterval> | null = null;
+  let liveSummaryIntervalMinutes = $state(5);
   let timeTimer: ReturnType<typeof setInterval> | null = null;
   let now = $state(new Date());
   let scrollEl: HTMLElement | null = null;
@@ -106,40 +109,50 @@
     return now.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   });
 
-  let userScrolledUp = $state(false);
-  let showScrollBtn = $state(false);
-  let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  let autoFollow = $state(true);
+  let showScrollBtn = $derived(sttListening && !autoFollow);
 
-  function handleScroll() {
-    if (!scrollEl) return;
-    const distFromBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
-    userScrolledUp = true;
-    showScrollBtn = distFromBottom > 200;
-    // Reset idle timer — resume auto-scroll after 30s of no scrolling
-    if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
-    scrollIdleTimer = setTimeout(() => {
-      userScrolledUp = false;
-      showScrollBtn = false;
-      scrollToBottom();
-    }, 30000);
+  /** User deliberately scrolled — unlock auto-follow while streaming. */
+  function handleUserScroll() {
+    if (!scrollEl || !sttListening) return;
+    autoFollow = false;
+  }
+
+  function bindManualScroll(node: HTMLDivElement) {
+    const onUserScroll = () => handleUserScroll();
+    node.addEventListener("wheel", onUserScroll);
+    node.addEventListener("touchmove", onUserScroll);
+    return {
+      destroy() {
+        node.removeEventListener("wheel", onUserScroll);
+        node.removeEventListener("touchmove", onUserScroll);
+      }
+    };
+  }
+
+  function bindSummaryOverlayDismiss(node: HTMLDivElement) {
+    const onDismiss = () => toggleSummaryExpand();
+    node.addEventListener("click", onDismiss);
+    return {
+      destroy() {
+        node.removeEventListener("click", onDismiss);
+      }
+    };
   }
 
   function scrollToBottom() {
     if (!scrollEl) return;
-    userScrolledUp = false;
-    showScrollBtn = false;
-    if (scrollIdleTimer) { clearTimeout(scrollIdleTimer); scrollIdleTimer = null; }
-    scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" });
+    autoFollow = true;
+    scrollEl.scrollTop = scrollEl.scrollHeight;
   }
 
   $effect(() => {
-    // auto-scroll to bottom when lines change, unless user scrolled up
     const _len = snapshot.transcript_lines.length;
     const _partial = partialText;
-    if (scrollEl && !userScrolledUp) {
+    if (scrollEl && autoFollow && sttListening) {
       requestAnimationFrame(() => {
-        if (!scrollEl || userScrolledUp) return;
-        scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" });
+        if (!scrollEl || !autoFollow) return;
+        scrollEl.scrollTop = scrollEl.scrollHeight;
       });
     }
   });
@@ -147,6 +160,12 @@
   const selectedCourse = $derived.by(() => {
     if (!selectedKey) return null;
     return courseOptions.find((course) => courseKey(course) === selectedKey) ?? null;
+  });
+
+  const renderedCourseOptions = $derived.by(() => {
+    const day = courseOptions[0]?.day;
+    if (day == null) return courseOptions;
+    return courseOptions.filter((course) => course.day === day);
   });
 
   const canStart = $derived(!snapshot.active && !!selectedCourse && liveReady && !busy);
@@ -191,6 +210,75 @@
     };
   }
 
+  function todayDayNumber(date: Date): number {
+    const jsDow = date.getDay();
+    return jsDow === 0 ? 7 : jsDow;
+  }
+
+  function closestCourseForNow(courses: CourseSlot[], date: Date): CourseSlot | null {
+    if (!courses.length) return null;
+    const nowMin = date.getHours() * 60 + date.getMinutes();
+    const ranked = courses
+      .map((course) => {
+        const time = PERIOD_TIMES[course.period];
+        if (!time) return { course, distance: Number.MAX_SAFE_INTEGER, startMin: Number.MAX_SAFE_INTEGER };
+        const startMin = time.startH * 60 + time.startM;
+        const endMin = time.endH * 60 + time.endM;
+        let distance = 0;
+        if (nowMin < startMin) distance = startMin - nowMin;
+        else if (nowMin > endMin) distance = nowMin - endMin;
+        return { course, distance, startMin };
+      })
+      .sort((a, b) => a.distance - b.distance || a.startMin - b.startMin);
+    return ranked[0]?.course ?? null;
+  }
+
+  function defaultCourseForVisibleOptions(courses: CourseSlot[], date: Date): CourseSlot | null {
+    if (!courses.length) return null;
+    const visibleDay = courses[0]?.day;
+    if (visibleDay == null) return courses[0] ?? null;
+    if (visibleDay === todayDayNumber(date)) {
+      return closestCourseForNow(courses, date) ?? courses[0] ?? null;
+    }
+    return [...courses].sort((a, b) => a.period - b.period || a.name.localeCompare(b.name))[0] ?? null;
+  }
+
+  function chooseFocusedCourseOptions(courses: CourseSlot[], date: Date): CourseSlot[] {
+    if (!courses.length) return [];
+    const today = todayDayNumber(date);
+    const nowMin = date.getHours() * 60 + date.getMinutes();
+
+    const grouped = new Map<number, CourseSlot[]>();
+    for (const course of courses) {
+      if (!grouped.has(course.day)) grouped.set(course.day, []);
+      grouped.get(course.day)!.push(course);
+    }
+    for (const list of grouped.values()) {
+      list.sort((a, b) => a.period - b.period || a.name.localeCompare(b.name));
+    }
+
+    const todayCourses = grouped.get(today) ?? [];
+    const hasRemainingToday = todayCourses.some((course) => {
+      const time = PERIOD_TIMES[course.period];
+      if (!time) return false;
+      const endMin = time.endH * 60 + time.endM;
+      return nowMin <= endMin;
+    });
+    if (todayCourses.length > 0 && hasRemainingToday) {
+      return todayCourses;
+    }
+
+    for (let offset = 1; offset <= 7; offset++) {
+      const day = ((today - 1 + offset) % 7) + 1;
+      const nextCourses = grouped.get(day) ?? [];
+      if (nextCourses.length > 0) return nextCourses;
+    }
+
+    return todayCourses.length > 0
+      ? todayCourses
+      : [...courses].sort((a, b) => a.day - b.day || a.period - b.period || a.name.localeCompare(b.name));
+  }
+
   function setMessage(kind: "error" | "success", message: string) {
     if (kind === "error") {
       error = message;
@@ -205,7 +293,14 @@
   async function refreshSchedule() {
     scheduleData = await getScheduleSnapshot();
     const slots = buildCourseSlots(scheduleData).filter((course) => !course.is_cancelled);
-    courseOptions = [...slots].sort((a, b) => a.day - b.day || a.period - b.period || a.name.localeCompare(b.name));
+    allCourseOptions = [...slots].sort((a, b) => a.day - b.day || a.period - b.period || a.name.localeCompare(b.name));
+    const focused = chooseFocusedCourseOptions(allCourseOptions, new Date());
+    const focusedDay = focused[0]?.day;
+    courseOptions = focusedDay != null
+      ? focused.filter((course) => course.day === focusedDay)
+      : focused;
+    console.log("[LIVE] allCourseOptions =", allCourseOptions.map((c) => ({ day: c.day, period: c.period, name: c.name })));
+    console.log("[LIVE] focusedCourseOptions =", courseOptions.map((c) => ({ day: c.day, period: c.period, name: c.name })));
     if (snapshot.active && snapshot.course) {
       const match = courseOptions.find((course) =>
         course.name === snapshot.course?.course_name &&
@@ -216,6 +311,21 @@
         selectedKey = courseKey(match);
         return;
       }
+      const allMatch = allCourseOptions.find((course) =>
+        course.name === snapshot.course?.course_name &&
+        course.period === snapshot.course?.period &&
+        course.day === snapshot.course?.day,
+      );
+      if (allMatch) {
+        courseOptions = allCourseOptions.filter((course) => course.day === allMatch.day);
+        selectedKey = courseKey(allMatch);
+        return;
+      }
+    }
+    const nearest = defaultCourseForVisibleOptions(courseOptions, new Date());
+    if (nearest) {
+      selectedKey = courseKey(nearest);
+      return;
     }
     const hero = getHeroCourses(courseOptions, new Date());
     selectedKey = hero[0] ? courseKey(hero[0].entry) : (courseOptions[0] ? courseKey(courseOptions[0]) : "");
@@ -223,10 +333,11 @@
 
   async function refreshReadiness() {
     const cfg = await getAiConfig();
+    liveSummaryIntervalMinutes = Math.min(30, Math.max(5, cfg.live_summary_interval_minutes ?? 5));
     const ready = await isAiReady();
     liveReady = cfg.ai_enabled !== false && (cfg.provider !== "local" || ready);
     if (!liveReady) {
-      error = "LiveにはAIの準備が必要です。設定でAIを有効にしてください。";
+      error = "LIVEにはAIの準備が必要です。設定でAIを有効にしてください。";
     }
   }
 
@@ -248,8 +359,9 @@
       lastSaved = null;
       await invoke("stt_start_stream", { caller: "live" });
       sttListening = true;
+      autoFollow = true;
       startFlushTimer();
-      setMessage("success", `Liveを開始: ${selectedCourse.name}`);
+      setMessage("success", `LIVEを開始: ${selectedCourse.name}`);
     } catch (e: any) {
       setMessage("error", e?.message || String(e));
       try {
@@ -300,7 +412,23 @@
       partialText = "";
       sttListening = false;
       stopFlushTimer();
-      setMessage("success", "Liveセッションを破棄しました");
+      setMessage("success", "LIVEセッションを破棄しました");
+    } catch (e: any) {
+      setMessage("error", e?.message || String(e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function clearCourseData() {
+    if (!selectedCourse) return;
+    const name = selectedCourse.name;
+    busy = true;
+    error = "";
+    try {
+      await liveClearDayCache(toLiveCourse(selectedCourse));
+      snapshot = { active: false, course: null, started_at: null, transcript_lines: [], pending_lines: [], summaries: [] };
+      setMessage("success", `${name} のキャッシュをクリアしました`);
     } catch (e: any) {
       setMessage("error", e?.message || String(e));
     } finally {
@@ -310,14 +438,18 @@
 
   function startFlushTimer() {
     stopFlushTimer();
+    const intervalMs = Math.max(30_000, liveSummaryIntervalMinutes * 60 * 1000);
+    console.log("[Live] flush timer started, interval =", intervalMs, "ms");
     flushTimer = setInterval(async () => {
-      if (!snapshot.active || busy) return;
+      console.log("[Live] flush timer tick");
       try {
-        snapshot = await liveFlushSummary(false);
+        snapshot = await liveFlushSummary(true);
+        console.log("[Live] flush done, summaries =", snapshot.summaries.length);
       } catch (e: any) {
+        console.warn("[Live] flush error:", e);
         error = e?.message || String(e);
       }
-    }, 30000);
+    }, intervalMs);
   }
 
   function stopFlushTimer() {
@@ -354,7 +486,9 @@
       });
       unlistenState = await listen<{ state: string; caller: string }>("stt-state", (event) => {
         if (event.payload.caller !== "live") return;
+        const wasListening = sttListening;
         sttListening = event.payload.state === "initializing" || event.payload.state === "listening";
+        if (sttListening && !wasListening) autoFollow = true;
       });
       unlistenError = await listen<{ message: string; caller: string }>("stt-error", (event) => {
         if (event.payload.caller !== "live") return;
@@ -380,7 +514,6 @@
   onDestroy(() => {
     stopFlushTimer();
     if (timeTimer) clearInterval(timeTimer);
-    if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
     unlistenPartial?.();
     unlistenFinal?.();
     unlistenState?.();
@@ -405,10 +538,10 @@
         <span class="capsule-clock">{remainingLabel}</span>
       {:else}
         <select class="capsule-select" bind:value={selectedKey} disabled={pageLoading}>
-          {#if courseOptions.length === 0}
+          {#if renderedCourseOptions.length === 0}
             <option value="">授業候補なし</option>
           {:else}
-            {#each courseOptions as course}
+            {#each renderedCourseOptions as course}
               <option value={courseKey(course)}>{courseLabel(course)}</option>
             {/each}
           {/if}
@@ -421,6 +554,12 @@
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
             開始
           </button>
+          {#if hasContent && selectedCourse}
+            <button class="capsule-act ghost danger" onclick={clearCourseData} disabled={busy} title="この授業のキャッシュデータを削除">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+              クリア
+            </button>
+          {/if}
         {:else}
           <button class="capsule-act stop" onclick={stopLive} disabled={!canStop}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
@@ -437,7 +576,7 @@
   </header>
 
   <!-- ─── Main scrollable area ─── -->
-  <div class="main-scroll" bind:this={scrollEl} onscroll={handleScroll}>
+  <div class="main-scroll" bind:this={scrollEl} use:bindManualScroll role="region" aria-label="LIVE transcript">
     <div class="scroll-spacer-top"></div>
 
     <!-- Inline messages -->
@@ -472,7 +611,7 @@
         </div>
         <div class="summary-card-body md">{@html renderMd(chunk.body)}</div>
         {#if summaryExpanded}
-          <div class="summary-card-overlay" onclick={toggleSummaryExpand}>
+          <div class="summary-card-overlay" use:bindSummaryOverlayDismiss>
             <div class="summary-card-header">
               <span class="toast-ai-badge"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke-width="1.3"><defs><linearGradient id="ai-g2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#c480e8"/><stop offset="100%" stop-color="#6bacf0"/></linearGradient></defs><path d="M10 2l2 4.5L16.5 8l-4.5 2L10 14.5 8 10 3.5 8l4.5-2z" stroke="url(#ai-g2)" stroke-linejoin="round"/><path d="M15 13l1 2.2L18.2 16l-2.2 1L15 19.2 14 17l-2.2-1L14 15z" stroke="url(#ai-g2)" stroke-linejoin="round" stroke-width="1"/></svg><span class="toast-badge-text">AI 要点</span></span>
               {#if total > 1}
@@ -745,6 +884,13 @@
   .capsule-act.ghost:hover:not(:disabled) {
     background: color-mix(in srgb, var(--text-primary) 6%, transparent);
   }
+  .capsule-act.ghost.danger {
+    color: color-mix(in srgb, var(--red, #e5484d) 72%, var(--text-secondary));
+  }
+  .capsule-act.ghost.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--red, #e5484d) 10%, transparent);
+    color: var(--red, #e5484d);
+  }
 
   .capsule-warn {
     margin-top: 6px;
@@ -798,9 +944,7 @@
     top: 56px;
     z-index: 10;
     margin-bottom: 14px;
-    background: color-mix(in srgb, var(--bg-card) 100%, #f8f4fc);
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    background: #f9f6fc;
     border: 0.5px solid rgba(175, 82, 222, 0.22);
     border-radius: 14px;
     padding: 10px 16px;
@@ -808,6 +952,24 @@
     animation: card-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
     overflow: hidden;
     transition: box-shadow 0.3s ease;
+  }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .summary-card {
+      background: #1c1c20;
+      border-color: rgba(191, 90, 242, 0.24);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.04);
+    }
+    :global(:root:not([data-theme="light"])) .summary-card.expanded {
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+  }
+  :global([data-theme="dark"]) .summary-card {
+    background: #1c1c20;
+    border-color: rgba(191, 90, 242, 0.24);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  }
+  :global([data-theme="dark"]) .summary-card.expanded {
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(255, 255, 255, 0.05);
   }
   .summary-card.expanded {
     overflow: visible;
@@ -819,7 +981,8 @@
     align-items: center;
     gap: 8px;
     margin-bottom: 4px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    min-width: 0;
   }
   .toast-ai-badge {
     flex-shrink: 0;
@@ -843,11 +1006,19 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    flex-wrap: wrap;
+    flex: 1 1 0;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
+  .summary-time-pills::-webkit-scrollbar { display: none; }
   .time-pill {
     all: unset;
     cursor: pointer;
+    flex-shrink: 0;
     font-size: 10px;
     font-weight: 500;
     color: var(--text-tertiary);
@@ -868,6 +1039,34 @@
     font-weight: 600;
     transform: scale(1.06);
   }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .time-pill {
+      color: rgba(245, 245, 247, 0.76);
+      border-color: rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    :global(:root:not([data-theme="light"])) .time-pill:hover {
+      background: rgba(74, 144, 217, 0.16);
+      color: rgba(245, 245, 247, 0.92);
+    }
+    :global(:root:not([data-theme="light"])) .time-pill.active {
+      background: linear-gradient(135deg, rgba(191, 90, 242, 0.2), rgba(74, 144, 217, 0.2));
+      border-color: rgba(191, 90, 242, 0.34);
+    }
+  }
+  :global([data-theme="dark"]) .time-pill {
+    color: rgba(245, 245, 247, 0.76);
+    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  :global([data-theme="dark"]) .time-pill:hover {
+    background: rgba(74, 144, 217, 0.16);
+    color: rgba(245, 245, 247, 0.92);
+  }
+  :global([data-theme="dark"]) .time-pill.active {
+    background: linear-gradient(135deg, rgba(191, 90, 242, 0.2), rgba(74, 144, 217, 0.2));
+    border-color: rgba(191, 90, 242, 0.34);
+  }
 
   .toast-meta {
     font-size: 11px;
@@ -877,6 +1076,7 @@
   .toast-expand-btn {
     all: unset;
     cursor: pointer;
+    flex-shrink: 0;
     font-size: 10px;
     color: var(--accent);
     font-weight: 500;
@@ -884,11 +1084,20 @@
     padding: 2px 6px;
     border-radius: 4px;
     margin-left: auto;
+    white-space: nowrap;
     transition: background 0.12s;
   }
   .toast-expand-btn:hover {
     background: color-mix(in srgb, var(--accent) 8%, transparent);
     opacity: 1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .toast-expand-btn:hover {
+      background: rgba(74, 144, 217, 0.18);
+    }
+  }
+  :global([data-theme="dark"]) .toast-expand-btn:hover {
+    background: rgba(74, 144, 217, 0.18);
   }
 
   /* Collapsed body: show bullet titles only (before ---) */
@@ -916,14 +1125,23 @@
     background: #f9f6fc;
     border: 0.5px solid rgba(175, 82, 222, 0.22);
     border-radius: 14px;
-    box-shadow: 0 8px 32px rgba(175, 82, 222, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+    box-shadow: 0 8px 32px rgba(175, 82, 222, 0.12), var(--shadow-md);
     z-index: 30;
     cursor: pointer;
     animation: overlay-expand 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
     transform-origin: top center;
   }
-  :global(.dark) .summary-card-overlay {
-    background: #1e1a24;
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .summary-card-overlay {
+      background: #1c1c20;
+      border-color: rgba(191, 90, 242, 0.28);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+  }
+  :global([data-theme="dark"]) .summary-card-overlay {
+    background: #1c1c20;
+    border-color: rgba(191, 90, 242, 0.28);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(255, 255, 255, 0.05);
   }
   .summary-card-full {
     font-size: 13.5px;
@@ -1289,7 +1507,7 @@
     .capsule-inner { gap: 4px; padding: 4px 4px 4px 8px; }
   }
 
-  h3, p { margin: 0; }
+  p { margin: 0; }
 
   /* ── Scroll to Bottom Button ── */
   .scroll-to-bottom {

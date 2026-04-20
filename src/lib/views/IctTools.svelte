@@ -125,12 +125,6 @@
   .view h2 {
     margin-bottom: 12px;
   }
-  .desc {
-    margin-top: 0;
-    margin-bottom: 12px;
-    color: var(--text-secondary);
-    font-size: 12px;
-  }
 
   .tool-grid {
     display: grid;

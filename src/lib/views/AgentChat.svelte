@@ -22,6 +22,7 @@
   import { agentConversations, agentActiveConvId, agentReady } from "../stores";
   import { invoke } from "@tauri-apps/api/core";
   import type { AiConfig } from "../stores";
+  import { externalLinkDelegate } from "../externalLinkDelegate";
 
   type UIMessage = AgentMessage & { _streaming?: boolean };
   type ActionMode = "send" | "mic" | "stop";
@@ -45,7 +46,7 @@
   let unlistenSttState: UnlistenFn | null = null;
   let unlistenSttError: UnlistenFn | null = null;
   let msgListEl: HTMLElement | null = null;
-  let thinkTraceEl: HTMLElement | null = null;
+  let thinkTraceEl = $state<HTMLElement | null>(null);
   let autoFollow = $state(true);
   let aiCfg = $state<AiConfig | null>(null);
   let historyOpen = $state(false);
@@ -138,7 +139,7 @@
 
   let editingTitle = $state(false);
   let titleDraft = $state("");
-  let titleInputEl: HTMLInputElement | null = null;
+  let titleInputEl = $state<HTMLInputElement | null>(null);
 
   async function startRename() {
     if (!activeConv) return;
@@ -416,20 +417,6 @@
     autoFollow = near;
   }
 
-  function onMessageAreaClick(e: MouseEvent) {
-    const target = e.target instanceof HTMLElement ? e.target.closest("a") : null;
-    if (!(target instanceof HTMLAnchorElement)) return;
-    if (!target.closest(".assistant-bubble .md")) return;
-    const href = target.getAttribute("href");
-    if (!href) return;
-    if (!href.startsWith("http://") && !href.startsWith("https://")) return;
-    e.preventDefault();
-    e.stopPropagation();
-    invoke("open_external_url", { url: href }).catch((err) => {
-      console.error("open_external_url failed:", err);
-    });
-  }
-
   // ── History dropdown ──
 
   function onDocClick(e: MouseEvent) {
@@ -673,7 +660,7 @@
     <div
       class="msg-list"
       bind:this={msgListEl}
-      onclick={onMessageAreaClick}
+      use:externalLinkDelegate={{ scopeSelector: ".assistant-bubble .md" }}
       onscroll={onScroll}
       role="log"
       aria-live="polite"
@@ -1066,8 +1053,6 @@
     flex-shrink: 0;
     margin-top: 2px;
   }
-  .avatar.dim { opacity: 0.6; }
-
   .bubble {
     position: relative;
     max-width: 76%;
@@ -1097,13 +1082,6 @@
     box-shadow: var(--shadow-sm);
   }
   .user-bubble .text { white-space: pre-wrap; }
-  .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-  .imgs img {
-    max-width: 180px;
-    max-height: 180px;
-    border-radius: 10px;
-    display: block;
-  }
 
   /* ── Markdown ── */
   .md :global(p) { margin: 0 0 8px; }
@@ -1364,12 +1342,6 @@
     padding: 0;
   }
   .quote-dismiss:hover { color: var(--text-secondary); }
-
-  .composer-row-actions {
-    display: flex;
-    align-items: stretch;
-    gap: 8px;
-  }
 
   .send-row {
     display: flex;

@@ -10,9 +10,13 @@
 
   let { initial, onBack }: Props = $props();
 
-  let result = $state<AiTodoAnalysis | null>(initial);
+  let result = $state<AiTodoAnalysis | null>(null);
   let loading = $state(false);
   let error = $state("");
+
+  $effect(() => {
+    result = initial;
+  });
 
   // Cycling tips from overall_advice
   let tipIndex = $state(0);
@@ -118,11 +122,11 @@
       </button>
       <h2 class="header-title">AI 辅助モード</h2>
     </div>
-    <button class="re-btn" onclick={reanalyze} disabled={loading}>
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class:spin={loading}>
-      <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-      <path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
+    <button class="re-btn" onclick={reanalyze} disabled={loading} aria-label="再分析" title="再分析">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class:spin={loading}>
+        <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
     </button>
   </div>
 
@@ -191,7 +195,7 @@
                     </div>
                   {/if}
                   {#if isOpen && guide}
-                    <div class="task-detail" onclick={(e) => e.stopPropagation()}>
+                    <div class="task-detail">
                       {#if guide.background}
                         <div class="detail-block">
                           <div class="detail-label">
@@ -257,7 +261,7 @@
                 {/if}
               </div>
               {#if isOpen}
-                <div class="task-detail" onclick={(e) => e.stopPropagation()}>
+                <div class="task-detail">
                   {#if guide.background}
                     <div class="detail-block">
                       <div class="detail-label">

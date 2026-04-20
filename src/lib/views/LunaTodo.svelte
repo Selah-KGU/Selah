@@ -200,7 +200,7 @@
           </svg>
         </button>
       {/if}
-      <button class="refresh-btn" onclick={refresh} disabled={loading}>
+      <button class="refresh-btn" onclick={refresh} disabled={loading} aria-label="更新" title="更新">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class:spin={loading}>
           <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           <path d="M14 2v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>

@@ -2338,7 +2338,10 @@ pub fn get_native_agent_config() -> NativeAgentConfig {
 }
 
 #[tauri::command]
-pub fn save_native_agent_config(app: tauri::AppHandle, config: NativeAgentConfig) -> Result<(), String> {
+pub fn save_native_agent_config(
+    app: tauri::AppHandle,
+    config: NativeAgentConfig,
+) -> Result<(), String> {
     save_native_agent_config_to_disk(&config)?;
 
     #[cfg(target_os = "macos")]
