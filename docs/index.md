@@ -84,7 +84,7 @@ features:
   border-radius: 24px;
   background: linear-gradient(180deg, var(--vp-c-bg-soft), var(--vp-c-bg));
   color: inherit;
-  text-decoration: none;
+  text-decoration: none !important;
   box-shadow: 0 18px 40px rgba(27, 45, 91, 0.08);
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
