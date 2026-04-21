@@ -177,33 +177,42 @@ fn estimate_text_w(text: &str) -> f64 {
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 pub fn setup(app: &AppHandle) {
-    let app_live = app.clone();
-    let lid1 = app.listen("live-session-updated", move |event| {
+    // `live-session-updated` is now only emitted on summary/cancel/finish —
+    // we listen purely to drive the fade-out when the session goes inactive.
+    let app_state = app.clone();
+    let lid_state = app.listen("live-session-updated", move |event| {
         if !OVERLAY_OPEN.load(Ordering::Relaxed) {
             return;
         }
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
         let active = payload.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
         if !active {
-            schedule_fade_out(&app_live, SUB_FADE_DELAY_SECS);
+            schedule_fade_out(&app_state, SUB_FADE_DELAY_SECS);
+        }
+    });
+
+    // Slim per-line delta event — carries only the new transcript line so
+    // the overlay no longer reserialises the full (potentially hundreds of
+    // KB) session snapshot on every final.
+    let app_line = app.clone();
+    let lid_line = app.listen("live-line-appended", move |event| {
+        if !OVERLAY_OPEN.load(Ordering::Relaxed) {
             return;
         }
+        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
         let text = payload
-            .get("transcript_lines")
-            .and_then(|v| v.as_array())
-            .and_then(|arr| arr.last())
-            .and_then(|item| item.get("text"))
+            .get("text")
             .and_then(|t| t.as_str())
             .unwrap_or_default()
             .to_owned();
         if text.trim().is_empty() {
             return;
         }
-        show_text(&app_live, text, true);
+        show_text(&app_line, text, true);
     });
 
     let app_partial = app.clone();
-    let lid2 = app.listen("stt-partial", move |event| {
+    let lid_partial = app.listen("stt-partial", move |event| {
         if !OVERLAY_OPEN.load(Ordering::Relaxed) {
             return;
         }
@@ -222,7 +231,7 @@ pub fn setup(app: &AppHandle) {
         show_text(&app_partial, text, false);
     });
 
-    SHARED.lock().unwrap().event_listeners = vec![lid1, lid2];
+    SHARED.lock().unwrap().event_listeners = vec![lid_state, lid_line, lid_partial];
 }
 
 pub fn open_overlay(app: &AppHandle) -> Result<(), String> {

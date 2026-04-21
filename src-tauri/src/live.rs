@@ -1,7 +1,18 @@
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
+
+const CACHE_DEBOUNCE: Duration = Duration::from_secs(5);
+static LAST_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
+
+fn instant_now_ms() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let origin = *START.get_or_init(Instant::now);
+    Instant::now().saturating_duration_since(origin).as_millis() as u64
+}
 
 pub struct LiveState(Mutex<Option<LiveSession>>);
 
@@ -136,7 +147,16 @@ fn remove_day_cache(course: &LiveCourseInfo) {
 }
 
 /// Auto-save session state to day cache (non-fatal on error).
-fn auto_save_day_cache(state: &LiveState) {
+/// Debounced: if `force` is false, skip when called within CACHE_DEBOUNCE of the
+/// previous write. This prevents disk wake-ups on every final transcript line.
+fn auto_save_day_cache(state: &LiveState, force: bool) {
+    if !force {
+        let now = instant_now_ms();
+        let last = LAST_CACHE_WRITE.load(Ordering::Relaxed);
+        if last > 0 && now.saturating_sub(last) < CACHE_DEBOUNCE.as_millis() as u64 {
+            return;
+        }
+    }
     let guard = state.0.lock().ok();
     if let Some(Some(session)) = guard.as_deref() {
         save_day_cache(
@@ -145,6 +165,7 @@ fn auto_save_day_cache(state: &LiveState) {
             &session.transcript_lines,
             &session.summaries,
         );
+        LAST_CACHE_WRITE.store(instant_now_ms(), Ordering::Relaxed);
     }
 }
 
@@ -278,12 +299,15 @@ async fn summarize_chunk(
         crate::ai::ChatMessage {
             role: "user".into(),
             content: format!(
-                "講義: {}\n授業コード: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n今回の文字起こし:\n{}",
+                "講義: {}\n授業コード: {}\n教員: {}\n教室: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n今回の文字起こし:\n{}\n\n注記: 文字起こしの専門用語・固有名詞は STT の誤認識が混ざる可能性があります。講義名「{}」の分野脈絡を手がかりに、明らかな誤りは自然に補正してください。",
                 course.course_name,
                 course.course_code,
+                if course.teacher.is_empty() { "不明" } else { &course.teacher },
+                if course.room.is_empty() { "未設定" } else { &course.room },
                 course.time_label,
                 recent_summary_context,
-                transcript
+                transcript,
+                course.course_name,
             ),
             images: Vec::new(),
         },
@@ -329,8 +353,13 @@ async fn summarize_overall(
         crate::ai::ChatMessage {
             role: "user".into(),
             content: format!(
-                "講義: {}\n授業コード: {}\n\n分割要約:\n{}\n\n終盤の文字起こし:\n{}",
-                course.course_name, course.course_code, summary_text, recent_transcript
+                "講義: {}\n授業コード: {}\n教員: {}\n\n分割要約:\n{}\n\n終盤の文字起こし:\n{}\n\n注記: 文字起こしには STT 誤認識が含まれる可能性があります。講義名「{}」の分野脈絡から、明らかな誤りは自然に補正してください。",
+                course.course_name,
+                course.course_code,
+                if course.teacher.is_empty() { "不明" } else { &course.teacher },
+                summary_text,
+                recent_transcript,
+                course.course_name,
             ),
             images: Vec::new(),
         },
@@ -371,6 +400,14 @@ async fn flush_session_summary(
                 .num_minutes()
                 < summary_interval_minutes
         {
+            return Ok(session.snapshot());
+        }
+        // Skip the scheduled summary when almost nothing has been said this
+        // interval — spending an AI call on 1-2 stray lines wastes power and
+        // yields a useless summary. We leave batch_started_at untouched, so
+        // the next tick still considers this content and will fire once more
+        // lines have accumulated (or immediately if forced on stop).
+        if !force && session.pending_lines.len() < 3 {
             return Ok(session.snapshot());
         }
         (
@@ -553,11 +590,14 @@ pub fn live_append_transcript(
             .as_mut()
             .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
         session.transcript_lines.push(line.clone());
-        session.pending_lines.push(line);
+        session.pending_lines.push(line.clone());
         session.snapshot()
     };
-    auto_save_day_cache(&state);
-    emit_live_update(&app, &state);
+    auto_save_day_cache(&state, false);
+    // Slim delta event for the subtitle overlay and any cheap subscriber.
+    // Emitting the full snapshot per final line grew O(N) in payload size —
+    // a 2-hour lecture was serialising hundreds of KB on every append.
+    let _ = app.emit("live-line-appended", &line);
     Ok(snapshot)
 }
 
@@ -568,7 +608,7 @@ pub async fn live_flush_summary(
     force: bool,
 ) -> Result<LiveSessionSnapshot, String> {
     let snapshot = flush_session_summary(&state, force).await?;
-    auto_save_day_cache(&state);
+    auto_save_day_cache(&state, true);
     emit_live_update(&app, &state);
     Ok(snapshot)
 }

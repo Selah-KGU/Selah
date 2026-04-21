@@ -131,21 +131,31 @@
       const endMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), pt.endH, pt.endM).getTime();
       const diff = endMs - now.getTime();
       if (diff > 0) {
-        const totalSec = Math.floor(diff / 1000);
-        const h = Math.floor(totalSec / 3600);
-        const m = Math.floor((totalSec % 3600) / 60);
-        const s = totalSec % 60;
-        if (h > 0) return `残 ${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-        return `残 ${m}:${String(s).padStart(2, '0')}`;
+        const totalMin = Math.ceil(diff / 60000);
+        const h = Math.floor(totalMin / 60);
+        const m = totalMin % 60;
+        if (h > 0) return `残 ${h}:${String(m).padStart(2, '0')}`;
+        return `残 ${m}分`;
       }
       return "終了";
     }
-    return now.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return now.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
   });
 
   let autoFollow = $state(true);
   let showScrollBtn = $derived(sttListening && !autoFollow);
   let confirmClear = $state(false);
+  let lastAppliedLen = $state(0);
+
+  const VISIBLE_LINE_WINDOW = 120;
+  const visibleLines = $derived.by(() => {
+    const lines = snapshot.transcript_lines;
+    if (lines.length <= VISIBLE_LINE_WINDOW) return lines;
+    return lines.slice(lines.length - VISIBLE_LINE_WINDOW);
+  });
+  const hiddenLineCount = $derived(
+    Math.max(0, snapshot.transcript_lines.length - visibleLines.length)
+  );
 
   /** User deliberately scrolled — unlock auto-follow while streaming. */
   function handleUserScroll() {
@@ -172,14 +182,31 @@
   }
 
   $effect(() => {
-    const _len = snapshot.transcript_lines.length;
-    const _partial = partialText;
-    if (scrollEl && autoFollow && sttListening) {
-      requestAnimationFrame(() => {
-        if (!scrollEl || !autoFollow) return;
-        scrollEl.scrollTop = scrollEl.scrollHeight;
-      });
+    // Only run the 5s clock while a session is active. When idle the badge
+    // doesn't display remaining time, so waking the event loop is wasted.
+    if (snapshot.active) {
+      if (!timeTimer) {
+        now = new Date();
+        timeTimer = setInterval(() => { now = new Date(); }, 5000);
+      }
+    } else if (timeTimer) {
+      clearInterval(timeTimer);
+      timeTimer = null;
     }
+  });
+
+  let lastScrolledLen = $state(-1);
+  $effect(() => {
+    const len = snapshot.transcript_lines.length;
+    if (!scrollEl || !autoFollow || !sttListening) return;
+    // Only schedule a scroll when the line count actually changes; partial
+    // text churn would otherwise trigger rAF on every 600ms decode.
+    if (len === lastScrolledLen) return;
+    lastScrolledLen = len;
+    requestAnimationFrame(() => {
+      if (!scrollEl || !autoFollow) return;
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
   });
 
   const selectedCourse = $derived.by(() => {
@@ -509,7 +536,11 @@
         if (!snapshot.active) return;
         partialText = "";
         try {
+          // The backend also emits `live-session-updated`; we apply the
+          // return value and let the listener be an idempotent no-op via
+          // the line-length fingerprint check below.
           snapshot = await liveAppendTranscript(event.payload.text || "");
+          lastAppliedLen = snapshot.transcript_lines.length;
         } catch (e: any) {
           error = e?.message || String(e);
         }
@@ -526,14 +557,25 @@
         error = event.payload.message;
       });
       unlistenLive = await listen<LiveSessionSnapshot>("live-session-updated", (event) => {
+        const len = event.payload.transcript_lines.length;
+        // Skip when this update is the same one we just applied via the
+        // liveAppendTranscript return value — avoids re-rendering the
+        // whole transcript block twice per final.
+        if (
+          len === lastAppliedLen &&
+          event.payload.summaries.length === snapshot.summaries.length &&
+          event.payload.active === snapshot.active
+        ) {
+          return;
+        }
         snapshot = event.payload;
+        lastAppliedLen = len;
       });
       unlistenSaved = await listen<LiveSaveResult>("live-session-saved", (event) => {
         lastSaved = event.payload;
       });
-      timeTimer = setInterval(() => {
-        now = new Date();
-      }, 1000);
+      // Timer is only needed while a session is active (to drive the
+      // remaining-time badge). Started lazily by the $effect below.
     } catch (e: any) {
       error = e?.message || String(e);
     } finally {
@@ -738,8 +780,11 @@
         </div>
       {:else}
         <div class="lyrics-track">
-          {#each snapshot.transcript_lines as line, i (line.at + '-' + i)}
-            {@const isLast = i === snapshot.transcript_lines.length - 1 && !partialText.trim()}
+          {#if hiddenLineCount > 0}
+            <div class="lyrics-hidden-hint">前{hiddenLineCount}行は保存済み（表示省略）</div>
+          {/if}
+          {#each visibleLines as line, i (line.at + '-' + i)}
+            {@const isLast = i === visibleLines.length - 1 && !partialText.trim()}
             <div class="lyric-line" class:past={!isLast} class:active={isLast}>
               <span class="lyric-time">{line.at}</span>
               <span class="lyric-text">{line.text}</span>
@@ -1480,6 +1525,16 @@
   }
 
   /* Line count badge */
+  .lyrics-hidden-hint {
+    align-self: center;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    opacity: 0.6;
+    padding: 4px 12px;
+    margin-bottom: 4px;
+    letter-spacing: 0.02em;
+  }
+
   .lyrics-count {
     position: sticky;
     bottom: 8px;

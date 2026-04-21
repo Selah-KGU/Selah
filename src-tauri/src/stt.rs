@@ -267,11 +267,11 @@ fn build_sense_voice_config(model: &SttModelInfo) -> Result<OfflineRecognizerCon
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
         model: Some(model_path.to_string_lossy().into_owned()),
         language: Some(lang),
-        use_itn: false,
+        use_itn: true,
     };
     config.model_config.tokens = Some(tokens_path.to_string_lossy().into_owned());
     config.model_config.num_threads = std::thread::available_parallelism()
-        .map(|n| n.get().min(4) as i32)
+        .map(|n| n.get().min(2) as i32)
         .unwrap_or(2);
     config.decoding_method = Some("greedy_search".into());
     Ok(config)
@@ -289,10 +289,10 @@ fn build_vad_config() -> Result<VadModelConfig, String> {
     config.silero_vad = SileroVadModelConfig {
         model: Some(path.to_string_lossy().into_owned()),
         threshold: 0.5,
-        min_silence_duration: 0.35,
+        min_silence_duration: 0.45,
         min_speech_duration: 0.25,
         window_size: 512,
-        max_speech_duration: 12.0,
+        max_speech_duration: 8.0,
     };
     Ok(config)
 }
@@ -372,6 +372,56 @@ fn emit_final(app: &tauri::AppHandle, text: String, caller: &str) {
     );
 }
 
+/// Emit a final transcript line, but suppress it when SenseVoice repeats
+/// itself on adjacent VAD segments. This happens occasionally when the VAD
+/// splits an utterance at an unlucky point and both pieces get decoded to
+/// the same phrase. `last_final` is updated with whatever we end up keeping
+/// (so any legitimate later repeat of the same phrase, spaced by other
+/// content, still goes through).
+fn emit_final_deduped(
+    app: &tauri::AppHandle,
+    text: String,
+    caller: &str,
+    last_final: &mut String,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if text == *last_final {
+        return;
+    }
+    *last_final = text.clone();
+    emit_final(app, text, caller);
+}
+
+/// SenseVoice occasionally emits inline metadata tokens such as
+/// `<|ja|><|NEUTRAL|><|Speech|><|withitn|>` at the start of decoded text
+/// (and sometimes mid-output between utterances). Strip anything inside
+/// `<|...|>` so users and the downstream AI summariser never see them.
+fn strip_sense_voice_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+            // Find the matching "|>" closing marker.
+            if let Some(rel) = text[i + 2..].find("|>") {
+                i += 2 + rel + 2;
+                continue;
+            }
+        }
+        // UTF-8-safe copy by char boundary: advance one char.
+        let ch_end = text[i..]
+            .char_indices()
+            .nth(1)
+            .map(|(n, _)| i + n)
+            .unwrap_or(bytes.len());
+        out.push_str(&text[i..ch_end]);
+        i = ch_end;
+    }
+    out.trim().to_string()
+}
+
 fn decode_samples(recognizer: &OfflineRecognizer, sample_rate: i32, samples: &[f32]) -> String {
     if samples.is_empty() {
         return String::new();
@@ -381,38 +431,204 @@ fn decode_samples(recognizer: &OfflineRecognizer, sample_rate: i32, samples: &[f
     recognizer.decode(&stream);
     stream
         .get_result()
-        .map(|r| r.text.trim().to_string())
+        .map(|r| strip_sense_voice_tags(r.text.trim()))
         .unwrap_or_default()
 }
 
-fn resample_to_16k(samples: &[f32], src_rate: i32, channels: usize) -> Vec<f32> {
-    if channels == 0 {
-        return Vec::new();
+/// Design a Hamming-windowed sinc low-pass FIR.
+/// `fs` is the input sample rate the filter runs at, `fc` the cutoff in Hz.
+fn design_lowpass_fir(fs: f32, fc: f32, m: usize) -> Vec<f32> {
+    let mid = (m as f32 - 1.0) / 2.0;
+    let fc_norm = fc / fs; // 0..0.5
+    let two_pi = 2.0 * std::f32::consts::PI;
+    let mut taps: Vec<f32> = (0..m)
+        .map(|n| {
+            let x = n as f32 - mid;
+            let sinc = if x.abs() < 1e-6 {
+                2.0 * fc_norm
+            } else {
+                (two_pi * fc_norm * x).sin() / (std::f32::consts::PI * x)
+            };
+            let window = 0.54 - 0.46 * (two_pi * n as f32 / (m as f32 - 1.0)).cos();
+            sinc * window
+        })
+        .collect();
+    let sum: f32 = taps.iter().sum();
+    if sum.abs() > 1e-6 {
+        for v in taps.iter_mut() {
+            *v /= sum;
+        }
     }
-    let mono: Vec<f32> = if channels == 1 {
-        samples.to_vec()
-    } else {
-        samples
-            .chunks(channels)
-            .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
-            .collect()
-    };
-    if src_rate == TARGET_SAMPLE_RATE {
-        return mono;
-    }
-    let ratio = TARGET_SAMPLE_RATE as f64 / src_rate as f64;
-    let out_len = ((mono.len() as f64) * ratio).round() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let pos = i as f64 / ratio;
-        let idx = pos.floor() as usize;
-        let frac = (pos - idx as f64) as f32;
-        let s0 = *mono.get(idx).unwrap_or(&0.0);
-        let s1 = *mono.get(idx + 1).unwrap_or(&s0);
-        out.push(s0 + (s1 - s0) * frac);
-    }
-    out
+    taps
 }
+
+/// Stateful resampler: stereo/mono-interleaved input → 16 kHz mono.
+///
+/// For source rates above the target we apply a windowed-sinc low-pass
+/// before decimation to avoid aliasing (the previous pure-linear path
+/// folded the 8-24 kHz band into speech, hurting sibilants). State is
+/// carried across chunks so the filter has no boundary transients.
+struct Resampler {
+    src_rate: i32,
+    channels: usize,
+    taps: Vec<f32>,
+    history: Vec<f32>,
+}
+
+impl Resampler {
+    fn new(src_rate: i32, channels: usize) -> Self {
+        // Only engage the FIR when we actually need to band-limit. At 16 kHz
+        // input the cutoff would eat useful energy; the caller handles that
+        // case via the early-return in `process`.
+        let taps = if src_rate > TARGET_SAMPLE_RATE {
+            // ~7.5 kHz cutoff gives ~500 Hz guard band below Nyquist.
+            // 63-tap Hamming yields ~60 dB stopband attenuation, plenty for
+            // STT purposes; cost is ~63 mul-adds per input sample.
+            design_lowpass_fir(src_rate as f32, 7500.0, 63)
+        } else {
+            Vec::new()
+        };
+        let history_len = taps.len().saturating_sub(1);
+        Self {
+            src_rate,
+            channels: channels.max(1),
+            taps,
+            history: vec![0.0; history_len],
+        }
+    }
+
+    fn process(&mut self, interleaved: &[f32]) -> Vec<f32> {
+        if interleaved.is_empty() {
+            return Vec::new();
+        }
+        // Downmix to mono first. For stereo mics this mitigates phase
+        // cancellation at the capture stage before any further processing.
+        let mono: Vec<f32> = if self.channels == 1 {
+            interleaved.to_vec()
+        } else {
+            interleaved
+                .chunks(self.channels)
+                .map(|frame| frame.iter().copied().sum::<f32>() / self.channels as f32)
+                .collect()
+        };
+
+        if self.taps.is_empty() {
+            // src == target rate: no filtering or resampling needed.
+            return mono;
+        }
+
+        // Apply stateful FIR: prepend history, convolve, emit samples that
+        // had full filter context, carry the tail forward.
+        let m = self.taps.len();
+        let mut buf = Vec::with_capacity(self.history.len() + mono.len());
+        buf.extend_from_slice(&self.history);
+        buf.extend_from_slice(&mono);
+
+        let n_out = buf.len().saturating_sub(m - 1);
+        let mut filtered = Vec::with_capacity(n_out);
+        for i in 0..n_out {
+            let mut acc = 0.0f32;
+            for k in 0..m {
+                acc += self.taps[k] * buf[i + k];
+            }
+            filtered.push(acc);
+        }
+        self.history.clear();
+        self.history
+            .extend_from_slice(&buf[buf.len().saturating_sub(m - 1)..]);
+
+        // Linear interpolation from src_rate → 16 kHz on the already
+        // band-limited signal. For the common 48 kHz input the step is
+        // exactly 3.0 so there is no phase jitter across chunks; for odd
+        // rates (44.1 kHz) the sub-sample jitter at chunk edges is well
+        // under 1 input sample — negligible for STT.
+        let ratio = TARGET_SAMPLE_RATE as f64 / self.src_rate as f64;
+        let out_len = ((filtered.len() as f64) * ratio).round() as usize;
+        let mut out = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let pos = i as f64 / ratio;
+            let idx = pos.floor() as usize;
+            let frac = (pos - idx as f64) as f32;
+            let s0 = *filtered.get(idx).unwrap_or(&0.0);
+            let s1 = *filtered.get(idx + 1).unwrap_or(&s0);
+            out.push(s0 + (s1 - s0) * frac);
+        }
+        out
+    }
+}
+
+/// Soft automatic-gain control.
+///
+/// Tracks a slow EMA of the peak sample observed while the VAD reports
+/// speech, then scales chunks by a gain that brings that tracked peak
+/// toward a conventional speech level. Gain is clamped to [1.0, 2.0] so
+/// we never attenuate and can't boost a whisper into distortion. Updates
+/// only happen during speech so room tone can't pull the reference down.
+struct Agc {
+    ema_peak: f32,
+    initialized: bool,
+}
+
+impl Agc {
+    const TARGET_PEAK: f32 = 0.5;
+    const MAX_GAIN: f32 = 2.0;
+    const ATTACK: f32 = 0.15;  // fast when a louder sample arrives
+    const RELEASE: f32 = 0.02; // slow when the running peak decays
+
+    fn new() -> Self {
+        Self {
+            ema_peak: 0.0,
+            initialized: false,
+        }
+    }
+
+    fn apply(&mut self, samples: &mut [f32], in_speech: bool) {
+        if samples.is_empty() {
+            return;
+        }
+        if in_speech {
+            let chunk_peak: f32 = samples
+                .iter()
+                .fold(0.0f32, |a, &b| a.max(b.abs()));
+            if !self.initialized {
+                self.ema_peak = chunk_peak;
+                self.initialized = true;
+            } else if chunk_peak > self.ema_peak {
+                self.ema_peak =
+                    self.ema_peak + Self::ATTACK * (chunk_peak - self.ema_peak);
+            } else {
+                self.ema_peak =
+                    self.ema_peak + Self::RELEASE * (chunk_peak - self.ema_peak);
+            }
+        }
+        if !self.initialized || self.ema_peak < 1e-4 {
+            return;
+        }
+        let gain = (Self::TARGET_PEAK / self.ema_peak).clamp(1.0, Self::MAX_GAIN);
+        if gain <= 1.001 {
+            return;
+        }
+        for s in samples.iter_mut() {
+            *s = (*s * gain).clamp(-1.0, 1.0);
+        }
+    }
+}
+
+/// Root-mean-square of a slice. Returns 0 for empty input.
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
+/// Noise-floor gate. While no speech is in progress, skip VAD inference on
+/// chunks that are clearly below any plausible speech level. Silero VAD is
+/// lightweight but still runs ONNX forward passes every 512 samples; gating
+/// lets long silent stretches cost almost nothing.
+/// Threshold corresponds to roughly -55 dBFS.
+const RMS_GATE: f32 = 0.0018;
 
 fn normalize_i16_input(data: &[i16]) -> Vec<f32> {
     data.iter().map(|&s| s as f32 / i16::MAX as f32).collect()
@@ -424,26 +640,71 @@ fn normalize_u16_input(data: &[u16]) -> Vec<f32> {
         .collect()
 }
 
+const PARTIAL_WINDOW_SECS: usize = 5;
+const PARTIAL_MIN_INTERVAL_MS: u64 = 600;
+const PARTIAL_STABLE_INTERVAL_MS: u64 = 1500;
+const PARTIAL_VERY_STABLE_INTERVAL_MS: u64 = 3000;
+/// Tail window we probe to decide whether the utterance has momentarily
+/// fallen silent. Roughly one natural syllable gap.
+const PARTIAL_TAIL_WINDOW_SAMPLES: usize = TARGET_SAMPLE_RATE as usize / 2; // 500 ms
+/// RMS threshold below which the tail is treated as silent. Kept slightly
+/// above the pre-VAD RMS gate so brief lulls count as silence even if the
+/// gate would still let them through.
+const PARTIAL_TAIL_SILENCE_RMS: f32 = 0.003;
+
 fn maybe_emit_partial(
     app: &tauri::AppHandle,
     recognizer: &OfflineRecognizer,
     current_samples: &[f32],
     last_partial: &mut String,
     last_partial_at: &mut Instant,
+    stable_streak: &mut u32,
     caller: &str,
 ) {
     if current_samples.len() < (TARGET_SAMPLE_RATE as usize / 2) {
         return;
     }
-    if last_partial_at.elapsed() < Duration::from_millis(450) {
+    let interval = if *stable_streak >= 4 {
+        PARTIAL_VERY_STABLE_INTERVAL_MS
+    } else if *stable_streak >= 2 {
+        PARTIAL_STABLE_INTERVAL_MS
+    } else {
+        PARTIAL_MIN_INTERVAL_MS
+    };
+    if last_partial_at.elapsed() < Duration::from_millis(interval) {
         return;
     }
-    let text = decode_samples(recognizer, TARGET_SAMPLE_RATE, current_samples);
-    if !text.is_empty() && text != *last_partial {
-        *last_partial = text.clone();
-        emit_partial(app, text, caller);
+    // If the tail of the utterance is currently silent, nothing the decoder
+    // produces can differ from last time — VAD hasn't cut the segment yet,
+    // but the speaker is between phrases. Skip the encode entirely.
+    let tail_start = current_samples
+        .len()
+        .saturating_sub(PARTIAL_TAIL_WINDOW_SAMPLES);
+    if rms(&current_samples[tail_start..]) < PARTIAL_TAIL_SILENCE_RMS {
+        *stable_streak = stable_streak.saturating_add(1);
+        *last_partial_at = Instant::now();
+        return;
     }
+    // Only decode the tail window — SenseVoice is non-streaming, so re-encoding
+    // the full utterance every partial tick is the dominant CPU cost.
+    let window = PARTIAL_WINDOW_SECS * TARGET_SAMPLE_RATE as usize;
+    let slice = if current_samples.len() > window {
+        &current_samples[current_samples.len() - window..]
+    } else {
+        current_samples
+    };
+    let text = decode_samples(recognizer, TARGET_SAMPLE_RATE, slice);
     *last_partial_at = Instant::now();
+    if text.is_empty() {
+        return;
+    }
+    if text == *last_partial {
+        *stable_streak = stable_streak.saturating_add(1);
+        return;
+    }
+    *stable_streak = 0;
+    *last_partial = text.clone();
+    emit_partial(app, text, caller);
 }
 
 fn choose_input_config(
@@ -493,7 +754,18 @@ fn run_stt_session(
             .ok_or_else(|| "利用可能なマイク入力デバイスが見つかりません".to_string())?;
         let (supported_cfg, channels) = choose_input_config(&device)?;
         let sample_rate = supported_cfg.sample_rate().0 as i32;
-        let stream_config = supported_cfg.config();
+        let mut stream_config = supported_cfg.config();
+        // Request ~80ms callback period: at 48kHz mono this is ~3840 frames,
+        // roughly 10× fewer wake-ups than cpal's 10ms default. Fewer callbacks
+        // ⇒ fewer allocations, fewer channel sends, fewer thread context
+        // switches, while still well under the VAD's ~12s speech window.
+        let desired_frames = (sample_rate as u32 * channels as u32 * 80) / 1000;
+        if let cpal::SupportedBufferSize::Range { min, max } =
+            supported_cfg.buffer_size()
+        {
+            let clamped = desired_frames.clamp(*min, *max);
+            stream_config.buffer_size = cpal::BufferSize::Fixed(clamped);
+        }
 
         let (audio_tx, audio_rx) = mpsc::channel::<Vec<f32>>();
         let err_app = app.clone();
@@ -551,6 +823,10 @@ fn run_stt_session(
         let mut current_utterance = Vec::<f32>::new();
         let mut last_partial = String::new();
         let mut last_partial_at = Instant::now();
+        let mut stable_streak: u32 = 0;
+        let mut last_final = String::new();
+        let mut resampler = Resampler::new(sample_rate, channels);
+        let mut agc = Agc::new();
 
         loop {
             if stop_rx.try_recv().is_ok() {
@@ -558,10 +834,21 @@ fn run_stt_session(
             }
             match audio_rx.recv_timeout(Duration::from_millis(120)) {
                 Ok(chunk) => {
-                    let resampled = resample_to_16k(&chunk, sample_rate, channels);
+                    let mut resampled = resampler.process(&chunk);
                     if resampled.is_empty() {
                         continue;
                     }
+                    // Noise-floor gate on the *raw* (pre-AGC) signal: when
+                    // nothing is currently being captured and the chunk is
+                    // below speech level, skip VAD entirely. Checked before
+                    // AGC so amplified ambient noise can't trip the gate.
+                    let in_utterance = !current_utterance.is_empty() || vad.detected();
+                    if !in_utterance && rms(&resampled) < RMS_GATE {
+                        continue;
+                    }
+                    // Soft AGC: pull quiet mics up toward a conventional
+                    // speech level without over-amplifying. Capped at 2×.
+                    agc.apply(&mut resampled, in_utterance);
                     vad.accept_waveform(&resampled);
                     if vad.detected() {
                         current_utterance.extend_from_slice(&resampled);
@@ -571,6 +858,7 @@ fn run_stt_session(
                             &current_utterance,
                             &mut last_partial,
                             &mut last_partial_at,
+                            &mut stable_streak,
                             caller,
                         );
                     }
@@ -580,11 +868,12 @@ fn run_stt_session(
                             let text = decode_samples(&recognizer, TARGET_SAMPLE_RATE, &samples);
                             if !text.is_empty() {
                                 last_partial = text.clone();
-                                emit_final(&app, text, caller);
+                                emit_final_deduped(&app, text, caller, &mut last_final);
                             }
                         }
                         vad.pop();
                         current_utterance.clear();
+                        stable_streak = 0;
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -598,7 +887,7 @@ fn run_stt_session(
                 let samples = segment.samples().to_vec();
                 let text = decode_samples(&recognizer, TARGET_SAMPLE_RATE, &samples);
                 if !text.is_empty() {
-                    emit_final(&app, text, caller);
+                    emit_final_deduped(&app, text, caller, &mut last_final);
                 }
             }
             vad.pop();
@@ -606,7 +895,7 @@ fn run_stt_session(
         if !current_utterance.is_empty() {
             let text = decode_samples(&recognizer, TARGET_SAMPLE_RATE, &current_utterance);
             if !text.is_empty() {
-                emit_final(&app, text, caller);
+                emit_final_deduped(&app, text, caller, &mut last_final);
             }
         }
 
