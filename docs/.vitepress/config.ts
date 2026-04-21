@@ -47,6 +47,7 @@ export default defineConfig({
             { text: 'メール', link: '/guide/mail' },
             { text: '成績照会', link: '/guide/grades' },
             { text: 'シラバス検索', link: '/guide/syllabus' },
+            { text: 'LIVE 講義文字起こし', link: '/guide/live' },
             { text: 'AI 機能', link: '/guide/ai' },
           ],
         },
@@ -54,6 +55,7 @@ export default defineConfig({
           text: 'その他',
           items: [
             { text: 'アーキテクチャ', link: '/guide/architecture' },
+            { text: 'キャラクター', link: '/guide/character' },
             { text: 'FAQ', link: '/guide/faq' },
           ],
         },

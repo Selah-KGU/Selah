@@ -35,6 +35,9 @@ features:
   - icon: "\U0001F4CA"
     title: 成績照会
     details: 系列ごとの必要単位・修得単位をテーブルで確認。
+  - icon: "\U0001F3A4"
+    title: LIVE 講義文字起こし
+    details: リアルタイム STT で発話を即時テキスト化し、AI が定期的に講義内容を要約。macOS では字幕オーバーレイにも対応。
   - icon: "\U0001F916"
     title: Selah Agent
     details: ローカル AI または OpenAI / Gemini による対話型エージェント。履修分析・学習計画・通知サマリーを生成し、音声入力にも対応。
@@ -69,7 +72,7 @@ features:
 
 .intro-gallery {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
   margin: 24px 0 40px;
 }
@@ -108,6 +111,8 @@ features:
 .intro-card-copy h3 {
   margin: 0 0 8px;
   font-size: 1.08rem;
+  border-bottom: none !important;
+  padding-bottom: 0 !important;
 }
 
 .intro-card-copy p {
