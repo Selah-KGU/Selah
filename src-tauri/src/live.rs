@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 const CACHE_DEBOUNCE: Duration = Duration::from_secs(5);
+const MIN_AI_SUMMARIZATION_DURATION_SECS: i64 = 120;
 static LAST_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
 const FREE_NOTE_FOLDER_NAME: &str = "自由ノート";
 
@@ -278,6 +279,27 @@ fn live_summary_interval_minutes() -> i64 {
         .clamp(5, 30) as i64
 }
 
+fn should_skip_ai_summarization(
+    started_at: DateTime<Local>,
+    now: DateTime<Local>,
+) -> bool {
+    now.signed_duration_since(started_at).num_seconds() < MIN_AI_SUMMARIZATION_DURATION_SECS
+}
+
+fn short_session_overall_summary(course: &LiveCourseInfo, transcript_line_count: usize) -> String {
+    if course.is_free_note {
+        format!(
+            "### 全体要約\n2分未満の自由ノートのためAI要約は行わず、全文転写（{}行）をそのまま保存しました。",
+            transcript_line_count
+        )
+    } else {
+        format!(
+            "### 全体要約\n2分未満のLIVEのためAI要約は行わず、{}の全文転写（{}行）をそのまま保存しました。",
+            course.course_name, transcript_line_count
+        )
+    }
+}
+
 fn format_recent_summary_context(summaries: &[LiveSummaryChunk], limit: usize) -> String {
     if summaries.is_empty() || limit == 0 {
         return "なし".to_string();
@@ -416,6 +438,9 @@ async fn flush_session_summary(
             .as_ref()
             .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
         if session.pending_lines.is_empty() {
+            return Ok(session.snapshot());
+        }
+        if should_skip_ai_summarization(session.started_at, now) {
             return Ok(session.snapshot());
         }
         if !force
@@ -736,24 +761,28 @@ pub async fn live_finish_session(
     };
 
     let ended_at = Local::now();
-    let overall_summary = summarize_overall(&course, &summaries, &transcript_lines)
-        .await
-        .unwrap_or_else(|_| {
-            if course.is_free_note {
-                format!(
-                    "### 全体要約\n{} 件の転写行と {} 件の分割要約を含む自由ノートを保存しました。",
-                    transcript_lines.len(),
-                    summaries.len()
-                )
-            } else {
-                format!(
-                    "### 全体要約\n{} の講義メモ。{}件の転写行と{}件の分割要約を保存しました。",
-                    course.course_name,
-                    transcript_lines.len(),
-                    summaries.len()
-                )
-            }
-        });
+    let overall_summary = if should_skip_ai_summarization(started_at, ended_at) {
+        short_session_overall_summary(&course, transcript_lines.len())
+    } else {
+        summarize_overall(&course, &summaries, &transcript_lines)
+            .await
+            .unwrap_or_else(|_| {
+                if course.is_free_note {
+                    format!(
+                        "### 全体要約\n{} 件の転写行と {} 件の分割要約を含む自由ノートを保存しました。",
+                        transcript_lines.len(),
+                        summaries.len()
+                    )
+                } else {
+                    format!(
+                        "### 全体要約\n{} の講義メモ。{}件の転写行と{}件の分割要約を保存しました。",
+                        course.course_name,
+                        transcript_lines.len(),
+                        summaries.len()
+                    )
+                }
+            })
+    };
     let markdown = build_markdown(
         &course,
         started_at,
@@ -818,4 +847,22 @@ pub async fn live_finish_session(
     let _ = app.emit("live-session-saved", &result);
     emit_live_update(&app, &state);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_ai_summarization_for_sessions_under_two_minutes() {
+        let now = Local::now();
+        assert!(should_skip_ai_summarization(
+            now - chrono::Duration::seconds(119),
+            now
+        ));
+        assert!(!should_skip_ai_summarization(
+            now - chrono::Duration::seconds(120),
+            now
+        ));
+    }
 }

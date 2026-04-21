@@ -70,6 +70,7 @@
   let now = $state(new Date());
   let scrollEl: HTMLElement | null = null;
   const FREE_NOTE_NAME = "自由ノート";
+  const MIN_AI_SUMMARIZATION_MS = 2 * 60 * 1000;
   let pendingActivationMode: "start" | "resume" | null = null;
   let cancelSessionOnStartFailure = false;
 
@@ -87,6 +88,18 @@
     const nextSection = md.indexOf("\n###", afterHeader + 1);
     const end = nextSection >= 0 ? nextSection : md.indexOf("\n## ", afterHeader + 1);
     return (end >= 0 ? md.slice(afterHeader + 1, end) : md.slice(afterHeader + 1)).trim();
+  }
+
+  function snapshotStartedAtMs(value: string | null | undefined): number | null {
+    if (!value) return null;
+    const parsed = new Date(value.replace(" ", "T")).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function shouldSkipAiSummarizationForSnapshot(current: LiveSessionSnapshot): boolean {
+    const startedAtMs = snapshotStartedAtMs(current.started_at);
+    if (startedAtMs == null) return false;
+    return Date.now() - startedAtMs < MIN_AI_SUMMARIZATION_MS;
   }
 
   function expandSummary() {
@@ -658,9 +671,12 @@
         }
         return;
       }
-      saveProgress = "AI要約を生成中…";
-      const flushed = await liveFlushSummary(true);
-      snapshot = flushed;
+      const skipAiSummarization = shouldSkipAiSummarizationForSnapshot(snapshot);
+      if (!skipAiSummarization) {
+        saveProgress = "AI要約を生成中…";
+        const flushed = await liveFlushSummary(true);
+        snapshot = flushed;
+      }
       saveProgress = "ファイルに書き出し中…";
       const saved = await liveFinishSession();
       lastSaved = saved.saved ? saved : null;
@@ -748,17 +764,25 @@
     }
   }
 
+  async function refreshLiveSttState() {
+    try {
+      const [running, caller] = await Promise.all([
+        invoke<boolean>("stt_is_running"),
+        invoke<string | null>("stt_get_active_caller"),
+      ]);
+      sttListening = running && caller === "live";
+      sttPhase = sttListening ? "listening" : "idle";
+    } catch {
+      sttListening = false;
+      sttPhase = "idle";
+    }
+  }
+
   onMount(async () => {
     try {
       snapshot = await liveGetSession();
       await Promise.all([refreshSchedule(), refreshReadiness()]);
-      try {
-        sttListening = await invoke<boolean>("stt_is_running");
-        sttPhase = sttListening ? "listening" : "idle";
-      } catch {
-        sttListening = false;
-        sttPhase = "idle";
-      }
+      await refreshLiveSttState();
       if (snapshot.active && sttListening) startFlushTimer();
 
       unlistenPartial = await listen<{ text: string; caller: string }>("stt-partial", (event) => {

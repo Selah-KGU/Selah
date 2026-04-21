@@ -426,17 +426,25 @@
     }
   }
 
+  async function refreshAgentSttState() {
+    try {
+      const [running, caller] = await Promise.all([
+        invoke<boolean>("stt_is_running"),
+        invoke<string | null>("stt_get_active_caller"),
+      ]);
+      sttListening = running && caller === "agent";
+    } catch {
+      sttListening = false;
+    }
+  }
+
   // ── Lifecycle ──
 
   onMount(async () => {
     document.addEventListener("mousedown", onDocClick);
     await refreshConfig();
     await refreshConversations();
-    try {
-      sttListening = await invoke<boolean>("stt_is_running");
-    } catch {
-      sttListening = false;
-    }
+    await refreshAgentSttState();
     unlistenSttPartial = await listen<{ text: string; caller: string }>("stt-partial", (ev) => {
       if (ev.payload.caller !== "agent") return;
       sttPartialText = ev.payload.text || "";

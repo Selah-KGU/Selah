@@ -128,7 +128,10 @@ export interface AiTodoTaskGuide {
   deadline: string;
   urgency: "overdue" | "critical" | "soon" | "normal";
   background: string;
+  live_note_summary: string;
   study_hints: string[];
+  ready_to_use_label: string;
+  ready_to_use: string;
   estimated_minutes: number;
 }
 

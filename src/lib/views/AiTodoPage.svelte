@@ -178,6 +178,9 @@
                         <span class="task-urg {guide.urgency}">{urgencyLabel(guide.urgency)}</span>
                       {/if}
                       <span class="task-label">{taskStr}</span>
+                      {#if guide?.live_note_summary}
+                        <span class="task-note">Live</span>
+                      {/if}
                     </div>
                     {#if guide}
                       <svg class="task-chev" class:open={isOpen} width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -205,6 +208,15 @@
                           <div class="detail-text">{guide.background}</div>
                         </div>
                       {/if}
+                      {#if guide.live_note_summary}
+                        <div class="detail-block">
+                          <div class="detail-label">
+                            <svg width="10" height="10" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4.5 4.5h11v11h-11z"/><path d="M7 8h6M7 11h6M7 14h4" stroke-linecap="round"/></svg>
+                            Live ノート
+                          </div>
+                          <div class="detail-text">{guide.live_note_summary}</div>
+                        </div>
+                      {/if}
                       {#if guide.study_hints && guide.study_hints.length > 0}
                         <div class="detail-block">
                           <div class="detail-label">
@@ -216,6 +228,15 @@
                               <li style="--si: {hi}">{hint}</li>
                             {/each}
                           </ol>
+                        </div>
+                      {/if}
+                      {#if guide.ready_to_use}
+                        <div class="detail-block">
+                          <div class="detail-label">
+                            <svg width="10" height="10" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M5 4.5h10v11H5z"/><path d="M8 8h4M8 11h6M8 14h5" stroke-linecap="round"/></svg>
+                            {guide.ready_to_use_label || "すぐ使える下書き"}
+                          </div>
+                          <div class="detail-text detail-ready">{guide.ready_to_use}</div>
                         </div>
                       {/if}
                     </div>
@@ -245,6 +266,9 @@
                     <span class="task-urg {guide.urgency}">{urgencyLabel(guide.urgency)}</span>
                   {/if}
                   <span class="task-label">{guide.task_name}</span>
+                  {#if guide.live_note_summary}
+                    <span class="task-note">Live</span>
+                  {/if}
                   {#if guide.estimated_minutes}
                     <span class="task-time">{guide.estimated_minutes}min</span>
                   {/if}
@@ -271,6 +295,15 @@
                       <div class="detail-text">{guide.background}</div>
                     </div>
                   {/if}
+                  {#if guide.live_note_summary}
+                    <div class="detail-block">
+                      <div class="detail-label">
+                        <svg width="10" height="10" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4.5 4.5h11v11h-11z"/><path d="M7 8h6M7 11h6M7 14h4" stroke-linecap="round"/></svg>
+                        Live ノート
+                      </div>
+                      <div class="detail-text">{guide.live_note_summary}</div>
+                    </div>
+                  {/if}
                   {#if guide.study_hints && guide.study_hints.length > 0}
                     <div class="detail-block">
                       <div class="detail-label">
@@ -282,6 +315,15 @@
                           <li style="--si: {hi}">{hint}</li>
                         {/each}
                       </ol>
+                    </div>
+                  {/if}
+                  {#if guide.ready_to_use}
+                    <div class="detail-block">
+                      <div class="detail-label">
+                        <svg width="10" height="10" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M5 4.5h10v11H5z"/><path d="M8 8h4M8 11h6M8 14h5" stroke-linecap="round"/></svg>
+                        {guide.ready_to_use_label || "すぐ使える下書き"}
+                      </div>
+                      <div class="detail-text detail-ready">{guide.ready_to_use}</div>
                     </div>
                   {/if}
                 </div>
@@ -518,6 +560,15 @@
   .task-urg.overdue { background: rgba(255,59,48,0.12); color: var(--red); }
   .task-urg.critical { background: rgba(255,149,0,0.12); color: var(--orange); }
   .task-urg.soon { background: rgba(245,197,66,0.12); color: #b8900a; }
+  .task-note {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(0, 122, 255, 0.1);
+    color: #007aff;
+  }
   .task-label {
     font-size: 13px;
     font-weight: 600;
@@ -594,6 +645,9 @@
     font-size: 12px;
     color: var(--text-secondary);
     line-height: 1.6;
+  }
+  .detail-ready {
+    white-space: pre-wrap;
   }
   .detail-ol {
     margin: 0;
