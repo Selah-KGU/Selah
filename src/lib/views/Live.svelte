@@ -17,6 +17,7 @@
     liveGetSession,
     livePeekDayCache,
     liveStartSession,
+    openSettingsWindow,
     openSubtitleOverlay,
     closeSubtitleOverlay,
     type LiveCourseInfo,
@@ -26,6 +27,17 @@
   import type { ScheduleResponse } from "../types";
   import { DAY_NUM_LABELS, PERIOD_TIMES } from "../types";
   import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
+
+  type NoticeKind = "error" | "success" | "warning";
+  type NoticeSource = "general" | "readiness" | "stt";
+  type NoticeAction = "open-ai-settings";
+  type SttPhase = "idle" | "checking" | "starting" | "initializing" | "listening";
+  type NoticeState = {
+    kind: NoticeKind;
+    text: string;
+    source: NoticeSource;
+    action?: NoticeAction;
+  } | null;
 
   let scheduleData = $state<ScheduleResponse | null>(null);
   let allCourseOptions = $state<CourseSlot[]>([]);
@@ -41,10 +53,10 @@
   });
   let partialText = $state("");
   let sttListening = $state(false);
+  let sttPhase = $state<SttPhase>("idle");
   let busy = $state(false);
   let pageLoading = $state(true);
-  let error = $state("");
-  let success = $state("");
+  let notice = $state<NoticeState>(null);
   let liveReady = $state(false);
   let lastSaved = $state<LiveSaveResult | null>(null);
   let showSaveNotif = $state(false);
@@ -52,6 +64,7 @@
   let summaryViewIndex = $state(-1); // -1 = auto (latest)
   let summaryExpanded = $state(false);
   let flushTimer: ReturnType<typeof setInterval> | null = null;
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
   let liveSummaryIntervalMinutes = $state(5);
   let timeTimer: ReturnType<typeof setInterval> | null = null;
   let now = $state(new Date());
@@ -118,10 +131,32 @@
   let unlistenError: (() => void) | null = null;
   let unlistenLive: (() => void) | null = null;
   let unlistenSaved: (() => void) | null = null;
+  let unlistenAiConfig: (() => void) | null = null;
   let unlistenWinFocus: (() => void) | null = null;
   let unlistenWinBlur: (() => void) | null = null;
 
   const hasContent = $derived(snapshot.transcript_lines.length > 0 || partialText.trim().length > 0);
+  const sttBooting = $derived(
+    sttPhase === "checking" || sttPhase === "starting" || sttPhase === "initializing"
+  );
+  const sttBootMessage = $derived.by(() => {
+    switch (sttPhase) {
+      case "checking":
+        return "音声入力モデルを確認中…";
+      case "starting":
+        return "音声入力を起動中…";
+      case "initializing":
+        return "マイクと音声認識を初期化中…";
+      default:
+        return "";
+    }
+  });
+  const liveBadgeLabel = $derived.by(() => {
+    if (!snapshot.active) return "LIVE";
+    if (sttBooting) return "準備中";
+    if (sttPhase === "listening") return "REC";
+    return saveProgress ? "処理中" : "一時停止";
+  });
 
   const remainingLabel = $derived.by(() => {
     if (!snapshot.active || !snapshot.course) return "";
@@ -331,15 +366,98 @@
       : [...courses].sort((a, b) => a.day - b.day || a.period - b.period || a.name.localeCompare(b.name));
   }
 
+  function clearNoticeTimer() {
+    if (noticeTimer) {
+      clearTimeout(noticeTimer);
+      noticeTimer = null;
+    }
+  }
+
+  function clearNotice() {
+    clearNoticeTimer();
+    notice = null;
+  }
+
+  function setNotice(
+    kind: NoticeKind,
+    text: string,
+    options: {
+      source?: NoticeSource;
+      action?: NoticeAction;
+      autoClearMs?: number;
+    } = {},
+  ) {
+    clearNoticeTimer();
+    const source = options.source ?? "general";
+    notice = {
+      kind,
+      text,
+      source,
+      action: options.action,
+    };
+    if (options.autoClearMs && options.autoClearMs > 0) {
+      const expected = { kind, text, source };
+      noticeTimer = setTimeout(() => {
+        if (
+          notice &&
+          notice.kind === expected.kind &&
+          notice.text === expected.text &&
+          notice.source === expected.source
+        ) {
+          notice = null;
+        }
+        noticeTimer = null;
+      }, options.autoClearMs);
+    }
+  }
+
   function setMessage(kind: "error" | "success", message: string) {
     if (kind === "error") {
-      error = message;
-      success = "";
-    } else {
-      success = message;
-      error = "";
-      setTimeout(() => { if (success === message) success = ""; }, 4000);
+      setNotice("error", message);
+      return;
     }
+    setNotice("success", message, { autoClearMs: 4000 });
+  }
+
+  function setReadinessNotice(message: string) {
+    if (notice && notice.source !== "readiness" && notice.kind === "error") return;
+    setNotice("warning", message, {
+      source: "readiness",
+      action: "open-ai-settings",
+    });
+  }
+
+  function clearReadinessNotice() {
+    if (notice?.source === "readiness") {
+      clearNotice();
+    }
+  }
+
+  function setSttNotice(message: string) {
+    if (notice?.source === "readiness" && notice.kind === "error") return;
+    setNotice("warning", message, { source: "stt" });
+  }
+
+  function clearSttNotice() {
+    if (notice?.source === "stt") {
+      clearNotice();
+    }
+  }
+
+  function buildReadinessMessage(
+    cfg: { ai_enabled: boolean; provider: string; api_key?: string },
+    ready: boolean,
+  ): string {
+    if (cfg.ai_enabled === false) {
+      return "AIが無効です。LIVEを使うには設定でAIを有効にしてください。";
+    }
+    if (cfg.provider === "local" && !ready) {
+      return "ローカルAIモデルの準備ができていません。AI設定でモデルを確認してください。";
+    }
+    if (!cfg.api_key?.trim()) {
+      return "APIキーが未設定です。LIVEを使うにはAI設定を完了してください。";
+    }
+    return "LIVEにはAIの準備が必要です。AI設定を確認してください。";
   }
 
   async function refreshSchedule() {
@@ -387,38 +505,47 @@
     const cfg = await getAiConfig();
     liveSummaryIntervalMinutes = Math.min(30, Math.max(5, cfg.live_summary_interval_minutes ?? 5));
     const ready = await isAiReady();
-    liveReady = cfg.ai_enabled !== false && (cfg.provider !== "local" || ready);
-    if (!liveReady) {
-      error = "LIVEにはAIの準備が必要です。設定でAIを有効にしてください。";
+    liveReady = ready;
+    if (liveReady) {
+      clearReadinessNotice();
+      return;
     }
+    setReadinessNotice(buildReadinessMessage(cfg, ready));
   }
 
   async function ensureReadyToStart() {
     await refreshReadiness();
-    if (!liveReady) throw new Error(error || "AIの準備ができていません");
-    await invoke<string>("stt_test_model");
+    if (!liveReady) {
+      throw new Error(notice?.source === "readiness" ? notice.text : "AIの準備ができていません");
+    }
   }
 
   async function startLive() {
     if (!selectedCourse) return;
     busy = true;
-    error = "";
-    success = "";
+    clearNotice();
+    sttListening = false;
+    sttPhase = "checking";
+    setSttNotice("音声入力モデルを確認中…");
     try {
       await ensureReadyToStart();
+      sttPhase = "starting";
+      setSttNotice("音声入力を起動中…");
       snapshot = await liveStartSession(toLiveCourse(selectedCourse));
       partialText = "";
       lastSaved = null;
       await invoke("stt_start_stream", { caller: "live" });
-      sttListening = true;
       autoFollow = true;
       startFlushTimer();
-      setMessage("success", `LIVEを開始: ${selectedCourse.name}`);
     } catch (e: any) {
+      sttPhase = "idle";
+      clearSttNotice();
       setMessage("error", e?.message || String(e));
       try {
         await liveCancelSession();
+        snapshot = await liveGetSession();
       } catch {}
+      stopFlushTimer();
     } finally {
       busy = false;
     }
@@ -426,7 +553,9 @@
 
   async function stopLive() {
     busy = true;
-    error = "";
+    clearNotice();
+    clearSttNotice();
+    sttPhase = "idle";
     saveProgress = "録音を停止中…";
     try {
       try {
@@ -456,6 +585,8 @@
   async function cancelLive() {
     busy = true;
     try {
+      clearSttNotice();
+      sttPhase = "idle";
       try {
         await invoke("stt_stop_stream");
       } catch {}
@@ -481,7 +612,7 @@
     if (!selectedCourse) return;
     const name = selectedCourse.name;
     busy = true;
-    error = "";
+    clearNotice();
     try {
       await liveClearDayCache(toLiveCourse(selectedCourse));
       snapshot = { active: false, course: null, started_at: null, transcript_lines: [], pending_lines: [], summaries: [] };
@@ -504,7 +635,7 @@
         console.log("[Live] flush done, summaries =", snapshot.summaries.length);
       } catch (e: any) {
         console.warn("[Live] flush error:", e);
-        error = e?.message || String(e);
+        setMessage("error", e?.message || String(e));
       }
     }, intervalMs);
   }
@@ -522,8 +653,10 @@
       await Promise.all([refreshSchedule(), refreshReadiness()]);
       try {
         sttListening = await invoke<boolean>("stt_is_running");
+        sttPhase = sttListening ? "listening" : "idle";
       } catch {
         sttListening = false;
+        sttPhase = "idle";
       }
       if (snapshot.active) startFlushTimer();
 
@@ -542,19 +675,46 @@
           snapshot = await liveAppendTranscript(event.payload.text || "");
           lastAppliedLen = snapshot.transcript_lines.length;
         } catch (e: any) {
-          error = e?.message || String(e);
+          setMessage("error", e?.message || String(e));
         }
       });
       unlistenState = await listen<{ state: string; caller: string }>("stt-state", (event) => {
         if (event.payload.caller !== "live") return;
         const wasListening = sttListening;
+        const previousPhase = sttPhase;
         sttListening = event.payload.state === "initializing" || event.payload.state === "listening";
+        if (event.payload.state === "initializing") {
+          sttPhase = "initializing";
+          setSttNotice("マイクと音声認識を初期化中…");
+        } else if (event.payload.state === "listening") {
+          sttPhase = "listening";
+          clearSttNotice();
+          if (previousPhase !== "listening") {
+            setMessage("success", `LIVEを開始: ${snapshot.course?.course_name ?? selectedCourse?.name ?? "録音"}`);
+          }
+        } else {
+          sttPhase = "idle";
+          clearSttNotice();
+        }
         if (sttListening && !wasListening) autoFollow = true;
       });
       unlistenError = await listen<{ message: string; caller: string }>("stt-error", (event) => {
         if (event.payload.caller !== "live") return;
+        const wasStarting = sttPhase === "starting" || sttPhase === "initializing";
         sttListening = false;
-        error = event.payload.message;
+        sttPhase = "idle";
+        clearSttNotice();
+        setMessage("error", event.payload.message);
+        if (wasStarting) {
+          stopFlushTimer();
+          void (async () => {
+            try {
+              await liveCancelSession();
+              snapshot = await liveGetSession();
+              partialText = "";
+            } catch {}
+          })();
+        }
       });
       unlistenLive = await listen<LiveSessionSnapshot>("live-session-updated", (event) => {
         const len = event.payload.transcript_lines.length;
@@ -574,10 +734,16 @@
       unlistenSaved = await listen<LiveSaveResult>("live-session-saved", (event) => {
         lastSaved = event.payload;
       });
+      unlistenAiConfig = await listen("ai-config-changed", () => {
+        refreshReadiness().catch((e: any) => {
+          liveReady = false;
+          setReadinessNotice(e?.message || "LIVEにはAIの準備が必要です。AI設定を確認してください。");
+        });
+      });
       // Timer is only needed while a session is active (to drive the
       // remaining-time badge). Started lazily by the $effect below.
     } catch (e: any) {
-      error = e?.message || String(e);
+      setMessage("error", e?.message || String(e));
     } finally {
       pageLoading = false;
     }
@@ -596,12 +762,14 @@
   onDestroy(() => {
     stopFlushTimer();
     if (timeTimer) clearInterval(timeTimer);
+    clearNoticeTimer();
     unlistenPartial?.();
     unlistenFinal?.();
     unlistenState?.();
     unlistenError?.();
     unlistenLive?.();
     unlistenSaved?.();
+    unlistenAiConfig?.();
     unlistenWinFocus?.();
     unlistenWinBlur?.();
     // Live ページを離れたら浮窗を再表示
@@ -613,9 +781,9 @@
   <!-- ─── Floating Top Capsule ─── -->
   <header class="top-capsule">
     <div class="capsule-inner">
-      <span class="live-badge" class:recording={snapshot.active && sttListening}>
+      <span class="live-badge" class:recording={snapshot.active && sttPhase === "listening"}>
         <span class="live-dot"></span>
-        {snapshot.active ? (sttListening ? "REC" : (saveProgress ? "処理中" : "一時停止")) : "LIVE"}
+        {liveBadgeLabel}
       </span>
 
       {#if snapshot.active && snapshot.course}
@@ -665,9 +833,6 @@
       </div>
     </div>
 
-    {#if !liveReady && !snapshot.active}
-      <div class="capsule-warn">AIの準備が必要です。設定でAIを有効にしてください。</div>
-    {/if}
   </header>
 
   <!-- ─── Main scrollable area ─── -->
@@ -675,11 +840,13 @@
     <div class="scroll-spacer-top"></div>
 
     <!-- Inline messages -->
-    {#if error}
-      <div class="inline-msg error">{error}</div>
-    {/if}
-    {#if success}
-      <div class="inline-msg success">{success}</div>
+    {#if notice}
+      <div class="inline-msg {notice.kind}" class:has-action={!!notice.action}>
+        <span>{notice.text}</span>
+        {#if notice.action === "open-ai-settings"}
+          <button class="inline-msg-action" onclick={() => openSettingsWindow("ai")}>AI設定</button>
+        {/if}
+      </div>
     {/if}
 
     <!-- ─── AI Summary Card ─── -->
@@ -740,6 +907,11 @@
             <div class="save-capsule saving">
               <span class="save-capsule-spinner"></span>
               <span class="save-capsule-text">{saveProgress}</span>
+            </div>
+          {:else if snapshot.active && sttBooting}
+            <div class="save-capsule saving">
+              <span class="save-capsule-spinner"></span>
+              <span class="save-capsule-text">{sttBootMessage}</span>
             </div>
           {:else if snapshot.active}
             <div class="waiting-vis">
@@ -990,18 +1162,6 @@
     color: var(--red, #e5484d);
   }
 
-  .capsule-warn {
-    margin-top: 6px;
-    padding: 6px 14px;
-    border-radius: 10px;
-    font-size: 11.5px;
-    font-weight: 500;
-    color: var(--orange, #e67700);
-    background: color-mix(in srgb, var(--orange, #e67700) 8%, var(--bg-card));
-    border: 0.5px solid color-mix(in srgb, var(--orange, #e67700) 18%, transparent);
-    text-align: center;
-  }
-
   /* ── Main Scroll Area ── */
   .main-scroll {
     flex: 1;
@@ -1018,6 +1178,10 @@
 
   /* ── Inline Messages ── */
   .inline-msg {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     padding: 9px 14px;
     border-radius: 10px;
     font-size: 12.5px;
@@ -1025,15 +1189,43 @@
     margin-bottom: 10px;
     animation: toast-enter 0.25s ease-out;
   }
+  .inline-msg.has-action {
+    flex-wrap: wrap;
+  }
   .inline-msg.error {
     background: color-mix(in srgb, var(--red) 10%, transparent);
     color: var(--red);
     border: 0.5px solid color-mix(in srgb, var(--red) 15%, transparent);
   }
+  .inline-msg.warning {
+    background: color-mix(in srgb, var(--orange, #e67700) 8%, var(--bg-card));
+    color: var(--orange, #e67700);
+    border: 0.5px solid color-mix(in srgb, var(--orange, #e67700) 18%, transparent);
+  }
   .inline-msg.success {
     background: color-mix(in srgb, var(--green) 10%, transparent);
     color: var(--green);
     border: 0.5px solid color-mix(in srgb, var(--green) 15%, transparent);
+  }
+  .inline-msg-action {
+    border: none;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    color: inherit;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.18s ease, transform 0.18s ease;
+  }
+  .inline-msg-action:hover {
+    background: color-mix(in srgb, currentColor 18%, transparent);
+    transform: translateY(-1px);
+  }
+  .inline-msg-action:focus-visible {
+    outline: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+    outline-offset: 2px;
   }
 
   /* ── Summary Card (single floating card) ── */

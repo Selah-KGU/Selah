@@ -27,10 +27,12 @@ function _isDemo(): boolean {
 // Global listeners — app-lifetime, no cleanup needed
 listen("luna-login-success", () => {
   lunaAuthState.set({ authenticated: true });
+  void notificationSyncNow();
 });
 
 listen("kwic-login-success", () => {
   kwicAuthState.set({ authenticated: true });
+  void notificationSyncNow();
 });
 
 // Handle login phase 2/3 failures — undo premature auth state
@@ -48,6 +50,7 @@ listen<{ email: string; displayName: string }>("mail-login-success", (event) => 
     email: event.payload.email,
     displayName: event.payload.displayName,
   });
+  void notificationSyncNow();
 });
 
 listen("gcal-login-success", () => {
@@ -356,6 +359,7 @@ export async function initiateRelogin(): Promise<void> {
     sessionExpired.set(false);
     // Refresh all data after successful re-login
     startBackgroundPolling();
+    void notificationSyncNow();
   } catch (e: any) {
     if (e?.message !== "__login_cancelled__") {
       console.warn("[Selah] User-initiated relogin failed:", e);
@@ -1198,6 +1202,10 @@ export async function closeSubtitleOverlay(): Promise<void> {
 
 export async function subtitleOverlayIsOpen(): Promise<boolean> {
   return invoke<boolean>("subtitle_overlay_is_open");
+}
+
+export async function notificationSyncNow(): Promise<void> {
+  return invoke<void>("notification_sync_now");
 }
 
 export async function showMainAgentWindow(): Promise<void> {

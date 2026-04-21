@@ -28,6 +28,7 @@ mod macos_native_agent;
 mod macos_subtitle_overlay;
 mod mail;
 mod mail_commands;
+mod notifier;
 mod parser;
 mod read_state;
 mod stt;
@@ -199,6 +200,7 @@ pub fn run() {
             )));
             app.manage(ThemeState(std::sync::Mutex::new("system".to_string())));
             app.manage(live::LiveState::new());
+            app.manage(notifier::NotificationPollState::new());
 
             // Initialize SQLite database for timetable enrichment
             let data_dir = dirs::data_dir()
@@ -212,6 +214,7 @@ pub fn run() {
             app.manage(tray_status.clone());
             tray::setup_tray(app.handle())?;
             tray::start_tray_cycle(app.handle(), tray_status);
+            notifier::start_notification_loop(app.handle());
             #[cfg(target_os = "macos")]
             {
                 macos_native_agent::setup(app.handle());
@@ -372,6 +375,7 @@ pub fn run() {
             commands::save_native_agent_config,
             commands::get_calendar_config,
             commands::save_calendar_config,
+            notifier::notification_sync_now,
             commands::list_downloads,
             commands::scan_download_dir,
             commands::check_file_downloaded,

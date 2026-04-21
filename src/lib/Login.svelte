@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { openLoginWindow, setAuthFromSession, startBackgroundPolling } from "./api";
+  import { notificationSyncNow, openLoginWindow, setAuthFromSession, startBackgroundPolling } from "./api";
   import { authState } from "./stores";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
@@ -58,6 +58,7 @@
         // Luna auth state is set by the "luna-login-success" event listener in api.ts
         // after Phase 2 (Luna SAML) actually completes.
         startBackgroundPolling();
+        void notificationSyncNow();
       }
     );
 

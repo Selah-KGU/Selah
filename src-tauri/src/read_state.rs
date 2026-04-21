@@ -103,6 +103,7 @@ pub struct ReadIdsResponse {
 // ── Seen notification IDs (push dedup) ──
 
 const SEEN_CACHE_PREFIX: &str = "seen_notifs_";
+const SEEN_INIT_PREFIX: &str = "seen_notifs_init_";
 const MAX_SEEN_IDS: usize = 500;
 
 pub fn get_seen_notif_ids(db: &Database, source: &str) -> Vec<String> {
@@ -123,6 +124,21 @@ pub fn save_seen_notif_ids(db: &Database, source: &str, ids: Vec<String>) {
         ids
     };
     if let Ok(json) = serde_json::to_string(&trimmed) {
+        let _ = db.save_data_cache(&key, &json);
+    }
+}
+
+pub fn is_seen_notif_initialized(db: &Database, source: &str) -> bool {
+    let key = format!("{}{}", SEEN_INIT_PREFIX, source);
+    match db.get_data_cache(&key) {
+        Ok(Some((json, _))) => serde_json::from_str::<bool>(&json).unwrap_or(false),
+        _ => !get_seen_notif_ids(db, source).is_empty(),
+    }
+}
+
+pub fn mark_seen_notif_initialized(db: &Database, source: &str) {
+    let key = format!("{}{}", SEEN_INIT_PREFIX, source);
+    if let Ok(json) = serde_json::to_string(&true) {
         let _ = db.save_data_cache(&key, &json);
     }
 }

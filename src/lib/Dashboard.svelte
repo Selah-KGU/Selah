@@ -23,7 +23,6 @@
   import type { MailMessage, KwicPortalHome } from "./api";
   import { updateAiReadiness } from "./api";
   import type { LunaNotification } from "./types";
-  import { notifyNewKgc, notifyNewLuna, notifyNewKwic, notifyNewMail } from "./notify";
 
   interface Tab {
     id: string;
@@ -97,24 +96,12 @@
 
   const unsubNotif = onCacheUpdate<NotificationsData>("notifications", (fresh) => {
     recalcNotifBadge();
-    if (fresh?.entries) notifyNewKgc(fresh.entries);
   });
   const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => {
     recalcNotifBadge();
-    if (fresh) notifyNewLuna(fresh);
   });
   const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => {
     recalcNotifBadge();
-    if (fresh) {
-      const items = fresh.sections
-        .filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ")
-        .flatMap(s => s.items.map(i => ({
-          id: i.id, title: i.title, date: i.date,
-          section: s.title,
-          category: i.category || s.title, important: i.important,
-        })));
-      if (items.length) notifyNewKwic(items);
-    }
   });
   // Recalc when read IDs change (e.g. user marks notification read in NotificationsUnified)
   $effect(() => { $readIdsStore; recalcNotifBadge(); });
@@ -123,7 +110,6 @@
   const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (msgs) => {
     if (msgs) {
       unreadMailCount.set(msgs.filter(m => !m.isRead).length);
-      notifyNewMail(msgs);
     }
   });
 
