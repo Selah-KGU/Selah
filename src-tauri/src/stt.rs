@@ -17,6 +17,12 @@ const TARGET_SAMPLE_RATE: i32 = 16_000;
 const VAD_MODEL_URL: &str =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
 const VAD_MODEL_FILE: &str = "silero_vad.onnx";
+const STT_BACKEND_CPU: &str = "cpu";
+const STT_BACKEND_COREML: &str = "coreml";
+const STT_BACKEND_DIRECTML: &str = "directml";
+const STT_PARTIAL_MODE_BALANCED: &str = "balanced";
+const STT_PARTIAL_MODE_POWER_SAVER: &str = "power_saver";
+const STT_PARTIAL_MODE_FINAL_ONLY: &str = "final_only";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SttModelInfo {
@@ -90,6 +96,8 @@ pub fn is_stt_model_downloaded(model: &SttModelInfo) -> bool {
 pub struct SttConfig {
     pub selected_model: String,
     pub language: String,
+    pub execution_backend: String,
+    pub partial_mode: String,
 }
 
 impl Default for SttConfig {
@@ -97,19 +105,216 @@ impl Default for SttConfig {
         Self {
             selected_model: "sensevoice-ja-en".into(),
             language: "ja".into(),
+            execution_backend: STT_BACKEND_CPU.into(),
+            partial_mode: STT_PARTIAL_MODE_BALANCED.into(),
         }
     }
 }
 
-fn load_config() -> SttConfig {
-    let path = stt_config_path();
-    if !path.exists() {
-        return SttConfig::default();
+#[derive(Debug, Clone, Copy)]
+struct SttPartialThrottleProfile {
+    enabled: bool,
+    min_interval_ms: u64,
+    stable_interval_ms: u64,
+    very_stable_interval_ms: u64,
+}
+
+static STT_CONFIG_CACHE: LazyLock<Mutex<Option<SttConfig>>> = LazyLock::new(|| Mutex::new(None));
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SttExecutionBackendInfo {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub experimental: bool,
+    pub available: bool,
+    pub availability_note: Option<String>,
+}
+
+fn directml_build_enabled() -> bool {
+    cfg!(target_os = "windows") && option_env!("SELAH_STT_DIRECTML_ENABLED") == Some("1")
+}
+
+fn stt_execution_backend_catalog() -> Vec<SttExecutionBackendInfo> {
+    let mut backends = vec![SttExecutionBackendInfo {
+        id: STT_BACKEND_CPU.into(),
+        label: "CPU".into(),
+        description: "現在の安定ルートです。すべてのビルドで利用できます。".into(),
+        experimental: false,
+        available: true,
+        availability_note: None,
+    }];
+
+    if cfg!(target_os = "macos") {
+        backends.push(SttExecutionBackendInfo {
+            id: STT_BACKEND_COREML.into(),
+            label: "CoreML".into(),
+            description: "Apple Neural Engine / GPU を使う実験的な高速化です。".into(),
+            experimental: true,
+            available: true,
+            availability_note: Some(
+                "認識器のみ CoreML に切り替わり、VAD は引き続き CPU を使います。".into(),
+            ),
+        });
     }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default()
+
+    if cfg!(target_os = "windows") {
+        let available = directml_build_enabled();
+        backends.push(SttExecutionBackendInfo {
+            id: STT_BACKEND_DIRECTML.into(),
+            label: "DirectML".into(),
+            description: "DX12 GPU / iGPU を使う実験的な高速化です。".into(),
+            experimental: true,
+            available,
+            availability_note: if available {
+                Some("DirectML 対応の実験ビルドでのみ有効です。".into())
+            } else {
+                Some("この Windows ビルドには DirectML 用の sherpa-onnx ランタイムが含まれていません。".into())
+            },
+        });
+    }
+
+    backends
+}
+
+fn normalize_stt_language(language: &str) -> String {
+    let language = language.trim();
+    if language.is_empty() {
+        "ja".into()
+    } else {
+        language.to_string()
+    }
+}
+
+fn normalize_stt_model_id(model_id: &str) -> String {
+    let model_id = model_id.trim();
+    if stt_model_catalog().iter().any(|model| model.id == model_id) {
+        model_id.to_string()
+    } else {
+        SttConfig::default().selected_model
+    }
+}
+
+fn normalize_stt_execution_backend(requested: &str) -> String {
+    match requested.trim().to_ascii_lowercase().as_str() {
+        STT_BACKEND_COREML if cfg!(target_os = "macos") => STT_BACKEND_COREML.into(),
+        STT_BACKEND_DIRECTML if cfg!(target_os = "windows") && directml_build_enabled() => {
+            STT_BACKEND_DIRECTML.into()
+        }
+        _ => STT_BACKEND_CPU.into(),
+    }
+}
+
+fn validate_stt_execution_backend(requested: &str) -> Result<String, String> {
+    let requested = requested.trim().to_ascii_lowercase();
+    match requested.as_str() {
+        "" | STT_BACKEND_CPU => Ok(STT_BACKEND_CPU.into()),
+        STT_BACKEND_COREML if cfg!(target_os = "macos") => Ok(STT_BACKEND_COREML.into()),
+        STT_BACKEND_COREML => Err("CoreML は macOS 実験ビルドでのみ利用できます".into()),
+        STT_BACKEND_DIRECTML if cfg!(target_os = "windows") && directml_build_enabled() => {
+            Ok(STT_BACKEND_DIRECTML.into())
+        }
+        STT_BACKEND_DIRECTML if cfg!(target_os = "windows") => {
+            Err("この Windows ビルドには DirectML 実験ランタイムが含まれていません".into())
+        }
+        STT_BACKEND_DIRECTML => Err("DirectML は Windows 実験ビルドでのみ利用できます".into()),
+        _ => Err("不明な STT 実行バックエンドです".into()),
+    }
+}
+
+fn stt_execution_backend_label(backend: &str) -> &'static str {
+    match backend {
+        STT_BACKEND_COREML => "CoreML",
+        STT_BACKEND_DIRECTML => "DirectML",
+        _ => "CPU",
+    }
+}
+
+fn normalize_stt_partial_mode(requested: &str) -> String {
+    match requested.trim().to_ascii_lowercase().as_str() {
+        STT_PARTIAL_MODE_POWER_SAVER => STT_PARTIAL_MODE_POWER_SAVER.into(),
+        STT_PARTIAL_MODE_FINAL_ONLY => STT_PARTIAL_MODE_FINAL_ONLY.into(),
+        _ => STT_PARTIAL_MODE_BALANCED.into(),
+    }
+}
+
+fn stt_partial_mode_label(mode: &str) -> &'static str {
+    match mode {
+        STT_PARTIAL_MODE_POWER_SAVER => "省電",
+        STT_PARTIAL_MODE_FINAL_ONLY => "最省電",
+        _ => "標準",
+    }
+}
+
+fn stt_partial_throttle_profile(mode: &str) -> SttPartialThrottleProfile {
+    match normalize_stt_partial_mode(mode).as_str() {
+        STT_PARTIAL_MODE_POWER_SAVER => SttPartialThrottleProfile {
+            enabled: true,
+            min_interval_ms: 1500,
+            stable_interval_ms: 3000,
+            very_stable_interval_ms: 5000,
+        },
+        STT_PARTIAL_MODE_FINAL_ONLY => SttPartialThrottleProfile {
+            enabled: false,
+            min_interval_ms: 0,
+            stable_interval_ms: 0,
+            very_stable_interval_ms: 0,
+        },
+        _ => SttPartialThrottleProfile {
+            enabled: true,
+            min_interval_ms: 600,
+            stable_interval_ms: 1500,
+            very_stable_interval_ms: 3000,
+        },
+    }
+}
+
+fn stt_fallback_message(requested_backend: &str) -> String {
+    format!(
+        "{} の初期化に失敗したため、CPU にフォールバックしました",
+        stt_execution_backend_label(requested_backend)
+    )
+}
+
+fn stt_runtime_preferences() -> (String, String) {
+    let stt_cfg = load_config();
+    (
+        normalize_stt_language(&stt_cfg.language),
+        normalize_stt_execution_backend(&stt_cfg.execution_backend),
+    )
+}
+
+fn normalized_stt_config(mut config: SttConfig) -> SttConfig {
+    config.selected_model = normalize_stt_model_id(&config.selected_model);
+    config.language = normalize_stt_language(&config.language);
+    config.execution_backend = normalize_stt_execution_backend(&config.execution_backend);
+    config.partial_mode = normalize_stt_partial_mode(&config.partial_mode);
+    config
+}
+
+fn load_config() -> SttConfig {
+    if let Ok(cache) = STT_CONFIG_CACHE.lock() {
+        if let Some(config) = cache.clone() {
+            return config;
+        }
+    }
+
+    let path = stt_config_path();
+    let config = if !path.exists() {
+        SttConfig::default()
+    } else {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .map(normalized_stt_config)
+            .unwrap_or_default()
+    };
+
+    if let Ok(mut cache) = STT_CONFIG_CACHE.lock() {
+        *cache = Some(config.clone());
+    }
+
+    config
 }
 
 fn save_config(config: &SttConfig) -> Result<(), String> {
@@ -121,6 +326,9 @@ fn save_config(config: &SttConfig) -> Result<(), String> {
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    if let Ok(mut cache) = STT_CONFIG_CACHE.lock() {
+        *cache = Some(config.clone());
     }
     Ok(())
 }
@@ -244,7 +452,11 @@ pub fn download_stt_model_blocking(
     Ok(())
 }
 
-fn build_sense_voice_config(model: &SttModelInfo) -> Result<OfflineRecognizerConfig, String> {
+fn build_sense_voice_config_for_backend(
+    model: &SttModelInfo,
+    language: &str,
+    execution_backend: &str,
+) -> Result<OfflineRecognizerConfig, String> {
     let dir = stt_model_dir(model);
     let model_path = dir.join(&model.model_file);
     let tokens_path = dir.join(&model.tokens_file);
@@ -257,19 +469,14 @@ fn build_sense_voice_config(model: &SttModelInfo) -> Result<OfflineRecognizerCon
         }
     }
 
-    let stt_cfg = load_config();
-    let lang = if stt_cfg.language.is_empty() {
-        "ja".to_string()
-    } else {
-        stt_cfg.language
-    };
     let mut config = OfflineRecognizerConfig::default();
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
         model: Some(model_path.to_string_lossy().into_owned()),
-        language: Some(lang),
+        language: Some(language.to_string()),
         use_itn: true,
     };
     config.model_config.tokens = Some(tokens_path.to_string_lossy().into_owned());
+    config.model_config.provider = Some(execution_backend.to_string());
     config.model_config.num_threads = std::thread::available_parallelism()
         .map(|n| n.get().min(2) as i32)
         .unwrap_or(2);
@@ -318,6 +525,35 @@ struct SttStatePayload {
     caller: String,
 }
 
+#[derive(Clone, Serialize)]
+struct SttInfoPayload {
+    message: String,
+    caller: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SttRuntimeDebugState {
+    execution_backend: Option<String>,
+    fallback_from: Option<String>,
+    state: String,
+    active_caller: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SttRuntimeDebugInfo {
+    pub configured_backend: String,
+    pub configured_partial_mode: String,
+    pub runtime_backend: String,
+    pub runtime_state: String,
+    pub active_caller: String,
+}
+
+struct RecognizerInitResult {
+    recognizer: OfflineRecognizer,
+    execution_backend: String,
+    fallback_from: Option<String>,
+}
+
 struct ActiveSttSession {
     id: u64,
     caller: String,
@@ -325,6 +561,14 @@ struct ActiveSttSession {
 }
 
 static STT_SESSION: Mutex<Option<ActiveSttSession>> = Mutex::new(None);
+static STT_RUNTIME_DEBUG: LazyLock<Mutex<SttRuntimeDebugState>> = LazyLock::new(|| {
+    Mutex::new(SttRuntimeDebugState {
+        execution_backend: None,
+        fallback_from: None,
+        state: "idle".into(),
+        active_caller: None,
+    })
+});
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 fn clear_session_if_matches(id: u64) {
@@ -335,7 +579,83 @@ fn clear_session_if_matches(id: u64) {
     }
 }
 
+fn stt_runtime_state_label(state: &str) -> &'static str {
+    match state {
+        "initializing" => "初期化中",
+        "listening" => "音声入力中",
+        "test-ok" => "テスト成功",
+        _ => "待機",
+    }
+}
+
+fn update_runtime_debug_state(
+    state: &str,
+    caller: Option<&str>,
+    execution_backend: Option<&str>,
+    fallback_from: Option<&str>,
+) {
+    if let Ok(mut debug) = STT_RUNTIME_DEBUG.lock() {
+        debug.state = state.to_string();
+        debug.active_caller = caller.map(|value| value.to_string());
+        if let Some(execution_backend) = execution_backend {
+            debug.execution_backend = Some(execution_backend.to_string());
+            debug.fallback_from = fallback_from.map(|value| value.to_string());
+        }
+        if state == "idle" {
+            debug.active_caller = None;
+        }
+    }
+}
+
+fn stt_runtime_backend_debug_label(
+    execution_backend: Option<&str>,
+    fallback_from: Option<&str>,
+) -> String {
+    match execution_backend {
+        Some(execution_backend) => {
+            let active = stt_execution_backend_label(execution_backend);
+            if let Some(fallback_from) = fallback_from {
+                format!(
+                    "{} ({} からフォールバック)",
+                    active,
+                    stt_execution_backend_label(fallback_from)
+                )
+            } else {
+                active.to_string()
+            }
+        }
+        None => "未初期化".into(),
+    }
+}
+
+pub fn stt_runtime_debug_info() -> SttRuntimeDebugInfo {
+    let config = load_config();
+    let configured_backend = stt_execution_backend_label(&config.execution_backend).to_string();
+    let configured_partial_mode = stt_partial_mode_label(&config.partial_mode).to_string();
+    if let Ok(debug) = STT_RUNTIME_DEBUG.lock() {
+        return SttRuntimeDebugInfo {
+            configured_backend,
+            configured_partial_mode,
+            runtime_backend: stt_runtime_backend_debug_label(
+                debug.execution_backend.as_deref(),
+                debug.fallback_from.as_deref(),
+            ),
+            runtime_state: stt_runtime_state_label(&debug.state).to_string(),
+            active_caller: debug.active_caller.clone().unwrap_or_else(|| "-".into()),
+        };
+    }
+
+    SttRuntimeDebugInfo {
+        configured_backend,
+        configured_partial_mode,
+        runtime_backend: "未取得".into(),
+        runtime_state: "待機".into(),
+        active_caller: "-".into(),
+    }
+}
+
 fn emit_state(app: &tauri::AppHandle, state: &str, caller: &str) {
+    update_runtime_debug_state(state, Some(caller), None, None);
     let _ = app.emit(
         "stt-state",
         SttStatePayload {
@@ -349,6 +669,16 @@ fn emit_error(app: &tauri::AppHandle, message: impl Into<String>, caller: &str) 
     let _ = app.emit(
         "stt-error",
         serde_json::json!({ "message": message.into(), "caller": caller }),
+    );
+}
+
+fn emit_info(app: &tauri::AppHandle, message: impl Into<String>, caller: &str) {
+    let _ = app.emit(
+        "stt-info",
+        SttInfoPayload {
+            message: message.into(),
+            caller: caller.to_string(),
+        },
     );
 }
 
@@ -387,6 +717,45 @@ fn emit_final_deduped(app: &tauri::AppHandle, text: String, caller: &str, last_f
     }
     *last_final = text.clone();
     emit_final(app, text, caller);
+}
+
+fn create_recognizer_with_fallback(model: &SttModelInfo) -> Result<RecognizerInitResult, String> {
+    let (language, requested_backend) = stt_runtime_preferences();
+    let requested_cfg = build_sense_voice_config_for_backend(model, &language, &requested_backend)?;
+
+    if let Some(recognizer) = OfflineRecognizer::create(&requested_cfg) {
+        return Ok(RecognizerInitResult {
+            recognizer,
+            execution_backend: requested_backend,
+            fallback_from: None,
+        });
+    }
+
+    if requested_backend == STT_BACKEND_CPU {
+        return Err(format!(
+            "SenseVoice 認識器の作成に失敗しました ({})",
+            stt_execution_backend_label(STT_BACKEND_CPU)
+        ));
+    }
+
+    log::warn!(
+        "[stt] {} init failed; retrying with CPU",
+        stt_execution_backend_label(&requested_backend)
+    );
+
+    let cpu_cfg = build_sense_voice_config_for_backend(model, &language, STT_BACKEND_CPU)?;
+    let recognizer = OfflineRecognizer::create(&cpu_cfg).ok_or_else(|| {
+        format!(
+            "SenseVoice 認識器の作成に失敗しました ({} / CPU)",
+            stt_execution_backend_label(&requested_backend)
+        )
+    })?;
+
+    Ok(RecognizerInitResult {
+        recognizer,
+        execution_backend: STT_BACKEND_CPU.into(),
+        fallback_from: Some(requested_backend),
+    })
 }
 
 /// SenseVoice occasionally emits inline metadata tokens such as
@@ -632,9 +1001,6 @@ fn normalize_u16_input(data: &[u16]) -> Vec<f32> {
 }
 
 const PARTIAL_WINDOW_SECS: usize = 5;
-const PARTIAL_MIN_INTERVAL_MS: u64 = 600;
-const PARTIAL_STABLE_INTERVAL_MS: u64 = 1500;
-const PARTIAL_VERY_STABLE_INTERVAL_MS: u64 = 3000;
 /// Tail window we probe to decide whether the utterance has momentarily
 /// fallen silent. Roughly one natural syllable gap.
 const PARTIAL_TAIL_WINDOW_SAMPLES: usize = TARGET_SAMPLE_RATE as usize / 2; // 500 ms
@@ -655,12 +1021,16 @@ fn maybe_emit_partial(
     if current_samples.len() < (TARGET_SAMPLE_RATE as usize / 2) {
         return;
     }
+    let partial_profile = stt_partial_throttle_profile(&load_config().partial_mode);
+    if !partial_profile.enabled {
+        return;
+    }
     let interval = if *stable_streak >= 4 {
-        PARTIAL_VERY_STABLE_INTERVAL_MS
+        partial_profile.very_stable_interval_ms
     } else if *stable_streak >= 2 {
-        PARTIAL_STABLE_INTERVAL_MS
+        partial_profile.stable_interval_ms
     } else {
-        PARTIAL_MIN_INTERVAL_MS
+        partial_profile.min_interval_ms
     };
     if last_partial_at.elapsed() < Duration::from_millis(interval) {
         return;
@@ -734,8 +1104,17 @@ fn run_stt_session(
         }
 
         emit_state(&app, "initializing", caller);
-        let recognizer = OfflineRecognizer::create(&build_sense_voice_config(&model)?)
-            .ok_or_else(|| "SenseVoice 認識器の作成に失敗しました".to_string())?;
+        let recognizer_init = create_recognizer_with_fallback(&model)?;
+        update_runtime_debug_state(
+            "initializing",
+            Some(caller),
+            Some(&recognizer_init.execution_backend),
+            recognizer_init.fallback_from.as_deref(),
+        );
+        if let Some(fallback_from) = &recognizer_init.fallback_from {
+            emit_info(&app, stt_fallback_message(fallback_from), caller);
+        }
+        let recognizer = recognizer_init.recognizer;
         let vad = VoiceActivityDetector::create(&build_vad_config()?, 30.0)
             .ok_or_else(|| "VAD の初期化に失敗しました".to_string())?;
 
@@ -905,7 +1284,10 @@ pub fn get_stt_config() -> SttConfig {
 
 #[tauri::command]
 pub fn save_stt_config(app: tauri::AppHandle, mut config: SttConfig) -> Result<(), String> {
-    config.selected_model = config.selected_model.trim().to_string();
+    config.selected_model = normalize_stt_model_id(&config.selected_model);
+    config.language = normalize_stt_language(&config.language);
+    config.execution_backend = validate_stt_execution_backend(&config.execution_backend)?;
+    config.partial_mode = normalize_stt_partial_mode(&config.partial_mode);
     if stt_model_catalog()
         .iter()
         .all(|m| m.id != config.selected_model)
@@ -915,6 +1297,11 @@ pub fn save_stt_config(app: tauri::AppHandle, mut config: SttConfig) -> Result<(
     save_config(&config)?;
     let _ = app.emit("stt-config-changed", ());
     Ok(())
+}
+
+#[tauri::command]
+pub fn list_stt_execution_backends() -> Vec<SttExecutionBackendInfo> {
+    stt_execution_backend_catalog()
 }
 
 #[tauri::command]
@@ -978,10 +1365,29 @@ pub fn stt_test_model() -> Result<String, String> {
     if !is_stt_model_downloaded(&model) {
         return Err("STT モデルを先にダウンロードしてください".into());
     }
-    let cfg = build_sense_voice_config(&model)?;
-    OfflineRecognizer::create(&cfg)
-        .map(|_| format!("OK: {}", model.name))
-        .ok_or_else(|| "SenseVoice 認識器の初期化に失敗しました".into())
+    let recognizer_init = create_recognizer_with_fallback(&model)?;
+    update_runtime_debug_state(
+        "test-ok",
+        None,
+        Some(&recognizer_init.execution_backend),
+        recognizer_init.fallback_from.as_deref(),
+    );
+    let _recognizer = recognizer_init.recognizer;
+
+    if let Some(fallback_from) = recognizer_init.fallback_from {
+        return Ok(format!(
+            "OK: {} ({}) / {}",
+            model.name,
+            stt_execution_backend_label(&recognizer_init.execution_backend),
+            stt_fallback_message(&fallback_from)
+        ));
+    }
+
+    Ok(format!(
+        "OK: {} ({})",
+        model.name,
+        stt_execution_backend_label(&recognizer_init.execution_backend)
+    ))
 }
 
 #[tauri::command]

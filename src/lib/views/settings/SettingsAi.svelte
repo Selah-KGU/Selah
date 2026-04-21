@@ -20,6 +20,22 @@
     downloaded: boolean;
   }
 
+  interface SttConfig {
+    selected_model: string;
+    language: string;
+    execution_backend: string;
+    partial_mode: string;
+  }
+
+  interface SttExecutionBackendOption {
+    id: string;
+    label: string;
+    description: string;
+    experimental: boolean;
+    available: boolean;
+    availability_note?: string | null;
+  }
+
   interface AiConfig {
     ai_enabled: boolean;
     provider: string;
@@ -44,6 +60,32 @@
   };
   const DEFAULT_URLS: Record<string, string> = { openai: "https://api.openai.com/v1", gemini: "" };
   const DEFAULT_MODELS: Record<string, string> = { openai: "gpt-5.4-nano", gemini: "gemini-3-flash-preview" };
+  const DEFAULT_STT_BACKEND_OPTIONS: SttExecutionBackendOption[] = [
+    {
+      id: "cpu",
+      label: "CPU",
+      description: "現在の安定ルートです。すべてのビルドで利用できます。",
+      experimental: false,
+      available: true,
+    },
+  ];
+  const STT_PARTIAL_MODE_OPTIONS = [
+    {
+      id: "balanced",
+      label: "標準",
+      description: "現在の partial 更新頻度です。応答性を優先します。",
+    },
+    {
+      id: "power_saver",
+      label: "省電",
+      description: "partial 更新間隔を広げて、識別中の消費電力を抑えます。",
+    },
+    {
+      id: "final_only",
+      label: "最省電",
+      description: "partial を止めて final のみ表示します。最も省電力ですが途中経過は出ません。",
+    },
+  ] as const;
 
   let aiEnabled = $state("true");
   let aiProvider = $state("local");
@@ -63,6 +105,9 @@
   let sttModelList = $state<SttModel[]>([]);
   let selectedSttModel = $state("sensevoice-ja-en");
   let sttLanguage = $state("ja");
+  let selectedSttExecutionBackend = $state("cpu");
+  let selectedSttPartialMode = $state("balanced");
+  let sttExecutionBackendOptions = $state<SttExecutionBackendOption[]>(DEFAULT_STT_BACKEND_OPTIONS);
   let sttDownloading = $state(false);
   let sttDownloadProgress = $state<{ modelId: string; name: string; percent: number; downloaded: number; total: number } | null>(null);
   let sttTestBusy = $state(false);
@@ -86,6 +131,14 @@
   let unlistenSttDlProgress: (() => void) | null = null;
 
   function isLocal() { return aiProvider === "local"; }
+
+  function currentSttBackendOption() {
+    return sttExecutionBackendOptions.find((option) => option.id === selectedSttExecutionBackend) || null;
+  }
+
+  function currentSttPartialModeOption() {
+    return STT_PARTIAL_MODE_OPTIONS.find((option) => option.id === selectedSttPartialMode) || STT_PARTIAL_MODE_OPTIONS[0];
+  }
 
   function getConfig(): AiConfig {
     const p = aiProvider;
@@ -223,7 +276,8 @@
   async function loadConfig() {
     try {
       const c = await invoke<any>("get_ai_config");
-      const stt = await invoke<any>("get_stt_config");
+      const stt = await invoke<SttConfig>("get_stt_config");
+      sttExecutionBackendOptions = await invoke<SttExecutionBackendOption[]>("list_stt_execution_backends");
       aiEnabled = c.ai_enabled !== false ? "true" : "false";
       aiProvider = c.provider || "local";
       selectedLocalModel = c.local_model || "qwen3.5-2b";
@@ -237,6 +291,14 @@
       liveSummaryInterval = c.live_summary_interval_minutes != null ? c.live_summary_interval_minutes : 5;
       selectedSttModel = stt?.selected_model || "sensevoice-ja-en";
       sttLanguage = stt?.language || "ja";
+      selectedSttExecutionBackend = stt?.execution_backend || "cpu";
+      selectedSttPartialMode = stt?.partial_mode || "balanced";
+      if (!sttExecutionBackendOptions.some((option) => option.id === selectedSttExecutionBackend && option.available)) {
+        selectedSttExecutionBackend = sttExecutionBackendOptions.find((option) => option.available)?.id || "cpu";
+      }
+      if (!STT_PARTIAL_MODE_OPTIONS.some((option) => option.id === selectedSttPartialMode)) {
+        selectedSttPartialMode = STT_PARTIAL_MODE_OPTIONS[0].id;
+      }
       const nativeAgent = await invoke<{ floating_orb_enabled?: boolean; subtitle_overlay_enabled?: boolean }>("get_native_agent_config");
       floatingOrbEnabled = nativeAgent?.floating_orb_enabled ? "true" : "false";
       lastSavedFloatingOrbEnabled = floatingOrbEnabled;
@@ -254,7 +316,14 @@
     saveBusy = true;
     try {
       await invoke("save_ai_config", { config: getConfig() });
-      await invoke("save_stt_config", { config: { selected_model: selectedSttModel, language: sttLanguage } });
+      await invoke("save_stt_config", {
+        config: {
+          selected_model: selectedSttModel,
+          language: sttLanguage,
+          execution_backend: selectedSttExecutionBackend,
+          partial_mode: selectedSttPartialMode,
+        },
+      });
       await invoke("save_native_agent_config", {
         config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
       });
@@ -304,7 +373,14 @@
     sttTestOk = null;
     sttTestMsg = "STT モデルを読み込み中...";
     try {
-      await invoke("save_stt_config", { config: { selected_model: selectedSttModel, language: sttLanguage } });
+      await invoke("save_stt_config", {
+        config: {
+          selected_model: selectedSttModel,
+          language: sttLanguage,
+          execution_backend: selectedSttExecutionBackend,
+          partial_mode: selectedSttPartialMode,
+        },
+      });
       const r = await invoke<string>("stt_test_model");
       sttTestOk = true;
       sttTestMsg = r;
@@ -577,6 +653,22 @@
 <div class="card-label">AI 音声文字起こし</div>
 <div class="card">
   <div class="row">
+    <span class="row-label">STT 実行バックエンド</span>
+    <div class="row-input">
+      <select bind:value={selectedSttExecutionBackend}>
+        {#each sttExecutionBackendOptions as option}
+          <option value={option.id} disabled={!option.available}>
+            {option.label}{option.experimental ? "（実験）" : ""}{option.available ? "" : " - 利用不可"}
+          </option>
+        {/each}
+      </select>
+      <div class="hint">{currentSttBackendOption()?.description || "現在の安定ルートは CPU です。"}</div>
+      {#if currentSttBackendOption()?.availability_note}
+        <div class="hint">{currentSttBackendOption()?.availability_note}</div>
+      {/if}
+    </div>
+  </div>
+  <div class="row">
     <span class="row-label">AI 音声認識言語</span>
     <div class="row-input">
       <select bind:value={sttLanguage}>
@@ -588,6 +680,18 @@
         <option value="auto">自動検出</option>
       </select>
       <div class="hint">音声認識の対象言語を選択します。「自動検出」は誤認識する場合があります。</div>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">STT 省電モード</span>
+    <div class="row-input">
+      <select bind:value={selectedSttPartialMode}>
+        {#each STT_PARTIAL_MODE_OPTIONS as option}
+          <option value={option.id}>{option.label}</option>
+        {/each}
+      </select>
+      <div class="hint">{currentSttPartialModeOption().description}</div>
+      <div class="hint">保存後は、LIVE 録音中でも次の partial 更新判定からそのまま反映されます。</div>
     </div>
   </div>
   {#each sttModelList as m}

@@ -1,3 +1,6 @@
+#[cfg(all(feature = "stt-static", feature = "stt-shared"))]
+compile_error!("features `stt-static` and `stt-shared` cannot be enabled together");
+
 mod agent;
 mod agent_commands;
 mod agent_error;
@@ -349,6 +352,7 @@ pub fn run() {
             ai::debug_test_notification,
             stt::get_stt_config,
             stt::save_stt_config,
+            stt::list_stt_execution_backends,
             stt::list_stt_models,
             stt::download_stt_model,
             stt::delete_stt_model,

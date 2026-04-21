@@ -1,5 +1,6 @@
 use crate::client;
 use crate::config;
+use crate::stt;
 use serde::Serialize;
 #[cfg(debug_assertions)]
 use std::sync::LazyLock;
@@ -419,9 +420,13 @@ pub struct DebugInfo {
     pub timestamp: String,
     pub os: String,
     pub arch: String,
+    pub stt_configured_backend: String,
+    pub stt_configured_partial_mode: String,
+    pub stt_runtime_backend: String,
+    pub stt_runtime_state: String,
+    pub stt_active_caller: String,
 }
 
-#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn debug_info(state: State<'_, KgcState>) -> Result<DebugInfo, String> {
     let client = state.client.lock().await;
@@ -430,6 +435,7 @@ pub async fn debug_info(state: State<'_, KgcState>) -> Result<DebugInfo, String>
     } else {
         ("not_authenticated".to_string(), String::new())
     };
+    let stt_debug = stt::stt_runtime_debug_info();
 
     Ok(DebugInfo {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -440,6 +446,11 @@ pub async fn debug_info(state: State<'_, KgcState>) -> Result<DebugInfo, String>
         timestamp: chrono_now(),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
+        stt_configured_backend: stt_debug.configured_backend,
+        stt_configured_partial_mode: stt_debug.configured_partial_mode,
+        stt_runtime_backend: stt_debug.runtime_backend,
+        stt_runtime_state: stt_debug.runtime_state,
+        stt_active_caller: stt_debug.active_caller,
     })
 }
 
@@ -502,19 +513,10 @@ pub async fn debug_ping(target: String) -> Result<PingResult, String> {
 
 #[cfg(not(debug_assertions))]
 #[tauri::command]
-pub async fn debug_info() -> Result<DebugInfo, String> {
-    Err("debug commands are not available in release builds".into())
-}
-
-#[cfg(not(debug_assertions))]
-#[tauri::command]
 pub async fn debug_ping() -> Result<PingResult, String> {
     Err("debug commands are not available in release builds".into())
 }
 
-// ============ Syllabus ============
-
-#[cfg(debug_assertions)]
 fn chrono_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -11,6 +11,11 @@ rust-version = "1.80.0"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["stt-static"]
+stt-static = ["sherpa-onnx/static"]
+stt-shared = ["sherpa-onnx/shared"]
+
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
 
@@ -48,7 +53,7 @@ rfd = "0.15"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-sherpa-onnx = "1.12.39"
+sherpa-onnx = { version = "1.12.39", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
@@ -80,7 +85,7 @@ keyring = { version = "3", features = ["windows-native"] }
 webview2-com = "0.38"
 windows-core = "0.61"
 tauri-plugin-single-instance = "2"
-sherpa-onnx = { version = "1.12.39", default-features = false, features = ["static"] }
+sherpa-onnx = { version = "1.12.39", default-features = false }
 llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
 
 [profile.release]

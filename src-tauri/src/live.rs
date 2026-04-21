@@ -279,10 +279,7 @@ fn live_summary_interval_minutes() -> i64 {
         .clamp(5, 30) as i64
 }
 
-fn should_skip_ai_summarization(
-    started_at: DateTime<Local>,
-    now: DateTime<Local>,
-) -> bool {
+fn should_skip_ai_summarization(started_at: DateTime<Local>, now: DateTime<Local>) -> bool {
     now.signed_duration_since(started_at).num_seconds() < MIN_AI_SUMMARIZATION_DURATION_SECS
 }
 

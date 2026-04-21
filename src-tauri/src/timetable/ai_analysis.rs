@@ -616,7 +616,8 @@ fn build_todo_ai_prompt(
         }
     }
 
-    let pending_course_names: HashSet<&str> = pending.iter().map(|t| t.course_name.as_str()).collect();
+    let pending_course_names: HashSet<&str> =
+        pending.iter().map(|t| t.course_name.as_str()).collect();
 
     if !is_local && !raw.luna_activities.is_empty() {
         let luna_id_to_name: HashMap<&str, &str> = raw
@@ -1510,15 +1511,22 @@ fn normalize_todo_task_guide(value: serde_json::Value) -> Option<serde_json::Val
         _ => return None,
     };
 
-    let task_name = value_to_string(remove_first_value(&mut obj, &["task_name", "title", "task"]));
-    let course_name =
-        value_to_string(remove_first_value(&mut obj, &["course_name", "course", "subject"]));
+    let task_name = value_to_string(remove_first_value(
+        &mut obj,
+        &["task_name", "title", "task"],
+    ));
+    let course_name = value_to_string(remove_first_value(
+        &mut obj,
+        &["course_name", "course", "subject"],
+    ));
     if task_name.trim().is_empty() && course_name.trim().is_empty() {
         return None;
     }
 
-    let deadline =
-        value_to_string(remove_first_value(&mut obj, &["deadline", "due", "due_at", "period"]));
+    let deadline = value_to_string(remove_first_value(
+        &mut obj,
+        &["deadline", "due", "due_at", "period"],
+    ));
     let urgency = normalize_todo_urgency(value_to_string(remove_first_value(
         &mut obj,
         &["urgency", "priority"],
@@ -1529,7 +1537,12 @@ fn normalize_todo_task_guide(value: serde_json::Value) -> Option<serde_json::Val
     ));
     let live_note_summary = value_to_string(remove_first_value(
         &mut obj,
-        &["live_note_summary", "note_summary", "note_context", "class_note_summary"],
+        &[
+            "live_note_summary",
+            "note_summary",
+            "note_context",
+            "class_note_summary",
+        ],
     ));
     let study_hints = value_to_string_vec(remove_first_value(
         &mut obj,
@@ -1546,7 +1559,13 @@ fn normalize_todo_task_guide(value: serde_json::Value) -> Option<serde_json::Val
     ));
     let ready_to_use = value_to_string(remove_first_value(
         &mut obj,
-        &["ready_to_use", "starter_output", "draft", "output", "template"],
+        &[
+            "ready_to_use",
+            "starter_output",
+            "draft",
+            "output",
+            "template",
+        ],
     ));
     let estimated_minutes = value_to_i32(remove_first_value(
         &mut obj,
@@ -1594,8 +1613,11 @@ fn normalize_todo_daily_plan_item(value: serde_json::Value) -> Option<serde_json
         return None;
     }
 
-    let free_hours =
-        value_to_f64(remove_first_value(&mut obj, &["free_hours", "free_time", "hours"])).max(0.0);
+    let free_hours = value_to_f64(remove_first_value(
+        &mut obj,
+        &["free_hours", "free_time", "hours"],
+    ))
+    .max(0.0);
     Some(serde_json::json!({
         "label": label,
         "tasks": tasks,

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import { getTaskSnapshot, onTaskChange } from "../../stores";
   import type { TaskInfo } from "../../stores";
@@ -14,6 +15,11 @@
     timestamp: string;
     os: string;
     arch: string;
+    stt_configured_backend: string;
+    stt_configured_partial_mode: string;
+    stt_runtime_backend: string;
+    stt_runtime_state: string;
+    stt_active_caller: string;
   }
 
   interface PingResult {
@@ -45,6 +51,8 @@
   let browserError = $state("");
 
   let notifTestMsg = $state("Selah テスト通知");
+  let unlistenSttState: (() => void) | null = null;
+  let unlistenSttConfigChanged: (() => void) | null = null;
 
   const targets = [
     { name: "KG Course", url: "https://kg-course.kwansei.ac.jp" },
@@ -147,6 +155,16 @@
     const taskTickTimer = setInterval(() => {
       if (activeSection === "tasks") taskTick++;
     }, 2000);
+    void listen("stt-state", () => {
+      void fetchDebugInfo();
+    }).then((fn) => {
+      unlistenSttState = fn;
+    });
+    void listen("stt-config-changed", () => {
+      void fetchDebugInfo();
+    }).then((fn) => {
+      unlistenSttConfigChanged = fn;
+    });
 
     const prebootLogs = (window as any).__SELAH_PREBOOT_LOGS__ as { type: string; message: string; time: string }[] | undefined;
     if (prebootLogs) {
@@ -162,6 +180,8 @@
     void fetchDebugInfo();
 
     return () => {
+      unlistenSttState?.();
+      unlistenSttConfigChanged?.();
       unsubTasks();
       clearInterval(taskTickTimer);
     };
@@ -225,6 +245,17 @@
           </span>
         </div>
       </div>
+
+      <h4>音声認識</h4>
+      {#if debugInfo}
+        <div class="info-grid">
+          <div class="info-row"><span class="info-key">STT Config</span><span class="info-val">{debugInfo.stt_configured_backend}</span></div>
+          <div class="info-row"><span class="info-key">STT Partial</span><span class="info-val">{debugInfo.stt_configured_partial_mode}</span></div>
+          <div class="info-row"><span class="info-key">STT Runtime</span><span class="info-val">{debugInfo.stt_runtime_backend}</span></div>
+          <div class="info-row"><span class="info-key">STT State</span><span class="info-val">{debugInfo.stt_runtime_state}</span></div>
+          <div class="info-row"><span class="info-key">STT Caller</span><span class="info-val mono">{debugInfo.stt_active_caller}</span></div>
+        </div>
+      {/if}
     </div>
 
   {:else if activeSection === "tasks"}

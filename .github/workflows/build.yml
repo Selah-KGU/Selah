@@ -5,6 +5,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      windows_directml_experimental:
+        description: Build the experimental Windows DirectML package instead of the stable Windows release
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # ── Read version (shared) ─────────────────────────────────────────────────
@@ -274,7 +280,20 @@ jobs:
             Write-Host "Updated checksum entry: $relPath -> $newHash"
           }
 
+      - name: Build sherpa-onnx DirectML runtime (experimental)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_directml_experimental }}
+        shell: pwsh
+        working-directory: s
+        run: |
+          .\scripts\build-windows-directml-runtime.ps1 `
+            -WorkRoot "D:\directml-runtime" `
+            -LibStageDir "D:\directml-runtime\lib"
+
+          echo "SHERPA_ONNX_LIB_DIR=D:\directml-runtime\lib" >> $env:GITHUB_ENV
+          echo "SELAH_ENABLE_STT_DIRECTML=1" >> $env:GITHUB_ENV
+
       - name: Build Tauri app (Windows x64)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.windows_directml_experimental) }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -299,3 +318,50 @@ jobs:
           releaseBody: "See the assets for installers."
           releaseDraft: true
           prerelease: false
+
+      - name: Build Tauri app (Windows x64, DirectML experimental)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_directml_experimental }}
+        shell: pwsh
+        working-directory: s
+        env:
+          RUST_BACKTRACE: 1
+          CARGO_TARGET_DIR: D:/t
+          CARGO_INCREMENTAL: 0
+          CARGO_BUILD_JOBS: 1
+          CMAKE_BUILD_PARALLEL_LEVEL: 1
+          CMAKE_VS_GLOBALS: UseMultiToolTask=false;EnforceProcessCountAcrossBuilds=true;CL_MPCount=1
+          CMAKE_MSVC_DEBUG_INFORMATION_FORMAT: Embedded
+          GGML_CCACHE: OFF
+          LLAMA_STATIC_CRT: 1
+          CL: /FS
+          _CL_: /FS
+          CFLAGS: /FS
+          CXXFLAGS: /FS
+        run: |
+          npx tauri build `
+            --target x86_64-pc-windows-msvc `
+            --config src-tauri/tauri.windows.directml.conf.json `
+            --no-default-features `
+            --features stt-shared
+
+      - name: Verify DirectML runtime staging
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_directml_experimental }}
+        shell: pwsh
+        working-directory: s
+        run: |
+          $required = @("sherpa-onnx-c-api.dll", "onnxruntime.dll", "DirectML.dll")
+          foreach ($name in $required) {
+            $path = Join-Path "$PWD\src-tauri\windows-runtime" $name
+            if (-not (Test-Path $path)) {
+              throw "Missing staged DirectML runtime DLL: $path"
+            }
+          }
+
+      - name: Upload DirectML experimental installer
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_directml_experimental }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selah-windows-directml-experimental
+          path: |
+            D:/t/x86_64-pc-windows-msvc/release/bundle/nsis/*
+          if-no-files-found: error

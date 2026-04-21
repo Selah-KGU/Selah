@@ -145,6 +145,7 @@
   let unlistenFinal: (() => void) | null = null;
   let unlistenState: (() => void) | null = null;
   let unlistenError: (() => void) | null = null;
+  let unlistenInfo: (() => void) | null = null;
   let unlistenLive: (() => void) | null = null;
   let unlistenSaved: (() => void) | null = null;
   let unlistenAiConfig: (() => void) | null = null;
@@ -847,6 +848,10 @@
           })();
         }
       });
+      unlistenInfo = await listen<{ message: string; caller: string }>("stt-info", (event) => {
+        if (event.payload.caller !== "live") return;
+        setMessage("success", event.payload.message);
+      });
       unlistenLive = await listen<LiveSessionSnapshot>("live-session-updated", (event) => {
         const len = event.payload.transcript_lines.length;
         // Skip when this update is the same one we just applied via the
@@ -898,6 +903,7 @@
     unlistenFinal?.();
     unlistenState?.();
     unlistenError?.();
+    unlistenInfo?.();
     unlistenLive?.();
     unlistenSaved?.();
     unlistenAiConfig?.();
