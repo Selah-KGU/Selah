@@ -25,6 +25,11 @@ use crate::db::Database;
 use crate::stt;
 use crate::tray;
 
+#[path = "macos_native_agent/ui_support.rs"]
+mod ui_support;
+
+use ui_support::*;
+
 // ── Capsule Dimensions ─────────────────────────────────────────────────────
 
 const CAP_IDLE_W: f64 = 110.0;
@@ -37,7 +42,7 @@ const CAP_MARGIN_BOTTOM: f64 = 28.0;
 const CAP_LISTENING_W: f64 = 360.0;
 const CAP_PROCESSING_W: f64 = 160.0;
 const CAP_RESULT_W: f64 = 380.0;
-const CAP_RESULT_MAX_H: f64 = 220.0;
+const CAP_RESULT_MAX_H: f64 = 280.0;
 
 // Idle: logo + mic
 const LOGO_SIZE: f64 = 28.0;
@@ -59,20 +64,26 @@ const DOT_SIZE: f64 = 8.0;
 const DOT_GAP: f64 = 10.0;
 
 // Result: text + continue button
-const RESULT_PAD_X: f64 = 16.0;
-const RESULT_PAD_Y: f64 = 10.0;
+const RESULT_PAD_X: f64 = 20.0;
+const RESULT_PAD_Y: f64 = 12.0;
 const RESULT_FONT: f64 = 13.0;
 const RESULT_LINE_H: f64 = RESULT_FONT * 1.44;
-const RESULT_MAX_LINES: usize = 8;
+const RESULT_MAX_LINES: usize = 10;
 const RESULT_BTN_SIZE: f64 = 30.0;
-const RESULT_BTN_RIGHT: f64 = 8.0;
+const RESULT_BTN_RIGHT: f64 = 10.0;
 const RESULT_AUTO_CLOSE_SECS: u64 = 20;
 
 // ── Animation ───────────────────────────────────────────────────────────────
 
-const ANIM_MS: u64 = 16;
-const MORPH_FRAMES: u64 = 18;
+const ANIM_MS: u64 = 16; // ~60 fps
 const FADE_IN_FRAMES: u64 = 18;
+
+// Spring physics for morph — tuned for Dynamic-Island-like feel
+const SPRING_STIFFNESS: f64 = 280.0; // Higher = faster snap
+const SPRING_DAMPING: f64 = 22.0; // Higher = less oscillation
+const SPRING_MASS: f64 = 1.0;
+const SPRING_DT: f64 = 0.016; // timestep per frame (60fps)
+const SPRING_SETTLE: f64 = 0.3; // velocity+distance threshold to stop
 
 // ── State ───────────────────────────────────────────────────────────────────
 
@@ -91,7 +102,11 @@ static MORPH_TOKEN: AtomicU64 = AtomicU64::new(0);
 static DOTS_TOKEN: AtomicU64 = AtomicU64::new(0);
 static BORDER_ANIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 static RESULT_CLOSE_TOKEN: AtomicU64 = AtomicU64::new(0);
+static RESULT_GLOW_TOKEN: AtomicU64 = AtomicU64::new(0);
+static CONTENT_FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static IDLE_WAVE_TOKEN: AtomicU64 = AtomicU64::new(0);
+/// Cached system dark-mode flag; cheaply read by animation loops.
+static SYSTEM_IS_DARK: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CapsuleMode {
@@ -118,14 +133,15 @@ struct SharedState {
 struct CapsuleViews {
     panel: Option<Retained<NSPanel>>,
     root_view: Option<Retained<NSView>>,
-    capsule_view: Option<Retained<NSView>>,  // shadow host
+    capsule_view: Option<Retained<NSView>>, // shadow host
     vfx_view: Option<Retained<NSVisualEffectView>>,
-    bg_overlay: Option<Retained<NSView>>,     // dark opacity layer
+    bg_overlay: Option<Retained<NSView>>, // dark opacity layer
 
     // Idle sub-views
     idle_logo_halo: Option<Retained<NSView>>,
     idle_logo: Option<Retained<NSView>>,
     idle_mic_capsule: Option<Retained<NSView>>,
+    idle_separator: Option<Retained<NSView>>,
     idle_wave_bars: Vec<Retained<NSView>>,
 
     // Listening sub-views
@@ -145,17 +161,47 @@ struct CapsuleViews {
     event_monitor: Option<Retained<AnyObject>>,
 }
 
-// ── Easing ──────────────────────────────────────────────────────────────────
+// ── Easing & Spring ─────────────────────────────────────────────────────────
 
+/// Corner radius that never exceeds the idle-capsule pill radius,
+/// so tall result views stay a rounded rectangle instead of an oval.
 #[inline]
-#[allow(dead_code)]
-fn ease_out_cubic(t: f64) -> f64 {
-    1.0 - (1.0 - t).powi(3)
+fn cap_radius(h: f64) -> f64 {
+    (h / 2.0).min(CAP_CORNER)
 }
 
 #[inline]
 fn ease_out_quart(t: f64) -> f64 {
     1.0 - (1.0 - t).powi(4)
+}
+
+/// Single-axis critically-damped spring state.
+#[derive(Clone, Copy)]
+struct Spring {
+    pos: f64,
+    vel: f64,
+    target: f64,
+}
+
+impl Spring {
+    fn new(pos: f64) -> Self {
+        Self {
+            pos,
+            vel: 0.0,
+            target: pos,
+        }
+    }
+    fn set_target(&mut self, t: f64) {
+        self.target = t;
+    }
+    /// Advance one tick. Returns true if still moving.
+    fn tick(&mut self) -> bool {
+        let dx = self.pos - self.target;
+        let accel = (-SPRING_STIFFNESS * dx - SPRING_DAMPING * self.vel) / SPRING_MASS;
+        self.vel += accel * SPRING_DT;
+        self.pos += self.vel * SPRING_DT;
+        dx.abs() > SPRING_SETTLE || self.vel.abs() > SPRING_SETTLE
+    }
 }
 
 // ── Helpers: NSVisualEffectView ─────────────────────────────────────────────
@@ -166,9 +212,8 @@ fn new_vibrancy_view(
     material: NSVisualEffectMaterial,
     radius: f64,
 ) -> Retained<NSVisualEffectView> {
-    let vfx: Retained<NSVisualEffectView> = unsafe {
-        msg_send![NSVisualEffectView::alloc(mtm), initWithFrame: frame]
-    };
+    let vfx: Retained<NSVisualEffectView> =
+        unsafe { msg_send![NSVisualEffectView::alloc(mtm), initWithFrame: frame] };
     vfx.setMaterial(material);
     vfx.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
     vfx.setState(NSVisualEffectState::Active);
@@ -180,9 +225,58 @@ fn new_vibrancy_view(
     vfx
 }
 
+// ── Appearance Change Observer ───────────────────────────────────────────────
+
+/// Registers for macOS distributed notification `AppleInterfaceThemeChangedNotification`.
+/// Must be called from the main thread.
+fn register_appearance_observer(app: AppHandle) {
+    // Store app handle in a leaked Box so the raw pointer lives forever.
+    let app_ptr = Box::into_raw(Box::new(app)) as usize;
+
+    unsafe {
+        // Get NSDistributedNotificationCenter defaultCenter
+        let dnc_cls = AnyClass::get(c"NSDistributedNotificationCenter").unwrap();
+        let dnc: *mut AnyObject = msg_send![dnc_cls, defaultCenter];
+
+        // Notification name
+        let notif_name = NSString::from_str("AppleInterfaceThemeChangedNotification");
+
+        // Use a raw block via block2
+        let block = RcBlock::new(move |_notif: *mut AnyObject| {
+            // Reconstruct (borrow) the AppHandle from the leaked pointer
+            let app_ref = &*(app_ptr as *const AppHandle);
+            let app_clone = app_ref.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                let dark = is_dark_mode_macos();
+                SYSTEM_IS_DARK.store(dark, Ordering::Relaxed);
+                UI.with(|s| {
+                    let s = s.borrow();
+                    if s.panel.is_some() {
+                        apply_theme_to_capsule(&s, Theme { is_dark: dark });
+                    }
+                });
+            });
+        });
+
+        let _: () = msg_send![
+            dnc,
+            addObserverForName: &*notif_name,
+            object: std::ptr::null::<AnyObject>(),
+            queue: std::ptr::null::<AnyObject>(),
+            usingBlock: &*block
+        ];
+    }
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
 pub fn setup(app: &AppHandle) {
+    // Observe macOS appearance changes (Dark ↔ Light) — must run on main thread
+    let app_theme = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        register_appearance_observer(app_theme);
+    });
+
     // stt-final: user finished speaking a phrase
     let app_final = app.clone();
     app.listen("stt-final", move |event| {
@@ -259,8 +353,7 @@ pub fn setup(app: &AppHandle) {
                 let mut sh = SHARED.lock().unwrap();
                 // If already transitioned to processing (stt-final fast-path submitted),
                 // don't submit again.
-                if sh.mode == Some(CapsuleMode::Processing)
-                    || sh.mode == Some(CapsuleMode::Result)
+                if sh.mode == Some(CapsuleMode::Processing) || sh.mode == Some(CapsuleMode::Result)
                 {
                     sh.last_final_text.clear();
                     sh.current_speech.clear();
@@ -355,6 +448,8 @@ pub fn close_orb(app: &AppHandle) -> Result<(), String> {
     DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
     BORDER_ANIM_TOKEN.fetch_add(1, Ordering::Relaxed);
     RESULT_CLOSE_TOKEN.fetch_add(1, Ordering::Relaxed);
+    RESULT_GLOW_TOKEN.fetch_add(1, Ordering::Relaxed);
+    CONTENT_FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
     IDLE_WAVE_TOKEN.fetch_add(1, Ordering::Relaxed);
 
     app.run_on_main_thread(move || {
@@ -373,6 +468,7 @@ pub fn close_orb(app: &AppHandle) -> Result<(), String> {
             s.idle_logo_halo = None;
             s.idle_logo = None;
             s.idle_mic_capsule = None;
+            s.idle_separator = None;
             s.idle_wave_bars.clear();
             s.listen_text = None;
             s.listen_done_btn = None;
@@ -413,15 +509,10 @@ fn build_capsule(s: &mut CapsuleViews, app: &AppHandle) {
     panel.setAcceptsMouseMovedEvents(true);
     panel.setAlphaValue(0.0);
 
-    // Force dark vibrant appearance
-    unsafe {
-        let name = NSString::from_str("NSAppearanceNameVibrantDark");
-        let cls = AnyClass::get(c"NSAppearance").unwrap();
-        let appearance: *mut AnyObject = msg_send![cls, appearanceNamed: &*name];
-        if !appearance.is_null() {
-            let _: () = msg_send![&*panel, setAppearance: appearance];
-        }
-    }
+    // Detect and cache current dark/light mode
+    let dark = is_dark_mode_macos();
+    SYSTEM_IS_DARK.store(dark, Ordering::Relaxed);
+    let theme = Theme { is_dark: dark };
 
     // Root clear view
     let root = NSView::initWithFrame(
@@ -442,10 +533,6 @@ fn build_capsule(s: &mut CapsuleViews, app: &AppHandle) {
     if let Some(layer) = capsule.layer() {
         layer.setCornerRadius(CAP_CORNER);
         layer.setBackgroundColor(Some(&NSColor::clearColor().CGColor()));
-        layer.setShadowColor(Some(&srgb(0, 0, 0, 0.65).CGColor()));
-        layer.setShadowRadius(30.0);
-        layer.setShadowOpacity(0.28);
-        layer.setShadowOffset(NSSize::new(0.0, -10.0));
     }
 
     // Frosted glass base (subtle vibrancy underneath)
@@ -456,22 +543,33 @@ fn build_capsule(s: &mut CapsuleViews, app: &AppHandle) {
         CAP_CORNER,
     );
 
-    // Near-opaque dark overlay on top of vibrancy
+    // Near-opaque overlay on top of vibrancy (color depends on mode)
     let overlay = NSView::initWithFrame(
         NSView::alloc(mtm),
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CAP_IDLE_W, CAP_H)),
     );
     overlay.setWantsLayer(true);
     if let Some(layer) = overlay.layer() {
-        layer.setBackgroundColor(Some(&srgb(18, 18, 22, 0.92).CGColor()));
+        let (r, g, b, a) = theme.overlay_bg();
+        layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
         layer.setCornerRadius(CAP_CORNER);
     }
     vfx.addSubview(&overlay);
 
     // Subtle inner border
     if let Some(vfx_layer) = vfx.layer() {
-        vfx_layer.setBorderColor(Some(&srgb(255, 255, 255, 0.08).CGColor()));
+        let (r, g, b, a) = theme.vfx_border();
+        vfx_layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
         vfx_layer.setBorderWidth(0.5);
+    }
+
+    // Shadow
+    if let Some(layer) = capsule.layer() {
+        let (r, g, b, a) = theme.capsule_shadow();
+        layer.setShadowColor(Some(&srgb(r, g, b, a).CGColor()));
+        layer.setShadowRadius(30.0);
+        layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
+        layer.setShadowOffset(NSSize::new(0.0, -10.0));
     }
 
     capsule.addSubview(&vfx);
@@ -497,6 +595,7 @@ fn build_capsule(s: &mut CapsuleViews, app: &AppHandle) {
 }
 
 fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThreadMarker) {
+    let theme = Theme::current();
     let cy = CAP_H / 2.0;
 
     // Layout: [logo | gap | separator | gap | mic_capsule] — centered in capsule
@@ -509,7 +608,7 @@ fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThr
     let sep_x = logo_x + LOGO_SIZE + gap;
     let mic_x = sep_x + sep_w + gap;
 
-    // Logo glow ring (subtle blue tint) — centered on logo
+    // Logo glow ring
     let halo_offset = (LOGO_HALO_SIZE - LOGO_SIZE) / 2.0;
     let halo = NSView::initWithFrame(
         NSView::alloc(mtm),
@@ -521,7 +620,8 @@ fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThr
     halo.setWantsLayer(true);
     if let Some(layer) = halo.layer() {
         layer.setCornerRadius(LOGO_HALO_SIZE / 2.0);
-        layer.setBackgroundColor(Some(&srgb(74, 158, 255, 0.06).CGColor()));
+        let (r, g, b, a) = theme.halo_idle();
+        layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
     }
     vfx.addSubview(&halo);
 
@@ -557,7 +657,8 @@ fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThr
     );
     sep.setWantsLayer(true);
     if let Some(layer) = sep.layer() {
-        layer.setBackgroundColor(Some(&srgb(255, 255, 255, 0.10).CGColor()));
+        let (r, g, b, a) = theme.separator_color();
+        layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
     }
     vfx.addSubview(&sep);
 
@@ -572,7 +673,8 @@ fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThr
     );
     mic_capsule.setWantsLayer(true);
     if let Some(layer) = mic_capsule.layer() {
-        layer.setBackgroundColor(Some(&srgb(255, 255, 255, 0.05).CGColor()));
+        let (r, g, b, a) = theme.mic_bg();
+        layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
         layer.setCornerRadius(MIC_CAPSULE_H / 2.0);
     }
     vfx.addSubview(&mic_capsule);
@@ -590,7 +692,8 @@ fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThr
         );
         bar.setWantsLayer(true);
         if let Some(layer) = bar.layer() {
-            layer.setBackgroundColor(Some(&srgb(255, 255, 255, 0.70).CGColor()));
+            let (r, g, b, a) = theme.bar_color();
+            layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
             layer.setCornerRadius(BAR_W / 2.0);
         }
         vfx.addSubview(&bar);
@@ -600,10 +703,12 @@ fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThr
     s.idle_logo_halo = Some(halo);
     s.idle_logo = Some(logo_view);
     s.idle_mic_capsule = Some(mic_capsule);
+    s.idle_separator = Some(sep);
     s.idle_wave_bars = bars;
 }
 
 fn build_listening_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThreadMarker) {
+    let theme = Theme::current();
     let text_right = LISTEN_DONE_SIZE + LISTEN_DONE_RIGHT * 2.0;
     let text_w = CAP_LISTENING_W - LISTEN_TEXT_LEFT - text_right;
     // Vertically center the text label
@@ -617,7 +722,7 @@ fn build_listening_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: Ma
             NSSize::new(text_w, text_h),
         ),
         LISTEN_TEXT_FONT,
-        &NSColor::whiteColor(),
+        &theme.label_color(),
         NSTextAlignment::Left,
         2,
     );
@@ -651,10 +756,7 @@ fn build_listening_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: Ma
     let sq_y = (LISTEN_DONE_SIZE - sq) / 2.0;
     let icon = NSView::initWithFrame(
         NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(sq_x, sq_y),
-            NSSize::new(sq, sq),
-        ),
+        NSRect::new(NSPoint::new(sq_x, sq_y), NSSize::new(sq, sq)),
     );
     icon.setWantsLayer(true);
     if let Some(layer) = icon.layer() {
@@ -705,6 +807,7 @@ fn build_result_views(
     cap_w: f64,
     cap_h: f64,
 ) {
+    let theme = Theme::current();
     let text_w = cap_w - RESULT_PAD_X * 2.0 - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
     let text_h = cap_h - RESULT_PAD_Y * 2.0;
     let label = make_wrapping_label(
@@ -715,7 +818,7 @@ fn build_result_views(
             NSSize::new(text_w, text_h),
         ),
         RESULT_FONT,
-        &NSColor::whiteColor(),
+        &theme.label_color(),
         NSTextAlignment::Left,
         RESULT_MAX_LINES,
     );
@@ -771,10 +874,7 @@ fn build_result_views(
     // Invisible placeholder (kept for struct consistency)
     let icon = NSView::initWithFrame(
         NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(0.0, 0.0),
-        ),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
     );
     btn.addSubview(&icon);
 
@@ -808,13 +908,14 @@ fn transition_to_listening(app: &AppHandle) {
             if let Some(vfx) = &vfx {
                 build_listening_views(&mut s, vfx, mtm);
             }
+            // Start content at 0 opacity for fade-in
+            set_content_opacity(&s, 0.0);
         });
     });
 
-    // Morph capsule size
     morph_capsule_to(app.clone(), CAP_LISTENING_W, CAP_H);
+    fade_content_in(app.clone());
 
-    // Start border glow animation
     let token = BORDER_ANIM_TOKEN
         .fetch_add(1, Ordering::Relaxed)
         .wrapping_add(1);
@@ -843,12 +944,14 @@ fn transition_to_processing(app: &AppHandle) {
                 build_processing_views(&mut s, vfx, mtm);
             }
 
-            // Reset capsule shadow to dark neutral
+            // Reset capsule shadow to neutral
+            let theme = Theme::current();
             if let Some(capsule) = &s.capsule_view {
                 if let Some(layer) = capsule.layer() {
-                    layer.setShadowColor(Some(&srgb(0, 0, 0, 0.65).CGColor()));
+                    let (r, g, b, a) = theme.capsule_shadow();
+                    layer.setShadowColor(Some(&srgb(r, g, b, a).CGColor()));
                     layer.setShadowRadius(30.0);
-                    layer.setShadowOpacity(0.28);
+                    layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
                     layer.setShadowOffset(NSSize::new(0.0, -10.0));
                     layer.setBorderWidth(0.0);
                 }
@@ -856,7 +959,8 @@ fn transition_to_processing(app: &AppHandle) {
             // Reset vfx border
             if let Some(vfx) = &s.vfx_view {
                 if let Some(layer) = vfx.layer() {
-                    layer.setBorderColor(Some(&srgb(255, 255, 255, 0.08).CGColor()));
+                    let (r, g, b, a) = theme.vfx_border();
+                    layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
                     layer.setBorderWidth(0.5);
                 }
             }
@@ -866,14 +970,13 @@ fn transition_to_processing(app: &AppHandle) {
     morph_capsule_to(app.clone(), CAP_PROCESSING_W, CAP_H);
 
     // Start dot bounce animation
-    let token = DOTS_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    let token = DOTS_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     start_dots_animation(app.clone(), token);
 }
 
 fn transition_to_result(app: &AppHandle) {
     DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
+    BORDER_ANIM_TOKEN.fetch_add(1, Ordering::Relaxed);
 
     let text = {
         let mut sh = SHARED.lock().unwrap();
@@ -882,8 +985,30 @@ fn transition_to_result(app: &AppHandle) {
     };
     let result_h = compute_result_height(&text);
 
-    let text_for_ui = text.clone();
+    // Flash the border bright on transition
+    let app_flash = app.clone();
     let _ = app.run_on_main_thread(move || {
+        UI.with(|s| {
+            let s = s.borrow();
+            if let Some(capsule) = &s.capsule_view {
+                if let Some(layer) = capsule.layer() {
+                    layer.setShadowColor(Some(&srgb(74, 158, 255, 0.55).CGColor()));
+                    layer.setShadowRadius(40.0);
+                    layer.setShadowOpacity(0.50);
+                }
+            }
+            if let Some(vfx) = &s.vfx_view {
+                if let Some(layer) = vfx.layer() {
+                    layer.setBorderColor(Some(&srgb(74, 158, 255, 0.40).CGColor()));
+                    layer.setBorderWidth(1.5);
+                }
+            }
+        });
+    });
+    // Fade the flash over ~200ms (handled by the result glow anim taking over)
+
+    let text_for_ui = text.clone();
+    let _ = app_flash.run_on_main_thread(move || {
         UI.with(|s| {
             let mut s = s.borrow_mut();
             if s.panel.is_none() {
@@ -905,6 +1030,12 @@ fn transition_to_result(app: &AppHandle) {
 
     morph_capsule_to(app.clone(), CAP_RESULT_W, result_h);
 
+    // Start subtle breathing glow for result mode
+    let glow_token = RESULT_GLOW_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    start_result_glow_anim(app.clone(), glow_token);
+
     // Auto-close timer
     let close_token = RESULT_CLOSE_TOKEN
         .fetch_add(1, Ordering::Relaxed)
@@ -918,14 +1049,14 @@ fn transition_to_result(app: &AppHandle) {
     });
 }
 
-/// Update result text and resize capsule instantly during streaming.
+/// Update result text and smoothly animate capsule to fit new content.
 fn update_result_live(app: &AppHandle, text: String, cap_w: f64, cap_h: f64) {
+    // Update text + internal content frames on main thread
     let _ = app.run_on_main_thread(move || {
         UI.with(|s| {
             let s = s.borrow();
-            let Some(panel) = &s.panel else { return };
 
-            // Update text label and expand its frame to the new height
+            // Update text label
             if let Some(label) = &s.result_text {
                 label.setStringValue(&NSString::from_str(&text));
                 let text_w = cap_w - RESULT_PAD_X * 2.0 - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
@@ -936,7 +1067,7 @@ fn update_result_live(app: &AppHandle, text: String, cap_w: f64, cap_h: f64) {
                 ));
             }
 
-            // Reposition continue button to vertical center of new height
+            // Reposition continue button
             if let Some(btn) = &s.result_btn {
                 let btn_x = cap_w - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
                 let btn_y = (cap_h - RESULT_BTN_SIZE) / 2.0;
@@ -945,44 +1076,11 @@ fn update_result_live(app: &AppHandle, text: String, cap_w: f64, cap_h: f64) {
                     NSSize::new(RESULT_BTN_SIZE, RESULT_BTN_SIZE),
                 ));
             }
-
-            // Resize panel + internal layers — anchor to right edge, grow upward
-            let pf = panel.frame();
-            let right = pf.origin.x + pf.size.width;
-            let new_x = right - cap_w;
-            panel.setFrame_display(
-                NSRect::new(
-                    NSPoint::new(new_x, pf.origin.y),
-                    NSSize::new(cap_w, cap_h),
-                ),
-                true,
-            );
-            let sz = NSSize::new(cap_w, cap_h);
-            let origin = NSPoint::new(0.0, 0.0);
-            let r = cap_h / 2.0;
-            if let Some(root) = &s.root_view {
-                root.setFrame(NSRect::new(origin, sz));
-            }
-            if let Some(capsule) = &s.capsule_view {
-                capsule.setFrame(NSRect::new(origin, sz));
-                if let Some(layer) = capsule.layer() {
-                    layer.setCornerRadius(r);
-                }
-            }
-            if let Some(vfx) = &s.vfx_view {
-                vfx.setFrame(NSRect::new(origin, sz));
-                if let Some(layer) = vfx.layer() {
-                    layer.setCornerRadius(r);
-                }
-            }
-            if let Some(bg) = &s.bg_overlay {
-                bg.setFrame(NSRect::new(origin, sz));
-                if let Some(layer) = bg.layer() {
-                    layer.setCornerRadius(r);
-                }
-            }
         });
     });
+
+    // Animate the capsule frame via spring physics (reuses morph token)
+    morph_capsule_to(app.clone(), cap_w, cap_h);
 }
 
 fn transition_to_idle(app: &AppHandle) {
@@ -992,6 +1090,8 @@ fn transition_to_idle(app: &AppHandle) {
     BORDER_ANIM_TOKEN.fetch_add(1, Ordering::Relaxed);
     DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
     RESULT_CLOSE_TOKEN.fetch_add(1, Ordering::Relaxed);
+    RESULT_GLOW_TOKEN.fetch_add(1, Ordering::Relaxed);
+    CONTENT_FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
 
     {
         let mut sh = SHARED.lock().unwrap();
@@ -1017,12 +1117,14 @@ fn transition_to_idle(app: &AppHandle) {
                 build_idle_views(&mut s, vfx, mtm);
             }
 
-            // Reset capsule shadow to dark neutral
+            // Reset capsule shadow to neutral
+            let theme = Theme::current();
             if let Some(capsule) = &s.capsule_view {
                 if let Some(layer) = capsule.layer() {
-                    layer.setShadowColor(Some(&srgb(0, 0, 0, 0.65).CGColor()));
+                    let (r, g, b, a) = theme.capsule_shadow();
+                    layer.setShadowColor(Some(&srgb(r, g, b, a).CGColor()));
                     layer.setShadowRadius(30.0);
-                    layer.setShadowOpacity(0.28);
+                    layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
                     layer.setShadowOffset(NSSize::new(0.0, -10.0));
                     layer.setBorderWidth(0.0);
                 }
@@ -1030,7 +1132,8 @@ fn transition_to_idle(app: &AppHandle) {
             // Reset vfx border
             if let Some(vfx) = &s.vfx_view {
                 if let Some(layer) = vfx.layer() {
-                    layer.setBorderColor(Some(&srgb(255, 255, 255, 0.08).CGColor()));
+                    let (r, g, b, a) = theme.vfx_border();
+                    layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
                     layer.setBorderWidth(0.5);
                 }
             }
@@ -1062,6 +1165,7 @@ fn clear_mode_views(s: &mut CapsuleViews) {
     s.idle_logo_halo = None;
     s.idle_logo = None;
     s.idle_mic_capsule = None;
+    s.idle_separator = None;
     s.idle_wave_bars.clear();
     s.listen_text = None;
     s.listen_done_btn = None;
@@ -1072,14 +1176,12 @@ fn clear_mode_views(s: &mut CapsuleViews) {
     s.result_btn_icon = None;
 }
 
-// ── Morph Animation ─────────────────────────────────────────────────────────
+// ── Morph Animation (Spring Physics) ─────────────────────────────────────────
 
 fn morph_capsule_to(app: AppHandle, target_w: f64, target_h: f64) {
-    let token = MORPH_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    let token = MORPH_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     tauri::async_runtime::spawn(async move {
-        // Capture current frame ON THE MAIN THREAD (UI is thread-local, only valid there)
+        // Capture current frame ON THE MAIN THREAD
         let (tx, rx) = std::sync::mpsc::sync_channel::<(f64, f64, f64, f64)>(1);
         let tw = target_w;
         let th = target_h;
@@ -1096,68 +1198,77 @@ fn morph_capsule_to(app: AppHandle, target_w: f64, target_h: f64) {
             });
             let _ = tx.send(result);
         });
-        // Brief blocking wait — main thread processes this within one run-loop tick
         let (start_w, start_h, right_edge, bottom_y) =
             rx.recv().unwrap_or((target_w, target_h, 0.0, 0.0));
 
-        for i in 1..=MORPH_FRAMES {
+        let mut sw = Spring::new(start_w);
+        let mut sh = Spring::new(start_h);
+        sw.set_target(target_w);
+        sh.set_target(target_h);
+
+        // Inject a small initial velocity kick for that "punchy" feel
+        let dw = target_w - start_w;
+        let dh = target_h - start_h;
+        sw.vel = dw * 2.5; // velocity boost in direction of travel
+        sh.vel = dh * 2.5;
+
+        let max_frames = 90u64; // safety cap ~1.5s
+        for _ in 0..max_frames {
             if MORPH_TOKEN.load(Ordering::Relaxed) != token {
                 return;
             }
-            let t = ease_out_quart(i as f64 / MORPH_FRAMES as f64);
-            let w = start_w + (target_w - start_w) * t;
-            let h = start_h + (target_h - start_h) * t;
-            let new_x = right_edge - w; // Anchor to right edge
+            let w_moving = sw.tick();
+            let h_moving = sh.tick();
+            if !w_moving && !h_moving {
+                break;
+            }
+            let w = sw.pos;
+            let h = sh.pos;
+            let new_x = right_edge - w;
 
             let _ = app.run_on_main_thread(move || {
-                UI.with(|s| {
-                    let s = s.borrow();
-                    if let Some(panel) = &s.panel {
-                        panel.setFrame_display(
-                            NSRect::new(
-                                NSPoint::new(new_x, bottom_y),
-                                NSSize::new(w, h),
-                            ),
-                            true,
-                        );
-                    }
-                    // Resize internal views
-                    if let Some(root) = &s.root_view {
-                        root.setFrame(NSRect::new(
-                            NSPoint::new(0.0, 0.0),
-                            NSSize::new(w, h),
-                        ));
-                    }
-                    if let Some(capsule) = &s.capsule_view {
-                        capsule.setFrame(NSRect::new(
-                            NSPoint::new(0.0, 0.0),
-                            NSSize::new(w, h),
-                        ));
-                        if let Some(layer) = capsule.layer() {
-                            layer.setCornerRadius(h / 2.0);
-                        }
-                    }
-                    if let Some(vfx) = &s.vfx_view {
-                        vfx.setFrame(NSRect::new(
-                            NSPoint::new(0.0, 0.0),
-                            NSSize::new(w, h),
-                        ));
-                        if let Some(layer) = vfx.layer() {
-                            layer.setCornerRadius(h / 2.0);
-                        }
-                    }
-                    if let Some(bg) = &s.bg_overlay {
-                        bg.setFrame(NSRect::new(
-                            NSPoint::new(0.0, 0.0),
-                            NSSize::new(w, h),
-                        ));
-                        if let Some(layer) = bg.layer() {
-                            layer.setCornerRadius(h / 2.0);
-                        }
-                    }
-                });
+                apply_capsule_frame(w, h, new_x, bottom_y);
             });
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
+        }
+        // Snap to exact target on final frame
+        let final_x = right_edge - target_w;
+        let _ = app.run_on_main_thread(move || {
+            apply_capsule_frame(target_w, target_h, final_x, bottom_y);
+        });
+    });
+}
+
+/// Shared helper: set panel + all internal layers to (w, h) at screen position (x, y).
+fn apply_capsule_frame(w: f64, h: f64, x: f64, y: f64) {
+    UI.with(|s| {
+        let s = s.borrow();
+        if let Some(panel) = &s.panel {
+            panel.setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)), true);
+        }
+        let r = cap_radius(h);
+        let origin = NSPoint::new(0.0, 0.0);
+        let sz = NSSize::new(w, h);
+        if let Some(root) = &s.root_view {
+            root.setFrame(NSRect::new(origin, sz));
+        }
+        if let Some(capsule) = &s.capsule_view {
+            capsule.setFrame(NSRect::new(origin, sz));
+            if let Some(layer) = capsule.layer() {
+                layer.setCornerRadius(r);
+            }
+        }
+        if let Some(vfx) = &s.vfx_view {
+            vfx.setFrame(NSRect::new(origin, sz));
+            if let Some(layer) = vfx.layer() {
+                layer.setCornerRadius(r);
+            }
+        }
+        if let Some(bg) = &s.bg_overlay {
+            bg.setFrame(NSRect::new(origin, sz));
+            if let Some(layer) = bg.layer() {
+                layer.setCornerRadius(r);
+            }
         }
     });
 }
@@ -1216,9 +1327,7 @@ fn install_event_monitor(s: &mut CapsuleViews, app: AppHandle) {
                             }
                             ClickAction::None
                         }
-                        CapsuleMode::Processing => {
-                            ClickAction::None
-                        }
+                        CapsuleMode::Processing => ClickAction::None,
                         CapsuleMode::Result => {
                             // Continue button — vertically centered on right
                             let panel_h = panel.frame().size.height;
@@ -1331,10 +1440,9 @@ fn submit_to_agent(app: AppHandle, text: String) {
     // Register stream listener
     let cid = conv_id.clone();
     let app_for_listener = app.clone();
-    let listener_id =
-        app.listen(format!("agent_stream:{}", conv_id), move |event| {
-            handle_agent_stream(&app_for_listener, &cid, event.payload());
-        });
+    let listener_id = app.listen(format!("agent_stream:{}", conv_id), move |event| {
+        handle_agent_stream(&app_for_listener, &cid, event.payload());
+    });
 
     {
         let mut sh = SHARED.lock().unwrap();
@@ -1515,6 +1623,123 @@ fn start_dots_animation(app: AppHandle, token: u64) {
     });
 }
 
+// ── Content Fade Helpers ────────────────────────────────────────────────────
+
+/// Set layer opacity on all mode-specific content subviews (not the bg_overlay).
+fn set_content_opacity(s: &CapsuleViews, opacity: f64) {
+    let op = opacity as f32;
+    let set = |v: &Retained<NSView>| {
+        if let Some(l) = v.layer() {
+            l.setOpacity(op);
+        }
+    };
+    let set_tf = |v: &Retained<NSTextField>| {
+        if let Some(l) = v.layer() {
+            l.setOpacity(op);
+        } else {
+            // NSTextField may not be layer-backed yet — ensure it is
+            v.setWantsLayer(true);
+            if let Some(l) = v.layer() {
+                l.setOpacity(op);
+            }
+        }
+    };
+    for bar in &s.idle_wave_bars {
+        set(bar);
+    }
+    if let Some(v) = &s.idle_logo {
+        set(v);
+    }
+    if let Some(v) = &s.idle_logo_halo {
+        set(v);
+    }
+    if let Some(v) = &s.idle_mic_capsule {
+        set(v);
+    }
+    if let Some(v) = &s.listen_text {
+        set_tf(v);
+    }
+    if let Some(v) = &s.listen_done_btn {
+        set(v);
+    }
+    for dot in &s.proc_dots {
+        set(dot);
+    }
+    if let Some(v) = &s.result_text {
+        set_tf(v);
+    }
+    if let Some(v) = &s.result_btn {
+        set(v);
+    }
+}
+
+/// Fade all mode-specific content from 0→1 over ~18 frames (~300ms).
+fn fade_content_in(app: AppHandle) {
+    let token = CONTENT_FADE_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    tauri::async_runtime::spawn(async move {
+        for i in 1..=FADE_IN_FRAMES {
+            if CONTENT_FADE_TOKEN.load(Ordering::Relaxed) != token {
+                return;
+            }
+            let alpha = ease_out_quart(i as f64 / FADE_IN_FRAMES as f64);
+            let _ = app.run_on_main_thread(move || {
+                UI.with(|s| {
+                    set_content_opacity(&s.borrow(), alpha);
+                });
+            });
+            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
+        }
+    });
+}
+
+// ── Result Glow Animation ───────────────────────────────────────────────────
+
+fn start_result_glow_anim(app: AppHandle, token: u64) {
+    tauri::async_runtime::spawn(async move {
+        let mut frame: u64 = 0;
+        loop {
+            if RESULT_GLOW_TOKEN.load(Ordering::Relaxed) != token {
+                break;
+            }
+            let t = frame as f64 * 0.04;
+            let _ = app.run_on_main_thread(move || {
+                UI.with(|s| {
+                    let s = s.borrow();
+                    // Gentle breathing shadow
+                    if let Some(capsule) = &s.capsule_view {
+                        if let Some(layer) = capsule.layer() {
+                            let w1 = ((t * 0.5).sin() + 1.0) * 0.5;
+                            let w2 = ((t * 0.8 + 1.0).sin() + 1.0) * 0.5;
+                            let combined = w1 * 0.6 + w2 * 0.4;
+
+                            let r = (40.0 + combined * 25.0) as u8;
+                            let g = (120.0 + combined * 50.0) as u8;
+                            let a = 0.15 + combined * 0.20;
+                            layer.setShadowColor(Some(&srgb(r, g, 255, a).CGColor()));
+                            layer.setShadowRadius(18.0 + combined * 14.0);
+                            layer.setShadowOpacity((0.18 + combined * 0.15) as f32);
+                            layer.setShadowOffset(NSSize::new(0.0, -3.0 - combined * 3.0));
+                        }
+                    }
+                    // Subtle border shimmer
+                    if let Some(vfx) = &s.vfx_view {
+                        if let Some(layer) = vfx.layer() {
+                            let shimmer = ((t * 0.6).sin() + 1.0) * 0.5;
+                            let border_a = 0.06 + shimmer * 0.08;
+                            layer.setBorderColor(Some(&srgb(74, 158, 255, border_a).CGColor()));
+                            layer.setBorderWidth(0.5 + shimmer * 0.3);
+                        }
+                    }
+                });
+            });
+            frame = frame.wrapping_add(1);
+            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
+        }
+    });
+}
+
 // ── Idle Wave Animation (with hover detection) ─────────────────────────────
 
 fn start_idle_wave_anim(app: AppHandle, token: u64) {
@@ -1575,22 +1800,20 @@ fn start_idle_wave_anim(app: AppHandle, token: u64) {
                         }
                     }
 
+                    let theme = Theme::current();
                     // Hover: expand shadow, brighten border
                     if let Some(capsule) = &s.capsule_view {
                         if let Some(layer) = capsule.layer() {
                             if hovering {
-                                layer.setShadowColor(Some(
-                                    &srgb(74, 158, 255, 0.18).CGColor(),
-                                ));
+                                layer.setShadowColor(Some(&srgb(74, 158, 255, 0.18).CGColor()));
                                 layer.setShadowRadius(38.0);
                                 layer.setShadowOpacity(0.35);
                             } else {
                                 let r = 28.0 + ((t * 0.3).sin() + 1.0) * 1.5;
-                                layer.setShadowColor(Some(
-                                    &srgb(0, 0, 0, 0.60).CGColor(),
-                                ));
+                                let (sr, sg, sb, sa) = theme.capsule_shadow();
+                                layer.setShadowColor(Some(&srgb(sr, sg, sb, sa).CGColor()));
                                 layer.setShadowRadius(r);
-                                layer.setShadowOpacity(0.25);
+                                layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
                             }
                         }
                     }
@@ -1598,20 +1821,24 @@ fn start_idle_wave_anim(app: AppHandle, token: u64) {
                     // Hover: brighten inner border
                     if let Some(vfx) = &s.vfx_view {
                         if let Some(layer) = vfx.layer() {
-                            let border_a = if hovering { 0.18 } else { 0.08 };
-                            layer.setBorderColor(Some(
-                                &srgb(255, 255, 255, border_a).CGColor(),
-                            ));
+                            let (r, g, b, a) = if hovering {
+                                theme.vfx_border_hover()
+                            } else {
+                                theme.vfx_border()
+                            };
+                            layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
                         }
                     }
 
                     // Hover: logo halo glow
                     if let Some(halo) = &s.idle_logo_halo {
                         if let Some(layer) = halo.layer() {
-                            let a = if hovering { 0.12 } else { 0.06 };
-                            layer.setBackgroundColor(Some(
-                                &srgb(74, 158, 255, a).CGColor(),
-                            ));
+                            let (r, g, b, a) = if hovering {
+                                theme.halo_hover()
+                            } else {
+                                theme.halo_idle()
+                            };
+                            layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
                         }
                     }
                 });
@@ -1626,15 +1853,19 @@ fn start_idle_wave_anim(app: AppHandle, token: u64) {
 
 fn compute_result_height(text: &str) -> f64 {
     let text_w = CAP_RESULT_W - RESULT_PAD_X * 2.0 - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
-    let effective_chars = text
-        .chars()
-        .map(|c| if c.is_ascii() { 1.0 } else { 1.7 })
-        .sum::<f64>();
     let chars_per_line = (text_w / (RESULT_FONT * 0.74)).max(8.0);
-    let lines = (effective_chars / chars_per_line)
-        .ceil()
-        .max(1.0)
-        .min(RESULT_MAX_LINES as f64);
+
+    // Count lines: each explicit newline is at least one line,
+    // each visual line within a paragraph wraps by char count.
+    let mut total_lines = 0.0_f64;
+    for paragraph in text.split('\n') {
+        let eff = paragraph
+            .chars()
+            .map(|c| if c.is_ascii() { 1.0 } else { 1.7 })
+            .sum::<f64>();
+        total_lines += (eff / chars_per_line).ceil().max(1.0);
+    }
+    let lines = total_lines.max(1.0).min(RESULT_MAX_LINES as f64);
     let text_h = lines * RESULT_LINE_H + RESULT_PAD_Y * 2.0;
     text_h.clamp(CAP_H, CAP_RESULT_MAX_H)
 }
@@ -1664,73 +1895,4 @@ fn base_panel(mtm: MainThreadMarker, rect: NSRect, shadow: bool) -> Retained<NSP
     );
     unsafe { panel.setReleasedWhenClosed(false) };
     panel
-}
-
-fn visible_frame(mtm: MainThreadMarker) -> NSRect {
-    NSScreen::mainScreen(mtm)
-        .as_ref()
-        .map(|s| s.visibleFrame())
-        .unwrap_or_else(|| NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0)))
-}
-
-fn make_wrapping_label(
-    mtm: MainThreadMarker,
-    text: &str,
-    frame: NSRect,
-    font_size: f64,
-    color: &NSColor,
-    align: NSTextAlignment,
-    max_lines: usize,
-) -> Retained<NSTextField> {
-    let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-    // labelWithString sets translatesAutoresizingMaskIntoConstraints=false (auto-layout).
-    // We use frame-based positioning, so re-enable it to honour setFrame.
-    label.setTranslatesAutoresizingMaskIntoConstraints(true);
-    label.setFrame(frame);
-    label.setTextColor(Some(color));
-    label.setFont(Some(&NSFont::systemFontOfSize(font_size)));
-    label.setAlignment(align);
-    label.setMaximumNumberOfLines(max_lines as isize);
-    label.setPreferredMaxLayoutWidth(frame.size.width);
-    if let Some(cell) = label.cell() {
-        use objc2_app_kit::NSLineBreakMode;
-        cell.setUsesSingleLineMode(false);
-        cell.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
-    }
-    label
-}
-
-// ── Palette ─────────────────────────────────────────────────────────────────
-
-fn srgb(r: u8, g: u8, b: u8, a: f64) -> Retained<NSColor> {
-    NSColor::colorWithSRGBRed_green_blue_alpha(
-        f64::from(r) / 255.0,
-        f64::from(g) / 255.0,
-        f64::from(b) / 255.0,
-        a,
-    )
-}
-
-fn load_app_logo() -> Option<Retained<NSImage>> {
-    static LOGO_BYTES: &[u8] = include_bytes!("../icons/icon.png");
-    let data = unsafe {
-        NSData::dataWithBytes_length(
-            LOGO_BYTES.as_ptr() as *const core::ffi::c_void,
-            LOGO_BYTES.len(),
-        )
-    };
-    NSImage::initWithData(NSImage::alloc(), &data)
-}
-
-fn uuid_v4() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8],
-        bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-    )
 }

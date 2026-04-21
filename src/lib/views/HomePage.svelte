@@ -2,41 +2,27 @@
   import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
-  import type { NotificationsData, NotificationEntry, AiChatMessage } from "../stores";
+  import type { NotificationsData, NotificationEntry } from "../stores";
   import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, fetchWeather } from "../api";
   import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
   import type { LunaTodoItem, LunaNotification, ScheduleResponse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
   import { invoke } from "@tauri-apps/api/core";
   import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
-
-  // ============ Types ============
-
-  interface UnifiedNotif {
-    source: "kgc" | "luna" | "kwic";
-    title: string;
-    category: string;
-    date: string;
-    url?: string;
-    body?: string;
-    // KWIC detail params
-    kwicId?: string;
-    informationType?: string;
-    personCategoryCd?: string;
-    categoryCd?: string;
-  }
-
-  interface AiNotifResult {
-    summary: string;
-    important: { title: string; reason: string; index: number }[];
-    suggestions: string[];
-  }
-
-  interface AiNotifCache {
-    timestamp: number;
-    result: AiNotifResult;
-    sources: UnifiedNotif[];
-  }
+  import {
+    AI_CACHE_KEY,
+    AI_REFRESH_MS,
+    buildLocalSystemPrompt,
+    daysUntil,
+    getGreetingSlot,
+    getRecentNotifications,
+    getWeatherInfo,
+    parseAiNotifResponse,
+    pickStableGreeting,
+    type AiNotifCache,
+    type AiNotifResult,
+    type UnifiedNotif,
+  } from "./home/homeData";
 
   // ============ State ============
 
@@ -52,11 +38,6 @@
   let todayDate = $state(new Date());
   let loading = $state(true);
   let loadInProgress = false;
-
-  function greetingSlot(d: Date) {
-    const h = d.getHours();
-    return h < 5 ? 0 : h < 11 ? 1 : h < 17 ? 2 : 3;
-  }
 
   // KWIC subportal state
   let subportalData = $state<KwicSubportalData | null>(null);
@@ -103,39 +84,6 @@
 
   // ============ Derived ============
 
-  // ============ Weather ============
-
-  const WMO_DESCRIPTIONS: Record<number, { label: string; icon: string }> = {
-    0: { label: "快晴", icon: "☀️" },
-    1: { label: "晴れ", icon: "🌤" },
-    2: { label: "くもり", icon: "⛅" },
-    3: { label: "曇天", icon: "☁️" },
-    45: { label: "霧", icon: "🌫" },
-    48: { label: "霧氷", icon: "🌫" },
-    51: { label: "小雨", icon: "🌦" },
-    53: { label: "雨", icon: "🌧" },
-    55: { label: "強い雨", icon: "🌧" },
-    56: { label: "着氷性の霧雨", icon: "🌧" },
-    57: { label: "着氷性の雨", icon: "🌧" },
-    61: { label: "小雨", icon: "🌦" },
-    63: { label: "雨", icon: "🌧" },
-    65: { label: "大雨", icon: "🌧" },
-    66: { label: "着氷性の雨", icon: "🧊" },
-    67: { label: "着氷性の大雨", icon: "🧊" },
-    71: { label: "小雪", icon: "🌨" },
-    73: { label: "雪", icon: "❄️" },
-    75: { label: "大雪", icon: "❄️" },
-    77: { label: "霧雪", icon: "🌨" },
-    80: { label: "にわか雨", icon: "🌦" },
-    81: { label: "にわか雨", icon: "🌧" },
-    82: { label: "激しいにわか雨", icon: "⛈" },
-    85: { label: "にわか雪", icon: "🌨" },
-    86: { label: "激しいにわか雪", icon: "❄️" },
-    95: { label: "雷雨", icon: "⛈" },
-    96: { label: "雷雨（雹）", icon: "⛈" },
-    99: { label: "激しい雷雨（雹）", icon: "⛈" },
-  };
-
   let weather = $state<WeatherData | null>(null);
   let tomorrowWeather = $state<WeatherData["tomorrow"]>(null);
 
@@ -165,37 +113,7 @@
     if (tomorrowWeather) startWeatherCycle();
   }
 
-  function getWeatherInfo(code: number) {
-    return WMO_DESCRIPTIONS[code] ?? { label: "不明", icon: "🌡" };
-  }
-
-  const GREETINGS: Record<string, string[]> = {
-    night: [
-      "おやすみなさい", "夜更かしはほどほどに",
-      "明日に備えよう", "そろそろ休もう",
-    ],
-    morning: [
-      "おはよう", "いい朝だね",
-      "今日もがんばろう", "いい一日にしよう",
-    ],
-    day: [
-      "こんにちは", "午後もがんばろう",
-      "もうひとふんばり", "いい調子",
-    ],
-    evening: [
-      "おつかれさま", "今日もおつかれ",
-      "ゆっくり休んでね", "もうひと息",
-    ],
-  };
-
-  // Pick a greeting that stays stable per calendar day
-  let greeting = $derived.by(() => {
-    const h = todayDate.getHours();
-    const slot = h < 5 ? "night" : h < 11 ? "morning" : h < 17 ? "day" : "evening";
-    const pool = GREETINGS[slot];
-    const daySeed = todayDate.getFullYear() * 400 + todayDate.getMonth() * 32 + todayDate.getDate();
-    return pool[daySeed % pool.length];
-  });
+  let greeting = $derived.by(() => pickStableGreeting(todayDate));
 
   let dateLabel = $derived.by(() => {
     const m = todayDate.getMonth() + 1;
@@ -285,43 +203,7 @@
       });
   });
 
-  let recentNotifs = $derived.by(() => {
-    const merged: UnifiedNotif[] = [];
-    const seen = new Set<string>();
-    const addUniq = (n: UnifiedNotif) => {
-      // Deduplicate by source + normalized title + date
-      const key = `${n.source}|${n.title.trim().replace(/\s+/g, "")}|${n.date}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      merged.push(n);
-    };
-    for (const n of kgcNotifs) {
-      addUniq({ source: "kgc", title: n.title, category: n.category, date: n.date });
-    }
-    for (const n of lunaNotifs) {
-      addUniq({ source: "luna", title: n.content, category: n.module || n.course_info, date: n.date, url: n.url });
-    }
-    // KWIC notification sections
-    if (kwicHome) {
-      const notifSections = kwicHome.sections.filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ");
-      for (const sec of notifSections) {
-        for (const item of sec.items) {
-          addUniq({
-            source: "kwic", title: item.title, category: item.category || sec.title, date: item.date,
-            kwicId: item.id, informationType: item.information_type,
-            personCategoryCd: item.person_category_cd, categoryCd: item.category_cd,
-          });
-        }
-      }
-    }
-    // Sort by date descending (newer first), take 5
-    merged.sort((a, b) => {
-      const da = new Date(a.date.replace(/\//g, "-")).getTime() || 0;
-      const db = new Date(b.date.replace(/\//g, "-")).getTime() || 0;
-      return db - da;
-    });
-    return merged.slice(0, 3);
-  });
+  let recentNotifs = $derived.by(() => getRecentNotifications(kgcNotifs, lunaNotifs, kwicHome));
 
   let totalUpcoming = $derived(urgentTodos.length);
 
@@ -372,7 +254,7 @@
   function tickClock() {
     const prev = now;
     now = new Date();
-    if (now.getDate() !== prev.getDate() || greetingSlot(now) !== greetingSlot(prev)) {
+    if (now.getDate() !== prev.getDate() || getGreetingSlot(now) !== getGreetingSlot(prev)) {
       todayDate = now;
     }
   }
@@ -530,9 +412,6 @@
     loadInProgress = false;
   }
 
-  const AI_CACHE_KEY = "ai-notif-cache";
-  const AI_REFRESH_MS = 12 * 60 * 60 * 1000; // 12 hours
-
   async function checkAiConfig() {
     try {
       if (get(sessionExpired)) return;
@@ -563,52 +442,6 @@
       } catch { /* ignore bad cache */ }
     }
     await fetchAiNotifs();
-  }
-
-  function buildLocalSystemPrompt(nowStr: string, lang: string): string {
-    let p = `あなたは関西学院大学の学生向けパーソナル通知アシスタントです。
-学生のプロフィール（学部・キャンパス・履修科目・課題状況）と通知一覧を受け取り、今この学生にとって重要な情報をJSON形式で出力します。
-
-現在の日時: ${nowStr}
-この日時がすべての判断の基準です。
-
-# キャンパスと学部
-- 西宮上ケ原（NUC）：神学部、文学部、社会学部、法学部、経済学部、商学部、人間福祉学部、国際学部、教育学部
-- 神戸三田（KSC）：総合政策学部、理学部、工学部、生命環境学部、建築学部
-NUCとKSCは約40km離れており、別キャンパスの通知は基本無関係です。
-
-# 判定基準
-各通知について以下を判定してください：
-- 日程が現在より前 → 終了済み → 除外
-- 学生の所属キャンパス・学部と無関係 → 除外
-- 各通知は独立です。似たタイトルでも各通知の「内容:」から個別に日程を読み取ること
-- 「内容:」がない通知はタイトルと日付で判断
-
-# 出力ルール
-
-summary（80〜150字）:
-- 除外した通知には言及しない
-- 課題の締切は「あとN日」と残り日数を書く
-- 具体的な情報（教室名・時間・場所）を引用する
-
-important（最大5件）:
-- 除外した通知は入れない
-- indexは通知一覧の番号（1始まり）と一致させる
-- 優先: 履修科目関連 > 学部関連 > キャンパス内イベント > 全学共通
-
-suggestions（最大3件、各10〜20字）:
-- 通知の繰り返しではなく、一歩踏み込んだ行動提案を書く
-- カジュアルな口調（丁寧語・命令形は使わない）
-- 終了済みイベントのsuggestionsは書かない
-- 良い例:「レポートは構成だけ先に書いとくといいよ」
-- 悪い例:「〇〇のクイズ、あと3日」（これはsummaryの内容）
-
-# 出力形式
-以下のJSONのみ出力。JSON以外のテキスト・説明・前置きは絶対に書かないでください。
-
-{"summary":"...","important":[{"title":"20字以内","reason":"15字以内","index":番号}],"suggestions":["..."]}`;
-    if (lang) p += `\n\nsummary, title, reason, suggestionsは${lang}で書くこと。`;
-    return p;
   }
 
   async function fetchAiNotifs() {
@@ -887,30 +720,13 @@ suggestionsのルール：
   "suggestions": ["10〜20字の行動提案"]
 }${aiReplyLanguage ? `\n\n# 言語指定\nsummary, important内のtitle/reason, suggestionsの中身は必ず${aiReplyLanguage}で書くこと。_checkは日本語のままでよい。` : ""}`;
 
-      // Helper: strip <think>...</think> blocks from local model responses
-      const sanitizeAiResponse = (text: string): string => {
-        let s = text.replace(/<think[\s\S]*?<\/think>/gi, "");
-        s = s.replace(/<think>/gi, "").replace(/<\/think>/gi, "");
-        return s.trim();
-      };
-
-      // Helper: parse AI JSON response
-      const parseAiResponse = (raw: string): AiNotifResult => {
-        const cleaned = sanitizeAiResponse(raw);
-        const m = cleaned.match(/\{[\s\S]*\}/);
-        if (!m) throw new Error("AI応答の解析に失敗しました");
-        const parsed = JSON.parse(m[0]);
-        delete parsed._check;
-        return parsed;
-      };
-
       const fullNotifText = fmtNotifs(allNotifs, 0);
       const fullUserMsg = `${baseCtx}\n\n通知一覧（${allNotifs.length}件）:\n${fullNotifText}`;
 
       let result: AiNotifResult;
       console.log("[AI] Single request: provider=%s, user msg %d chars, body-enriched %d", aiProvider, fullUserMsg.length, allNotifs.filter(n => n.body).length);
       const raw = await aiChat([{ role: "system", content: systemPrompt }, { role: "user", content: fullUserMsg }]);
-      result = parseAiResponse(raw);
+      result = parseAiNotifResponse(raw);
 
       aiNotifResult = result;
       localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result, sources: aiNotifSources }));
@@ -936,11 +752,6 @@ suggestionsのルール：
     } catch { /* keep existing */ }
     if (aiNotifBlocked2b) return;
     await loadAiNotifs(true);
-  }
-
-  function daysUntil(deadline: string): number {
-    const d = new Date(deadline.replace(/\//g, "-"));
-    return Math.ceil((d.getTime() - now.getTime()) / 86400000);
   }
 
   function navigate(tab: string) {
@@ -1249,7 +1060,7 @@ suggestionsのルール：
           </div>
         {/each}
         {#each urgentTodos as item}
-          {@const d = daysUntil(item.deadline)}
+          {@const d = daysUntil(item.deadline, now)}
           <button class="tile tile-dl" class:tile-crit={d <= 1} class:tile-warn={d > 1 && d <= 3} onclick={() => openTodo(item)}>
             <div class="dl-header">
               <span class="dl-course">{item.course_name}</span>

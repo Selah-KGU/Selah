@@ -251,22 +251,18 @@ fn format_recent_summary_context(summaries: &[LiveSummaryChunk], limit: usize) -
         .join("\n\n")
 }
 
-fn live_summary_language_hint(reply_language: &str) -> &'static str {
-    match reply_language {
-        "zh" => "\n\n重要: 输出全文必须使用中文（简体）。标题、要点、补充说明、整体总结都使用中文。",
-        "en" => "\n\nIMPORTANT: Write the entire output in English, including headings, bullet points, and explanations.",
-        "ko" => "\n\n중요: 출력 전체를 한국어로 작성하세요. 제목, 핵심 포인트, 보충 설명, 전체 요약을 모두 한국어로 작성합니다.",
-        _ => "",
-    }
-}
-
 async fn summarize_chunk(
     course: &LiveCourseInfo,
     lines: &[LiveTranscriptLine],
     recent_summaries: &[LiveSummaryChunk],
 ) -> Result<String, String> {
     let cfg = live_ai_config()?;
-    let language_hint = live_summary_language_hint(&cfg.reply_language);
+    let language_hint = crate::ai::reply_language_hint(
+        &cfg.reply_language,
+        "\n\n重要: 输出全文必须使用中文（简体）。标题、要点、补充说明、整体总结都使用中文。",
+        "\n\nIMPORTANT: Write the entire output in English, including headings, bullet points, and explanations.",
+        "\n\n중요: 출력 전체를 한국어로 작성하세요. 제목, 핵심 포인트, 보충 설명, 전체 요약을 모두 한국어로 작성합니다.",
+    );
     let transcript = lines
         .iter()
         .map(|line| format!("- [{}] {}", line.at, line.text))
@@ -302,7 +298,12 @@ async fn summarize_overall(
     transcript_lines: &[LiveTranscriptLine],
 ) -> Result<String, String> {
     let cfg = live_ai_config()?;
-    let language_hint = live_summary_language_hint(&cfg.reply_language);
+    let language_hint = crate::ai::reply_language_hint(
+        &cfg.reply_language,
+        "\n\n重要: 输出全文必须使用中文（简体）。标题、要点、补充说明、整体总结都使用中文。",
+        "\n\nIMPORTANT: Write the entire output in English, including headings, bullet points, and explanations.",
+        "\n\n중요: 출력 전체를 한국어로 작성하세요. 제목, 핵심 포인트, 보충 설명, 전체 요약을 모두 한국어로 작성합니다.",
+    );
     let summary_text = summaries
         .iter()
         .map(|chunk| format!("## {}\n{}\n{}", chunk.title, chunk.range_label, chunk.body))

@@ -483,6 +483,62 @@
   .back-btn svg { transform:rotate(90deg); width:12px; height:12px; }
   .status { font-size:12px; color:var(--text-tertiary); margin-top:16px; text-align:center; }
 
+  /* ── Attendance Modal ── */
+  .att-modal-overlay {
+    position:fixed; inset:0; z-index:1000;
+    background:rgba(0,0,0,0.4);
+    display:flex; align-items:center; justify-content:center;
+    padding:24px;
+    backdrop-filter:blur(6px);
+    -webkit-backdrop-filter:blur(6px);
+  }
+  .att-modal-card {
+    background:var(--card-bg); border-radius:18px;
+    box-shadow:0 16px 64px rgba(0,0,0,0.28);
+    width:100%; max-width:380px;
+    overflow:hidden;
+  }
+  .att-modal-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 18px 0;
+  }
+  .att-modal-title { font-size:16px; font-weight:700; color:var(--text-primary); }
+  .att-modal-close {
+    background:var(--bg-tertiary); border:none; cursor:pointer;
+    width:26px; height:26px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; color:var(--text-secondary); line-height:1; padding:0;
+    flex-shrink:0;
+  }
+  .att-modal-close:hover { background:var(--border-strong); color:var(--text-primary); }
+  .att-modal-meta {
+    margin:12px 18px 0;
+    padding:10px 12px;
+    background:var(--bg-secondary);
+    border-radius:10px;
+    font-size:12px;
+    flex-direction:column; gap:4px;
+  }
+  .att-modal-meta-row { display:flex; gap:8px; }
+  .att-modal-meta-label { font-weight:600; color:var(--text-tertiary); min-width:70px; flex-shrink:0; }
+  .att-modal-meta-value { color:var(--text-secondary); }
+  .att-modal-body { padding:14px 18px 0; display:flex; flex-direction:column; gap:12px; }
+  .att-field-label {
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:12px; font-weight:600; color:var(--text-secondary);
+    margin-bottom:5px;
+  }
+  .att-required {
+    font-size:10px; font-weight:700; padding:1px 5px; border-radius:4px;
+    background:var(--red-bg); color:var(--red);
+  }
+  .att-char-count { font-size:11px; font-weight:500; color:var(--text-tertiary); }
+  .att-comment-textarea { min-height:76px; resize:none; }
+  .att-modal-actions {
+    display:flex; gap:8px; justify-content:flex-end;
+    padding:14px 18px 18px;
+  }
+
   /* Thread Posts */
   .post-list { margin-top:16px; }
   .post-list-header { font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:10px; padding-bottom:6px; border-bottom:0.5px solid var(--border); }
@@ -1680,30 +1736,26 @@
           var targetId = att.idnumber || idnumber;
           if (!targetId) return;
 
-          var oneTimePass = window.prompt('\u8acb\u8f38\u5165\u51fa\u5e2d\u5bc6\u78bc (oneTimePass)') || '';
-          if (!oneTimePass.trim()) {
-            showStatus('\u5df2\u53d6\u6d88\u51fa\u5e2d\u767b\u9332');
-            return;
-          }
-          var comment = window.prompt('\u8a55\u8ad6 (\u53ef\u9078)') || '';
+          var result = await openAttendanceModal(att);
+          if (!result) { showStatus('出勤登録をキャンセルしました'); return; }
 
           var orig = btn.textContent;
           btn.disabled = true;
-          btn.textContent = '\u9001\u4fe1\u4e2d...';
+          btn.textContent = '送信中...';
           try {
             var msg = await invoke('luna_submit_attendance', {
               idnumber: targetId,
               attendanceId: att.attendance_id,
-              oneTimePass: oneTimePass,
-              comment: comment
+              oneTimePass: result.pass,
+              comment: result.comment
             });
-            showStatus(msg || '\u51fa\u5e2d\u3092\u767b\u9332\u3057\u307e\u3057\u305f', 'var(--green)');
+            showStatus(msg || '出席を登録しました', 'var(--green)');
             var fresh = await invoke('luna_fetch_course_detail', { idnumber: targetId });
             renderCourseDetail(fresh, targetId, kgcPath);
           } catch (e) {
             btn.disabled = false;
-            btn.textContent = orig || '\u7f72\u540d\u767b\u5f55';
-            showStatus('\u51fa\u5e2d\u767b\u9332\u30a8\u30e9\u30fc: ' + String(e));
+            btn.textContent = orig || '署名登録';
+            showStatus('出席登録エラー: ' + String(e));
           }
         });
       });
@@ -1901,22 +1953,21 @@
           var idx = parseInt(btn.dataset.attIdx, 10);
           var att = list[idx];
           if (!att || !att.attendance_id) return;
-          var oneTimePass = window.prompt('\u8acb\u8f38\u5165\u51fa\u5e2d\u5bc6\u78bc (oneTimePass)') || '';
-          if (!oneTimePass.trim()) { showStatus('\u5df2\u53d6\u6d88\u51fa\u5e2d\u767b\u9332'); return; }
-          var comment = window.prompt('\u8a55\u8ad6 (\u53ef\u9078)') || '';
+          var result = await openAttendanceModal(att);
+          if (!result) { showStatus('出勤登録をキャンセルしました'); return; }
           var orig = btn.textContent;
           btn.disabled = true;
-          btn.textContent = '\u9001\u4fe1\u4e2d...';
+          btn.textContent = '送信中...';
           try {
             var targetId = att.idnumber || idnumber;
-            var msg = await invoke('luna_submit_attendance', { idnumber: targetId, attendanceId: att.attendance_id, oneTimePass: oneTimePass, comment: comment });
-            showStatus(msg || '\u51fa\u5e2d\u3092\u767b\u9332\u3057\u307e\u3057\u305f', 'var(--green)');
+            var msg = await invoke('luna_submit_attendance', { idnumber: targetId, attendanceId: att.attendance_id, oneTimePass: result.pass, comment: result.comment });
+            showStatus(msg || '出席を登録しました', 'var(--green)');
             var fresh = await invoke('luna_fetch_course_detail', { idnumber: targetId });
             renderAttendanceDetail(fresh, targetId);
           } catch (e) {
             btn.disabled = false;
-            btn.textContent = orig || '\u7f72\u540d\u767b\u5f55';
-            showStatus('\u51fa\u5e2d\u767b\u9332\u30a8\u30e9\u30fc: ' + String(e));
+            btn.textContent = orig || '署名登録';
+            showStatus('出席登録エラー: ' + String(e));
           }
         });
       });
@@ -2420,6 +2471,117 @@
       var inv = window.__TAURI__?.core?.invoke;
       if (inv) inv('kwic_open_link', { url: href, title: a.textContent.trim() || href });
     }, true);
+  </script>
+
+  <!-- ── Attendance Modal ── -->
+  <div id="att-modal" class="att-modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="att-modal-title-txt">
+    <div class="att-modal-card">
+      <div class="att-modal-header">
+        <span class="att-modal-title" id="att-modal-title-txt">出席登録</span>
+        <button class="att-modal-close" id="att-modal-close" type="button" aria-label="閉じる">✕</button>
+      </div>
+      <div id="att-modal-meta" class="att-modal-meta" style="display:none"></div>
+      <div class="att-modal-body">
+        <div>
+          <div class="att-field-label">パスワード <span class="att-required">必須</span></div>
+          <input type="text" id="att-pass-input" class="text-input" placeholder="担当教員に確認してください" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <div class="att-field-label">コメント <span class="att-char-count"><span id="att-comment-count">0</span> / 1300</span></div>
+          <textarea id="att-comment-input" class="text-input att-comment-textarea" maxlength="1300" placeholder="任意"></textarea>
+        </div>
+      </div>
+      <div class="att-modal-actions">
+        <button class="btn secondary" id="att-modal-cancel" type="button">キャンセル</button>
+        <button class="btn primary" id="att-modal-submit" type="button">出席登録</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // ── Attendance Modal Controller ──
+  (function() {
+    var modal, closeBtn, metaDiv, passInput, commentInput, commentCount, cancelBtn, submitBtn;
+    var _resolveModal = null;
+
+    function init() {
+      modal       = document.getElementById('att-modal');
+      closeBtn    = document.getElementById('att-modal-close');
+      metaDiv     = document.getElementById('att-modal-meta');
+      passInput   = document.getElementById('att-pass-input');
+      commentInput= document.getElementById('att-comment-input');
+      commentCount= document.getElementById('att-comment-count');
+      cancelBtn   = document.getElementById('att-modal-cancel');
+      submitBtn   = document.getElementById('att-modal-submit');
+
+      closeBtn.addEventListener('click', dismiss);
+      cancelBtn.addEventListener('click', dismiss);
+      modal.addEventListener('click', function(e) { if (e.target === modal) dismiss(); });
+      commentInput.addEventListener('input', function() {
+        commentCount.textContent = commentInput.value.length;
+      });
+      submitBtn.addEventListener('click', function() {
+        var pass = passInput.value.trim();
+        if (!pass) { passInput.style.borderColor = 'var(--red)'; passInput.focus(); return; }
+        if (_resolveModal) _resolveModal({ pass: pass, comment: commentInput.value });
+      });
+      passInput.addEventListener('input', function() { passInput.style.borderColor = ''; });
+      document.addEventListener('keydown', function(e) {
+        if (modal && modal.style.display !== 'none' && e.key === 'Escape') dismiss();
+      });
+    }
+
+    function dismiss() {
+      if (modal) modal.style.display = 'none';
+      if (_resolveModal) { var r = _resolveModal; _resolveModal = null; r(null); }
+    }
+
+    // Returns Promise<{pass, comment}|null>
+    window.openAttendanceModal = async function(att) {
+      if (!modal) init();
+      passInput.value = ''; passInput.style.borderColor = '';
+      commentInput.value = ''; commentCount.textContent = '0';
+      metaDiv.style.display = 'none'; metaDiv.innerHTML = '';
+      submitBtn.disabled = false;
+      modal.style.display = 'flex';
+      passInput.focus();
+
+      // Prefetch time-window info in the background
+      var invoke = window.__TAURI__?.core?.invoke;
+      if (invoke && att && att.idnumber && att.attendance_id) {
+        invoke('luna_prefetch_attendance_form', {
+          idnumber: att.idnumber,
+          attendanceId: att.attendance_id
+        }).then(function(info) {
+          if (!info || info.already_registered || modal.style.display === 'none') return;
+          var rows = '';
+          if (info.open_start || info.open_end) {
+            rows += '<div class="att-modal-meta-row">'
+              + '<span class="att-modal-meta-label">受付時間</span>'
+              + '<span class="att-modal-meta-value">' + escapeHtml(info.open_start || '') + ' ～ ' + escapeHtml(info.open_end || '') + '</span>'
+              + '</div>';
+          }
+          if (info.late_start || info.late_end) {
+            rows += '<div class="att-modal-meta-row">'
+              + '<span class="att-modal-meta-label">遅刻時間</span>'
+              + '<span class="att-modal-meta-value">' + escapeHtml(info.late_start || '') + ' ～ ' + escapeHtml(info.late_end || '') + '</span>'
+              + '</div>';
+          }
+          if (info.content) {
+            rows += '<div class="att-modal-meta-row">'
+              + '<span class="att-modal-meta-label">内容</span>'
+              + '<span class="att-modal-meta-value">' + escapeHtml(info.content) + '</span>'
+              + '</div>';
+          }
+          if (rows) { metaDiv.innerHTML = rows; metaDiv.style.display = 'flex'; }
+        }).catch(function() {});
+      }
+
+      return new Promise(function(resolve) {
+        _resolveModal = function(result) { _resolveModal = null; modal.style.display = 'none'; resolve(result); };
+      });
+    };
+  })();
   </script>
 </body>
 </html>

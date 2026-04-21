@@ -695,8 +695,7 @@ async fn execute_tools(
                         ok: auto_ok,
                     },
                 );
-                let auto_json =
-                    serde_json::to_string(&auto_result).unwrap_or_else(|_| "{}".into());
+                let auto_json = serde_json::to_string(&auto_result).unwrap_or_else(|_| "{}".into());
                 let _ = db.agent_append_message(
                     conv_id,
                     "tool",

@@ -1,0 +1,4 @@
+[env]
+# Match sherpa-onnx's prebuilt Windows libraries, which are compiled with the
+# static MSVC runtime (`/MT`). This keeps llama.cpp from linking with `/MD`.
+LLAMA_STATIC_CRT = "1"

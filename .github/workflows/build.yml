@@ -289,6 +289,7 @@ jobs:
           CMAKE_VS_GLOBALS: UseMultiToolTask=false;EnforceProcessCountAcrossBuilds=true;CL_MPCount=1
           CMAKE_MSVC_DEBUG_INFORMATION_FORMAT: Embedded
           GGML_CCACHE: OFF
+          LLAMA_STATIC_CRT: 1
           CL: /FS
           _CL_: /FS
           CFLAGS: /FS

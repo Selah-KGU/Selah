@@ -3,9 +3,17 @@ use crate::config;
 use crate::luna_client;
 use crate::luna_parser;
 use crate::LunaState;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 use std::sync::LazyLock;
-use tauri::{Manager, State};
+use tauri::State;
+
+#[path = "luna_commands/downloads.rs"]
+mod downloads;
+#[path = "luna_commands/navigation.rs"]
+mod navigation;
+
+pub use downloads::*;
+pub use navigation::*;
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -187,146 +195,6 @@ async fn luna_fetch_cached<T: serde::Serialize + serde::de::DeserializeOwned>(
     }
 }
 
-/// Luna download: download a file without holding the lock. Returns bytes.
-pub(crate) async fn luna_download(http: &reqwest::Client, path: &str) -> Result<Vec<u8>, String> {
-    let url = if path.starts_with("http") {
-        path.to_string()
-    } else {
-        format!("{}{}", config::LUNA_BASE, path)
-    };
-
-    let mut current_url = url;
-    for i in 0..10 {
-        let resp = http
-            .get(&current_url)
-            .header(
-                "Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            )
-            .header("Sec-Fetch-Dest", "document")
-            .header("Sec-Fetch-Mode", "navigate")
-            .header("Sec-Fetch-Site", "same-origin")
-            .send()
-            .await
-            .map_err(|e| format!("ダウンロード失敗: {}", e))?;
-
-        let status = resp.status();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string();
-        let content_len = resp
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string();
-        let content_disp = resp
-            .headers()
-            .get("content-disposition")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        log::info!(
-            "luna_download #{}: status={}, type={}, len={}, disp='{}'",
-            i,
-            status,
-            content_type,
-            content_len,
-            content_disp
-        );
-
-        if status.is_redirection() {
-            if let Some(loc) = resp.headers().get("location") {
-                let loc_str = loc.to_str().unwrap_or_default();
-                current_url = if loc_str.starts_with('/') {
-                    format!("{}{}", config::LUNA_BASE, loc_str)
-                } else {
-                    loc_str.to_string()
-                };
-                if current_url.contains("sso.kwansei.ac.jp") {
-                    return Err(luna_client::LUNA_SESSION_EXPIRED_MSG.into());
-                }
-                log::info!("luna_download: redirect -> {}", current_url);
-                continue;
-            }
-        }
-
-        if !status.is_success() {
-            return Err(format!("HTTP {}", status));
-        }
-
-        // Check for session expired in HTML responses
-        if content_type.contains("text/html") {
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| format!("読み取り失敗: {}", e))?;
-            if luna_client::is_luna_session_expired(&text) {
-                return Err(luna_client::LUNA_SESSION_EXPIRED_MSG.into());
-            }
-            return Ok(text.into_bytes());
-        }
-
-        return resp
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| format!("ダウンロード読み取り失敗: {}", e));
-    }
-    Err("リダイレクトが多すぎます".into())
-}
-
-/// Save bytes to the download folder with conflict avoidance (appends " (N)" if the file exists).
-/// If course_name is provided and classify_by_course is enabled, saves into a course subfolder.
-pub(crate) fn save_to_downloads(
-    filename: &str,
-    bytes: &[u8],
-    course_name: Option<&str>,
-) -> Result<String, String> {
-    let downloads = crate::commands::resolve_download_dir(course_name);
-    let _ = std::fs::create_dir_all(&downloads);
-    let save_path = downloads.join(filename);
-
-    let final_path = if save_path.exists() {
-        let stem = std::path::Path::new(filename)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
-        let ext = std::path::Path::new(filename)
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let mut i = 1;
-        loop {
-            let name = if ext.is_empty() {
-                format!("{} ({})", stem, i)
-            } else {
-                format!("{} ({}).{}", stem, i, ext)
-            };
-            let candidate = downloads.join(&name);
-            if !candidate.exists() {
-                break candidate;
-            }
-            if i >= 999 {
-                return Err("ファイル名の競合を解決できません".into());
-            }
-            i += 1;
-        }
-    } else {
-        save_path
-    };
-
-    std::fs::write(&final_path, bytes).map_err(|e| format!("ファイル保存失敗: {}", e))?;
-
-    let path_str = final_path.to_string_lossy().to_string();
-    crate::commands::record_download(filename, &path_str, course_name, "luna", bytes.len() as u64);
-
-    Ok(path_str)
-}
-
 /// Escape HTML special characters to prevent XSS in server-side rendered content
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -341,224 +209,6 @@ fn is_safe_param(s: &str) -> bool {
         && s.len() <= 20
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-/// application/x-www-form-urlencoded: space -> +, encode other special chars.
-pub(crate) fn form_encode(s: &str) -> String {
-    let mut result = String::new();
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() || "-._~".contains(ch) {
-            result.push(ch);
-        } else if ch == ' ' {
-            result.push('+');
-        } else {
-            let mut buf = [0u8; 4];
-            let s = ch.encode_utf8(&mut buf);
-            for b in s.bytes() {
-                result.push_str(&format!("%{:02X}", b));
-            }
-        }
-    }
-    result
-}
-
-/// Open a Luna detail page in a separate native window
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn luna_open_detail_window(
-    app: tauri::AppHandle,
-    path: String,
-    title: String,
-    mode: Option<String>,
-    period: Option<String>,
-    status: Option<String>,
-    idnumber: Option<String>,
-    info_id: Option<String>,
-    kgc_path: Option<String>,
-    course_name: Option<String>,
-) -> Result<(), String> {
-    let existing = app
-        .webview_windows()
-        .keys()
-        .filter(|k| k.starts_with("luna-detail-"))
-        .count();
-    if existing >= 10 {
-        return Err(config::TOO_MANY_WINDOWS_MSG.into());
-    }
-    let id = LUNA_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let label = format!("luna-detail-{}", id);
-
-    let url_str = match mode.as_deref() {
-        Some("material") => {
-            let mut parts = format!(
-                "luna-detail.html?mode=material&title={}",
-                urlencoding::encode(&title)
-            );
-            if let Some(p) = &period {
-                parts.push_str(&format!("&period={}", urlencoding::encode(p)));
-            }
-            if let Some(s) = &status {
-                parts.push_str(&format!("&status={}", urlencoding::encode(s)));
-            }
-            if let Some(id) = &idnumber {
-                parts.push_str(&format!("&idnumber={}", urlencoding::encode(id)));
-            }
-            if let Some(info) = &info_id {
-                parts.push_str(&format!("&infoId={}", urlencoding::encode(info)));
-            }
-            parts
-        }
-        Some("announcement") => {
-            let mut parts = format!(
-                "luna-detail.html?mode=announcement&title={}&idnumber={}&infoId={}",
-                urlencoding::encode(&title),
-                urlencoding::encode(idnumber.as_deref().unwrap_or("")),
-                urlencoding::encode(info_id.as_deref().unwrap_or(""))
-            );
-            if let Some(cn) = &course_name {
-                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
-            }
-            parts
-        }
-        Some("discussion") => {
-            format!(
-                "luna-detail.html?mode=discussion&path={}&title={}",
-                urlencoding::encode(&path),
-                urlencoding::encode(&title)
-            )
-        }
-        Some("report") => {
-            let mut parts = format!(
-                "luna-detail.html?mode=report&path={}&title={}",
-                urlencoding::encode(&path),
-                urlencoding::encode(&title)
-            );
-            if let Some(id) = &idnumber {
-                parts.push_str(&format!("&idnumber={}", urlencoding::encode(id)));
-            }
-            if let Some(info) = &info_id {
-                parts.push_str(&format!("&reportId={}", urlencoding::encode(info)));
-            }
-            if let Some(cn) = &course_name {
-                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
-            }
-            parts
-        }
-        Some("survey") | Some("questionnaire") => {
-            let mut parts = format!(
-                "luna-detail.html?mode=survey&path={}&title={}",
-                urlencoding::encode(&path),
-                urlencoding::encode(&title)
-            );
-            if let Some(cn) = &course_name {
-                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
-            }
-            parts
-        }
-        Some("thread") => {
-            format!(
-                "luna-detail.html?mode=thread&path={}&title={}",
-                urlencoding::encode(&path),
-                urlencoding::encode(&title)
-            )
-        }
-        Some("course") => {
-            let mut parts = format!(
-                "luna-detail.html?mode=course&idnumber={}&title={}",
-                urlencoding::encode(idnumber.as_deref().unwrap_or("")),
-                urlencoding::encode(&title)
-            );
-            if let Some(kp) = &kgc_path {
-                parts.push_str(&format!("&kgcPath={}", urlencoding::encode(kp)));
-            }
-            parts
-        }
-        Some("attendance") => {
-            format!(
-                "luna-detail.html?mode=attendance&idnumber={}&title={}",
-                urlencoding::encode(idnumber.as_deref().unwrap_or("")),
-                urlencoding::encode(&title)
-            )
-        }
-        _ => {
-            let mut parts = format!(
-                "luna-detail.html?path={}&title={}",
-                urlencoding::encode(&path),
-                urlencoding::encode(&title)
-            );
-            if let Some(cn) = &course_name {
-                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
-            }
-            parts
-        }
-    };
-
-    let builder =
-        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_str.into()))
-            .title(&title)
-            .inner_size(720.0, 780.0)
-            .min_inner_size(560.0, 480.0)
-            .resizable(true);
-
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true);
-
-    builder
-        .build()
-        .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
-
-    Ok(())
-}
-
-/// Launch an LTI tool (Zoom, Panopto, etc.) and open the final URL in app webview
-#[tauri::command]
-pub async fn luna_launch_lti(
-    app: tauri::AppHandle,
-    state: State<'_, LunaState>,
-    path: String,
-) -> Result<(), String> {
-    let http = luna_http(&state).await?;
-    let final_url = luna_client::launch_lti(&http, &path).await?;
-    crate::commands::open_external_url(app, final_url, None).await
-}
-
-/// Reveal a file in Finder (restricted to app download directory)
-#[tauri::command]
-pub async fn luna_reveal_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    // Restrict to files under the user's Downloads or configured download directory
-    let p = std::path::Path::new(&path);
-    let canonical = p
-        .canonicalize()
-        .map_err(|e| format!("パスが無効です: {}", e))?;
-    let sys_downloads = crate::commands::default_download_dir();
-    let dl_config = crate::commands::load_download_config();
-    let custom_dir = if dl_config.download_dir.is_empty() {
-        None
-    } else {
-        std::path::Path::new(&dl_config.download_dir)
-            .canonicalize()
-            .ok()
-    };
-    let sys_dl = dirs::download_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|h| h.join("Downloads"))
-            .unwrap_or_else(std::env::temp_dir)
-    });
-    let allowed = canonical.starts_with(&sys_downloads)
-        || canonical.starts_with(&sys_dl)
-        || custom_dir
-            .as_ref()
-            .is_some_and(|d| canonical.starts_with(d));
-    if !allowed {
-        return Err("ダウンロードフォルダ外のファイルは表示できません".into());
-    }
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .reveal_item_in_dir(&canonical)
-        .map_err(|e| format!("ファイルを表示できませんでした: {}", e))?;
-    Ok(())
 }
 
 /// Fetch a Luna page (generic)
@@ -877,6 +527,116 @@ pub async fn luna_submit_survey(
     Ok(())
 }
 
+/// Prefetch the attendance send form to extract time-window metadata
+/// (送信可能日時, 遅刻時間, 内容) without submitting.
+#[tauri::command]
+pub async fn luna_prefetch_attendance_form(
+    state: State<'_, LunaState>,
+    idnumber: String,
+    attendance_id: String,
+) -> Result<serde_json::Value, String> {
+    if !is_safe_param(&idnumber) || !is_safe_param(&attendance_id) {
+        return Err("無効なパラメータです".into());
+    }
+
+    let http = luna_http(&state).await?;
+    let send_path = format!(
+        "/lms/course/attendances/send?idnumber={}&attendanceId={}",
+        idnumber, attendance_id
+    );
+    let referer_path = format!("/lms/course?idnumber={}#attendance", idnumber);
+
+    let html = match luna_get_with_referer(&http, &send_path, &referer_path).await {
+        Ok(body) => body,
+        Err(_) => luna_get(&http, &send_path).await?,
+    };
+
+    if html.contains("登録期間外") {
+        return Err("登録期間外です".into());
+    }
+    if html.contains("登録済") || html.contains("出席済") {
+        return Ok(serde_json::json!({ "already_registered": true }));
+    }
+
+    // Parse the contents-detail blocks to extract time info
+    let doc = scraper::Html::parse_document(&html);
+    sel!(SEL_DETAIL_BLOCK, ".contents-detail.contents-vertical");
+    sel!(SEL_HEADER_TXT, ".contents-header.contents-header-txt");
+    sel!(SEL_INPUT_AREA, ".contents-input-area");
+
+    let mut open_start = String::new();
+    let mut open_end = String::new();
+    let mut late_start = String::new();
+    let mut late_end = String::new();
+    let mut content_text = String::new();
+
+    for block in doc.select(&SEL_DETAIL_BLOCK) {
+        let header_text = block
+            .select(&SEL_HEADER_TXT)
+            .next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+
+        let spans: Vec<String> = block
+            .select(&SEL_INPUT_AREA)
+            .next()
+            .map(|area| {
+                area.children()
+                    .filter_map(|n| {
+                        n.value().as_element().and_then(|e| {
+                            if e.name() == "span" {
+                                Some(
+                                    scraper::ElementRef::wrap(n)
+                                        .map(|er| er.text().collect::<String>().trim().to_string())
+                                        .unwrap_or_default(),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if header_text.contains("送信可能日時") || header_text.contains("ログイン期間")
+        {
+            if spans.len() >= 1 {
+                open_start = spans[0].clone();
+            }
+            if spans.len() >= 3 {
+                open_end = spans[2].clone();
+            }
+        } else if header_text.contains("遅刻時間") {
+            if spans.len() >= 1 {
+                late_start = spans[0].clone();
+            }
+            if spans.len() >= 3 {
+                late_end = spans[2].clone();
+            }
+        } else if header_text.contains("内容") && !header_text.contains("パスワード") {
+            let area_text = block
+                .select(&SEL_INPUT_AREA)
+                .next()
+                .map(|e| e.text().collect::<String>().trim().to_string())
+                .unwrap_or_default();
+            if !area_text.is_empty() {
+                content_text = area_text;
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "already_registered": false,
+        "open_start": open_start,
+        "open_end": open_end,
+        "late_start": late_start,
+        "late_end": late_end,
+        "content": content_text,
+    }))
+}
+
 /// Submit attendance registration (出席登録)
 /// Flow: GET send page -> parse hidden form -> POST submit (up to 2 rounds)
 #[tauri::command]
@@ -1078,405 +838,6 @@ pub async fn luna_fetch_course_detail(
     }
 
     Ok(result)
-}
-
-/// Download a Luna file attachment to the Downloads folder and return the saved path.
-///
-/// Two modes:
-///   1. `url` is non-empty (legacy or direct link): download from URL directly
-///   2. `url` is empty but `download_action`/`object_name` provided:
-///      re-fetch the detail page via `page_path` to get fresh `_cid` token,
-///      then construct the proper form-based download URL.
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn luna_download_file(
-    state: State<'_, LunaState>,
-    url: String,
-    filename: String,
-    _page_path: Option<String>,
-    _object_name: Option<String>,
-    download_action: Option<String>,
-    download_params: Option<Vec<(String, String)>>,
-    course_name: Option<String>,
-    _detail_title: Option<String>,
-) -> Result<String, String> {
-    // For external URLs (SharePoint etc.), just return the URL for the frontend to open
-    if url.starts_with("http") {
-        return Ok(url);
-    }
-
-    let http = luna_http(&state).await?;
-
-    // Mode 2: Structured attachment — GET form submit (mirrors browser form.submit())
-    // Luna JS modifies the form action to: {action}/{makeDownFileName(name)}
-    // then submits as GET with form fields as query params.
-    // download_params contains ALL query fields (static + per-file dynamic, merged by parser)
-    let bytes = if url.is_empty() {
-        let action = download_action.as_deref().unwrap_or("");
-
-        if action.is_empty() {
-            return Err("ダウンロードURLが見つかりません".into());
-        }
-
-        // Build query string from pre-merged form fields
-        let mut params: Vec<String> = Vec::new();
-        if let Some(ref fields) = download_params {
-            for (k, v) in fields {
-                params.push(format!("{}={}", form_encode(k), form_encode(v)));
-            }
-        }
-
-        // Action URL path includes makeDownFileName(filename) — set by JS before submit
-        let path_name = make_down_file_name(&filename);
-        let download_url = format!("{}/{}?{}", action, path_name, params.join("&"));
-
-        log::info!("Attachment GET: url='{}'", download_url);
-        luna_download(&http, &download_url).await?
-    } else {
-        log::info!(
-            "Attachment GET download: url='{}', filename='{}'",
-            url,
-            filename
-        );
-        luna_download(&http, &url).await?
-    };
-
-    log::info!(
-        "Attachment downloaded {} bytes for '{}'",
-        bytes.len(),
-        filename
-    );
-
-    if bytes.is_empty() {
-        return Err("ダウンロードされたファイルが空です".into());
-    }
-
-    // Check if we got an HTML error page instead of the actual file
-    if bytes.len() < 2000 {
-        if let Ok(text) = std::str::from_utf8(&bytes) {
-            if text.contains("<!DOCTYPE") || text.contains("<html") || text.contains("<HTML") {
-                log::error!(
-                    "Attachment download returned HTML instead of file: {}",
-                    crate::client::safe_truncate(text, 500)
-                );
-                return Err("サーバーがファイルではなくエラーページを返しました".into());
-            }
-        }
-    }
-
-    save_to_downloads(&filename, &bytes, course_name.as_deref())
-}
-
-/// Replicate Luna's CommonUtil.makeDownFileName JS function:
-/// replace fullwidth/halfwidth spaces with _, collapse multiple _, then encodeURI
-pub(crate) fn make_down_file_name(file_name: &str) -> String {
-    // Replace fullwidth space (U+3000) and regular space with _
-    let mut result = file_name.replace(['\u{3000}', ' '], "_");
-    // Collapse multiple underscores
-    while result.contains("__") {
-        result = result.replace("__", "_");
-    }
-    // encodeURI: encode each char, but don't encode ;,/?:@&=+$-_.!~*'()#
-    // Using percent_encoding with a custom set equivalent to encodeURI
-    let mut encoded = String::new();
-    for ch in result.chars() {
-        if ch.is_ascii_alphanumeric() || "-_.!~*'()".contains(ch) || ";,/?:@&=+$#".contains(ch) {
-            encoded.push(ch);
-        } else {
-            // UTF-8 percent-encode
-            let mut buf = [0u8; 4];
-            let s = ch.encode_utf8(&mut buf);
-            for b in s.bytes() {
-                encoded.push_str(&format!("%{:02X}", b));
-            }
-        }
-    }
-    encoded
-}
-
-/// Download a Luna material file (requires tempfile preparation + form-based download)
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn luna_download_material(
-    state: State<'_, LunaState>,
-    idnumber: String,
-    file_name: String,
-    object_name: String,
-    resource_id: String,
-    file_type: String,
-    material_id: Option<String>,
-    display_name: Option<String>,
-    end_date: Option<String>,
-    course_name: Option<String>,
-    _material_title: Option<String>,
-) -> Result<String, String> {
-    let http = luna_http(&state).await?;
-
-    log::info!(
-        "Material download: file='{}', object='{}', resource='{}', type='{}', matId={:?}",
-        file_name,
-        object_name,
-        resource_id,
-        file_type,
-        material_id
-    );
-
-    // Step 0: Visit the course contents page first to establish server-side session context
-    // (the browser is always on this page when downloading)
-    let course_url = format!("/lms/course?idnumber={}", idnumber);
-    let _ = luna_get(&http, &course_url).await;
-
-    // Step 1: Prepare tempfile (GET /lms/course/make/tempfile)
-    let tempfile_query = format!(
-        "fileName={}&objectName={}&id={}&idnumber={}",
-        urlencoding::encode(&file_name),
-        urlencoding::encode(&object_name),
-        urlencoding::encode(&resource_id),
-        urlencoding::encode(&idnumber),
-    );
-    let tempfile_url = format!("/lms/course/make/tempfile?{}", tempfile_query);
-    log::info!("Material tempfile URL: {}", tempfile_url);
-    let file_id = luna_get(&http, &tempfile_url)
-        .await
-        .map_err(|e| format!("ファイル準備失敗: {}", e))?;
-    let file_id = file_id.trim().to_string();
-
-    log::info!(
-        "Material tempfile returned fileId (len={}): '{}'",
-        file_id.len(),
-        crate::client::safe_truncate(&file_id, 500)
-    );
-
-    // If tempfile returns HTML instead of a path, something went wrong
-    if file_id.contains('<') || file_id.is_empty() {
-        return Err(format!(
-            "tempfile returned unexpected response (len={})",
-            file_id.len()
-        ));
-    }
-
-    // Step 2: Download via GET form submit to setfiledown/sethtmlfiledown
-    // URL path uses CommonUtil.makeDownFileName (encodeURI with space→_ normalization)
-    let path_encoded_name = make_down_file_name(&file_name);
-    let base_path = if file_type == "0" {
-        format!("/lms/course/materialref/setfiledown/{}", path_encoded_name)
-    } else {
-        format!(
-            "/lms/course/materialref/sethtmlfiledown/{}",
-            path_encoded_name
-        )
-    };
-    let dl_title = display_name.unwrap_or_default();
-    let content_id = material_id.unwrap_or_default();
-    let title_val = if file_type != "0" { &dl_title } else { "" };
-    let end_date_val = end_date.unwrap_or_default();
-
-    // Browser form GET submit uses application/x-www-form-urlencoded
-    // Build the full URL manually to avoid reqwest's .query() double-encoding
-    let query_string = format!(
-        "fileName={}&fileId={}&idnumber={}&resourceId={}&screen=1&contentId={}&endDate={}&title={}",
-        form_encode(&file_name),
-        form_encode(&file_id),
-        form_encode(&idnumber),
-        form_encode(&resource_id),
-        form_encode(&content_id),
-        form_encode(&end_date_val),
-        form_encode(title_val),
-    );
-    let full_download_url = format!("{}?{}", base_path, query_string);
-
-    log::info!("Material download full URL: {}", full_download_url);
-
-    let bytes = luna_download(&http, &full_download_url).await?;
-
-    log::info!("Material downloaded {} bytes", bytes.len());
-
-    // Check if we got an HTML error page instead of the file
-    if bytes.len() < 1000 {
-        if let Ok(text) = std::str::from_utf8(&bytes) {
-            if text.contains("<!DOCTYPE") || text.contains("<html") {
-                log::error!(
-                    "Download returned HTML instead of file: {}",
-                    crate::client::safe_truncate(text, 500)
-                );
-                return Err("サーバーがファイルではなくエラーページを返しました".into());
-            }
-        }
-    }
-
-    if bytes.is_empty() {
-        return Err("ダウンロードされたファイルが空です".into());
-    }
-
-    save_to_downloads(&file_name, &bytes, course_name.as_deref())
-}
-
-/// Resolve an HTML-type material to its actual external URL.
-/// Same tempfile+sethtmlfiledown flow as download, but parses the HTML for the link.
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn luna_resolve_material_link(
-    state: State<'_, LunaState>,
-    idnumber: String,
-    file_name: String,
-    object_name: String,
-    resource_id: String,
-    file_type: String,
-    material_id: Option<String>,
-    display_name: Option<String>,
-    end_date: Option<String>,
-) -> Result<String, String> {
-    let http = luna_http(&state).await?;
-
-    log::info!(
-        "Material link resolve: file='{}', resource='{}', type='{}'",
-        file_name,
-        resource_id,
-        file_type
-    );
-
-    let course_url = format!("/lms/course?idnumber={}", idnumber);
-    let _ = luna_get(&http, &course_url).await;
-
-    // Step 1: Prepare tempfile
-    let tempfile_query = format!(
-        "fileName={}&objectName={}&id={}&idnumber={}",
-        urlencoding::encode(&file_name),
-        urlencoding::encode(&object_name),
-        urlencoding::encode(&resource_id),
-        urlencoding::encode(&idnumber),
-    );
-    let tempfile_url = format!("/lms/course/make/tempfile?{}", tempfile_query);
-    let file_id = luna_get(&http, &tempfile_url)
-        .await
-        .map_err(|e| format!("Failed to prepare tempfile: {}", e))?;
-    let file_id = file_id.trim().to_string();
-
-    if file_id.contains('<') || file_id.is_empty() {
-        return Err(format!(
-            "tempfile returned unexpected response (len={})",
-            file_id.len()
-        ));
-    }
-
-    // Step 2: Fetch HTML via sethtmlfiledown
-    let path_encoded_name = make_down_file_name(&file_name);
-    let base_path = format!(
-        "/lms/course/materialref/sethtmlfiledown/{}",
-        path_encoded_name
-    );
-    let dl_title = display_name.unwrap_or_default();
-    let content_id = material_id.unwrap_or_default();
-    let end_date_val = end_date.unwrap_or_default();
-
-    let query_string = format!(
-        "fileName={}&fileId={}&idnumber={}&resourceId={}&screen=1&contentId={}&endDate={}&title={}",
-        form_encode(&file_name),
-        form_encode(&file_id),
-        form_encode(&idnumber),
-        form_encode(&resource_id),
-        form_encode(&content_id),
-        form_encode(&end_date_val),
-        form_encode(&dl_title),
-    );
-    let full_url = format!("{}{}?{}", config::LUNA_BASE, base_path, query_string);
-
-    let resp = http
-        .get(&full_url)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-    let final_url = resp.url().to_string();
-    let html = resp.text().await.unwrap_or_default();
-
-    log::info!(
-        "Material link HTML (len={}, final_url={}): {}",
-        html.len(),
-        final_url,
-        crate::client::safe_truncate(&html, 1000)
-    );
-
-    // If we were redirected to an external URL, return that
-    if !final_url.contains("luna.kwansei.ac.jp") {
-        return Ok(final_url);
-    }
-
-    // Try to extract URL from the HTML content
-    // 1) meta refresh: <meta http-equiv="refresh" content="0;url=...">
-    // 2) window.location / location.href in script
-    // 3) iframe src
-    // 4) anchor href
-    let doc = scraper::Html::parse_document(&html);
-
-    // meta refresh
-    if let Some(meta) = doc.select(&SEL_META_REFRESH).next() {
-        if let Some(content) = meta.value().attr("content") {
-            if let Some(idx) = content.to_lowercase().find("url=") {
-                let url = content[idx + 4..]
-                    .trim()
-                    .trim_matches(|c| c == '\'' || c == '"');
-                if !url.is_empty() {
-                    return Ok(url.to_string());
-                }
-            }
-        }
-    }
-
-    // iframe src
-    if let Some(iframe) = doc.select(&SEL_IFRAME_SRC).next() {
-        if let Some(src) = iframe.value().attr("src") {
-            if src.starts_with("http") {
-                return Ok(src.to_string());
-            }
-        }
-    }
-
-    // window.location or location.href in script
-    for script in doc.select(&SEL_SCRIPT) {
-        let text = script.text().collect::<String>();
-        for pattern in &[
-            "window.location.href",
-            "window.location",
-            "location.href",
-            "window.open(",
-        ] {
-            if let Some(idx) = text.find(pattern) {
-                let after = &text[idx + pattern.len()..];
-                // Find URL in quotes after = or (
-                let start = after.find(['\'', '"']);
-                if let Some(s) = start {
-                    let quote = after.as_bytes()[s] as char;
-                    if let Some(e) = after[s + 1..].find(quote) {
-                        let url = &after[s + 1..s + 1 + e];
-                        if url.starts_with("http") {
-                            return Ok(url.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // <a> with external href
-    for a in doc.select(&SEL_A_HREF) {
-        if let Some(href) = a.value().attr("href") {
-            if href.starts_with("http") && !href.contains("luna.kwansei.ac.jp") {
-                return Ok(href.to_string());
-            }
-        }
-    }
-
-    // Fallback: if the HTML body itself looks like a plain URL
-    let body_text = doc
-        .select(&SEL_BODY)
-        .next()
-        .map(|b| b.text().collect::<String>().trim().to_string())
-        .unwrap_or_default();
-    if body_text.starts_with("http") && !body_text.contains(' ') {
-        return Ok(body_text);
-    }
-
-    Err("リンク先のURLを抽出できませんでした".into())
 }
 
 /// Detect report submission type by fetching the submission page

@@ -40,6 +40,20 @@ fn normalize_ai_config(config: &mut AiConfig) {
     config.live_summary_interval_minutes = config.live_summary_interval_minutes.clamp(5, 30);
 }
 
+pub fn reply_language_hint<'a>(
+    reply_language: &str,
+    zh_hint: &'a str,
+    en_hint: &'a str,
+    ko_hint: &'a str,
+) -> &'a str {
+    match reply_language {
+        "zh" => zh_hint,
+        "en" => en_hint,
+        "ko" => ko_hint,
+        _ => "",
+    }
+}
+
 // Custom Debug — mask API key in log output
 impl std::fmt::Debug for AiConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
