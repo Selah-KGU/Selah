@@ -70,8 +70,37 @@
     return (end >= 0 ? md.slice(afterHeader + 1, end) : md.slice(afterHeader + 1)).trim();
   }
 
-  function toggleSummaryExpand() {
-    summaryExpanded = !summaryExpanded;
+  function expandSummary() {
+    summaryExpanded = true;
+  }
+
+  function collapseSummary() {
+    summaryExpanded = false;
+  }
+
+  function selectSummaryView(event: MouseEvent, idx: number) {
+    event.stopPropagation();
+    summaryViewIndex = idx;
+  }
+
+  function handleSummaryOverlayClick(event: MouseEvent) {
+    const target = event.target;
+    if (target instanceof Element && target.closest("button, a")) return;
+    collapseSummary();
+  }
+
+  function bindSummaryOverlayDismiss(node: HTMLDivElement) {
+    const onDismiss = (event: Event) => {
+      if (event instanceof MouseEvent) {
+        handleSummaryOverlayClick(event);
+      }
+    };
+    node.addEventListener("click", onDismiss);
+    return {
+      destroy() {
+        node.removeEventListener("click", onDismiss);
+      }
+    };
   }
 
   const activeSummaryIdx = $derived(
@@ -126,16 +155,6 @@
       destroy() {
         node.removeEventListener("wheel", onUserScroll);
         node.removeEventListener("touchmove", onUserScroll);
-      }
-    };
-  }
-
-  function bindSummaryOverlayDismiss(node: HTMLDivElement) {
-    const onDismiss = () => toggleSummaryExpand();
-    node.addEventListener("click", onDismiss);
-    return {
-      destroy() {
-        node.removeEventListener("click", onDismiss);
       }
     };
   }
@@ -600,14 +619,14 @@
                 <button
                   class="time-pill"
                   class:active={idx === activeSummaryIdx}
-                  onclick={(e) => { e.stopPropagation(); summaryViewIndex = idx; }}
+                  onclick={(e) => selectSummaryView(e, idx)}
                 >{s.range_label}</button>
               {/each}
             </div>
           {:else}
             <span class="toast-meta">{chunk.range_label}</span>
           {/if}
-          <button class="toast-expand-btn" onclick={(e) => { e.stopPropagation(); toggleSummaryExpand(); }}>{summaryExpanded ? '収める' : '展開'}</button>
+          <button class="toast-expand-btn" onclick={summaryExpanded ? collapseSummary : expandSummary}>{summaryExpanded ? '収める' : '展開'}</button>
         </div>
         <div class="summary-card-body md">{@html renderMd(chunk.body)}</div>
         {#if summaryExpanded}
@@ -620,14 +639,14 @@
                     <button
                       class="time-pill"
                       class:active={idx === activeSummaryIdx}
-                      onclick={(e) => { e.stopPropagation(); summaryViewIndex = idx; }}
+                      onclick={(e) => selectSummaryView(e, idx)}
                     >{s.range_label}</button>
                   {/each}
                 </div>
               {:else}
                 <span class="toast-meta">{chunk.range_label}</span>
               {/if}
-              <button class="toast-expand-btn" onclick={(e) => { e.stopPropagation(); toggleSummaryExpand(); }}>収める</button>
+              <button class="toast-expand-btn" onclick={collapseSummary}>収める</button>
             </div>
             <div class="summary-card-full md">{@html renderMd(chunk.body)}</div>
           </div>
@@ -977,11 +996,11 @@
   }
 
   .summary-card-header {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    column-gap: 8px;
     margin-bottom: 4px;
-    flex-wrap: nowrap;
     min-width: 0;
   }
   .toast-ai-badge {
@@ -1006,8 +1025,8 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    flex: 1 1 0;
     min-width: 0;
+    width: 100%;
     flex-wrap: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
@@ -1071,20 +1090,28 @@
   .toast-meta {
     font-size: 11px;
     color: var(--text-tertiary);
-    margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .toast-expand-btn {
     all: unset;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
-    flex-shrink: 0;
     font-size: 10px;
     color: var(--accent);
     font-weight: 500;
     opacity: 0.8;
-    padding: 2px 6px;
+    padding: 0px 6px;
+    min-height: 20px;
     border-radius: 4px;
-    margin-left: auto;
     white-space: nowrap;
+    justify-self: end;
+    position: relative;
+    z-index: 1;
     transition: background 0.12s;
   }
   .toast-expand-btn:hover {
