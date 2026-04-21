@@ -20,6 +20,30 @@
 
 Selah は関西学院大学の教務システム **KWIC** と学習管理システム **Luna (LMS)**、さらに大学の **Microsoft 365 メール**のデータを統合し、ネイティブデスクトップアプリとして提供します。ユーザー自身の大学アカウントで SSO ログインし、自分のデータにアクセスします——ブラウザでのログインと同じ体験です。macOS / Windows の両プラットフォームに対応しています。
 
+## 画面紹介
+
+毎日よく使う 3 つの画面を中心に、Selah の使いどころがひと目で伝わるようにしました。
+
+<table>
+  <tr>
+    <td width="33.33%" valign="top">
+      <img src="docs/public/p1.png" alt="Selah のホーム画面" width="100%">
+      <strong>ホーム</strong><br>
+      今日の授業、お知らせ、締切、天気を 1 画面にまとめて確認できます。
+    </td>
+    <td width="33.33%" valign="top">
+      <img src="docs/public/p2.png" alt="Selah の時間割画面" width="100%">
+      <strong>時間割</strong><br>
+      週間グリッドで授業と試験を一覧表示し、カレンダー同期や AI 日程機能にも対応します。
+    </td>
+    <td width="33.33%" valign="top">
+      <img src="docs/public/p3.png" alt="Selah のシラバス検索画面" width="100%">
+      <strong>シラバス検索</strong><br>
+      ログイン後の学部情報を引き継ぎ、お気に入り登録した科目は時間割へ反映できます。
+    </td>
+  </tr>
+</table>
+
 ## 機能一覧
 
 ### ホーム

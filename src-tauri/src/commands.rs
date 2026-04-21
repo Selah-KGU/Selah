@@ -1,6 +1,7 @@
 use crate::client;
 use crate::config;
 use serde::Serialize;
+#[cfg(debug_assertions)]
 use std::sync::LazyLock;
 #[cfg(debug_assertions)]
 use std::time::Instant;
