@@ -1118,6 +1118,7 @@ export interface LiveCourseInfo {
   day: number;
   period: number;
   time_label: string;
+  is_free_note: boolean;
 }
 
 export interface LiveTranscriptLine {
@@ -1142,6 +1143,7 @@ export interface LiveSessionSnapshot {
 }
 
 export interface LiveSaveResult {
+  saved: boolean;
   path: string;
   markdown: string;
   snapshot: LiveSessionSnapshot;

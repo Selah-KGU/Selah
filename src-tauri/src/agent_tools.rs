@@ -58,6 +58,18 @@ enum ArgSchema {
     OptionalText { key: &'static str, max_len: usize },
     /// URL arg.
     Url,
+    /// Browser click action.
+    BrowserClick,
+    /// Browser fill action.
+    BrowserFill,
+    /// Browser select action.
+    BrowserSelect,
+    /// Browser key press action.
+    BrowserPress,
+    /// Browser scroll action.
+    BrowserScroll,
+    /// Browser wait action.
+    BrowserWait,
 }
 
 struct ToolSpec {
@@ -326,7 +338,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
         name: "read_browser_page",
         category: "ブラウザ",
         signature: "read_browser_page(target?: string)",
-        purpose: "ブラウザ webview の現在ページ本文を抽出して読む",
+        purpose: "ブラウザ webview の主内容・見出し・リンク・操作要素を抽出して読む",
         schema: ArgSchema::OptionalText {
             key: "target",
             max_len: 120,
@@ -361,6 +373,48 @@ const TOOL_SPECS: &[ToolSpec] = &[
             key: "target",
             max_len: 120,
         },
+    },
+    ToolSpec {
+        name: "browser_click",
+        category: "ブラウザ",
+        signature: "browser_click(target?: string, text?: string, selector?: string, href_contains?: string, index?: number)",
+        purpose: "ページ内のリンク・ボタン・タブなどをクリックする",
+        schema: ArgSchema::BrowserClick,
+    },
+    ToolSpec {
+        name: "browser_fill",
+        category: "ブラウザ",
+        signature: "browser_fill(target?: string, label?: string, selector?: string, value: string, index?: number)",
+        purpose: "ページ内の入力欄・テキスト欄に値を入力する",
+        schema: ArgSchema::BrowserFill,
+    },
+    ToolSpec {
+        name: "browser_select_option",
+        category: "ブラウザ",
+        signature: "browser_select_option(target?: string, label?: string, selector?: string, value: string, index?: number)",
+        purpose: "ページ内の select / プルダウンで選択する",
+        schema: ArgSchema::BrowserSelect,
+    },
+    ToolSpec {
+        name: "browser_press",
+        category: "ブラウザ",
+        signature: "browser_press(target?: string, key: string, selector?: string)",
+        purpose: "ページまたは特定要素へ Enter / Tab などのキー入力を送る",
+        schema: ArgSchema::BrowserPress,
+    },
+    ToolSpec {
+        name: "browser_scroll",
+        category: "ブラウザ",
+        signature: "browser_scroll(target?: string, direction?: up|down|top|bottom, amount?: number, selector?: string)",
+        purpose: "ページをスクロール、または要素位置へ移動する",
+        schema: ArgSchema::BrowserScroll,
+    },
+    ToolSpec {
+        name: "browser_wait_for",
+        category: "ブラウザ",
+        signature: "browser_wait_for(target?: string, text?: string, selector?: string, timeout_ms?: number)",
+        purpose: "指定したテキストや要素が出るまで少し待つ",
+        schema: ArgSchema::BrowserWait,
     },
 ];
 
@@ -413,6 +467,12 @@ pub async fn dispatch(app: &tauri::AppHandle, name: &str, args: &Value) -> Value
         "browser_back" => browser_back(app, args).await,
         "browser_forward" => browser_forward(app, args).await,
         "browser_reload_page" => browser_reload_page(app, args).await,
+        "browser_click" => browser_click(app, args).await,
+        "browser_fill" => browser_fill(app, args).await,
+        "browser_select_option" => browser_select_option(app, args).await,
+        "browser_press" => browser_press(app, args).await,
+        "browser_scroll" => browser_scroll(app, args).await,
+        "browser_wait_for" => browser_wait_for(app, args).await,
         // is_known_tool guard above ensures we never reach here
         _ => unreachable!(),
     };
@@ -505,6 +565,12 @@ fn sanitize_by_schema(schema: ArgSchema, args: &Value) -> Option<Value> {
             Some(Value::Object(out))
         }
         ArgSchema::Url => sanitize_url_arg(args, "url").map(|url| json!({ "url": url })),
+        ArgSchema::BrowserClick => sanitize_browser_click_args(args),
+        ArgSchema::BrowserFill => sanitize_browser_fill_args(args),
+        ArgSchema::BrowserSelect => sanitize_browser_select_args(args),
+        ArgSchema::BrowserPress => sanitize_browser_press_args(args),
+        ArgSchema::BrowserScroll => sanitize_browser_scroll_args(args),
+        ArgSchema::BrowserWait => sanitize_browser_wait_args(args),
     }
 }
 
@@ -565,6 +631,181 @@ fn sanitize_url_arg(args: &Value, key: &str) -> Option<String> {
         "http" | "https" => Some(parsed.to_string()),
         _ => None,
     }
+}
+
+fn sanitize_browser_target_arg(args: &Value) -> Option<String> {
+    sanitize_text_arg(args, "target", 120)
+}
+
+fn sanitize_selector_arg(args: &Value, key: &str, max_len: usize) -> Option<String> {
+    let value = args.get(key).and_then(|v| v.as_str())?.trim();
+    if value.is_empty() || value.len() > max_len || value.contains('\0') {
+        return None;
+    }
+    let value = value.replace('\n', " ").replace('\r', " ");
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn sanitize_small_index(args: &Value, key: &str, max: u64) -> Option<u64> {
+    args.get(key).and_then(|v| v.as_u64()).map(|v| v.min(max))
+}
+
+fn sanitize_browser_click_args(args: &Value) -> Option<Value> {
+    let target = sanitize_browser_target_arg(args);
+    let selector = sanitize_selector_arg(args, "selector", 240);
+    let text = sanitize_text_arg(args, "text", 120);
+    let href_contains = sanitize_text_arg(args, "href_contains", 240);
+    let index = sanitize_small_index(args, "index", 20).unwrap_or(0);
+    if selector.is_none() && text.is_none() && href_contains.is_none() {
+        return None;
+    }
+    let mut out = serde_json::Map::new();
+    if let Some(target) = target {
+        out.insert("target".into(), Value::String(target));
+    }
+    if let Some(selector) = selector {
+        out.insert("selector".into(), Value::String(selector));
+    }
+    if let Some(text) = text {
+        out.insert("text".into(), Value::String(text));
+    }
+    if let Some(href_contains) = href_contains {
+        out.insert("href_contains".into(), Value::String(href_contains));
+    }
+    if index > 0 {
+        out.insert("index".into(), Value::Number(index.into()));
+    }
+    Some(Value::Object(out))
+}
+
+fn sanitize_browser_fill_args(args: &Value) -> Option<Value> {
+    let target = sanitize_browser_target_arg(args);
+    let selector = sanitize_selector_arg(args, "selector", 240);
+    let label = sanitize_text_arg(args, "label", 120);
+    let value = sanitize_text_blob_arg(args, "value", 2000)?;
+    let index = sanitize_small_index(args, "index", 20).unwrap_or(0);
+    if selector.is_none() && label.is_none() {
+        return None;
+    }
+    let mut out = serde_json::Map::new();
+    if let Some(target) = target {
+        out.insert("target".into(), Value::String(target));
+    }
+    if let Some(selector) = selector {
+        out.insert("selector".into(), Value::String(selector));
+    }
+    if let Some(label) = label {
+        out.insert("label".into(), Value::String(label));
+    }
+    out.insert("value".into(), Value::String(value));
+    if index > 0 {
+        out.insert("index".into(), Value::Number(index.into()));
+    }
+    Some(Value::Object(out))
+}
+
+fn sanitize_browser_select_args(args: &Value) -> Option<Value> {
+    sanitize_browser_fill_args(args)
+}
+
+fn normalize_browser_key(raw: &str) -> Option<String> {
+    let key = raw.trim();
+    if key.is_empty() || key.len() > 32 {
+        return None;
+    }
+    let normalized = match key.to_ascii_lowercase().as_str() {
+        "enter" => "Enter",
+        "tab" => "Tab",
+        "escape" | "esc" => "Escape",
+        "backspace" => "Backspace",
+        "delete" => "Delete",
+        "arrowup" | "up" => "ArrowUp",
+        "arrowdown" | "down" => "ArrowDown",
+        "arrowleft" | "left" => "ArrowLeft",
+        "arrowright" | "right" => "ArrowRight",
+        "space" | "spacebar" => " ",
+        "pageup" => "PageUp",
+        "pagedown" => "PageDown",
+        "home" => "Home",
+        "end" => "End",
+        _ => key,
+    };
+    Some(normalized.to_string())
+}
+
+fn sanitize_browser_press_args(args: &Value) -> Option<Value> {
+    let target = sanitize_browser_target_arg(args);
+    let selector = sanitize_selector_arg(args, "selector", 240);
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .and_then(normalize_browser_key)?;
+    let mut out = serde_json::Map::new();
+    if let Some(target) = target {
+        out.insert("target".into(), Value::String(target));
+    }
+    if let Some(selector) = selector {
+        out.insert("selector".into(), Value::String(selector));
+    }
+    out.insert("key".into(), Value::String(key));
+    Some(Value::Object(out))
+}
+
+fn sanitize_browser_scroll_args(args: &Value) -> Option<Value> {
+    let target = sanitize_browser_target_arg(args);
+    let selector = sanitize_selector_arg(args, "selector", 240);
+    let direction = args
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| matches!(v.as_str(), "up" | "down" | "top" | "bottom"))
+        .unwrap_or_else(|| "down".into());
+    let amount = args
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(900)
+        .clamp(80, 4000);
+    let mut out = serde_json::Map::new();
+    if let Some(target) = target {
+        out.insert("target".into(), Value::String(target));
+    }
+    if let Some(selector) = selector {
+        out.insert("selector".into(), Value::String(selector));
+    }
+    out.insert("direction".into(), Value::String(direction));
+    out.insert("amount".into(), Value::Number(amount.into()));
+    Some(Value::Object(out))
+}
+
+fn sanitize_browser_wait_args(args: &Value) -> Option<Value> {
+    let target = sanitize_browser_target_arg(args);
+    let selector = sanitize_selector_arg(args, "selector", 240);
+    let text = sanitize_text_arg(args, "text", 160);
+    let timeout_ms = args
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3000)
+        .clamp(400, 12_000);
+    if selector.is_none() && text.is_none() {
+        return None;
+    }
+    let mut out = serde_json::Map::new();
+    if let Some(target) = target {
+        out.insert("target".into(), Value::String(target));
+    }
+    if let Some(selector) = selector {
+        out.insert("selector".into(), Value::String(selector));
+    }
+    if let Some(text) = text {
+        out.insert("text".into(), Value::String(text));
+    }
+    out.insert("timeout_ms".into(), Value::Number(timeout_ms.into()));
+    Some(Value::Object(out))
 }
 
 /// Map simplified Chinese characters to their Japanese kanji equivalents

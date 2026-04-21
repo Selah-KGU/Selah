@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -38,6 +39,34 @@ fn normalize_extracted_text(s: &str) -> String {
         prev_blank = false;
     }
     out.trim().to_string()
+}
+
+fn compact_text(s: &str, max_chars: usize) -> Option<String> {
+    let normalized = normalize_extracted_text(s);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(truncate_chars(&normalized, max_chars))
+    }
+}
+
+fn compact_string_list(items: &[String], max_items: usize, max_chars: usize) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for item in items {
+        let Some(value) = compact_text(item, max_chars) else {
+            continue;
+        };
+        let key = value.to_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(value);
+        if out.len() >= max_items {
+            break;
+        }
+    }
+    out
 }
 
 fn allowed_download_roots() -> Vec<PathBuf> {
@@ -600,17 +629,149 @@ fn resolve_browser_target_from_args(
     crate::webview_toolbar::resolve_browser_target(app, args.get("target").and_then(|v| v.as_str()))
 }
 
+fn browser_action_failed_message(result: &Value, fallback: &str) -> Option<String> {
+    match result.get("ok").and_then(|v| v.as_bool()) {
+        Some(true) => None,
+        _ => Some(
+            result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or(fallback)
+                .to_string(),
+        ),
+    }
+}
+
+async fn run_browser_action_tool(
+    app: &tauri::AppHandle,
+    target: &str,
+    action: Value,
+    timeout_ms: u64,
+    settle_ms: u64,
+    fallback_error: &str,
+) -> Result<Value, String> {
+    let result =
+        crate::webview_toolbar::run_browser_action(app, target, &action, timeout_ms).await?;
+    if let Some(message) = browser_action_failed_message(&result, fallback_error) {
+        return Err(message);
+    }
+    if settle_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(settle_ms)).await;
+    }
+    let current_url = crate::webview_toolbar::browser_get_url(app.clone(), target.to_string())
+        .await
+        .unwrap_or_default();
+    let mut out = match result {
+        Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("result".into(), other);
+            map
+        }
+    };
+    out.insert("target".into(), Value::String(target.to_string()));
+    if !current_url.is_empty() {
+        out.insert("current_url".into(), Value::String(current_url));
+    }
+    Ok(Value::Object(out))
+}
+
 pub(super) async fn read_browser_page(
     app: &tauri::AppHandle,
     args: &Value,
 ) -> Result<Value, String> {
     let target = resolve_browser_target_from_args(app, args)?;
     let payload = crate::webview_toolbar::extract_page_text(app, &target).await?;
+    let headings = compact_string_list(&payload.headings, 10, 140);
+    let links: Vec<Value> = payload
+        .links
+        .iter()
+        .filter_map(|link| {
+            let text = compact_text(&link.text, 120);
+            let url = compact_text(&link.url, 240);
+            if text.is_none() && url.is_none() {
+                return None;
+            }
+            let mut item = serde_json::Map::new();
+            if let Some(text) = text {
+                item.insert("text".into(), Value::String(text));
+            }
+            if let Some(url) = url {
+                item.insert("url".into(), Value::String(url));
+            }
+            Some(Value::Object(item))
+        })
+        .take(8)
+        .collect();
+    let buttons: Vec<Value> = payload
+        .buttons
+        .iter()
+        .filter_map(|button| {
+            let text = compact_text(&button.text, 120)?;
+            let mut item = serde_json::Map::new();
+            item.insert("text".into(), Value::String(text));
+            if let Some(kind) = compact_text(&button.kind, 32) {
+                item.insert("type".into(), Value::String(kind));
+            }
+            Some(Value::Object(item))
+        })
+        .take(10)
+        .collect();
+    let inputs: Vec<Value> = payload
+        .inputs
+        .iter()
+        .filter_map(|input| {
+            let label = compact_text(&input.label, 120);
+            let name = compact_text(&input.name, 80);
+            let placeholder = compact_text(&input.placeholder, 120);
+            let value = compact_text(&input.value, 120);
+            let kind = compact_text(&input.kind, 32);
+            if label.is_none()
+                && name.is_none()
+                && placeholder.is_none()
+                && value.is_none()
+                && kind.is_none()
+            {
+                return None;
+            }
+            let mut item = serde_json::Map::new();
+            if let Some(label) = label {
+                item.insert("label".into(), Value::String(label));
+            }
+            if let Some(kind) = kind {
+                item.insert("type".into(), Value::String(kind));
+            }
+            if let Some(name) = name {
+                item.insert("name".into(), Value::String(name));
+            }
+            if let Some(placeholder) = placeholder {
+                item.insert("placeholder".into(), Value::String(placeholder));
+            }
+            if let Some(value) = value {
+                item.insert("value".into(), Value::String(value));
+            }
+            if input.required {
+                item.insert("required".into(), Value::Bool(true));
+            }
+            if input.disabled {
+                item.insert("disabled".into(), Value::Bool(true));
+            }
+            Some(Value::Object(item))
+        })
+        .take(10)
+        .collect();
     Ok(json!({
         "target": target,
-        "title": payload.title,
+        "title": compact_text(&payload.title, 200).unwrap_or_default(),
         "url": payload.url,
-        "content": truncate_chars(&payload.text, 12_000),
+        "content_source": compact_text(&payload.content_source, 40).unwrap_or_else(|| "document".into()),
+        "content": compact_text(&payload.text, 8_000).unwrap_or_default(),
+        "headings": headings,
+        "links": links,
+        "interactive_elements": {
+            "buttons": buttons,
+            "inputs": inputs,
+        },
     }))
 }
 
@@ -642,4 +803,166 @@ pub(super) async fn browser_reload_page(
         .await
         .unwrap_or_default();
     Ok(json!({ "target": target, "status": "ok", "url": url }))
+}
+
+pub(super) async fn browser_click(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
+    let target = resolve_browser_target_from_args(app, args)?;
+    let mut action = serde_json::Map::new();
+    action.insert("kind".into(), Value::String("click".into()));
+    if let Some(selector) = args.get("selector").and_then(|v| v.as_str()) {
+        action.insert("selector".into(), Value::String(selector.to_string()));
+    }
+    if let Some(text) = args.get("text").and_then(|v| v.as_str()) {
+        action.insert("text".into(), Value::String(text.to_string()));
+    }
+    if let Some(href_contains) = args.get("href_contains").and_then(|v| v.as_str()) {
+        action.insert(
+            "hrefContains".into(),
+            Value::String(href_contains.to_string()),
+        );
+    }
+    if let Some(index) = args.get("index").and_then(|v| v.as_u64()) {
+        action.insert("index".into(), Value::Number(index.into()));
+    }
+    run_browser_action_tool(
+        app,
+        &target,
+        Value::Object(action),
+        4_000,
+        450,
+        "ページ内のクリック対象が見つかりません",
+    )
+    .await
+}
+
+pub(super) async fn browser_fill(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
+    let target = resolve_browser_target_from_args(app, args)?;
+    let mut action = serde_json::Map::new();
+    action.insert("kind".into(), Value::String("fill".into()));
+    if let Some(selector) = args.get("selector").and_then(|v| v.as_str()) {
+        action.insert("selector".into(), Value::String(selector.to_string()));
+    }
+    if let Some(label) = args.get("label").and_then(|v| v.as_str()) {
+        action.insert("label".into(), Value::String(label.to_string()));
+    }
+    if let Some(value) = args.get("value").and_then(|v| v.as_str()) {
+        action.insert("value".into(), Value::String(value.to_string()));
+    }
+    if let Some(index) = args.get("index").and_then(|v| v.as_u64()) {
+        action.insert("index".into(), Value::Number(index.into()));
+    }
+    run_browser_action_tool(
+        app,
+        &target,
+        Value::Object(action),
+        4_000,
+        120,
+        "ページ内の入力欄が見つかりません",
+    )
+    .await
+}
+
+pub(super) async fn browser_select_option(
+    app: &tauri::AppHandle,
+    args: &Value,
+) -> Result<Value, String> {
+    let target = resolve_browser_target_from_args(app, args)?;
+    let mut action = serde_json::Map::new();
+    action.insert("kind".into(), Value::String("select_option".into()));
+    if let Some(selector) = args.get("selector").and_then(|v| v.as_str()) {
+        action.insert("selector".into(), Value::String(selector.to_string()));
+    }
+    if let Some(label) = args.get("label").and_then(|v| v.as_str()) {
+        action.insert("label".into(), Value::String(label.to_string()));
+    }
+    if let Some(value) = args.get("value").and_then(|v| v.as_str()) {
+        action.insert("value".into(), Value::String(value.to_string()));
+    }
+    if let Some(index) = args.get("index").and_then(|v| v.as_u64()) {
+        action.insert("index".into(), Value::Number(index.into()));
+    }
+    run_browser_action_tool(
+        app,
+        &target,
+        Value::Object(action),
+        4_000,
+        120,
+        "ページ内の選択欄が見つかりません",
+    )
+    .await
+}
+
+pub(super) async fn browser_press(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
+    let target = resolve_browser_target_from_args(app, args)?;
+    let mut action = serde_json::Map::new();
+    action.insert("kind".into(), Value::String("press".into()));
+    if let Some(selector) = args.get("selector").and_then(|v| v.as_str()) {
+        action.insert("selector".into(), Value::String(selector.to_string()));
+    }
+    if let Some(key) = args.get("key").and_then(|v| v.as_str()) {
+        action.insert("key".into(), Value::String(key.to_string()));
+    }
+    run_browser_action_tool(
+        app,
+        &target,
+        Value::Object(action),
+        4_000,
+        300,
+        "ページへキー入力を送れませんでした",
+    )
+    .await
+}
+
+pub(super) async fn browser_scroll(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
+    let target = resolve_browser_target_from_args(app, args)?;
+    let mut action = serde_json::Map::new();
+    action.insert("kind".into(), Value::String("scroll".into()));
+    if let Some(selector) = args.get("selector").and_then(|v| v.as_str()) {
+        action.insert("selector".into(), Value::String(selector.to_string()));
+    }
+    if let Some(direction) = args.get("direction").and_then(|v| v.as_str()) {
+        action.insert("direction".into(), Value::String(direction.to_string()));
+    }
+    if let Some(amount) = args.get("amount").and_then(|v| v.as_u64()) {
+        action.insert("amount".into(), Value::Number(amount.into()));
+    }
+    run_browser_action_tool(
+        app,
+        &target,
+        Value::Object(action),
+        3_500,
+        120,
+        "ページをスクロールできませんでした",
+    )
+    .await
+}
+
+pub(super) async fn browser_wait_for(
+    app: &tauri::AppHandle,
+    args: &Value,
+) -> Result<Value, String> {
+    let target = resolve_browser_target_from_args(app, args)?;
+    let mut action = serde_json::Map::new();
+    action.insert("kind".into(), Value::String("wait_for".into()));
+    if let Some(selector) = args.get("selector").and_then(|v| v.as_str()) {
+        action.insert("selector".into(), Value::String(selector.to_string()));
+    }
+    if let Some(text) = args.get("text").and_then(|v| v.as_str()) {
+        action.insert("text".into(), Value::String(text.to_string()));
+    }
+    if let Some(timeout_ms) = args.get("timeout_ms").and_then(|v| v.as_u64()) {
+        action.insert("timeoutMs".into(), Value::Number(timeout_ms.into()));
+    }
+    run_browser_action_tool(
+        app,
+        &target,
+        Value::Object(action),
+        args.get("timeout_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3_000)
+            + 700,
+        80,
+        "等待页面变化超时了",
+    )
+    .await
 }

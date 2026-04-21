@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use tauri::{Emitter, Manager};
@@ -8,27 +9,776 @@ const BROWSER_BRIDGE_SCRIPT: &str = r#"
 (function () {
   if (window.__selahBrowserBridgeInstalled) return;
   window.__selahBrowserBridgeInstalled = true;
+
+  function normalizeText(value) {
+    return String(value || '')
+      .replace(/\u00A0/g, ' ')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function textOf(el) {
+    if (!el) return '';
+    return normalizeText(el.innerText || el.textContent || '');
+  }
+
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+    try {
+      var style = window.getComputedStyle(el);
+      if (!style) return true;
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (parseFloat(style.opacity || '1') === 0) return false;
+    } catch (_) {}
+    var rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+    if (!rect) return true;
+    return rect.width > 0 || rect.height > 0;
+  }
+
+  function isJunk(el) {
+    if (!el || !(el instanceof Element)) return false;
+    return !!el.closest(
+      'script,style,noscript,template,svg,canvas,iframe,nav,header,footer,aside,' +
+      '[role="navigation"],[role="banner"],[role="contentinfo"],[role="dialog"],[aria-modal="true"],' +
+      '.cookie,.cookies,.consent,.ads,.ad,.advertisement,.breadcrumb,.sidebar,.drawer,.modal,.popup'
+    );
+  }
+
+  function pushUnique(items, seen, raw, maxChars) {
+    var value = normalizeText(raw);
+    if (!value) return;
+    if (maxChars && value.length > maxChars) value = value.slice(0, maxChars) + '…';
+    var key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(value);
+  }
+
+  function scoreRoot(el) {
+    if (!el || !isVisible(el) || isJunk(el)) return -1;
+    var text = textOf(el);
+    if (text.length < 80) return -1;
+    var blocks = el.querySelectorAll('p,li,tr').length;
+    var headings = el.querySelectorAll('h1,h2,h3').length;
+    var controls = el.querySelectorAll('button,input,textarea,select').length;
+    return Math.min(text.length, 7000) + blocks * 40 + headings * 120 + controls * 25;
+  }
+
+  function pickContentRoot(doc) {
+    var preferred = [
+      'main',
+      'article',
+      '[role="main"]',
+      '.main',
+      '#main',
+      '.content',
+      '#content',
+      '.article',
+      '.post',
+      '.entry',
+      'form'
+    ];
+    for (var i = 0; i < preferred.length; i++) {
+      var candidate = doc.querySelector(preferred[i]);
+      if (!candidate || !isVisible(candidate) || isJunk(candidate)) continue;
+      if (textOf(candidate).length >= 120 || candidate.querySelector('input,textarea,select,button')) {
+        return candidate;
+      }
+    }
+
+    var candidates = Array.from(doc.querySelectorAll('main,article,section,form,div')).slice(0, 500);
+    var best = doc.body || doc.documentElement;
+    var bestScore = scoreRoot(best);
+    for (var j = 0; j < candidates.length; j++) {
+      var el = candidates[j];
+      var score = scoreRoot(el);
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+    return best || doc.body || doc.documentElement;
+  }
+
+  function collectHeadings(root) {
+    var out = [];
+    var seen = new Set();
+    var nodes = root ? root.querySelectorAll('h1,h2,h3,h4,h5,h6') : [];
+    for (var i = 0; i < nodes.length && out.length < 10; i++) {
+      var el = nodes[i];
+      if (!isVisible(el) || isJunk(el)) continue;
+      pushUnique(out, seen, textOf(el), 140);
+    }
+    return out;
+  }
+
+  function collectLinks(root) {
+    var out = [];
+    var seen = new Set();
+    var nodes = root ? root.querySelectorAll('a[href]') : [];
+    for (var i = 0; i < nodes.length && out.length < 8; i++) {
+      var el = nodes[i];
+      if (!isVisible(el) || isJunk(el)) continue;
+      var text = textOf(el);
+      var href = normalizeText(el.href || el.getAttribute('href') || '');
+      if (!href || href === '#' || href.startsWith('javascript:')) continue;
+      var key = (text + '|' + href).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        text: text.length > 120 ? text.slice(0, 120) + '…' : text,
+        url: href.length > 240 ? href.slice(0, 240) + '…' : href
+      });
+    }
+    return out;
+  }
+
+  function buttonKind(el) {
+    var kind = el.getAttribute('type') || el.getAttribute('role') || el.tagName || '';
+    return normalizeText(kind).toLowerCase();
+  }
+
+  function collectButtons(root) {
+    var out = [];
+    var seen = new Set();
+    var nodes = root
+      ? root.querySelectorAll('button,[role="button"],input[type="button"],input[type="submit"],input[type="reset"]')
+      : [];
+    for (var i = 0; i < nodes.length && out.length < 10; i++) {
+      var el = nodes[i];
+      if (!isVisible(el) || isJunk(el)) continue;
+      var text = textOf(el) || normalizeText(el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+      if (!text) continue;
+      var key = (text + '|' + buttonKind(el)).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        text: text.length > 120 ? text.slice(0, 120) + '…' : text,
+        type: buttonKind(el)
+      });
+    }
+    return out;
+  }
+
+  function findLabelText(el) {
+    if (!el) return '';
+    var parentLabel = el.closest('label');
+    if (parentLabel) {
+      var parentText = textOf(parentLabel);
+      if (parentText) return parentText;
+    }
+    var id = el.id || '';
+    if (id && window.CSS && typeof window.CSS.escape === 'function') {
+      var label = document.querySelector('label[for="' + window.CSS.escape(id) + '"]');
+      if (label) {
+        var labelText = textOf(label);
+        if (labelText) return labelText;
+      }
+    }
+    return normalizeText(
+      el.getAttribute('aria-label') ||
+      el.getAttribute('placeholder') ||
+      el.getAttribute('name') ||
+      ''
+    );
+  }
+
+  function collectInputs(root) {
+    var out = [];
+    var seen = new Set();
+    var nodes = root ? root.querySelectorAll('input,textarea,select') : [];
+    for (var i = 0; i < nodes.length && out.length < 10; i++) {
+      var el = nodes[i];
+      if (!isVisible(el) || isJunk(el)) continue;
+      var tag = (el.tagName || '').toLowerCase();
+      var type = normalizeText(el.getAttribute('type') || tag).toLowerCase();
+      if (type === 'hidden') continue;
+      var label = findLabelText(el);
+      var name = normalizeText(el.getAttribute('name') || '');
+      var placeholder = normalizeText(el.getAttribute('placeholder') || '');
+      var value = normalizeText(el.value || '');
+      var key = (label + '|' + name + '|' + type).toLowerCase();
+      if (!label && !name && !placeholder && !value) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        label: label.length > 120 ? label.slice(0, 120) + '…' : label,
+        type: type,
+        name: name.length > 80 ? name.slice(0, 80) + '…' : name,
+        placeholder: placeholder.length > 120 ? placeholder.slice(0, 120) + '…' : placeholder,
+        value: value.length > 120 ? value.slice(0, 120) + '…' : value,
+        required: !!el.required,
+        disabled: !!el.disabled
+      });
+    }
+    return out;
+  }
+
+  function collectContent(root) {
+    var blocks = [];
+    var seen = new Set();
+    var totalChars = 0;
+    var nodes = root ? root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,tr') : [];
+
+    function pushLine(line) {
+      var value = normalizeText(line);
+      if (!value) return;
+      var key = value.toLowerCase();
+      if (seen.has(key)) return;
+      if (blocks.length > 0 && totalChars + value.length > 12000) return;
+      seen.add(key);
+      blocks.push(value);
+      totalChars += value.length + 1;
+    }
+
+    for (var i = 0; i < nodes.length; i++) {
+      if (totalChars >= 12000) break;
+      var el = nodes[i];
+      if (!isVisible(el) || isJunk(el)) continue;
+      var tag = (el.tagName || '').toLowerCase();
+      if (tag === 'tr') {
+        var cells = Array.from(el.querySelectorAll('th,td'))
+          .map(function (cell) { return textOf(cell); })
+          .filter(Boolean);
+        if (cells.length) pushLine(cells.join(' | '));
+        continue;
+      }
+      var text = textOf(el);
+      if (!text) continue;
+      if (/^h[1-6]$/.test(tag)) {
+        var level = Math.min(Math.max(parseInt(tag.slice(1), 10) || 2, 1), 4);
+        pushLine(Array(level + 1).join('#') + ' ' + text);
+      } else if (tag === 'li') {
+        pushLine('- ' + text);
+      } else if (tag === 'blockquote') {
+        pushLine('> ' + text);
+      } else {
+        pushLine(text);
+      }
+    }
+
+    if (!blocks.length) {
+      return textOf(root).slice(0, 12000);
+    }
+    return blocks.join('\n');
+  }
+
+  function candidateText(el) {
+    if (!el) return '';
+    return normalizeText(
+      textOf(el) ||
+      el.getAttribute('aria-label') ||
+      el.getAttribute('title') ||
+      el.getAttribute('value') ||
+      el.getAttribute('alt') ||
+      ''
+    );
+  }
+
+  function matchScore(query, text) {
+    var q = normalizeText(query).toLowerCase();
+    var t = normalizeText(text).toLowerCase();
+    if (!q || !t) return 0;
+    if (t === q) return 1200;
+    if (t.startsWith(q)) return 900 - Math.min(240, t.length - q.length);
+    if (t.includes(q)) return 700 - Math.min(220, t.length - q.length);
+    if (q.includes(t) && t.length >= 2) return 520 - Math.min(180, q.length - t.length);
+    return 0;
+  }
+
+  function dedupeElements(items) {
+    var seen = new Set();
+    var out = [];
+    for (var i = 0; i < items.length; i++) {
+      var el = items[i];
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+      out.push(el);
+    }
+    return out;
+  }
+
+  function pickByIndex(items, index) {
+    if (!items.length) return null;
+    var safe = Math.max(0, Math.min(Number(index || 0), items.length - 1));
+    return items[safe];
+  }
+
+  function currentPageMeta() {
+    return {
+      url: String(window.location.href || ''),
+      title: normalizeText(document.title || '')
+    };
+  }
+
+  function elementSummary(el) {
+    if (!el) return {};
+    return {
+      tag: String(el.tagName || '').toLowerCase(),
+      text: candidateText(el).slice(0, 160),
+      name: normalizeText(el.getAttribute('name') || '').slice(0, 80),
+      type: normalizeText(el.getAttribute('type') || el.getAttribute('role') || '').slice(0, 40),
+      href: normalizeText(el.href || el.getAttribute('href') || '').slice(0, 240)
+    };
+  }
+
+  function clickableSelector() {
+    return 'a[href],button,[role="button"],[role="link"],[role="tab"],summary,' +
+      'input[type="button"],input[type="submit"],input[type="reset"],label,[onclick]';
+  }
+
+  function isClickable(el) {
+    if (!el || !isVisible(el) || isJunk(el)) return false;
+    if (el.matches && el.matches(clickableSelector())) return true;
+    var tag = String(el.tagName || '').toLowerCase();
+    return tag === 'a' || tag === 'button';
+  }
+
+  function closestClickable(el) {
+    if (!el || !el.closest) return null;
+    return el.closest(clickableSelector());
+  }
+
+  function findClickable(action) {
+    var index = Number(action.index || 0);
+    if (action.selector) {
+      var direct = Array.from(document.querySelectorAll(String(action.selector)))
+        .map(function (el) { return closestClickable(el) || el; })
+        .filter(function (el) { return isClickable(el); });
+      direct = dedupeElements(direct);
+      return { element: pickByIndex(direct, index), matches: direct.length };
+    }
+
+    var textQuery = normalizeText(action.text || '');
+    var hrefQuery = normalizeText(action.hrefContains || '').toLowerCase();
+    var ranked = Array.from(document.querySelectorAll(clickableSelector()))
+      .filter(function (el) { return isClickable(el); })
+      .map(function (el) {
+        var score = 0;
+        if (textQuery) score += matchScore(textQuery, candidateText(el));
+        if (hrefQuery) {
+          var href = normalizeText(el.href || el.getAttribute('href') || '').toLowerCase();
+          if (href.includes(hrefQuery)) score += href === hrefQuery ? 1300 : 850;
+        }
+        return { el: el, score: score };
+      })
+      .filter(function (item) { return item.score > 0; })
+      .sort(function (a, b) { return b.score - a.score; });
+
+    var matches = ranked.map(function (item) { return item.el; });
+    return { element: pickByIndex(matches, index), matches: matches.length };
+  }
+
+  function fieldSelector() {
+    return 'input:not([type="hidden"]),textarea,select,[contenteditable="true"]';
+  }
+
+  function isFillable(el) {
+    if (!el || !isVisible(el) || isJunk(el)) return false;
+    if (el.matches && el.matches(fieldSelector())) return true;
+    return !!el.isContentEditable;
+  }
+
+  function fieldSummaryText(el) {
+    return normalizeText([
+      findLabelText(el),
+      el.getAttribute('name') || '',
+      el.getAttribute('placeholder') || '',
+      el.getAttribute('aria-label') || '',
+      el.getAttribute('title') || ''
+    ].filter(Boolean).join(' | '));
+  }
+
+  function findField(action, options) {
+    var index = Number(action.index || 0);
+    var allowSelectOnly = !!(options && options.selectOnly);
+    if (action.selector) {
+      var direct = Array.from(document.querySelectorAll(String(action.selector)))
+        .filter(function (el) { return isFillable(el); });
+      if (allowSelectOnly) {
+        direct = direct.filter(function (el) { return String(el.tagName || '').toLowerCase() === 'select'; });
+      }
+      return { element: pickByIndex(direct, index), matches: direct.length };
+    }
+
+    var labelQuery = normalizeText(action.label || '');
+    var ranked = Array.from(document.querySelectorAll(fieldSelector()))
+      .filter(function (el) { return isFillable(el); })
+      .filter(function (el) {
+        return !allowSelectOnly || String(el.tagName || '').toLowerCase() === 'select';
+      })
+      .map(function (el) {
+        return { el: el, score: matchScore(labelQuery, fieldSummaryText(el)) };
+      })
+      .filter(function (item) { return labelQuery ? item.score > 0 : true; })
+      .sort(function (a, b) { return b.score - a.score; });
+
+    var matches = ranked.map(function (item) { return item.el; });
+    return { element: pickByIndex(matches, index), matches: matches.length };
+  }
+
+  function setNativeValue(el, value) {
+    var proto = null;
+    if (window.HTMLInputElement && el instanceof window.HTMLInputElement) {
+      proto = window.HTMLInputElement.prototype;
+    } else if (window.HTMLTextAreaElement && el instanceof window.HTMLTextAreaElement) {
+      proto = window.HTMLTextAreaElement.prototype;
+    }
+    var desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && typeof desc.set === 'function') {
+      desc.set.call(el, value);
+    } else {
+      el.value = value;
+    }
+  }
+
+  function dispatchInputEvents(el) {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function setFieldValue(el, rawValue) {
+    var value = String(rawValue == null ? '' : rawValue);
+    if (el.isContentEditable) {
+      el.focus();
+      el.textContent = value;
+      dispatchInputEvents(el);
+      return;
+    }
+
+    var tag = String(el.tagName || '').toLowerCase();
+    var type = normalizeText(el.getAttribute('type') || '').toLowerCase();
+    el.focus();
+
+    if (type === 'checkbox' || type === 'radio') {
+      var truthy = ['true', '1', 'yes', 'on', 'checked', '选中', '勾选', 'はい'];
+      var shouldCheck = truthy.indexOf(value.trim().toLowerCase()) >= 0;
+      el.checked = shouldCheck;
+      dispatchInputEvents(el);
+      return;
+    }
+
+    if (tag === 'select') {
+      selectOptionValue(el, value);
+      return;
+    }
+
+    setNativeValue(el, value);
+    dispatchInputEvents(el);
+  }
+
+  function selectOptionValue(el, rawValue) {
+    var value = normalizeText(rawValue);
+    if (!el || String(el.tagName || '').toLowerCase() !== 'select') {
+      throw new Error('Target is not a <select> element');
+    }
+    var options = Array.from(el.options || []);
+    var lower = value.toLowerCase();
+    var bestIndex = -1;
+    var bestScore = 0;
+    for (var i = 0; i < options.length; i++) {
+      var option = options[i];
+      var optionText = normalizeText(option.text || option.label || '');
+      var optionValue = normalizeText(option.value || '');
+      var score = Math.max(matchScore(value, optionText), matchScore(value, optionValue));
+      if (optionValue.toLowerCase() === lower || optionText.toLowerCase() === lower) {
+        score += 800;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0) {
+      throw new Error('No matching option found');
+    }
+    el.focus();
+    el.selectedIndex = bestIndex;
+    dispatchInputEvents(el);
+  }
+
+  function performClick(el) {
+    if (!el) throw new Error('No clickable element found');
+    if (typeof el.focus === 'function') el.focus();
+    ['mouseover', 'mousedown', 'mouseup'].forEach(function (type) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    });
+    if (typeof el.click === 'function') {
+      el.click();
+    } else {
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    }
+  }
+
+  function normalizeKeyName(rawKey) {
+    var key = normalizeText(rawKey);
+    var lower = key.toLowerCase();
+    var map = {
+      enter: 'Enter',
+      tab: 'Tab',
+      escape: 'Escape',
+      esc: 'Escape',
+      backspace: 'Backspace',
+      delete: 'Delete',
+      arrowup: 'ArrowUp',
+      arrowdown: 'ArrowDown',
+      arrowleft: 'ArrowLeft',
+      arrowright: 'ArrowRight',
+      space: ' ',
+      spacebar: ' ',
+      pageup: 'PageUp',
+      pagedown: 'PageDown',
+      home: 'Home',
+      end: 'End'
+    };
+    return map[lower] || key;
+  }
+
+  function performKeyPress(el, rawKey) {
+    var key = normalizeKeyName(rawKey);
+    var target = el || document.activeElement || document.body;
+    if (!target) throw new Error('No target available for key press');
+    if (typeof target.focus === 'function') target.focus();
+
+    ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+      target.dispatchEvent(new KeyboardEvent(type, {
+        key: key,
+        bubbles: true,
+        cancelable: true
+      }));
+    });
+
+    if (key === 'Enter' && target.form && String(target.tagName || '').toLowerCase() !== 'textarea') {
+      if (typeof target.form.requestSubmit === 'function') target.form.requestSubmit();
+      else if (typeof target.form.submit === 'function') target.form.submit();
+    }
+
+    if ((key === ' ' || key === 'Enter') && isClickable(target) && typeof target.click === 'function') {
+      target.click();
+    }
+
+    return key;
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  async function waitForCondition(action) {
+    var timeoutMs = Math.max(200, Number(action.timeoutMs || 3000));
+    var start = Date.now();
+    var selector = normalizeText(action.selector || '');
+    var text = normalizeText(action.text || '');
+    while (Date.now() - start <= timeoutMs) {
+      if (selector) {
+        var matches = Array.from(document.querySelectorAll(String(action.selector)))
+          .filter(function (el) { return isVisible(el) && !isJunk(el); });
+        if (matches.length) {
+          return {
+            ok: true,
+            action: 'wait_for',
+            waitedMs: Date.now() - start,
+            matches: matches.length,
+            condition: selector,
+            selector: selector,
+            element: elementSummary(matches[0])
+          };
+        }
+      }
+      if (text) {
+        var body = normalizeText((document.body && (document.body.innerText || document.body.textContent)) || '');
+        if (body.toLowerCase().includes(text.toLowerCase())) {
+          return {
+            ok: true,
+            action: 'wait_for',
+            waitedMs: Date.now() - start,
+            matches: 1,
+            condition: text,
+            textFound: text
+          };
+        }
+      }
+      await wait(150);
+    }
+    throw new Error('Timed out waiting for page condition');
+  }
+
+  window.__selahBrowserRunAction = async function (requestId, action) {
+    try {
+      var invoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+      if (!invoke) return;
+      var payload = action || {};
+      var kind = normalizeText(payload.kind || payload.action).toLowerCase();
+      var report = function (result) {
+        return invoke('browser_report_action_result', {
+          report: {
+            requestId: requestId,
+            payload: Object.assign({}, currentPageMeta(), result || {})
+          }
+        });
+      };
+
+      if (!kind) {
+        await report({ ok: false, error: 'Missing browser action kind' });
+        return;
+      }
+
+      if (kind === 'click') {
+        var clicked = findClickable(payload);
+        if (!clicked.element) throw new Error('No matching clickable element found');
+        var clickResult = {
+          ok: true,
+          action: 'click',
+          matches: clicked.matches,
+          selector: normalizeText(payload.selector || ''),
+          textQuery: normalizeText(payload.text || ''),
+          hrefContains: normalizeText(payload.hrefContains || ''),
+          element: elementSummary(clicked.element)
+        };
+        var clickReport = report(clickResult);
+        performClick(clicked.element);
+        await clickReport;
+        return;
+      }
+
+      if (kind === 'fill') {
+        var filled = findField(payload, { selectOnly: false });
+        if (!filled.element) throw new Error('No matching field found');
+        setFieldValue(filled.element, payload.value || '');
+        await report({
+          ok: true,
+          action: 'fill',
+          matches: filled.matches,
+          selector: normalizeText(payload.selector || ''),
+          labelQuery: normalizeText(payload.label || ''),
+          valuePreview: normalizeText(String(payload.value || '')).slice(0, 120),
+          element: elementSummary(filled.element)
+        });
+        return;
+      }
+
+      if (kind === 'select_option') {
+        var selected = findField(payload, { selectOnly: true });
+        if (!selected.element) throw new Error('No matching select field found');
+        selectOptionValue(selected.element, payload.value || '');
+        await report({
+          ok: true,
+          action: 'select_option',
+          matches: selected.matches,
+          selector: normalizeText(payload.selector || ''),
+          labelQuery: normalizeText(payload.label || ''),
+          valuePreview: normalizeText(String(payload.value || '')).slice(0, 120),
+          element: elementSummary(selected.element)
+        });
+        return;
+      }
+
+      if (kind === 'press') {
+        var pressTarget = null;
+        if (payload.selector) {
+          pressTarget = document.querySelector(String(payload.selector));
+        }
+        if (pressTarget && !isVisible(pressTarget)) pressTarget = null;
+        var pressResult = {
+          ok: true,
+          action: 'press',
+          selector: normalizeText(payload.selector || ''),
+          key: performKeyPress(pressTarget, payload.key || '')
+        };
+        if (pressTarget) {
+          pressResult.element = elementSummary(pressTarget);
+        }
+        await report(pressResult);
+        return;
+      }
+
+      if (kind === 'scroll') {
+        var direction = normalizeText(payload.direction || 'down').toLowerCase();
+        var amount = Math.max(80, Number(payload.amount || 900));
+        if (payload.selector) {
+          var scrollTarget = document.querySelector(String(payload.selector));
+          if (!scrollTarget || !isVisible(scrollTarget)) throw new Error('No matching element to scroll into view');
+          scrollTarget.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' });
+          await wait(60);
+          await report({
+            ok: true,
+            action: 'scroll',
+            selector: normalizeText(payload.selector || ''),
+            direction: direction,
+            element: elementSummary(scrollTarget),
+            scrollY: Math.round(window.scrollY || 0)
+          });
+          return;
+        }
+
+        if (direction === 'top') window.scrollTo({ top: 0, behavior: 'auto' });
+        else if (direction === 'bottom') window.scrollTo({ top: document.body ? document.body.scrollHeight : 999999, behavior: 'auto' });
+        else if (direction === 'up') window.scrollBy({ top: -amount, behavior: 'auto' });
+        else window.scrollBy({ top: amount, behavior: 'auto' });
+
+        await wait(60);
+        await report({
+          ok: true,
+          action: 'scroll',
+          direction: direction,
+          amount: amount,
+          scrollY: Math.round(window.scrollY || 0)
+        });
+        return;
+      }
+
+      if (kind === 'wait_for') {
+        var waited = await waitForCondition(payload);
+        await report(waited);
+        return;
+      }
+
+      throw new Error('Unsupported browser action: ' + kind);
+    } catch (error) {
+      try {
+        var invoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+        if (!invoke) return;
+        await invoke('browser_report_action_result', {
+          report: {
+            requestId: requestId,
+            payload: Object.assign({}, currentPageMeta(), {
+              ok: false,
+              action: normalizeText(action && (action.kind || action.action) || '').toLowerCase(),
+              error: normalizeText(error && (error.message || String(error)) || 'Browser action failed')
+            })
+          }
+        });
+      } catch (_) {}
+    }
+  };
+
   window.__selahBrowserExtractText = async function (requestId) {
     try {
       var invoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
       if (!invoke) return;
       var doc = document;
       var title = (doc.title || '').trim();
-      var bodyText = '';
-      if (doc.body) {
-        bodyText = (doc.body.innerText || doc.body.textContent || '').trim();
+      var root = pickContentRoot(doc);
+      var bodyText = collectContent(root);
+      if (!bodyText && doc.body) {
+        bodyText = textOf(doc.body);
       }
-      if (!bodyText && doc.documentElement) {
-        bodyText = (doc.documentElement.innerText || doc.documentElement.textContent || '').trim();
-      }
-      bodyText = bodyText.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
       await invoke('browser_report_page_text', {
         report: {
           requestId: requestId,
           payload: {
             title: title,
             url: String(window.location.href || ''),
-            text: bodyText
+            text: bodyText,
+            headings: collectHeadings(root),
+            links: collectLinks(root),
+            buttons: collectButtons(root),
+            inputs: collectInputs(root),
+            contentSource: root && root.tagName ? String(root.tagName).toLowerCase() : 'document'
           }
         }
       });
@@ -39,6 +789,9 @@ const BROWSER_BRIDGE_SCRIPT: &str = r#"
 
 static PAGE_TEXT_WAITERS: LazyLock<
     Mutex<HashMap<String, tokio::sync::oneshot::Sender<PageTextPayload>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static BROWSER_ACTION_WAITERS: LazyLock<
+    Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 static BROWSER_WINDOW_LABELS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -52,6 +805,43 @@ pub struct BrowserWindowInfo {
 
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowserLinkPayload {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserButtonPayload {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserInputPayload {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub placeholder: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PageTextPayload {
     #[serde(default)]
     pub title: String,
@@ -59,6 +849,16 @@ pub struct PageTextPayload {
     pub url: String,
     #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub headings: Vec<String>,
+    #[serde(default)]
+    pub links: Vec<BrowserLinkPayload>,
+    #[serde(default)]
+    pub buttons: Vec<BrowserButtonPayload>,
+    #[serde(default)]
+    pub inputs: Vec<BrowserInputPayload>,
+    #[serde(default)]
+    pub content_source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +866,13 @@ pub struct PageTextPayload {
 pub struct BrowserPageTextReport {
     request_id: String,
     payload: PageTextPayload,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserActionReport {
+    request_id: String,
+    payload: Value,
 }
 
 /// Create a browser-style window with a native toolbar webview + content webview.
@@ -218,6 +1025,17 @@ pub async fn browser_report_page_text(report: BrowserPageTextReport) -> Result<(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn browser_report_action_result(report: BrowserActionReport) -> Result<(), String> {
+    let tx = BROWSER_ACTION_WAITERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&report.request_id)
+        .ok_or_else(|| "No pending browser action request".to_string())?;
+    let _ = tx.send(report.payload);
+    Ok(())
+}
+
 pub fn list_browser_windows(app: &tauri::AppHandle) -> Vec<BrowserWindowInfo> {
     let labels: Vec<String> = BROWSER_WINDOW_LABELS
         .lock()
@@ -322,4 +1140,49 @@ pub async fn extract_page_text(
         }
     }
     Err("Timed out while extracting page text".into())
+}
+
+pub async fn run_browser_action(
+    app: &tauri::AppHandle,
+    target: &str,
+    action: &Value,
+    timeout_ms: u64,
+) -> Result<Value, String> {
+    let wv = app.get_webview(target).ok_or("Webview not found")?;
+    let request_id = format!("browser-action-{}", uuid::Uuid::new_v4());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    BROWSER_ACTION_WAITERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(request_id.clone(), tx);
+
+    let js = format!(
+        "(function(){{ if (window.__selahBrowserRunAction) window.__selahBrowserRunAction({}, {}); else window.__TAURI__?.core?.invoke?.('browser_report_action_result', {{ report: {{ requestId: {}, payload: {{ ok: false, error: 'Browser action bridge unavailable' }} }} }}); }})();",
+        serde_json::to_string(&request_id).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(action).unwrap_or_else(|_| "{}".into()),
+        serde_json::to_string(&request_id).unwrap_or_else(|_| "\"\"".into()),
+    );
+
+    if let Err(e) = wv.eval(&js) {
+        BROWSER_ACTION_WAITERS
+            .lock()
+            .unwrap_or_else(|pe| pe.into_inner())
+            .remove(&request_id);
+        return Err(e.to_string());
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms.max(300)), rx).await {
+        Ok(Ok(payload)) => Ok(payload),
+        Ok(Err(_)) => Err("Browser action channel closed".into()),
+        Err(_) => {
+            BROWSER_ACTION_WAITERS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            Err(format!(
+                "Timed out while waiting for browser action after {} ms",
+                timeout_ms.max(300)
+            ))
+        }
+    }
 }

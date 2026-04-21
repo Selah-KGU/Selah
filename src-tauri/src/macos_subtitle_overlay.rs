@@ -107,7 +107,11 @@ struct Spring {
 
 impl Spring {
     fn new(pos: f64) -> Self {
-        Self { pos, vel: 0.0, target: pos }
+        Self {
+            pos,
+            vel: 0.0,
+            target: pos,
+        }
     }
     fn set_target(&mut self, t: f64) {
         self.target = t;
@@ -185,7 +189,10 @@ pub fn setup(app: &AppHandle) {
             return;
         }
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        let active = payload.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
+        let active = payload
+            .get("active")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !active {
             schedule_fade_out(&app_state, SUB_FADE_DELAY_SECS);
         }
@@ -459,7 +466,10 @@ fn install_click_monitor(app: AppHandle) {
 
                 let is_our_panel = UI.with(|ui| {
                     let ui = ui.borrow();
-                    ui.panel.as_ref().map(|p| p.windowNumber() == win_num).unwrap_or(false)
+                    ui.panel
+                        .as_ref()
+                        .map(|p| p.windowNumber() == win_num)
+                        .unwrap_or(false)
                 });
 
                 if is_our_panel {
@@ -538,7 +548,11 @@ fn morph_to(app: AppHandle, target_w: f64) {
         let _ = app.run_on_main_thread(move || {
             UI.with(|ui| {
                 let ui = ui.borrow();
-                let cur_w = ui.panel.as_ref().map(|p| p.frame().size.width).unwrap_or(target_w);
+                let cur_w = ui
+                    .panel
+                    .as_ref()
+                    .map(|p| p.frame().size.width)
+                    .unwrap_or(target_w);
                 let _ = tx.send((cur_w, ui.screen_center_x, ui.screen_bottom_y));
             });
         });
@@ -595,7 +609,11 @@ fn show_text(app: &AppHandle, text: String, is_final: bool) {
         let (tx, rx) = std::sync::mpsc::sync_channel::<f64>(1);
         let _ = app_fade.run_on_main_thread(move || {
             let a = UI.with(|ui| {
-                ui.borrow().panel.as_ref().map(|p| p.alphaValue() as f64).unwrap_or(1.0)
+                ui.borrow()
+                    .panel
+                    .as_ref()
+                    .map(|p| p.alphaValue() as f64)
+                    .unwrap_or(1.0)
             });
             let _ = tx.send(a);
         });

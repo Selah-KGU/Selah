@@ -114,7 +114,8 @@ async fn fetch_kgc_notifications(app: &AppHandle) -> Result<NotificationsData, S
 async fn fetch_luna_notifications(
     app: &AppHandle,
 ) -> Result<Vec<crate::luna_parser::LunaNotification>, String> {
-    crate::luna_commands::luna_fetch_updates(app.state::<LunaState>(), app.state::<Database>()).await
+    crate::luna_commands::luna_fetch_updates(app.state::<LunaState>(), app.state::<Database>())
+        .await
 }
 
 async fn fetch_kwic_home(app: &AppHandle) -> Result<KwicPortalHome, String> {
@@ -122,7 +123,11 @@ async fn fetch_kwic_home(app: &AppHandle) -> Result<KwicPortalHome, String> {
 }
 
 async fn is_kgc_authenticated(app: &AppHandle) -> bool {
-    app.state::<KgcState>().client.lock().await.is_authenticated()
+    app.state::<KgcState>()
+        .client
+        .lock()
+        .await
+        .is_authenticated()
 }
 
 async fn is_luna_authenticated(app: &AppHandle) -> bool {
@@ -134,7 +139,11 @@ async fn is_kwic_authenticated(app: &AppHandle) -> bool {
 }
 
 async fn is_mail_authenticated(app: &AppHandle) -> bool {
-    app.state::<MailState>().client.lock().await.is_authenticated()
+    app.state::<MailState>()
+        .client
+        .lock()
+        .await
+        .is_authenticated()
 }
 
 fn sync_kgc_notifications(app: &AppHandle, cfg: &NotificationConfig, data: NotificationsData) {
@@ -216,9 +225,12 @@ fn sync_kwic_notifications(app: &AppHandle, cfg: &NotificationConfig, home: Kwic
     let current_ids: Vec<String> = home
         .sections
         .iter()
-        .flat_map(|section| section.items.iter().filter_map(|item| {
-            (!item.id.is_empty()).then_some(item.id.clone())
-        }))
+        .flat_map(|section| {
+            section
+                .items
+                .iter()
+                .filter_map(|item| (!item.id.is_empty()).then_some(item.id.clone()))
+        })
         .collect();
     let (initialized, mut seen_ids, mut seen_set) = load_seen_state(&db, source);
 
@@ -270,7 +282,12 @@ fn sync_mail_notifications(app: &AppHandle, cfg: &NotificationConfig, items: Vec
             let sender = item
                 .from
                 .as_ref()
-                .and_then(|from| from.email_address.name.clone().or(from.email_address.address.clone()))
+                .and_then(|from| {
+                    from.email_address
+                        .name
+                        .clone()
+                        .or(from.email_address.address.clone())
+                })
                 .unwrap_or_else(|| "新着メール".to_string());
             let subject = item
                 .subject
@@ -285,10 +302,7 @@ fn sync_mail_notifications(app: &AppHandle, cfg: &NotificationConfig, items: Vec
     crate::read_state::mark_seen_notif_initialized(&db, source);
 }
 
-fn load_seen_state(
-    db: &Database,
-    source: &str,
-) -> (bool, Vec<String>, HashSet<String>) {
+fn load_seen_state(db: &Database, source: &str) -> (bool, Vec<String>, HashSet<String>) {
     let seen_ids = crate::read_state::get_seen_notif_ids(db, source);
     let seen_set = seen_ids.iter().cloned().collect::<HashSet<_>>();
     let initialized = crate::read_state::is_seen_notif_initialized(db, source);
@@ -307,7 +321,11 @@ fn seed_seen_state(
     crate::read_state::mark_seen_notif_initialized(db, source);
 }
 
-fn extend_seen_ids(seen_ids: &mut Vec<String>, seen_set: &mut HashSet<String>, current_ids: Vec<String>) {
+fn extend_seen_ids(
+    seen_ids: &mut Vec<String>,
+    seen_set: &mut HashSet<String>,
+    current_ids: Vec<String>,
+) {
     for id in current_ids {
         if !id.is_empty() && seen_set.insert(id.clone()) {
             seen_ids.push(id);
@@ -387,7 +405,9 @@ fn kwic_section_allowed(section: &str, cfg: &NotificationConfig) -> bool {
     match section {
         "呼出し・重要なお知らせ" => cfg.notify_important,
         "学部・研究科からのお知らせ" => cfg.notify_faculty,
-        "授業のお知らせ" => course_notification_allowed(CourseNotificationKind::General, cfg),
+        "授業のお知らせ" => {
+            course_notification_allowed(CourseNotificationKind::General, cfg)
+        }
         _ => cfg.notify_other,
     }
 }

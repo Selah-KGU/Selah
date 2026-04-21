@@ -403,6 +403,7 @@ pub fn run() {
             webview_toolbar::browser_reload,
             webview_toolbar::browser_get_url,
             webview_toolbar::browser_report_page_text,
+            webview_toolbar::browser_report_action_result,
             agent_commands::agent_list_conversations,
             agent_commands::agent_create_conversation,
             agent_commands::agent_load_messages,

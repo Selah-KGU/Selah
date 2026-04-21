@@ -378,12 +378,7 @@ fn emit_final(app: &tauri::AppHandle, text: String, caller: &str) {
 /// the same phrase. `last_final` is updated with whatever we end up keeping
 /// (so any legitimate later repeat of the same phrase, spaced by other
 /// content, still goes through).
-fn emit_final_deduped(
-    app: &tauri::AppHandle,
-    text: String,
-    caller: &str,
-    last_final: &mut String,
-) {
+fn emit_final_deduped(app: &tauri::AppHandle, text: String, caller: &str, last_final: &mut String) {
     if text.is_empty() {
         return;
     }
@@ -572,7 +567,7 @@ struct Agc {
 impl Agc {
     const TARGET_PEAK: f32 = 0.5;
     const MAX_GAIN: f32 = 2.0;
-    const ATTACK: f32 = 0.15;  // fast when a louder sample arrives
+    const ATTACK: f32 = 0.15; // fast when a louder sample arrives
     const RELEASE: f32 = 0.02; // slow when the running peak decays
 
     fn new() -> Self {
@@ -587,18 +582,14 @@ impl Agc {
             return;
         }
         if in_speech {
-            let chunk_peak: f32 = samples
-                .iter()
-                .fold(0.0f32, |a, &b| a.max(b.abs()));
+            let chunk_peak: f32 = samples.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
             if !self.initialized {
                 self.ema_peak = chunk_peak;
                 self.initialized = true;
             } else if chunk_peak > self.ema_peak {
-                self.ema_peak =
-                    self.ema_peak + Self::ATTACK * (chunk_peak - self.ema_peak);
+                self.ema_peak = self.ema_peak + Self::ATTACK * (chunk_peak - self.ema_peak);
             } else {
-                self.ema_peak =
-                    self.ema_peak + Self::RELEASE * (chunk_peak - self.ema_peak);
+                self.ema_peak = self.ema_peak + Self::RELEASE * (chunk_peak - self.ema_peak);
             }
         }
         if !self.initialized || self.ema_peak < 1e-4 {
@@ -760,9 +751,7 @@ fn run_stt_session(
         // ⇒ fewer allocations, fewer channel sends, fewer thread context
         // switches, while still well under the VAD's ~12s speech window.
         let desired_frames = (sample_rate as u32 * channels as u32 * 80) / 1000;
-        if let cpal::SupportedBufferSize::Range { min, max } =
-            supported_cfg.buffer_size()
-        {
+        if let cpal::SupportedBufferSize::Range { min, max } = supported_cfg.buffer_size() {
             let clamped = desired_frames.clamp(*min, *max);
             stream_config.buffer_size = cpal::BufferSize::Fixed(clamped);
         }

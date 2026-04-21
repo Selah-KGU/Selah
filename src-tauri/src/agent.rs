@@ -516,6 +516,52 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                     .collect::<Vec<_>>()
                     .join("; ")
             }),
+        "read_browser_page" => {
+            let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let url = parsed.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let headings = parsed
+                .get("headings")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(2)
+                        .filter_map(|h| h.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                })
+                .unwrap_or_default();
+            Some(format!("page[title={}, url={}] {}", title, url, headings))
+        }
+        "browser_click"
+        | "browser_fill"
+        | "browser_select_option"
+        | "browser_press"
+        | "browser_scroll"
+        | "browser_wait_for" => {
+            let action = parsed
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or(name);
+            let url = parsed
+                .get("current_url")
+                .or_else(|| parsed.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let text = parsed
+                .get("element")
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Some(format!(
+                "action[name={}, text={}, url={}]",
+                action, text, url
+            ))
+        }
+        "open_browser_url" | "browser_back" | "browser_forward" | "browser_reload_page" => parsed
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|url| format!("browser[url={}]", url)),
         "search_notifications" | "list_recent_notifications" => parsed
             .get("notifications")
             .and_then(|v| v.as_array())

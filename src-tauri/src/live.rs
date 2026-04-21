@@ -7,6 +7,7 @@ use tauri::Emitter;
 
 const CACHE_DEBOUNCE: Duration = Duration::from_secs(5);
 static LAST_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
+const FREE_NOTE_FOLDER_NAME: &str = "自由ノート";
 
 fn instant_now_ms() -> u64 {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -29,6 +30,8 @@ pub struct LiveCourseInfo {
     pub period: i32,
     #[serde(default)]
     pub time_label: String,
+    #[serde(default)]
+    pub is_free_note: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +60,7 @@ pub struct LiveSessionSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveSaveResult {
+    pub saved: bool,
     pub path: String,
     pub markdown: String,
     pub snapshot: LiveSessionSnapshot,
@@ -102,15 +106,28 @@ struct LiveDayCache {
     summaries: Vec<LiveSummaryChunk>,
 }
 
-fn day_cache_path(course: &LiveCourseInfo) -> std::path::PathBuf {
-    let dir = crate::commands::resolve_download_dir(Some(&course.course_name));
+fn live_storage_dir(course: &LiveCourseInfo) -> std::path::PathBuf {
+    if course.is_free_note {
+        let dir = crate::commands::resolve_download_dir(None).join(FREE_NOTE_FOLDER_NAME);
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    } else {
+        crate::commands::resolve_download_dir(Some(&course.course_name))
+    }
+}
+
+fn day_cache_path(course: &LiveCourseInfo) -> Option<std::path::PathBuf> {
+    if course.is_free_note {
+        return None;
+    }
+    let dir = live_storage_dir(course);
     let date_str = Local::now().format("%Y%m%d").to_string();
     let safe_name = sanitize_filename_component(&course.course_name);
-    dir.join(format!(".{}_{}_live.cache.json", date_str, safe_name))
+    Some(dir.join(format!(".{}_{}_live.cache.json", date_str, safe_name)))
 }
 
 fn load_day_cache(course: &LiveCourseInfo) -> Option<LiveDayCache> {
-    let path = day_cache_path(course);
+    let path = day_cache_path(course)?;
     let data = std::fs::read_to_string(&path).ok()?;
     let cache: LiveDayCache = serde_json::from_str(&data).ok()?;
     let today = Local::now().format("%Y-%m-%d").to_string();
@@ -136,14 +153,18 @@ fn save_day_cache(
         transcript_lines: transcript_lines.to_vec(),
         summaries: summaries.to_vec(),
     };
-    let path = day_cache_path(course);
+    let Some(path) = day_cache_path(course) else {
+        return;
+    };
     if let Ok(json) = serde_json::to_string(&cache) {
         let _ = std::fs::write(&path, json);
     }
 }
 
 fn remove_day_cache(course: &LiveCourseInfo) {
-    let _ = std::fs::remove_file(day_cache_path(course));
+    if let Some(path) = day_cache_path(course) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Auto-save session state to day cache (non-fatal on error).
@@ -159,6 +180,9 @@ fn auto_save_day_cache(state: &LiveState, force: bool) {
     }
     let guard = state.0.lock().ok();
     if let Some(Some(session)) = guard.as_deref() {
+        if session.course.is_free_note {
+            return;
+        }
         save_day_cache(
             &session.course,
             session.started_at,
@@ -471,32 +495,41 @@ fn build_markdown(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    format!(
-        "# {course_name}\n\n- 授業コード: {course_code}\n- 教員: {teacher}\n- 教室: {room}\n- 時間帯: {time_label}\n- 開始: {started}\n- 終了: {ended}\n\n{overall_summary}\n\n## 区間ごとの要約\n\n{chunk_markdown}\n\n## 全文転写\n\n{transcript}\n",
-        course_name = course.course_name,
-        course_code = if course.course_code.is_empty() {
-            "不明"
-        } else {
-            &course.course_code
-        },
-        teacher = if course.teacher.is_empty() {
-            "不明"
-        } else {
-            &course.teacher
-        },
-        room = if course.room.is_empty() {
-            "未設定"
-        } else {
-            &course.room
-        },
-        time_label = if course.time_label.is_empty() {
-            "未設定"
-        } else {
-            &course.time_label
-        },
-        started = format_datetime(started_at),
-        ended = format_datetime(ended_at),
-    )
+    if course.is_free_note {
+        format!(
+            "# {title}\n\n- 開始: {started}\n- 終了: {ended}\n\n{overall_summary}\n\n## 区間ごとの要約\n\n{chunk_markdown}\n\n## 全文転写\n\n{transcript}\n",
+            title = FREE_NOTE_FOLDER_NAME,
+            started = format_datetime(started_at),
+            ended = format_datetime(ended_at),
+        )
+    } else {
+        format!(
+            "# {course_name}\n\n- 授業コード: {course_code}\n- 教員: {teacher}\n- 教室: {room}\n- 時間帯: {time_label}\n- 開始: {started}\n- 終了: {ended}\n\n{overall_summary}\n\n## 区間ごとの要約\n\n{chunk_markdown}\n\n## 全文転写\n\n{transcript}\n",
+            course_name = course.course_name,
+            course_code = if course.course_code.is_empty() {
+                "不明"
+            } else {
+                &course.course_code
+            },
+            teacher = if course.teacher.is_empty() {
+                "不明"
+            } else {
+                &course.teacher
+            },
+            room = if course.room.is_empty() {
+                "未設定"
+            } else {
+                &course.room
+            },
+            time_label = if course.time_label.is_empty() {
+                "未設定"
+            } else {
+                &course.time_label
+            },
+            started = format_datetime(started_at),
+            ended = format_datetime(ended_at),
+        )
+    }
 }
 
 #[tauri::command]
@@ -527,14 +560,24 @@ pub fn live_start_session(
     state: tauri::State<'_, LiveState>,
     mut course: LiveCourseInfo,
 ) -> Result<LiveSessionSnapshot, String> {
-    if course.course_name.trim().is_empty() {
+    if !course.is_free_note && course.course_name.trim().is_empty() {
         return Err("講義名が空です".into());
     }
-    course.course_name = course.course_name.trim().to_string();
-    course.course_code = course.course_code.trim().to_string();
-    course.room = course.room.trim().to_string();
-    course.teacher = course.teacher.trim().to_string();
-    course.time_label = course.time_label.trim().to_string();
+    if course.is_free_note {
+        course.course_name = FREE_NOTE_FOLDER_NAME.to_string();
+        course.course_code.clear();
+        course.room.clear();
+        course.teacher.clear();
+        course.day = 0;
+        course.period = 0;
+        course.time_label.clear();
+    } else {
+        course.course_name = course.course_name.trim().to_string();
+        course.course_code = course.course_code.trim().to_string();
+        course.room = course.room.trim().to_string();
+        course.teacher = course.teacher.trim().to_string();
+        course.time_label = course.time_label.trim().to_string();
+    }
 
     let now = Local::now();
 
@@ -631,6 +674,9 @@ pub fn live_cancel_session(
 /// Clear the day cache for a specific course, removing all accumulated transcript/summary data.
 #[tauri::command]
 pub fn live_clear_day_cache(course: LiveCourseInfo) -> Result<(), String> {
+    if course.is_free_note {
+        return Ok(());
+    }
     if course.course_name.trim().is_empty() {
         return Err("講義名が空です".into());
     }
@@ -655,7 +701,31 @@ pub async fn live_finish_session(
             .as_ref()
             .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
         if session.transcript_lines.is_empty() {
-            return Err("文字起こしがまだありません".into());
+            let course = session.course.clone();
+            drop(guard);
+            if !course.is_free_note {
+                remove_day_cache(&course);
+            }
+            let snapshot = {
+                let mut guard = state
+                    .0
+                    .lock()
+                    .map_err(|_| "Live state lock failed".to_string())?;
+                let session = guard
+                    .as_ref()
+                    .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
+                let snapshot = session.snapshot();
+                *guard = None;
+                snapshot
+            };
+            let result = LiveSaveResult {
+                saved: false,
+                path: String::new(),
+                markdown: String::new(),
+                snapshot,
+            };
+            emit_live_update(&app, &state);
+            return Ok(result);
         }
         (
             session.course.clone(),
@@ -669,12 +739,20 @@ pub async fn live_finish_session(
     let overall_summary = summarize_overall(&course, &summaries, &transcript_lines)
         .await
         .unwrap_or_else(|_| {
-            format!(
-                "### 全体要約\n{} の講義メモ。{}件の転写行と{}件の分割要約を保存しました。",
-                course.course_name,
-                transcript_lines.len(),
-                summaries.len()
-            )
+            if course.is_free_note {
+                format!(
+                    "### 全体要約\n{} 件の転写行と {} 件の分割要約を含む自由ノートを保存しました。",
+                    transcript_lines.len(),
+                    summaries.len()
+                )
+            } else {
+                format!(
+                    "### 全体要約\n{} の講義メモ。{}件の転写行と{}件の分割要約を保存しました。",
+                    course.course_name,
+                    transcript_lines.len(),
+                    summaries.len()
+                )
+            }
         });
     let markdown = build_markdown(
         &course,
@@ -685,13 +763,20 @@ pub async fn live_finish_session(
         &transcript_lines,
     );
 
-    let dir = crate::commands::resolve_download_dir(Some(&course.course_name));
-    // Deterministic filename: one file per course per day
-    let base_name = format!(
-        "{}_{}_live.md",
-        ended_at.format("%Y%m%d"),
-        sanitize_filename_component(&course.course_name)
-    );
+    let dir = live_storage_dir(&course);
+    let base_name = if course.is_free_note {
+        format!(
+            "{}_{}_live.md",
+            ended_at.format("%Y%m%d"),
+            ended_at.format("%H%M%S")
+        )
+    } else {
+        format!(
+            "{}_{}_live.md",
+            ended_at.format("%Y%m%d"),
+            sanitize_filename_component(&course.course_name)
+        )
+    };
     let path = dir.join(&base_name);
     std::fs::write(&path, markdown.as_bytes()).map_err(|e| format!("Markdown保存失敗: {}", e))?;
 
@@ -725,6 +810,7 @@ pub async fn live_finish_session(
     };
 
     let result = LiveSaveResult {
+        saved: true,
         path: path_str.clone(),
         markdown,
         snapshot,

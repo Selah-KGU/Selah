@@ -69,6 +69,9 @@
   let timeTimer: ReturnType<typeof setInterval> | null = null;
   let now = $state(new Date());
   let scrollEl: HTMLElement | null = null;
+  const FREE_NOTE_NAME = "自由ノート";
+  let pendingActivationMode: "start" | "resume" | null = null;
+  let cancelSessionOnStartFailure = false;
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -160,6 +163,7 @@
 
   const remainingLabel = $derived.by(() => {
     if (!snapshot.active || !snapshot.course) return "";
+    if (snapshot.course.is_free_note) return "";
     const period = snapshot.course.period;
     const pt = PERIOD_TIMES[period];
     if (pt) {
@@ -256,6 +260,7 @@
   });
 
   const canStart = $derived(!snapshot.active && !!selectedCourse && liveReady && !busy);
+  const canStartFreeNote = $derived(!snapshot.active && liveReady && !busy);
   const canStop = $derived(snapshot.active && !busy);
 
   // When the selected course changes (and session not active), load cached history
@@ -294,6 +299,20 @@
       day: course.day,
       period: course.period,
       time_label: time ? `${time.start}-${time.end}` : "",
+      is_free_note: false,
+    };
+  }
+
+  function createFreeNoteCourse(): LiveCourseInfo {
+    return {
+      course_name: FREE_NOTE_NAME,
+      course_code: "",
+      room: "",
+      teacher: "",
+      day: 0,
+      period: 0,
+      time_label: "",
+      is_free_note: true,
     };
   }
 
@@ -520,24 +539,27 @@
     }
   }
 
-  async function startLive() {
-    if (!selectedCourse) return;
+  async function startSession(course: LiveCourseInfo) {
     busy = true;
     clearNotice();
     sttListening = false;
     sttPhase = "checking";
     setSttNotice("音声入力モデルを確認中…");
+    pendingActivationMode = "start";
+    cancelSessionOnStartFailure = true;
     try {
       await ensureReadyToStart();
       sttPhase = "starting";
       setSttNotice("音声入力を起動中…");
-      snapshot = await liveStartSession(toLiveCourse(selectedCourse));
+      snapshot = await liveStartSession(course);
       partialText = "";
       lastSaved = null;
       await invoke("stt_start_stream", { caller: "live" });
       autoFollow = true;
       startFlushTimer();
     } catch (e: any) {
+      pendingActivationMode = null;
+      cancelSessionOnStartFailure = false;
       sttPhase = "idle";
       clearSttNotice();
       setMessage("error", e?.message || String(e));
@@ -551,10 +573,71 @@
     }
   }
 
+  async function startLive() {
+    if (!selectedCourse) return;
+    await startSession(toLiveCourse(selectedCourse));
+  }
+
+  async function startFreeNote() {
+    await startSession(createFreeNoteCourse());
+  }
+
+  async function pauseLive() {
+    busy = true;
+    clearNotice();
+    clearSttNotice();
+    pendingActivationMode = null;
+    cancelSessionOnStartFailure = false;
+    try {
+      try {
+        await invoke("stt_stop_stream");
+      } catch {}
+      sttListening = false;
+      sttPhase = "idle";
+      partialText = "";
+      stopFlushTimer();
+      setMessage("success", `LIVEを一時停止: ${snapshot.course?.course_name ?? "録音"}`);
+    } catch (e: any) {
+      setMessage("error", e?.message || String(e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function resumeLive() {
+    if (!snapshot.active) return;
+    busy = true;
+    clearNotice();
+    sttListening = false;
+    sttPhase = "checking";
+    setSttNotice("音声入力モデルを確認中…");
+    pendingActivationMode = "resume";
+    cancelSessionOnStartFailure = false;
+    try {
+      await ensureReadyToStart();
+      sttPhase = "starting";
+      setSttNotice("音声入力を起動中…");
+      await invoke("stt_start_stream", { caller: "live" });
+      autoFollow = true;
+      startFlushTimer();
+    } catch (e: any) {
+      pendingActivationMode = null;
+      cancelSessionOnStartFailure = false;
+      sttPhase = "idle";
+      clearSttNotice();
+      setMessage("error", e?.message || String(e));
+      stopFlushTimer();
+    } finally {
+      busy = false;
+    }
+  }
+
   async function stopLive() {
     busy = true;
     clearNotice();
     clearSttNotice();
+    pendingActivationMode = null;
+    cancelSessionOnStartFailure = false;
     sttPhase = "idle";
     saveProgress = "録音を停止中…";
     try {
@@ -563,17 +646,33 @@
       } catch {}
       sttListening = false;
       partialText = "";
+      snapshot = await liveGetSession();
+      if (snapshot.transcript_lines.length === 0) {
+        const ended = await liveFinishSession();
+        lastSaved = ended.saved ? ended : null;
+        snapshot = await liveGetSession();
+        stopFlushTimer();
+        saveProgress = "";
+        if (!ended.saved) {
+          setMessage("success", "LIVEを終了しました");
+        }
+        return;
+      }
       saveProgress = "AI要約を生成中…";
       const flushed = await liveFlushSummary(true);
       snapshot = flushed;
       saveProgress = "ファイルに書き出し中…";
       const saved = await liveFinishSession();
-      lastSaved = saved;
+      lastSaved = saved.saved ? saved : null;
       snapshot = await liveGetSession();
       stopFlushTimer();
       saveProgress = "";
-      showSaveNotif = true;
-      setTimeout(() => { showSaveNotif = false; }, 6000);
+      if (saved.saved) {
+        showSaveNotif = true;
+        setTimeout(() => { showSaveNotif = false; }, 6000);
+      } else {
+        setMessage("success", "LIVEを終了しました");
+      }
     } catch (e: any) {
       saveProgress = "";
       setMessage("error", e?.message || String(e));
@@ -586,6 +685,8 @@
     busy = true;
     try {
       clearSttNotice();
+      pendingActivationMode = null;
+      cancelSessionOnStartFailure = false;
       sttPhase = "idle";
       try {
         await invoke("stt_stop_stream");
@@ -658,7 +759,7 @@
         sttListening = false;
         sttPhase = "idle";
       }
-      if (snapshot.active) startFlushTimer();
+      if (snapshot.active && sttListening) startFlushTimer();
 
       unlistenPartial = await listen<{ text: string; caller: string }>("stt-partial", (event) => {
         if (event.payload.caller !== "live") return;
@@ -689,12 +790,16 @@
         } else if (event.payload.state === "listening") {
           sttPhase = "listening";
           clearSttNotice();
+          cancelSessionOnStartFailure = false;
           if (previousPhase !== "listening") {
-            setMessage("success", `LIVEを開始: ${snapshot.course?.course_name ?? selectedCourse?.name ?? "録音"}`);
+            const verb = pendingActivationMode === "resume" ? "LIVEを再開" : "LIVEを開始";
+            setMessage("success", `${verb}: ${snapshot.course?.course_name ?? selectedCourse?.name ?? "録音"}`);
           }
+          pendingActivationMode = null;
         } else {
           sttPhase = "idle";
           clearSttNotice();
+          stopFlushTimer();
         }
         if (sttListening && !wasListening) autoFollow = true;
       });
@@ -703,10 +808,12 @@
         const wasStarting = sttPhase === "starting" || sttPhase === "initializing";
         sttListening = false;
         sttPhase = "idle";
+        pendingActivationMode = null;
         clearSttNotice();
+        stopFlushTimer();
         setMessage("error", event.payload.message);
-        if (wasStarting) {
-          stopFlushTimer();
+        if (wasStarting && cancelSessionOnStartFailure) {
+          cancelSessionOnStartFailure = false;
           void (async () => {
             try {
               await liveCancelSession();
@@ -789,7 +896,12 @@
       {#if snapshot.active && snapshot.course}
         <span class="capsule-divider"></span>
         <span class="capsule-course">{snapshot.course.course_name}</span>
-        <span class="capsule-clock">{remainingLabel}</span>
+        {#if remainingLabel}
+          <span class="capsule-clock">{remainingLabel}</span>
+        {/if}
+        {#if saveProgress}
+          <span class="capsule-progress">{saveProgress}</span>
+        {/if}
       {:else}
         <select class="capsule-select" bind:value={selectedKey} disabled={pageLoading}>
           {#if renderedCourseOptions.length === 0}
@@ -807,6 +919,9 @@
           <button class="capsule-act primary" onclick={startLive} disabled={!canStart}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
             開始
+          </button>
+          <button class="capsule-act ghost note" onclick={startFreeNote} disabled={!canStartFreeNote}>
+            自由ノート
           </button>
           {#if hasContent && selectedCourse}
             <div class="clear-wrap">
@@ -828,7 +943,11 @@
             <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
             保存
           </button>
-          <button class="capsule-act ghost" onclick={cancelLive} disabled={busy}>破棄</button>
+          {#if sttListening || sttBooting}
+            <button class="capsule-act ghost" onclick={pauseLive} disabled={busy}>一時停止</button>
+          {:else}
+            <button class="capsule-act ghost note" onclick={resumeLive} disabled={busy}>再開</button>
+          {/if}
         {/if}
       </div>
     </div>
@@ -945,7 +1064,7 @@
                   <line x1="12" y1="19" x2="12" y2="23"/>
                   <line x1="8" y1="23" x2="16" y2="23"/>
                 </svg>
-                <p>授業を選択して開始すると<br/>リアルタイム文字起こしがここに表示されます</p>
+                <p>授業または自由ノートを開始すると<br/>リアルタイム文字起こしがここに表示されます</p>
               {/if}
             </div>
           {/if}
@@ -1008,7 +1127,7 @@
     left: 50%;
     transform: translateX(-50%);
     z-index: 20;
-    max-width: min(620px, calc(100% - 24px));
+    max-width: min(760px, calc(100% - 24px));
     width: auto;
   }
 
@@ -1087,6 +1206,17 @@
     white-space: nowrap;
     flex-shrink: 0;
   }
+  .capsule-progress {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border: 0.5px solid color-mix(in srgb, var(--accent) 18%, transparent);
+    border-radius: 999px;
+    padding: 4px 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
 
   .capsule-select {
     padding: 4px 8px;
@@ -1160,6 +1290,13 @@
   .capsule-act.ghost.danger:hover:not(:disabled) {
     background: color-mix(in srgb, var(--red, #e5484d) 10%, transparent);
     color: var(--red, #e5484d);
+  }
+  .capsule-act.ghost.note {
+    color: color-mix(in srgb, var(--blue) 72%, var(--text-secondary));
+  }
+  .capsule-act.ghost.note:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--blue) 10%, transparent);
+    color: var(--blue);
   }
 
   /* ── Main Scroll Area ── */
