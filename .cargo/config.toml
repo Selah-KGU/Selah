@@ -6,3 +6,8 @@ LLAMA_STATIC_CRT = "1"
 # CMake path. These target-specific flags keep that path on the static CRT too.
 CFLAGS_x86_64_pc_windows_msvc = "/MT /FS"
 CXXFLAGS_x86_64_pc_windows_msvc = "/MT /FS"
+# llama.cpp's CMakeLists sets CMP0091 to NEW, so CMake strips `/MT` from
+# CMAKE_C_FLAGS and picks the runtime via CMAKE_MSVC_RUNTIME_LIBRARY instead.
+# Forward the static-runtime selector explicitly (llama-cpp-sys-2's build.rs
+# passes any CMAKE_* env var down to CMake as a `-D`).
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"

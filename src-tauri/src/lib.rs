@@ -220,9 +220,8 @@ pub fn run() {
                 if native_agent_cfg.floating_orb_enabled {
                     let _ = macos_native_agent::open_orb(app.handle());
                 }
-                if native_agent_cfg.subtitle_overlay_enabled {
-                    let _ = macos_subtitle_overlay::open_overlay(app.handle());
-                }
+                // 字幕浮窗は常にセットアップ済み。Live ページの表示/非表示でフロントから制御する。
+                let _ = macos_subtitle_overlay::open_overlay(app.handle());
             }
 
             // Hide main window on close instead of quitting (keep in tray)

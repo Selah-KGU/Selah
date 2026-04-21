@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import {
@@ -16,6 +17,8 @@
     liveGetSession,
     livePeekDayCache,
     liveStartSession,
+    openSubtitleOverlay,
+    closeSubtitleOverlay,
     type LiveCourseInfo,
     type LiveSaveResult,
     type LiveSessionSnapshot,
@@ -115,6 +118,8 @@
   let unlistenError: (() => void) | null = null;
   let unlistenLive: (() => void) | null = null;
   let unlistenSaved: (() => void) | null = null;
+  let unlistenWinFocus: (() => void) | null = null;
+  let unlistenWinBlur: (() => void) | null = null;
 
   const hasContent = $derived(snapshot.transcript_lines.length > 0 || partialText.trim().length > 0);
 
@@ -140,6 +145,7 @@
 
   let autoFollow = $state(true);
   let showScrollBtn = $derived(sttListening && !autoFollow);
+  let confirmClear = $state(false);
 
   /** User deliberately scrolled — unlock auto-follow while streaming. */
   function handleUserScroll() {
@@ -439,7 +445,12 @@
     }
   }
 
-  async function clearCourseData() {
+  function clearCourseData() {
+    if (!selectedCourse || busy) return;
+    confirmClear = true;
+  }
+
+  async function executeClearCourseData() {
     if (!selectedCourse) return;
     const name = selectedCourse.name;
     busy = true;
@@ -528,6 +539,16 @@
     } finally {
       pageLoading = false;
     }
+    // Live ページ表示中は字幕浮窗をブラックリスト
+    closeSubtitleOverlay().catch(() => {});
+    // アプリがバックグラウンドに回ったら浮窗を表示、フォアに戻ったら再ブラック
+    const win = getCurrentWindow();
+    unlistenWinBlur = await win.listen("tauri://blur", () => {
+      openSubtitleOverlay().catch(() => {});
+    });
+    unlistenWinFocus = await win.listen("tauri://focus", () => {
+      closeSubtitleOverlay().catch(() => {});
+    });
   });
 
   onDestroy(() => {
@@ -539,6 +560,10 @@
     unlistenError?.();
     unlistenLive?.();
     unlistenSaved?.();
+    unlistenWinFocus?.();
+    unlistenWinBlur?.();
+    // Live ページを離れたら浮窗を再表示
+    openSubtitleOverlay().catch(() => {});
   });
 </script>
 
@@ -574,10 +599,19 @@
             開始
           </button>
           {#if hasContent && selectedCourse}
-            <button class="capsule-act ghost danger" onclick={clearCourseData} disabled={busy} title="この授業のキャッシュデータを削除">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-              クリア
-            </button>
+            <div class="clear-wrap">
+              <button class="capsule-act ghost danger" onclick={clearCourseData} disabled={busy}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+                クリア
+              </button>
+              {#if confirmClear}
+                <div class="clear-tooltip" role="tooltip">
+                  <span class="clear-tooltip-msg">本当に削除？</span>
+                  <button class="clear-tip-btn cancel" onclick={() => confirmClear = false}>いいえ</button>
+                  <button class="clear-tip-btn danger" onclick={() => { confirmClear = false; executeClearCourseData(); }}>削除</button>
+                </div>
+              {/if}
+            </div>
           {/if}
         {:else}
           <button class="capsule-act stop" onclick={stopLive} disabled={!canStop}>
@@ -1569,4 +1603,126 @@
   .scroll-to-bottom:active {
     transform: scale(0.97);
   }
+
+  /* ── Clear Confirm Dialog ── */
+  .confirm-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    animation: capsule-in 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .confirm-card {
+    background: var(--glass-bg, rgba(255,255,255,0.85));
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    border: 0.5px solid var(--glass-border);
+    border-radius: 16px;
+    box-shadow: var(--shadow-glass), 0 8px 32px rgba(0,0,0,0.18);
+    padding: 20px 22px 16px;
+    width: min(320px, calc(100% - 40px));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .confirm-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+  }
+  .confirm-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.5;
+  }
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .confirm-btn {
+    padding: 6px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 0.5px solid var(--glass-border);
+    transition: opacity 0.15s;
+  }
+  .confirm-btn:hover { opacity: 0.8; }
+  .confirm-btn.cancel {
+    background: var(--glass-bg, rgba(255,255,255,0.6));
+    color: var(--text-primary);
+  }
+  .confirm-btn.danger {
+    background: rgba(255, 59, 48, 0.12);
+    color: #ff3b30;
+    border-color: rgba(255, 59, 48, 0.25);
+  }
+  .confirm-btn.danger:hover { background: rgba(255, 59, 48, 0.2); opacity: 1; }
+
+  /* ── Clear inline tooltip ── */
+  .clear-wrap {
+    position: relative;
+  }
+  .clear-tooltip {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 8px;
+    background: var(--glass-bg, rgba(255,255,255,0.92));
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    border: 0.5px solid var(--glass-border);
+    border-radius: 10px;
+    box-shadow: var(--shadow-glass), 0 4px 16px rgba(0,0,0,0.14);
+    white-space: nowrap;
+    animation: capsule-in 0.15s cubic-bezier(0.22, 1, 0.36, 1) both;
+    z-index: 50;
+  }
+  .clear-tooltip::after {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    right: 14px;
+    border: 5px solid transparent;
+    border-bottom-color: var(--glass-border, rgba(0,0,0,0.12));
+  }
+  .clear-tooltip-msg {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    padding-right: 2px;
+  }
+  .clear-tip-btn {
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 0.5px solid var(--glass-border);
+    transition: opacity 0.12s;
+  }
+  .clear-tip-btn:hover { opacity: 0.75; }
+  .clear-tip-btn.cancel {
+    background: var(--glass-bg, rgba(255,255,255,0.5));
+    color: var(--text-primary);
+  }
+  .clear-tip-btn.danger {
+    background: rgba(255, 59, 48, 0.12);
+    color: #ff3b30;
+    border-color: rgba(255, 59, 48, 0.3);
+  }
+  .clear-tip-btn.danger:hover { background: rgba(255, 59, 48, 0.22); opacity: 1; }
 </style>

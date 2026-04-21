@@ -12,17 +12,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyClass;
 use objc2::{msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSFont, NSPanel, NSScreen,
-    NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSFloatingWindowLevel, NSFont, NSPanel,
+    NSScreen, NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use serde_json::Value;
-use tauri::{AppHandle, Listener};
+use std::ptr::NonNull;
+use tauri::{AppHandle, Emitter, Listener, Manager};
 
 // ── Layout ─────────────────────────────────────────────────────────────────────
 
@@ -75,6 +78,8 @@ struct OverlayViews {
     text_label: Option<Retained<NSTextField>>,
     screen_center_x: f64,
     screen_bottom_y: f64,
+    /// Local event monitor for click-to-navigate
+    event_monitor: Option<Retained<objc2::runtime::AnyObject>>,
 }
 
 thread_local! {
@@ -232,8 +237,12 @@ pub fn open_overlay(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     OVERLAY_OPEN.store(true, Ordering::Relaxed);
-    app.run_on_main_thread(|| build_overlay_panel())
-        .map_err(|e| format!("subtitle overlay open failed: {e}"))
+    let app2 = app.clone();
+    app.run_on_main_thread(|| {
+        build_overlay_panel();
+        install_click_monitor(app2);
+    })
+    .map_err(|e| format!("subtitle overlay open failed: {e}"))
 }
 
 pub fn close_overlay(app: &AppHandle) -> Result<(), String> {
@@ -248,6 +257,10 @@ pub fn close_overlay(app: &AppHandle) -> Result<(), String> {
     app.run_on_main_thread(|| {
         UI.with(|ui| {
             let mut ui = ui.borrow_mut();
+            // Remove event monitor first
+            if let Some(monitor) = ui.event_monitor.take() {
+                unsafe { NSEvent::removeMonitor(&monitor) };
+            }
             if let Some(panel) = ui.panel.take() {
                 panel.setAlphaValue(0.0);
                 panel.orderOut(None);
@@ -419,6 +432,44 @@ fn build_overlay_panel() {
         ui.text_label = Some(label);
         ui.screen_center_x = screen_center_x;
         ui.screen_bottom_y = screen_bottom_y;
+        ui.event_monitor = None;
+    });
+}
+
+// ── Click-to-navigate monitor ──────────────────────────────────────────────────
+
+/// Install a local mouse-up monitor.  When the user clicks anywhere on the
+/// subtitle panel we bring the main window to the front and emit
+/// `tray-open-tab` with `"live"` so the frontend navigates to the Live page.
+fn install_click_monitor(app: AppHandle) {
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseUp,
+            &RcBlock::new(move |event: NonNull<NSEvent>| {
+                let win_num = event.as_ref().windowNumber();
+
+                let is_our_panel = UI.with(|ui| {
+                    let ui = ui.borrow();
+                    ui.panel.as_ref().map(|p| p.windowNumber() == win_num).unwrap_or(false)
+                });
+
+                if is_our_panel {
+                    // Bring main window to front and navigate to Live page
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.unminimize();
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    let _ = app.emit("tray-open-tab", "live");
+                }
+
+                event.as_ptr()
+            }),
+        )
+    };
+
+    UI.with(|ui| {
+        ui.borrow_mut().event_monitor = monitor;
     });
 }
 
