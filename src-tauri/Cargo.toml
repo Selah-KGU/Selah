@@ -80,7 +80,7 @@ keyring = { version = "3", features = ["windows-native"] }
 webview2-com = "0.38"
 windows-core = "0.61"
 tauri-plugin-single-instance = "2"
-sherpa-onnx = { version = "1.12.39", default-features = false, features = ["shared"] }
+sherpa-onnx = { version = "1.12.39", default-features = false, features = ["static"] }
 llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
 
 [profile.release]

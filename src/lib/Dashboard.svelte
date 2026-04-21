@@ -110,6 +110,7 @@
         .filter(s => s.title !== "メインリンク" && s.title !== "注目コンテンツ")
         .flatMap(s => s.items.map(i => ({
           id: i.id, title: i.title, date: i.date,
+          section: s.title,
           category: i.category || s.title, important: i.important,
         })));
       if (items.length) notifyNewKwic(items);

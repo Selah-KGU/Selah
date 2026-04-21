@@ -8,6 +8,13 @@
   let notifImportant = $state("true");
   let notifFaculty = $state("true");
   let notifClass = $state("true");
+  let notifClassGeneral = $state("true");
+  let notifClassAnnouncement = $state("true");
+  let notifClassAssignment = $state("true");
+  let notifClassExam = $state("true");
+  let notifClassDiscussion = $state("true");
+  let notifClassSurvey = $state("true");
+  let notifClassAttendance = $state("true");
   let notifOther = $state("true");
   let notifMail = $state("true");
 
@@ -26,11 +33,31 @@
 
   async function loadConfig() {
     try {
-      const cfg = await invoke<{ notify_important?: boolean; notify_faculty?: boolean; notify_class?: boolean; notify_other?: boolean; notify_mail?: boolean }>("get_notification_config");
-      notifImportant = cfg.notify_important ? "true" : "false";
-      notifFaculty = cfg.notify_faculty ? "true" : "false";
-      notifClass = cfg.notify_class ? "true" : "false";
-      notifOther = cfg.notify_other ? "true" : "false";
+      const cfg = await invoke<{
+        notify_important?: boolean;
+        notify_faculty?: boolean;
+        notify_class?: boolean;
+        notify_class_general?: boolean;
+        notify_class_announcement?: boolean;
+        notify_class_assignment?: boolean;
+        notify_class_exam?: boolean;
+        notify_class_discussion?: boolean;
+        notify_class_survey?: boolean;
+        notify_class_attendance?: boolean;
+        notify_other?: boolean;
+        notify_mail?: boolean;
+      }>("get_notification_config");
+      notifImportant = cfg.notify_important !== false ? "true" : "false";
+      notifFaculty = cfg.notify_faculty !== false ? "true" : "false";
+      notifClass = cfg.notify_class !== false ? "true" : "false";
+      notifClassGeneral = cfg.notify_class_general !== false ? "true" : "false";
+      notifClassAnnouncement = cfg.notify_class_announcement !== false ? "true" : "false";
+      notifClassAssignment = cfg.notify_class_assignment !== false ? "true" : "false";
+      notifClassExam = cfg.notify_class_exam !== false ? "true" : "false";
+      notifClassDiscussion = cfg.notify_class_discussion !== false ? "true" : "false";
+      notifClassSurvey = cfg.notify_class_survey !== false ? "true" : "false";
+      notifClassAttendance = cfg.notify_class_attendance !== false ? "true" : "false";
+      notifOther = cfg.notify_other !== false ? "true" : "false";
       notifMail = cfg.notify_mail !== false ? "true" : "false";
     } catch (e) {
       console.error("Failed to load notification config:", e);
@@ -45,6 +72,13 @@
           notify_important: notifImportant === "true",
           notify_faculty: notifFaculty === "true",
           notify_class: notifClass === "true",
+          notify_class_general: notifClassGeneral === "true",
+          notify_class_announcement: notifClassAnnouncement === "true",
+          notify_class_assignment: notifClassAssignment === "true",
+          notify_class_exam: notifClassExam === "true",
+          notify_class_discussion: notifClassDiscussion === "true",
+          notify_class_survey: notifClassSurvey === "true",
+          notify_class_attendance: notifClassAttendance === "true",
           notify_other: notifOther === "true",
           notify_mail: notifMail === "true",
         },
@@ -71,7 +105,7 @@
   </div>
   <div class="hero-text">
     <h2 class="panel-title">通知</h2>
-    <p class="panel-desc">通知の受信設定を管理します。カテゴリごとに通知のオン・オフを切り替えできます。</p>
+    <p class="panel-desc">通知の受信設定を管理します。カテゴリごとの切り替えに加えて、授業通知は種類別に細かく制御できます。</p>
   </div>
 </div>
 
@@ -139,3 +173,73 @@
   </div>
 </div>
 
+<div class="card-label">授業通知の詳細</div>
+<div class="card" style:opacity={notifClass === "true" ? 1 : 0.6}>
+  <div class="hint" style="padding:6px 14px 8px;">
+    「授業のお知らせ」が有効な場合のみ適用されます。掲示板の返信やコメント通知は「Luna 掲示板・コメント」で切り替えます。
+  </div>
+  <div class="row">
+    <span class="row-label">一般の授業通知</span>
+    <div class="row-input">
+      <select bind:value={notifClassGeneral} disabled={notifClass !== "true"}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+      <div class="hint">KG-Course、KWIC の授業通知、Luna の未分類通知に適用されます。</div>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">Luna お知らせ・資料</span>
+    <div class="row-input">
+      <select bind:value={notifClassAnnouncement} disabled={notifClass !== "true"}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">Luna 課題・レポート</span>
+    <div class="row-input">
+      <select bind:value={notifClassAssignment} disabled={notifClass !== "true"}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">Luna テスト・小テスト</span>
+    <div class="row-input">
+      <select bind:value={notifClassExam} disabled={notifClass !== "true"}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">Luna 掲示板・コメント</span>
+    <div class="row-input">
+      <select bind:value={notifClassDiscussion} disabled={notifClass !== "true"}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">Luna アンケート</span>
+    <div class="row-input">
+      <select bind:value={notifClassSurvey} disabled={notifClass !== "true"}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">Luna 出席</span>
+    <div class="row-input">
+      <select bind:value={notifClassAttendance} disabled={notifClass !== "true"}>
+        <option value="true">有効</option>
+        <option value="false">無効</option>
+      </select>
+    </div>
+  </div>
+</div>

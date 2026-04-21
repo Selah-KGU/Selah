@@ -9,16 +9,111 @@ interface NotificationConfig {
   notify_important: boolean;
   notify_faculty: boolean;
   notify_class: boolean;
+  notify_class_general: boolean;
+  notify_class_announcement: boolean;
+  notify_class_assignment: boolean;
+  notify_class_exam: boolean;
+  notify_class_discussion: boolean;
+  notify_class_survey: boolean;
+  notify_class_attendance: boolean;
   notify_other: boolean;
   notify_mail: boolean;
 }
 
+const DEFAULT_NOTIF_CONFIG: NotificationConfig = {
+  notify_important: true,
+  notify_faculty: true,
+  notify_class: true,
+  notify_class_general: true,
+  notify_class_announcement: true,
+  notify_class_assignment: true,
+  notify_class_exam: true,
+  notify_class_discussion: true,
+  notify_class_survey: true,
+  notify_class_attendance: true,
+  notify_other: true,
+  notify_mail: true,
+};
+
 async function getNotifConfig(): Promise<NotificationConfig> {
   try {
-    return await invoke("get_notification_config") as NotificationConfig;
+    const cfg = await invoke<Partial<NotificationConfig>>("get_notification_config");
+    return { ...DEFAULT_NOTIF_CONFIG, ...cfg };
   } catch {
-    return { notify_important: true, notify_faculty: true, notify_class: true, notify_other: true, notify_mail: true };
+    return { ...DEFAULT_NOTIF_CONFIG };
   }
+}
+
+type CourseNotificationKind =
+  | "general"
+  | "announcement"
+  | "assignment"
+  | "exam"
+  | "discussion"
+  | "survey"
+  | "attendance";
+
+function classifyCourseNotification(module: string): CourseNotificationKind {
+  const normalized = module.trim().toLowerCase();
+  if (!normalized) return "general";
+  if (
+    normalized.includes("掲示板")
+    || normalized.includes("forum")
+    || normalized.includes("discussion")
+    || normalized.includes("comment")
+    || normalized.includes("返信")
+  ) {
+    return "discussion";
+  }
+  if (
+    normalized.includes("アンケート")
+    || normalized.includes("survey")
+    || normalized.includes("questionnaire")
+  ) {
+    return "survey";
+  }
+  if (normalized.includes("出席") || normalized.includes("attendance")) {
+    return "attendance";
+  }
+  if (
+    normalized.includes("小テスト")
+    || normalized.includes("テスト")
+    || normalized.includes("試験")
+    || normalized.includes("exam")
+    || normalized.includes("quiz")
+  ) {
+    return "exam";
+  }
+  if (
+    normalized.includes("課題")
+    || normalized.includes("レポート")
+    || normalized.includes("assignment")
+    || normalized.includes("report")
+    || normalized.includes("提出")
+  ) {
+    return "assignment";
+  }
+  if (
+    normalized.includes("お知らせ")
+    || normalized.includes("資料")
+    || normalized.includes("announcement")
+    || normalized.includes("material")
+    || normalized.includes("連絡")
+  ) {
+    return "announcement";
+  }
+  return "general";
+}
+
+function courseNotificationAllowed(kind: CourseNotificationKind, cfg: NotificationConfig): boolean {
+  if (!cfg.notify_class) return false;
+  if (kind === "announcement") return cfg.notify_class_announcement;
+  if (kind === "assignment") return cfg.notify_class_assignment;
+  if (kind === "exam") return cfg.notify_class_exam;
+  if (kind === "discussion") return cfg.notify_class_discussion;
+  if (kind === "survey") return cfg.notify_class_survey;
+  if (kind === "attendance") return cfg.notify_class_attendance;
+  return cfg.notify_class_general;
 }
 
 // Per-source mutex to prevent concurrent notify calls from sending duplicate pushes
@@ -89,7 +184,7 @@ export function notifyNewKgc(entries: KgcNotif[]): Promise<void> {
       }
       return;
     }
-    if (!cfg.notify_class) {
+    if (!courseNotificationAllowed("general", cfg)) {
       for (const e of newEntries) seen.add(e.id);
       await saveSeenIds("kgc", seen);
       return;
@@ -122,20 +217,23 @@ export function notifyNewLuna(items: LunaNotif[]): Promise<void> {
       }
       return;
     }
-    if (!cfg.notify_class) {
+    const allowedItems = newItems.filter((n) =>
+      courseNotificationAllowed(classifyCourseNotification(n.module), cfg)
+    );
+    if (!allowedItems.length) {
       for (const n of newItems) seen.add(makeKey(n));
       await saveSeenIds("luna", seen);
       return;
     }
     const granted = await ensurePermission();
     if (!granted) return;
-    for (const n of newItems) {
+    for (const n of allowedItems) {
       nativeNotify(
         n.module ? `[${n.module}] ${n.content}` : n.content,
         `${n.course_info} — ${n.date}`,
       ).catch(console.warn);
-      seen.add(makeKey(n));
     }
+    for (const n of newItems) seen.add(makeKey(n));
     await saveSeenIds("luna", seen);
   });
 }
@@ -144,15 +242,16 @@ export interface KwicNotif {
   id: string;
   title: string;
   date: string;
+  section: string;
   category: string;
   important: boolean;
 }
 
-/** Map KWIC category to notification config key */
-function kwicCategoryAllowed(category: string, cfg: NotificationConfig): boolean {
-  if (category === "呼出し・重要なお知らせ") return cfg.notify_important;
-  if (category === "学部・研究科からのお知らせ") return cfg.notify_faculty;
-  // "その他" and any unknown categories
+/** Map KWIC section title to notification config key */
+function kwicCategoryAllowed(section: string, cfg: NotificationConfig): boolean {
+  if (section === "呼出し・重要なお知らせ") return cfg.notify_important;
+  if (section === "学部・研究科からのお知らせ") return cfg.notify_faculty;
+  if (section === "授業のお知らせ") return courseNotificationAllowed("general", cfg);
   return cfg.notify_other;
 }
 
@@ -170,15 +269,21 @@ export function notifyNewKwic(items: KwicNotif[]): Promise<void> {
       }
       return;
     }
+    const allowedItems = newItems.filter((n) => kwicCategoryAllowed(n.section, cfg));
+    if (!allowedItems.length) {
+      for (const n of newItems) seen.add(n.id);
+      await saveSeenIds("kwic", seen);
+      return;
+    }
     const granted = await ensurePermission();
     if (!granted) return;
+    for (const n of allowedItems) {
+      nativeNotify(
+        n.category ? `[${n.category}] ${n.title}` : n.title,
+        n.date,
+      ).catch(console.warn);
+    }
     for (const n of newItems) {
-      if (kwicCategoryAllowed(n.category, cfg)) {
-        nativeNotify(
-          n.category ? `[${n.category}] ${n.title}` : n.title,
-          n.date,
-        ).catch(console.warn);
-      }
       seen.add(n.id);
     }
     await saveSeenIds("kwic", seen);
