@@ -1,0 +1,10 @@
+{
+  "build": {
+    "beforeBundleCommand": "node scripts/stage-windows-runtime.mjs"
+  },
+  "bundle": {
+    "resources": {
+      "windows-runtime/*.dll": ""
+    }
+  }
+}
