@@ -123,12 +123,14 @@ pub fn save_notification_config(config: NotificationConfig) -> Result<(), String
 #[serde(default)]
 pub struct NativeAgentConfig {
     pub floating_orb_enabled: bool,
+    pub subtitle_overlay_enabled: bool,
 }
 
 impl Default for NativeAgentConfig {
     fn default() -> Self {
         Self {
             floating_orb_enabled: false,
+            subtitle_overlay_enabled: false,
         }
     }
 }
@@ -154,13 +156,53 @@ pub fn save_native_agent_config(
     save_json_config(&native_agent_config_path(), &config, "native agent config")?;
 
     #[cfg(target_os = "macos")]
-    if config.floating_orb_enabled {
-        let _ = crate::macos_native_agent::open_orb(&_app);
-    } else {
-        let _ = crate::macos_native_agent::close_orb(&_app);
+    {
+        if config.floating_orb_enabled {
+            let _ = crate::macos_native_agent::open_orb(&_app);
+        } else {
+            let _ = crate::macos_native_agent::close_orb(&_app);
+        }
+        if config.subtitle_overlay_enabled {
+            let _ = crate::macos_subtitle_overlay::open_overlay(&_app);
+        } else {
+            let _ = crate::macos_subtitle_overlay::close_overlay(&_app);
+        }
     }
 
     Ok(())
+}
+
+/// Open the real-time subtitle floating overlay and start STT.
+#[tauri::command]
+pub fn open_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        return crate::macos_subtitle_overlay::open_overlay(&_app);
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("Real-time subtitle overlay is currently macOS-only".into())
+}
+
+/// Stop STT and close the subtitle overlay.
+#[tauri::command]
+pub fn close_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        return crate::macos_subtitle_overlay::close_overlay(&_app);
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(())
+}
+
+/// Returns whether the subtitle overlay is currently open.
+#[tauri::command]
+pub fn subtitle_overlay_is_open() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return crate::macos_subtitle_overlay::is_open();
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 #[derive(Clone, Serialize, Deserialize)]

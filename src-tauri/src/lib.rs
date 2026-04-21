@@ -24,6 +24,8 @@ mod luna_commands;
 mod luna_parser;
 #[cfg(target_os = "macos")]
 mod macos_native_agent;
+#[cfg(target_os = "macos")]
+mod macos_subtitle_overlay;
 mod mail;
 mod mail_commands;
 mod parser;
@@ -213,9 +215,13 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 macos_native_agent::setup(app.handle());
+                macos_subtitle_overlay::setup(app.handle());
                 let native_agent_cfg = commands::load_native_agent_config();
                 if native_agent_cfg.floating_orb_enabled {
                     let _ = macos_native_agent::open_orb(app.handle());
+                }
+                if native_agent_cfg.subtitle_overlay_enabled {
+                    let _ = macos_subtitle_overlay::open_overlay(app.handle());
                 }
             }
 
@@ -401,6 +407,9 @@ pub fn run() {
             agent_commands::agent_cancel,
             agent_commands::agent_delete_conversation,
             agent_commands::agent_rename_conversation,
+            commands::open_subtitle_overlay,
+            commands::close_subtitle_overlay,
+            commands::subtitle_overlay_is_open,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

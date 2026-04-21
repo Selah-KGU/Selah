@@ -1188,6 +1188,18 @@ export async function openAgentFloatWindow(): Promise<void> {
   return invoke<void>("open_agent_float_window");
 }
 
+export async function openSubtitleOverlay(): Promise<void> {
+  return invoke<void>("open_subtitle_overlay");
+}
+
+export async function closeSubtitleOverlay(): Promise<void> {
+  return invoke<void>("close_subtitle_overlay");
+}
+
+export async function subtitleOverlayIsOpen(): Promise<boolean> {
+  return invoke<boolean>("subtitle_overlay_is_open");
+}
+
 export async function showMainAgentWindow(): Promise<void> {
   return invoke<void>("show_main_agent_window");
 }

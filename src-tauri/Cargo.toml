@@ -39,7 +39,6 @@ sha2 = "0.10"
 cpal = "0.15.3"
 bzip2 = "0.4"
 tar = "0.4"
-sherpa-onnx = "1.12.39"
 tauri-plugin-notification = "2.3.3"
 notify-rust = "4"
 time = { version = "0.3.41", default-features = false }
@@ -47,6 +46,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-opener = "2.5.3"
 rfd = "0.15"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+sherpa-onnx = "1.12.39"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
@@ -78,6 +80,7 @@ keyring = { version = "3", features = ["windows-native"] }
 webview2-com = "0.38"
 windows-core = "0.61"
 tauri-plugin-single-instance = "2"
+sherpa-onnx = { version = "1.12.39", default-features = false, features = ["shared"] }
 llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
 
 [profile.release]

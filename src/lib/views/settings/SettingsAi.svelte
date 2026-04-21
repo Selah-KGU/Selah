@@ -69,8 +69,10 @@
   let sttTestMsg = $state("");
   let sttTestOk = $state<boolean | null>(null);
   let floatingOrbEnabled = $state("false");
+  let subtitleOverlayEnabled = $state("false");
   let nativeOrbLoaded = false;
   let lastSavedFloatingOrbEnabled = "false";
+  let lastSavedSubtitleOverlayEnabled = "false";
 
   let statusMsg = $state("");
   let statusType = $state<"success" | "error" | "loading" | "">("");
@@ -235,9 +237,11 @@
       liveSummaryInterval = c.live_summary_interval_minutes != null ? c.live_summary_interval_minutes : 5;
       selectedSttModel = stt?.selected_model || "sensevoice-ja-en";
       sttLanguage = stt?.language || "ja";
-      const nativeAgent = await invoke<{ floating_orb_enabled?: boolean }>("get_native_agent_config");
+      const nativeAgent = await invoke<{ floating_orb_enabled?: boolean; subtitle_overlay_enabled?: boolean }>("get_native_agent_config");
       floatingOrbEnabled = nativeAgent?.floating_orb_enabled ? "true" : "false";
       lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+      subtitleOverlayEnabled = nativeAgent?.subtitle_overlay_enabled ? "true" : "false";
+      lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
       nativeOrbLoaded = true;
       await loadModelList();
       await loadSttModelList();
@@ -252,9 +256,10 @@
       await invoke("save_ai_config", { config: getConfig() });
       await invoke("save_stt_config", { config: { selected_model: selectedSttModel, language: sttLanguage } });
       await invoke("save_native_agent_config", {
-        config: { floating_orb_enabled: floatingOrbEnabled === "true" },
+        config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
       });
       lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+      lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
       updateAiReadiness().catch(() => {});
     } catch (e) {
       throw e;
@@ -335,10 +340,11 @@
   $effect(() => { onProviderSwitch(); void aiProvider; });
   $effect(() => {
     if (!nativeOrbLoaded) return;
-    if (floatingOrbEnabled === lastSavedFloatingOrbEnabled) return;
+    if (floatingOrbEnabled === lastSavedFloatingOrbEnabled && subtitleOverlayEnabled === lastSavedSubtitleOverlayEnabled) return;
     lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+    lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
     invoke("save_native_agent_config", {
-      config: { floating_orb_enabled: floatingOrbEnabled === "true" },
+      config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
     }).catch((e) => {
       console.error("Failed to save native agent config:", e);
     });
@@ -554,6 +560,16 @@
         <option value="true">有効</option>
       </select>
       <div class="hint">macOS ネイティブの Agent フローティング入口を使います。無効にすると、表示中の入口もすぐ閉じます。</div>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">リアルタイム字幕</span>
+    <div class="row-input">
+      <select bind:value={subtitleOverlayEnabled}>
+        <option value="false">無効</option>
+        <option value="true">有効</option>
+      </select>
+      <div class="hint">macOS ネイティブのリアルタイム字幕浮窗を表示します。Live 録課セッション中に最新の文字起こし内容を画面下部に表示します。</div>
     </div>
   </div>
 </div>
