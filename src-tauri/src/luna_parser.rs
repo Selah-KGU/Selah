@@ -686,6 +686,40 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_detail_page_accepts_unlabeled_report_body_row() {
+        let html = r#"
+            <html>
+              <head><title>第7回 レポート課題</title></head>
+              <body>
+                <div class="course-title-txt">アルゴリズムとデータ構造</div>
+                <div class="contents-title-txt">第7回 レポート課題</div>
+                <div class="contents-detail contents-vertical">
+                  <div class="contents-input-area">
+                    <script>
+                      _QuillUtil.reportBody.setJsonData("{\"ops\":[{\"insert\":\"グラフ探索アルゴリズムの比較を800字程度でまとめてください。\\n\"}]}", 'reference');
+                    </script>
+                  </div>
+                </div>
+                <div class="contents-detail contents-vertical">
+                  <div class="contents-header-txt"><span class="bold-txt">提出期限</span></div>
+                  <div class="contents-input-area">2026/05/01 23:59</div>
+                </div>
+              </body>
+            </html>
+        "#;
+
+        let result = parse_luna_detail_page(html);
+        assert_eq!(result.sections.len(), 1);
+        assert!(result.sections[0]
+            .body
+            .contains("グラフ探索アルゴリズムの比較を800字程度でまとめてください。"));
+        assert!(result
+            .meta
+            .iter()
+            .any(|(k, v)| k == "提出期限" && v == "2026/05/01 23:59"));
+    }
+
+    #[test]
     fn test_parse_announcement_detail_blacklists_system_notice_body() {
         let html = r#"
             <div id="osiraseTitle">授業内お知らせ</div>

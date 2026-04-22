@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { openLoginWindow, setAuthFromSession, startBackgroundPolling } from "./api";
+  import { openLoginWindow, setAuthFromSession, startBackgroundPolling, enterDemoMode } from "./api";
   import { authState } from "./stores";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
@@ -28,26 +28,21 @@
     }
   }
 
-  async function confirmDemo() {
-    const { activateDemo, populateDemoCache } = await import("./demo");
+  async function startDemoMode() {
     showDemoConfirm = false;
-    populateDemoCache();
-    activateDemo();
-    startBackgroundPolling();
+    try {
+      await enterDemoMode();
+    } catch (e: any) {
+      authState.update((s) => ({
+        ...s,
+        loading: false,
+        error: e?.message || e?.toString() || "演示モードの起動に失敗しました",
+      }));
+    }
   }
 
-  function cancelDemo() {
+  function cancelDemoMode() {
     showDemoConfirm = false;
-  }
-
-  function stopClickPropagation(node: HTMLDivElement) {
-    const onClick = (event: MouseEvent) => event.stopPropagation();
-    node.addEventListener("click", onClick);
-    return {
-      destroy() {
-        node.removeEventListener("click", onClick);
-      }
-    };
   }
 
   onMount(async () => {
@@ -136,16 +131,16 @@
 </div>
 
 {#if showDemoConfirm}
-<div class="demo-overlay" onclick={cancelDemo} role="presentation">
-  <div class="demo-dialog" use:stopClickPropagation role="dialog" aria-modal="true" tabindex="-1">
-    <div class="demo-dialog-title">演示モード</div>
-    <div class="demo-dialog-body">テストデータで演示モードに入ります。実際のログインは行われません。</div>
-    <div class="demo-dialog-actions">
-      <button class="demo-btn demo-btn-cancel" onclick={cancelDemo}>キャンセル</button>
-      <button class="demo-btn demo-btn-confirm" onclick={confirmDemo}>演示モードに入る</button>
+  <div class="demo-confirm-shell" role="presentation">
+    <div class="demo-confirm-card" role="dialog" aria-modal="true" aria-labelledby="demo-confirm-title">
+      <div id="demo-confirm-title" class="demo-confirm-title">演示モード</div>
+      <div class="demo-confirm-body">テストデータで演示モードに入ります。実際のログインは行われません。</div>
+      <div class="demo-confirm-actions">
+        <button type="button" class="demo-confirm-btn demo-confirm-cancel" onclick={cancelDemoMode}>キャンセル</button>
+        <button type="button" class="demo-confirm-btn demo-confirm-enter" onclick={startDemoMode}>演示モードに入る</button>
+      </div>
     </div>
   </div>
-</div>
 {/if}
 
 <style>
@@ -249,60 +244,61 @@
     color: var(--text-tertiary);
   }
 
-  .demo-overlay {
+  .demo-confirm-shell {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.4);
+    z-index: 1100;
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
-    animation: fade-in 0.15s ease;
+    background: rgba(15, 23, 42, 0.36);
   }
-  .demo-dialog {
-    width: 320px;
-    background: rgba(255, 255, 255, 1);
-    border-radius: 14px;
+
+  .demo-confirm-card {
+    width: min(340px, calc(100vw - 32px));
+    background: var(--bg-primary);
     border: 0.5px solid var(--border-strong);
+    border-radius: 16px;
     box-shadow: var(--shadow-lg);
     overflow: hidden;
   }
-  .demo-dialog-title {
-    font-size: 15px;
-    font-weight: 600;
+
+  .demo-confirm-title {
+    padding: 18px 20px 6px;
     text-align: center;
-    padding: 20px 20px 4px;
+    font-size: 15px;
+    font-weight: 700;
     color: var(--text-primary);
   }
-  .demo-dialog-body {
-    font-size: 13px;
-    color: var(--text-secondary);
+
+  .demo-confirm-body {
+    padding: 6px 22px 18px;
     text-align: center;
-    padding: 8px 24px 20px;
+    font-size: 13px;
     line-height: 1.6;
+    color: var(--text-secondary);
   }
-  .demo-dialog-actions {
-    display: flex;
+
+  .demo-confirm-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     border-top: 0.5px solid var(--border);
   }
-  .demo-btn {
-    flex: 1;
-    padding: 12px;
-    font-size: 14px;
-    font-weight: 500;
-    border: none;
+
+  .demo-confirm-btn {
+    min-height: 46px;
+    border-radius: 0;
     background: transparent;
-    cursor: pointer;
-    color: var(--accent);
+    font-size: 14px;
+    font-weight: 600;
   }
-  .demo-btn:hover {
-    background: var(--bg-hover);
-  }
-  .demo-btn-cancel {
+
+  .demo-confirm-cancel {
     color: var(--text-secondary);
     border-right: 0.5px solid var(--border);
   }
-  .demo-btn-confirm {
-    font-weight: 600;
+
+  .demo-confirm-enter {
+    color: var(--accent);
   }
 </style>

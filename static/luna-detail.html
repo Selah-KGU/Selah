@@ -2331,10 +2331,33 @@
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
           _currentPagePath = path;
           if (params.get('courseName')) _currentCourseName = params.get('courseName');
-          var reportData = await invoke('luna_fetch_detail', {
-            path: path,
-            expectedTitle: params.get('title') || ''
-          });
+          var reportData;
+          try {
+            reportData = await invoke('luna_fetch_detail', {
+              path: path,
+              expectedTitle: params.get('title') || ''
+            });
+          } catch(detailErr) {
+            var detailMsg = String(detailErr || '');
+            if (detailMsg.indexOf('初回読込が安定していません') >= 0) {
+              reportData = {
+                title: params.get('title') || '',
+                course_name: params.get('courseName') || '',
+                sections: [],
+                attachments: [],
+                meta: []
+              };
+            } else {
+              throw detailErr;
+            }
+          }
+          if (!reportData.title) reportData.title = params.get('title') || '';
+          if (!reportData.course_name && params.get('courseName')) reportData.course_name = params.get('courseName');
+          if ((!reportData.sections || !reportData.sections.length)
+            && (!reportData.meta || !reportData.meta.length)
+            && (!reportData.attachments || !reportData.attachments.length)) {
+            reportData.meta = [['状態', '課題の詳細本文は取得できませんでしたが、提出フォームは利用できます。']];
+          }
           renderDetail(reportData);
           // Detect submission type by fetching the actual submission page
           var repIdnumber = params.get('idnumber'), repReportId = params.get('reportId');

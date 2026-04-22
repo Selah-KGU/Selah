@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openExternalUrl } from "./system";
+import { stopTrayStatus } from "./trayStatus";
 import type {
   GradesData,
   CancellationsData,
@@ -217,6 +218,7 @@ function isTransientError(msg: string): boolean {
 }
 
 const EVER_AUTH_KEY = "selah-ever-auth";
+const EVER_AUTH_SOURCE_KEY = "selah-ever-auth-source";
 
 export function setAuthFromSession(session: { username: string; display_name?: string; student_id?: string; faculty?: string; department?: string }) {
   authState.set({
@@ -231,7 +233,10 @@ export function setAuthFromSession(session: { username: string; display_name?: s
   });
   // Persist the "ever logged in" flag so the app never shows Login after a restart
   // when cached data is available. Only cleared by explicit logout().
-  try { localStorage.setItem(EVER_AUTH_KEY, "1"); } catch {}
+  try {
+    localStorage.setItem(EVER_AUTH_KEY, "1");
+    localStorage.setItem(EVER_AUTH_SOURCE_KEY, "real");
+  } catch {}
 }
 
 /** Re-fetch KG-Course user info and update authState store */
@@ -980,26 +985,45 @@ export async function openLoginWindow(): Promise<void> {
   await invoke("open_login_window");
 }
 
+export async function enterDemoMode(): Promise<void> {
+  stopBackgroundPolling();
+  stopTrayStatus();
+  sessionExpired.set(false);
+  const { activateDemo } = await import("./demo");
+  activateDemo();
+  startBackgroundPolling();
+  startTrayStatus();
+}
+
 export async function logout(): Promise<void> {
   // Demo mode: just clear demo state, no real invoke
   const { deactivateDemo, isDemoMode } = await import("./demo");
   if (isDemoMode()) {
     deactivateDemo();
+    stopBackgroundPolling();
+    stopTrayStatus();
     sessionExpired.set(false);
     for (const svc of Object.values(serviceRegistry)) svc.onReset();
     invalidateCache();
-    try { localStorage.removeItem(EVER_AUTH_KEY); } catch {}
+    try {
+      localStorage.removeItem(EVER_AUTH_KEY);
+      localStorage.removeItem(EVER_AUTH_SOURCE_KEY);
+    } catch {}
     return;
   }
 
   stopBackgroundPolling();
   await invoke("logout");
+  stopTrayStatus();
   // Clear sessionExpired FIRST so kgc.onReset actually wipes authState
   sessionExpired.set(false);
   for (const svc of Object.values(serviceRegistry)) svc.onReset();
   invalidateCache();
   // Clear the persistent "ever logged in" flag so Login page shows
-  try { localStorage.removeItem(EVER_AUTH_KEY); } catch {}
+  try {
+    localStorage.removeItem(EVER_AUTH_KEY);
+    localStorage.removeItem(EVER_AUTH_SOURCE_KEY);
+  } catch {}
 }
 
 async function checkSession(): Promise<SessionStatus> {

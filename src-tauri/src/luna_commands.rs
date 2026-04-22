@@ -17,6 +17,7 @@ pub use navigation::*;
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
 const LUNA_DETAIL_CACHE_VERSION: &str = "v2";
+const LUNA_REPORT_DETAIL_CACHE_VERSION: &str = "v1";
 const LUNA_ANNOUNCEMENT_CACHE_VERSION: &str = "v2";
 
 // ── Cached selectors (compiled once, reused across all calls) ──
@@ -95,6 +96,22 @@ fn has_detail_payload(data: &luna_parser::LunaDetailPage) -> bool {
     !data.sections.is_empty() || !data.meta.is_empty() || !data.attachments.is_empty()
 }
 
+fn is_report_detail_path(path: &str) -> bool {
+    path.contains("/lms/course/report/submission")
+}
+
+fn finalize_report_detail(
+    mut data: luna_parser::LunaDetailPage,
+    expected_title: Option<&str>,
+) -> luna_parser::LunaDetailPage {
+    if data.title.trim().is_empty() {
+        if let Some(expected) = expected_title.filter(|s| !s.trim().is_empty()) {
+            data.title = expected.to_string();
+        }
+    }
+    data
+}
+
 fn has_blacklisted_cached_sections(data: &luna_parser::LunaDetailPage) -> bool {
     data.sections
         .iter()
@@ -146,12 +163,17 @@ fn is_valid_announcement_detail_response(
 }
 
 fn is_usable_cached_detail_response(
+    path: &str,
     data: &luna_parser::LunaDetailPage,
     expected_title: Option<&str>,
 ) -> bool {
-    title_matches_expected(&data.title, expected_title)
-        && has_detail_payload(data)
-        && !has_blacklisted_cached_sections(data)
+    if has_blacklisted_cached_sections(data) {
+        return false;
+    }
+    if is_report_detail_path(path) {
+        return true;
+    }
+    title_matches_expected(&data.title, expected_title) && has_detail_payload(data)
 }
 
 /// Luna GET with Referer header — required for form pages that serve CSRF tokens.
@@ -429,14 +451,37 @@ pub async fn luna_fetch_detail(
     if path.starts_with("http") || !path.starts_with('/') {
         return Err("許可されていないパスです".into());
     }
-    let cache_key = format!("luna_detail:{}:{}", LUNA_DETAIL_CACHE_VERSION, path);
+    let is_report = is_report_detail_path(&path);
+    let cache_key = if is_report {
+        format!(
+            "luna_report_detail:{}:{}",
+            LUNA_REPORT_DETAIL_CACHE_VERSION, path
+        )
+    } else {
+        format!("luna_detail:{}:{}", LUNA_DETAIL_CACHE_VERSION, path)
+    };
     let expected_title = expected_title.as_deref();
     match luna_http(&state).await {
         Ok(http) => {
             let fetch = async {
                 let mut html = luna_get(&http, &path).await?;
                 let mut data = luna_parser::parse_luna_detail_page(&html);
-
+                if is_report {
+                    data = finalize_report_detail(data, expected_title);
+                    #[cfg(debug_assertions)]
+                    {
+                        let filename = path.replace(['/', '?', '&'], "_");
+                        let dump_path = std::env::temp_dir()
+                            .join(format!("luna_report_detail{}.html", filename));
+                        let _ = std::fs::write(&dump_path, &html);
+                        log::info!(
+                            "Luna report detail HTML dumped to {} ({} bytes)",
+                            dump_path.display(),
+                            html.len()
+                        );
+                    }
+                    return Ok(data);
+                }
                 if !is_valid_generic_detail_response(&html, &data, expected_title) {
                     log::warn!(
                         "Luna detail page for '{}' looked unstable on first load (title='{}'), retrying",
@@ -482,7 +527,11 @@ pub async fn luna_fetch_detail(
                 Err(e) => {
                     if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                         if let Ok(cached) = serde_json::from_str(&json) {
-                            if is_usable_cached_detail_response(&cached, expected_title) {
+                            if is_report {
+                                log::info!("luna_report_detail: cache fallback ({})", e);
+                                return Ok(finalize_report_detail(cached, expected_title));
+                            }
+                            if is_usable_cached_detail_response(&path, &cached, expected_title) {
                                 log::info!("luna_detail: cache fallback ({})", e);
                                 return Ok(cached);
                             }
@@ -496,7 +545,11 @@ pub async fn luna_fetch_detail(
         Err(e) => {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
-                    if is_usable_cached_detail_response(&cached, expected_title) {
+                    if is_report {
+                        log::info!("luna_report_detail: cache fallback ({})", e);
+                        return Ok(finalize_report_detail(cached, expected_title));
+                    }
+                    if is_usable_cached_detail_response(&path, &cached, expected_title) {
                         log::info!("luna_detail: cache fallback ({})", e);
                         return Ok(cached);
                     }
@@ -580,7 +633,15 @@ pub async fn luna_fetch_announcement_detail(
                 Err(e) => {
                     if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                         if let Ok(cached) = serde_json::from_str(&json) {
-                            if is_usable_cached_detail_response(&cached, expected_title) {
+                            let cache_path = format!(
+                                "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
+                                idnumber, info_id
+                            );
+                            if is_usable_cached_detail_response(
+                                &cache_path,
+                                &cached,
+                                expected_title,
+                            ) {
                                 log::info!("luna_announce: cache fallback ({})", e);
                                 return Ok(cached);
                             }
@@ -594,7 +655,11 @@ pub async fn luna_fetch_announcement_detail(
         Err(e) => {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
-                    if is_usable_cached_detail_response(&cached, expected_title) {
+                    let cache_path = format!(
+                        "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
+                        idnumber, info_id
+                    );
+                    if is_usable_cached_detail_response(&cache_path, &cached, expected_title) {
                         log::info!("luna_announce: cache fallback ({})", e);
                         return Ok(cached);
                     }

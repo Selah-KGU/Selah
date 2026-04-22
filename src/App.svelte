@@ -2,6 +2,7 @@
   import "./styles.css";
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
+  import { demoMode } from "./lib/demo";
   import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, registerTask, updateTask, invalidateCache } from "./lib/stores";
   import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
@@ -10,9 +11,30 @@
   import { onMount, onDestroy } from "svelte";
   // Persistent latch: once the user has EVER logged in, always show Dashboard
   // (with cached data + re-auth badge). Only cleared by explicit logout.
-  // The flag is SET in setAuthFromSession() (api.ts) and CLEARED in logout().
-  let everLoggedIn = $state(!!localStorage.getItem("selah-ever-auth"));
-  let currentView = $derived(($authState.authenticated || $sessionExpired || everLoggedIn) ? "dashboard" : "login");
+  // Demo sessions do not participate in this latch.
+  function readDemoBootFlag(): boolean {
+    try {
+      return localStorage.getItem("selah-demo-mode") === "1";
+    } catch {
+      return false;
+    }
+  }
+  function readEverLoggedIn(): boolean {
+    try {
+      if (localStorage.getItem("selah-ever-auth") !== "1") return false;
+      const source = localStorage.getItem("selah-ever-auth-source");
+      if (source === "real") return true;
+      // Backward compatibility: older builds only stored the boolean flag.
+      // Keep treating it as a real login latch unless demo mode itself is active.
+      if (!source && localStorage.getItem("selah-demo-mode") !== "1") return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+  let demoBootFlag = $state(readDemoBootFlag());
+  let everLoggedIn = $state(readEverLoggedIn());
+  let currentView = $derived(($demoMode || demoBootFlag || $authState.authenticated || $sessionExpired || everLoggedIn) ? "dashboard" : "login");
   let restoring = $state(true);
   let validating = false;
   let lastValidateTime = 0;
@@ -56,15 +78,22 @@
       const { deactivateDemo, isDemoMode: checkDemo } = await import("./lib/demo");
       if (checkDemo()) deactivateDemo();
       stopBackgroundPolling();
+      stopTrayStatus();
       sessionExpired.set(false);
       for (const svc of Object.values(serviceRegistry)) svc.onReset();
       invalidateCache();
-      try { localStorage.removeItem("selah-ever-auth"); } catch {}
+      try {
+        localStorage.removeItem("selah-ever-auth");
+        localStorage.removeItem("selah-ever-auth-source");
+      } catch {}
+      demoBootFlag = false;
       everLoggedIn = false;
     });
 
     // Demo mode: restore from previous session, skip real network calls
     if (await restoreDemoState()) {
+      demoBootFlag = true;
+      startTrayStatus();
       restoring = false;
       return;
     }
@@ -223,7 +252,7 @@
 <style>
   .app-main {
     flex: 1;
-    overflow: auto;
+    overflow: hidden;
   }
   .page-transition {
     height: 100%;

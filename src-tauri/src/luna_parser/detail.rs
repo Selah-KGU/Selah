@@ -227,10 +227,23 @@ fn extract_filtered_input_text(area: scraper::ElementRef) -> String {
 }
 
 fn is_body_label(label: &str) -> bool {
+    let label = label.trim();
     matches!(
-        label.trim(),
-        "内容" | "本文" | "説明" | "詳細" | "課題内容" | "試験内容"
-    )
+        label,
+        "内容"
+            | "本文"
+            | "説明"
+            | "詳細"
+            | "課題内容"
+            | "試験内容"
+            | "課題説明"
+            | "提出内容"
+            | "説明文"
+            | "問題文"
+            | "設問"
+    ) || label.contains("内容")
+        || label.contains("説明")
+        || label.contains("本文")
 }
 
 fn push_unique_section(
@@ -392,6 +405,8 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 .unwrap_or_default();
             let row_html = row.html();
 
+            let row_quill_texts = extract_all_quill_texts(&row_html);
+
             if !label.is_empty() && is_body_label(&label) {
                 let heading = if label == "内容" {
                     String::new()
@@ -401,8 +416,20 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 if !value.is_empty() {
                     push_unique_section(&mut sections, heading.clone(), value.clone());
                 }
-                for quill_text in extract_all_quill_texts(&row_html) {
+                for quill_text in row_quill_texts {
                     push_unique_section(&mut sections, heading.clone(), quill_text);
+                }
+                continue;
+            }
+
+            // Some report pages place the body in an unlabeled row with only Quill/text content.
+            // Keep this scoped to the current row so we do not regress back to whole-page guesses.
+            if label.is_empty() && (!row_quill_texts.is_empty() || value.len() >= 24) {
+                if !value.is_empty() {
+                    push_unique_section(&mut sections, String::new(), value.clone());
+                }
+                for quill_text in row_quill_texts {
+                    push_unique_section(&mut sections, String::new(), quill_text);
                 }
                 continue;
             }

@@ -49,6 +49,7 @@ export function isDemoMode(): boolean {
 export function activateDemo() {
   demoMode.set(true);
   try { localStorage.setItem(DEMO_KEY, "1"); } catch {}
+  populateDemoCache();
 
   authState.set({
     authenticated: true,
@@ -63,8 +64,6 @@ export function activateDemo() {
   lunaAuthState.set({ authenticated: true });
   kwicAuthState.set({ authenticated: true });
   mailAuthState.set({ authenticated: true, email: "taro@kwansei.ac.jp", displayName: "関学 太郎" });
-
-  try { localStorage.setItem("selah-ever-auth", "1"); } catch {}
 }
 
 export function deactivateDemo() {
