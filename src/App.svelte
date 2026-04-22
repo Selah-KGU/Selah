@@ -3,7 +3,7 @@
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
   import { authState, lunaAuthState, kwicAuthState, mailAuthState, reloginInProgress, sessionExpired, registerTask, updateTask, invalidateCache } from "./lib/stores";
-  import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry, notificationSyncNow } from "./lib/api";
+  import { restoreAllSessions, validateSession, triggerRelogin, startBackgroundPolling, stopBackgroundPolling, syncSession, lunaCheckSession, kwicCheckSession, mailCheckSession, setAuthFromSession, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
   import { listen } from "@tauri-apps/api/event";
   import { get } from "svelte/store";
@@ -78,7 +78,6 @@
         "everLoggedIn =", everLoggedIn);
       if (session) {
         startBackgroundPolling();
-        void notificationSyncNow();
       } else if (everLoggedIn) {
         // Had a previous session (from a past app run) but recovery failed.
         // Set sessionExpired so the re-auth badge shows, and start polling

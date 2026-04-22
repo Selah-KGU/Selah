@@ -111,16 +111,6 @@ fn get_read_notifications(db: tauri::State<'_, db::Database>) -> read_state::Rea
 }
 
 #[tauri::command]
-fn get_seen_notif_ids(db: tauri::State<'_, db::Database>, source: String) -> Vec<String> {
-    read_state::get_seen_notif_ids(&db, &source)
-}
-
-#[tauri::command]
-fn save_seen_notif_ids(db: tauri::State<'_, db::Database>, source: String, ids: Vec<String>) {
-    read_state::save_seen_notif_ids(&db, &source, ids);
-}
-
-#[tauri::command]
 fn get_data_cache(db: tauri::State<'_, db::Database>, key: String) -> Option<String> {
     db.get_data_cache(&key).ok().flatten().map(|(json, _)| json)
 }
@@ -398,8 +388,6 @@ pub fn run() {
             mark_notification_read,
             mark_batch_notification_read,
             get_read_notifications,
-            get_seen_notif_ids,
-            save_seen_notif_ids,
             get_data_cache,
             save_data_cache,
             webview_toolbar::browser_go_back,

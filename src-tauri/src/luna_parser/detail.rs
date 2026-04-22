@@ -163,6 +163,84 @@ pub(super) fn extract_quill_rich_html(json_str: &str) -> Option<String> {
     }
 }
 
+fn normalize_detail_text(s: &str) -> String {
+    s.split_whitespace().collect::<String>()
+}
+
+fn extract_filtered_input_text(area: scraper::ElementRef) -> String {
+    let mut text_parts = Vec::new();
+    for child in area.text() {
+        let trimmed = child.trim();
+        if !trimmed.is_empty()
+            && !trimmed.starts_with("/*")
+            && !trimmed.starts_with("$(")
+            && !trimmed.starts_with("_Quill")
+            && !trimmed.starts_with("var ")
+            && !trimmed.starts_with("*/")
+            && !trimmed.contains("setJsonData")
+            && !trimmed.contains("function")
+            && !trimmed.contains("QuillUtil")
+        {
+            text_parts.push(trimmed.to_string());
+        }
+    }
+    text_parts.join(" ")
+}
+
+fn is_body_label(label: &str) -> bool {
+    matches!(
+        label.trim(),
+        "内容" | "本文" | "説明" | "詳細" | "課題内容" | "試験内容"
+    )
+}
+
+fn push_unique_section(
+    sections: &mut Vec<LunaDetailSection>,
+    heading: impl Into<String>,
+    body: impl Into<String>,
+) {
+    let body = body.into().trim().to_string();
+    if body.is_empty() {
+        return;
+    }
+    let normalized = normalize_detail_text(&body);
+    if normalized.is_empty()
+        || sections
+            .iter()
+            .any(|s| normalize_detail_text(&s.body) == normalized)
+    {
+        return;
+    }
+    sections.push(LunaDetailSection {
+        heading: heading.into(),
+        body,
+    });
+}
+
+fn fallback_single_quill_section(html: &str) -> Option<String> {
+    let mut unique = Vec::new();
+    for text in extract_all_quill_texts(html) {
+        let trimmed = text.trim();
+        if trimmed.len() <= 5 {
+            continue;
+        }
+        let normalized = normalize_detail_text(trimmed);
+        if normalized.is_empty()
+            || unique
+                .iter()
+                .any(|existing: &String| normalize_detail_text(existing) == normalized)
+        {
+            continue;
+        }
+        unique.push(trimmed.to_string());
+    }
+    if unique.len() == 1 {
+        unique.into_iter().next()
+    } else {
+        None
+    }
+}
+
 /// Parse any Luna detail page (report/submission, examination, forum, etc.)
 ///
 /// Luna detail pages use a consistent pattern:
@@ -247,6 +325,7 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
         ],
     );
 
+    let mut sections = Vec::new();
     let mut meta = Vec::new();
     let mut attachments = Vec::new();
 
@@ -264,36 +343,31 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
                 continue;
             }
 
-            let value = row
-                .select(&SEL_INPUT_AREA)
-                .next()
-                .map(|e| {
-                    // Collect text but skip script content and hidden elements
-                    let mut text_parts = Vec::new();
-                    for child in e.text() {
-                        let trimmed = child.trim();
-                        if !trimmed.is_empty()
-                            && !trimmed.starts_with("/*")
-                            && !trimmed.starts_with("$(")
-                            && !trimmed.starts_with("_Quill")
-                            && !trimmed.starts_with("var ")
-                            && !trimmed.starts_with("*/")
-                            && !trimmed.contains("setJsonData")
-                            && !trimmed.contains("function")
-                            && !trimmed.contains("QuillUtil")
-                        {
-                            text_parts.push(trimmed.to_string());
-                        }
-                    }
-                    text_parts.join(" ")
-                })
+            let value_el = row.select(&SEL_INPUT_AREA).next();
+            let value = value_el
+                .map(extract_filtered_input_text)
                 .unwrap_or_default();
+            let row_html = row.html();
+
+            if !label.is_empty() && is_body_label(&label) {
+                let heading = if label == "内容" {
+                    String::new()
+                } else {
+                    label.clone()
+                };
+                if !value.is_empty() {
+                    push_unique_section(&mut sections, heading.clone(), value.clone());
+                }
+                for quill_text in extract_all_quill_texts(&row_html) {
+                    push_unique_section(&mut sections, heading.clone(), quill_text);
+                }
+                continue;
+            }
 
             if !label.is_empty() && !value.is_empty() {
                 meta.push((label, value));
             } else if !label.is_empty() {
                 // Value might be in Quill rich text (empty div + script)
-                let row_html = row.html();
                 if let Some(quill_text) = extract_quill_text(&row_html) {
                     meta.push((label, quill_text));
                 }
@@ -301,26 +375,11 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
         }
     }
 
-    // === Extract Quill rich text content from scripts (page-level) ===
-    // If we didn't find content in meta, try to extract main Quill text
-    let quill_texts = extract_all_quill_texts(html);
-
-    // Build sections from top-level Quill content that wasn't captured in meta
-    let mut sections: Vec<LunaDetailSection> = if !quill_texts.is_empty() {
-        // Check which quill texts are already in meta values
-        let meta_values: Vec<&str> = meta.iter().map(|(_, v)| v.as_str()).collect();
-        quill_texts
-            .into_iter()
-            .filter(|t| !meta_values.iter().any(|mv| mv.contains(t.as_str())))
-            .filter(|t| t.len() > 5)
-            .map(|t| LunaDetailSection {
-                heading: String::new(),
-                body: t,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    if sections.is_empty() {
+        if let Some(body) = fallback_single_quill_section(html) {
+            push_unique_section(&mut sections, String::new(), body);
+        }
+    }
 
     // === Extract attachments ===
     // First, find the download form to determine the correct download endpoint
@@ -560,17 +619,6 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
         &["#osiraseTitle", ".block-title-txt", ".contents-title-txt"],
     );
 
-    // Extract Quill rich text content (main body) from setJsonData() calls
-    let quill_texts = extract_all_quill_texts(html);
-    for text in &quill_texts {
-        if text.len() > 3 {
-            sections.push(LunaDetailSection {
-                heading: String::new(),
-                body: text.clone(),
-            });
-        }
-    }
-
     // Helper: build a LunaAttachment from an announcement-style .downloadFile div.
     // Real Luna HTML looks like:
     //   <div class="link-txt downloadFile downFile">
@@ -640,11 +688,6 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
 
-            // Skip "内容" — it's the Quill content we already extracted
-            if label == "内容" {
-                continue;
-            }
-
             // Attachment rows: each .downloadFile div contains hidden inputs with the
             // real file/object name. Read those directly instead of trusting text.
             if row.select(&SEL_DOWNLOAD_FILE).next().is_some() {
@@ -656,30 +699,22 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
                 continue;
             }
 
+            let value_el = row.select(&SEL_INPUT_AREA).next();
             // Collect text from the value area, filtering out script content
-            let value = row
-                .select(&SEL_INPUT_AREA)
-                .next()
-                .map(|e| {
-                    let mut text_parts = Vec::new();
-                    for child in e.text() {
-                        let trimmed = child.trim();
-                        if !trimmed.is_empty()
-                            && !trimmed.starts_with("/*")
-                            && !trimmed.starts_with("$(")
-                            && !trimmed.starts_with("_Quill")
-                            && !trimmed.starts_with("var ")
-                            && !trimmed.starts_with("*/")
-                            && !trimmed.contains("setJsonData")
-                            && !trimmed.contains("function")
-                            && !trimmed.contains("QuillUtil")
-                        {
-                            text_parts.push(trimmed.to_string());
-                        }
-                    }
-                    text_parts.join("  ")
-                })
+            let value = value_el
+                .map(extract_filtered_input_text)
                 .unwrap_or_default();
+            let row_html = row.html();
+
+            if label == "内容" {
+                if !value.is_empty() {
+                    push_unique_section(&mut sections, String::new(), value.clone());
+                }
+                for quill_text in extract_all_quill_texts(&row_html) {
+                    push_unique_section(&mut sections, String::new(), quill_text);
+                }
+                continue;
+            }
 
             // Skip "添付ファイル" if empty
             if label == "添付ファイル" && value.is_empty() {
@@ -689,6 +724,12 @@ pub fn parse_luna_announcement_detail(html: &str) -> LunaDetailPage {
             if !label.is_empty() && !value.is_empty() {
                 meta.push((label, value));
             }
+        }
+    }
+
+    if sections.is_empty() {
+        if let Some(body) = fallback_single_quill_section(html) {
+            push_unique_section(&mut sections, String::new(), body);
         }
     }
 

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 
@@ -13,6 +14,7 @@ use crate::{KgcState, KwicState, LunaState, MailState};
 
 const INITIAL_SYNC_DELAY: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const BOOTSTRAP_GRACE_PERIOD: Duration = Duration::from_secs(6 * 60);
 
 pub struct NotificationPollState {
     running: AtomicBool,
@@ -35,6 +37,13 @@ enum CourseNotificationKind {
     Discussion,
     Survey,
     Attendance,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BootstrapMode {
+    Silent,
+    Finalize,
+    Normal,
 }
 
 pub fn start_notification_loop(app: &AppHandle) {
@@ -75,33 +84,41 @@ async fn sync_notifications_now(app: &AppHandle) -> Result<(), String> {
 
 async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
     let cfg = commands::load_notification_config();
+    let db = app.state::<Database>();
+    let bootstrap_mode = current_bootstrap_mode(&db);
+    let suppress_push = !matches!(bootstrap_mode, BootstrapMode::Normal);
 
     if is_kgc_authenticated(app).await {
         match fetch_kgc_notifications(app).await {
-            Ok(data) => sync_kgc_notifications(app, &cfg, data),
+            Ok(data) => sync_kgc_notifications(app, &cfg, data, suppress_push),
             Err(e) => log::warn!("notification sync: kgc fetch failed: {}", e),
         }
     }
 
     if is_luna_authenticated(app).await {
         match fetch_luna_notifications(app).await {
-            Ok(items) => sync_luna_notifications(app, &cfg, items),
+            Ok(items) => sync_luna_notifications(app, &cfg, items, suppress_push),
             Err(e) => log::warn!("notification sync: luna fetch failed: {}", e),
         }
     }
 
     if is_kwic_authenticated(app).await {
         match fetch_kwic_home(app).await {
-            Ok(home) => sync_kwic_notifications(app, &cfg, home),
+            Ok(home) => sync_kwic_notifications(app, &cfg, home, suppress_push),
             Err(e) => log::warn!("notification sync: kwic fetch failed: {}", e),
         }
     }
 
     if is_mail_authenticated(app).await {
         match crate::mail_commands::fetch_inbox_internal(app, 20, 0).await {
-            Ok(items) => sync_mail_notifications(app, &cfg, items),
+            Ok(items) => sync_mail_notifications(app, &cfg, items, suppress_push),
             Err(e) => log::warn!("notification sync: mail fetch failed: {}", e),
         }
+    }
+
+    if matches!(bootstrap_mode, BootstrapMode::Finalize) {
+        crate::read_state::mark_seen_notif_bootstrap_complete(&db);
+        log::info!("notification sync: initial bootstrap completed");
     }
 
     Ok(())
@@ -146,7 +163,12 @@ async fn is_mail_authenticated(app: &AppHandle) -> bool {
         .is_authenticated()
 }
 
-fn sync_kgc_notifications(app: &AppHandle, cfg: &NotificationConfig, data: NotificationsData) {
+fn sync_kgc_notifications(
+    app: &AppHandle,
+    cfg: &NotificationConfig,
+    data: NotificationsData,
+    suppress_push: bool,
+) {
     let source = "kgc";
     let db = app.state::<Database>();
     let current_ids: Vec<String> = data
@@ -167,7 +189,7 @@ fn sync_kgc_notifications(app: &AppHandle, cfg: &NotificationConfig, data: Notif
         .filter(|item| !item.id.is_empty() && !seen_set.contains(&item.id))
         .collect();
 
-    if course_notification_allowed(CourseNotificationKind::General, cfg) {
+    if !suppress_push && course_notification_allowed(CourseNotificationKind::General, cfg) {
         for item in &new_entries {
             let title = if item.category.is_empty() {
                 item.title.clone()
@@ -187,6 +209,7 @@ fn sync_luna_notifications(
     app: &AppHandle,
     cfg: &NotificationConfig,
     items: Vec<crate::luna_parser::LunaNotification>,
+    suppress_push: bool,
 ) {
     let source = "luna";
     let db = app.state::<Database>();
@@ -203,7 +226,9 @@ fn sync_luna_notifications(
         if seen_set.contains(&key) {
             continue;
         }
-        if course_notification_allowed(classify_course_notification(&item.module), cfg) {
+        if !suppress_push
+            && course_notification_allowed(classify_course_notification(&item.module), cfg)
+        {
             let title = if item.module.is_empty() {
                 item.content.clone()
             } else {
@@ -219,7 +244,12 @@ fn sync_luna_notifications(
     crate::read_state::mark_seen_notif_initialized(&db, source);
 }
 
-fn sync_kwic_notifications(app: &AppHandle, cfg: &NotificationConfig, home: KwicPortalHome) {
+fn sync_kwic_notifications(
+    app: &AppHandle,
+    cfg: &NotificationConfig,
+    home: KwicPortalHome,
+    suppress_push: bool,
+) {
     let source = "kwic";
     let db = app.state::<Database>();
     let current_ids: Vec<String> = home
@@ -244,7 +274,7 @@ fn sync_kwic_notifications(app: &AppHandle, cfg: &NotificationConfig, home: Kwic
             if item.id.is_empty() || seen_set.contains(&item.id) {
                 continue;
             }
-            if kwic_section_allowed(&section.title, cfg) {
+            if !suppress_push && kwic_section_allowed(&section.title, cfg) {
                 let title = if item.category.is_empty() {
                     item.title.clone()
                 } else {
@@ -260,7 +290,12 @@ fn sync_kwic_notifications(app: &AppHandle, cfg: &NotificationConfig, home: Kwic
     crate::read_state::mark_seen_notif_initialized(&db, source);
 }
 
-fn sync_mail_notifications(app: &AppHandle, cfg: &NotificationConfig, items: Vec<MailMessage>) {
+fn sync_mail_notifications(
+    app: &AppHandle,
+    cfg: &NotificationConfig,
+    items: Vec<MailMessage>,
+    suppress_push: bool,
+) {
     let source = "mail";
     let db = app.state::<Database>();
     let current_ids: Vec<String> = items
@@ -274,7 +309,7 @@ fn sync_mail_notifications(app: &AppHandle, cfg: &NotificationConfig, items: Vec
         return;
     }
 
-    if cfg.notify_mail {
+    if !suppress_push && cfg.notify_mail {
         for item in &items {
             if item.id.is_empty() || seen_set.contains(&item.id) || item.is_read.unwrap_or(false) {
                 continue;
@@ -307,6 +342,25 @@ fn load_seen_state(db: &Database, source: &str) -> (bool, Vec<String>, HashSet<S
     let seen_set = seen_ids.iter().cloned().collect::<HashSet<_>>();
     let initialized = crate::read_state::is_seen_notif_initialized(db, source);
     (initialized, seen_ids, seen_set)
+}
+
+fn current_bootstrap_mode(db: &Database) -> BootstrapMode {
+    if crate::read_state::is_seen_notif_bootstrap_complete(db) {
+        return BootstrapMode::Normal;
+    }
+
+    let now = epoch_secs();
+    let started_at =
+        crate::read_state::get_seen_notif_bootstrap_started_at(db).unwrap_or_else(|| {
+            crate::read_state::mark_seen_notif_bootstrap_started_at(db, now);
+            now
+        });
+
+    if now.saturating_sub(started_at) >= BOOTSTRAP_GRACE_PERIOD.as_secs() as i64 {
+        BootstrapMode::Finalize
+    } else {
+        BootstrapMode::Silent
+    }
 }
 
 fn seed_seen_state(
@@ -410,4 +464,11 @@ fn kwic_section_allowed(section: &str, cfg: &NotificationConfig) -> bool {
         }
         _ => cfg.notify_other,
     }
+}
+
+fn epoch_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }

@@ -142,6 +142,12 @@ pub async fn mail_open_login(
                                 "displayName": display_name,
                             }),
                         );
+                        drop(mail);
+                        if let Err(e) =
+                            crate::notifier::notification_sync_now(app_clone.clone()).await
+                        {
+                            log::warn!("notification sync after mail login failed: {}", e);
+                        }
                     }
                     Err(e) => {
                         log::error!("Microsoft mail login failed: {}", e);

@@ -614,6 +614,77 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_announcement_detail_ignores_unrelated_page_quill() {
+        let html = r#"
+            <div id="osiraseTitle">第1回授業のお知らせ</div>
+            <script>
+              _QuillUtil.portalNotice.setJsonData("{\"ops\":[{\"insert\":\"時間割\\nゲストアクセスと履修登録は違います。\\n\"}]}", 'reference');
+            </script>
+            <div class="contents-detail contents-vertical">
+              <div class="contents-header-txt"><span class="bold-txt">内容</span></div>
+              <div class="contents-input-area">
+                <script>
+                  _QuillUtil.infoBody.setJsonData("{\"ops\":[{\"insert\":\"初回授業は対面で実施します。\\n\"}]}", 'reference');
+                </script>
+              </div>
+            </div>
+            <div class="contents-detail contents-vertical">
+              <div class="contents-header-txt"><span class="bold-txt">発信者</span></div>
+              <div class="contents-input-area">山田太郎</div>
+            </div>
+        "#;
+
+        let result = parse_luna_announcement_detail(html);
+        assert_eq!(result.title, "第1回授業のお知らせ");
+        assert_eq!(result.sections.len(), 1);
+        assert!(result.sections[0]
+            .body
+            .contains("初回授業は対面で実施します。"));
+        assert!(!result.sections[0].body.contains("ゲストアクセス"));
+    }
+
+    #[test]
+    fn test_parse_detail_page_ignores_unrelated_page_quill() {
+        let html = r#"
+            <html>
+              <head><title>課題1 提出</title></head>
+              <body>
+                <div class="course-title-txt">データサイエンス入門</div>
+                <div class="contents-title-txt">課題1 提出</div>
+                <script>
+                  _QuillUtil.portalNotice.setJsonData("{\"ops\":[{\"insert\":\"時間割\\nLUNAサポートからのお知らせ\\n\"}]}", 'reference');
+                </script>
+                <div class="contents-detail contents-vertical">
+                  <div class="contents-header-txt"><span class="bold-txt">内容</span></div>
+                  <div class="contents-input-area">
+                    <script>
+                      _QuillUtil.reportBody.setJsonData("{\"ops\":[{\"insert\":\"レポート本文をPDFで提出してください。\\n\"}]}", 'reference');
+                    </script>
+                  </div>
+                </div>
+                <div class="contents-detail contents-vertical">
+                  <div class="contents-header-txt"><span class="bold-txt">提出期限</span></div>
+                  <div class="contents-input-area">2026/04/30 23:59</div>
+                </div>
+              </body>
+            </html>
+        "#;
+
+        let result = parse_luna_detail_page(html);
+        assert_eq!(result.title, "課題1 提出");
+        assert_eq!(result.course_name, "データサイエンス入門");
+        assert_eq!(result.sections.len(), 1);
+        assert!(result.sections[0]
+            .body
+            .contains("レポート本文をPDFで提出してください。"));
+        assert!(!result.sections[0].body.contains("LUNAサポート"));
+        assert!(result
+            .meta
+            .iter()
+            .any(|(k, v)| k == "提出期限" && v == "2026/04/30 23:59"));
+    }
+
+    #[test]
     fn test_extract_quill_delta_text() {
         let script = r#"
             _QuillUtil.materialContents_0.setJsonData("{\"ops\":[{\"insert\":\"\u51FA\u5E2D\u78BA\u8A8D\u306F\u6388\u696D\u5192\u982D\u306B\u884C\u3044\u307E\u3059\u3002\\n\"},{\"attributes\":{\"bold\":true},\"insert\":\"\u5EA7\u5E2D\u8868\u304C\u3042\u308A\u307E\u3059\u3002\"},{\"insert\":\"\\n\"}]}", 'reference');

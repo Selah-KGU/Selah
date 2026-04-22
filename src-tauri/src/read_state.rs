@@ -104,6 +104,8 @@ pub struct ReadIdsResponse {
 
 const SEEN_CACHE_PREFIX: &str = "seen_notifs_";
 const SEEN_INIT_PREFIX: &str = "seen_notifs_init_";
+const SEEN_BOOTSTRAP_STARTED_AT_KEY: &str = "seen_notifs_bootstrap_started_at";
+const SEEN_BOOTSTRAP_COMPLETE_KEY: &str = "seen_notifs_bootstrap_complete";
 const MAX_SEEN_IDS: usize = 500;
 
 pub fn get_seen_notif_ids(db: &Database, source: &str) -> Vec<String> {
@@ -140,5 +142,31 @@ pub fn mark_seen_notif_initialized(db: &Database, source: &str) {
     let key = format!("{}{}", SEEN_INIT_PREFIX, source);
     if let Ok(json) = serde_json::to_string(&true) {
         let _ = db.save_data_cache(&key, &json);
+    }
+}
+
+pub fn get_seen_notif_bootstrap_started_at(db: &Database) -> Option<i64> {
+    match db.get_data_cache(SEEN_BOOTSTRAP_STARTED_AT_KEY) {
+        Ok(Some((json, _))) => serde_json::from_str::<i64>(&json).ok(),
+        _ => None,
+    }
+}
+
+pub fn mark_seen_notif_bootstrap_started_at(db: &Database, started_at: i64) {
+    if let Ok(json) = serde_json::to_string(&started_at) {
+        let _ = db.save_data_cache(SEEN_BOOTSTRAP_STARTED_AT_KEY, &json);
+    }
+}
+
+pub fn is_seen_notif_bootstrap_complete(db: &Database) -> bool {
+    match db.get_data_cache(SEEN_BOOTSTRAP_COMPLETE_KEY) {
+        Ok(Some((json, _))) => serde_json::from_str::<bool>(&json).unwrap_or(false),
+        _ => false,
+    }
+}
+
+pub fn mark_seen_notif_bootstrap_complete(db: &Database) {
+    if let Ok(json) = serde_json::to_string(&true) {
+        let _ = db.save_data_cache(SEEN_BOOTSTRAP_COMPLETE_KEY, &json);
     }
 }

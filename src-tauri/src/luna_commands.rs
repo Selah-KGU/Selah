@@ -32,6 +32,16 @@ sel!(SEL_BODY, "body");
 sel!(SEL_FORM, "form");
 sel!(SEL_REPORT_FORM, "form#reportSubmissionForm");
 sel!(SEL_HIDDEN_INPUT, "input[type='hidden']");
+sel!(SEL_UPDATE_INFO_LIST, ".update-info-list");
+sel!(SEL_DETAIL_VERT, ".contents-detail.contents-vertical");
+sel!(
+    SEL_DETAIL_TITLE,
+    "#osiraseTitle, .block-title-txt, .contents-title-txt"
+);
+sel!(
+    SEL_THREAD_POST_MARKER,
+    ".thread-post-area, #threadPostListArea, .postContentsText"
+);
 
 /// Briefly lock Luna client, check auth and clone http. Releases lock immediately.
 async fn luna_http(state: &LunaState) -> Result<reqwest::Client, String> {
@@ -53,6 +63,78 @@ async fn luna_get(http: &reqwest::Client, path: &str) -> Result<String, String> 
         luna_client::is_luna_session_expired,
     )
     .await
+}
+
+fn normalize_detail_title(s: &str) -> String {
+    s.chars()
+        .filter(|c| {
+            !c.is_whitespace()
+                && !matches!(
+                    c,
+                    '|' | '｜' | '【' | '】' | '[' | ']' | '(' | ')' | '（' | '）' | ':' | '：'
+                )
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn title_matches_expected(actual: &str, expected: Option<&str>) -> bool {
+    let Some(expected) = expected.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    let actual = normalize_detail_title(actual);
+    let expected = normalize_detail_title(expected);
+    !actual.is_empty()
+        && !expected.is_empty()
+        && (actual.contains(&expected) || expected.contains(&actual))
+}
+
+fn has_detail_payload(data: &luna_parser::LunaDetailPage) -> bool {
+    !data.sections.is_empty() || !data.meta.is_empty() || !data.attachments.is_empty()
+}
+
+fn has_generic_detail_structure(html: &str) -> bool {
+    let doc = scraper::Html::parse_document(html);
+    let has_title =
+        doc.select(&SEL_DETAIL_TITLE).next().is_some() || html.contains("course-title-txt");
+    let has_detail_rows = doc.select(&SEL_DETAIL_VERT).next().is_some();
+    let has_report_form = doc.select(&SEL_REPORT_FORM).next().is_some();
+    let has_forum_post = doc.select(&SEL_THREAD_POST_MARKER).next().is_some();
+    let has_downloads = html.contains("downloadFile");
+    let has_updates = doc.select(&SEL_UPDATE_INFO_LIST).next().is_some();
+
+    (has_detail_rows || has_report_form || has_forum_post || has_downloads)
+        && (has_title || has_report_form || has_forum_post)
+        && !(has_updates && !has_detail_rows && !has_report_form && !has_forum_post)
+}
+
+fn has_announcement_detail_structure(html: &str) -> bool {
+    let doc = scraper::Html::parse_document(html);
+    let has_title = doc.select(&SEL_DETAIL_TITLE).next().is_some();
+    let has_detail_rows = doc.select(&SEL_DETAIL_VERT).next().is_some();
+    let has_updates = doc.select(&SEL_UPDATE_INFO_LIST).next().is_some();
+
+    has_title && has_detail_rows && !(has_updates && !has_detail_rows)
+}
+
+fn is_valid_generic_detail_response(
+    html: &str,
+    data: &luna_parser::LunaDetailPage,
+    expected_title: Option<&str>,
+) -> bool {
+    title_matches_expected(&data.title, expected_title)
+        && has_detail_payload(data)
+        && has_generic_detail_structure(html)
+}
+
+fn is_valid_announcement_detail_response(
+    html: &str,
+    data: &luna_parser::LunaDetailPage,
+    expected_title: Option<&str>,
+) -> bool {
+    title_matches_expected(&data.title, expected_title)
+        && has_detail_payload(data)
+        && has_announcement_detail_structure(html)
 }
 
 /// Luna GET with Referer header — required for form pages that serve CSRF tokens.
@@ -324,6 +406,7 @@ pub async fn luna_fetch_detail(
     state: State<'_, LunaState>,
     db: State<'_, crate::db::Database>,
     path: String,
+    expected_title: Option<String>,
 ) -> Result<luna_parser::LunaDetailPage, String> {
     // Reject absolute URLs and enforce known Luna path prefixes
     if path.starts_with("http") || !path.starts_with('/') {
@@ -331,8 +414,32 @@ pub async fn luna_fetch_detail(
     }
     let cache_key = format!("luna_detail:{}", path);
     match luna_http(&state).await {
-        Ok(http) => match luna_get(&http, &path).await {
-            Ok(html) => {
+        Ok(http) => {
+            let expected_title = expected_title.as_deref();
+            let fetch = async {
+                let mut html = luna_get(&http, &path).await?;
+                let mut data = luna_parser::parse_luna_detail_page(&html);
+
+                if !is_valid_generic_detail_response(&html, &data, expected_title) {
+                    log::warn!(
+                        "Luna detail page for '{}' looked unstable on first load (title='{}'), retrying",
+                        path,
+                        data.title
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    let retry_html = luna_get(&http, &path).await?;
+                    let retry_data = luna_parser::parse_luna_detail_page(&retry_html);
+                    if is_valid_generic_detail_response(&retry_html, &retry_data, expected_title) {
+                        html = retry_html;
+                        data = retry_data;
+                    } else {
+                        return Err(
+                            "Luna 詳細ページの初回読込が安定していません。もう一度お試しください。"
+                                .into(),
+                        );
+                    }
+                }
+
                 #[cfg(debug_assertions)]
                 {
                     let filename = path.replace(['/', '?', '&'], "_");
@@ -345,22 +452,27 @@ pub async fn luna_fetch_detail(
                         html.len()
                     );
                 }
-                let data = luna_parser::parse_luna_detail_page(&html);
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let _ = db.save_data_cache(&cache_key, &json);
-                }
                 Ok(data)
-            }
-            Err(e) => {
-                if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
-                    if let Ok(cached) = serde_json::from_str(&json) {
-                        log::info!("luna_detail: cache fallback ({})", e);
-                        return Ok(cached);
+            };
+
+            match fetch.await {
+                Ok(data) => {
+                    if let Ok(json) = serde_json::to_string(&data) {
+                        let _ = db.save_data_cache(&cache_key, &json);
                     }
+                    Ok(data)
                 }
-                Err(e)
+                Err(e) => {
+                    if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("luna_detail: cache fallback ({})", e);
+                            return Ok(cached);
+                        }
+                    }
+                    Err(e)
+                }
             }
-        },
+        }
         Err(e) => {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
@@ -380,6 +492,7 @@ pub async fn luna_fetch_announcement_detail(
     db: State<'_, crate::db::Database>,
     idnumber: String,
     info_id: String,
+    expected_title: Option<String>,
 ) -> Result<luna_parser::LunaDetailPage, String> {
     if !is_safe_param(&idnumber) || !is_safe_param(&info_id) {
         return Err("無効なパラメータです".into());
@@ -390,8 +503,37 @@ pub async fn luna_fetch_announcement_detail(
         idnumber, info_id
     );
     match luna_http(&state).await {
-        Ok(http) => match luna_get(&http, &path).await {
-            Ok(html) => {
+        Ok(http) => {
+            let expected_title = expected_title.as_deref();
+            let fetch = async {
+                let mut html = luna_get(&http, &path).await?;
+                let mut data = luna_parser::parse_luna_announcement_detail(&html);
+
+                if !is_valid_announcement_detail_response(&html, &data, expected_title) {
+                    log::warn!(
+                        "Luna announcement detail for '{}:{}' looked unstable on first load (title='{}'), retrying",
+                        idnumber,
+                        info_id,
+                        data.title
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    let retry_html = luna_get(&http, &path).await?;
+                    let retry_data = luna_parser::parse_luna_announcement_detail(&retry_html);
+                    if is_valid_announcement_detail_response(
+                        &retry_html,
+                        &retry_data,
+                        expected_title,
+                    ) {
+                        html = retry_html;
+                        data = retry_data;
+                    } else {
+                        return Err(
+                            "Luna お知らせ詳細の初回読込が安定していません。もう一度お試しください。"
+                                .into(),
+                        );
+                    }
+                }
+
                 #[cfg(debug_assertions)]
                 {
                     let dump_path = std::env::temp_dir()
@@ -399,22 +541,27 @@ pub async fn luna_fetch_announcement_detail(
                     let _ = std::fs::write(&dump_path, &html);
                     log::info!("Luna announcement detail dumped ({} bytes)", html.len());
                 }
-                let data = luna_parser::parse_luna_announcement_detail(&html);
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let _ = db.save_data_cache(&cache_key, &json);
-                }
                 Ok(data)
-            }
-            Err(e) => {
-                if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
-                    if let Ok(cached) = serde_json::from_str(&json) {
-                        log::info!("luna_announce: cache fallback ({})", e);
-                        return Ok(cached);
+            };
+
+            match fetch.await {
+                Ok(data) => {
+                    if let Ok(json) = serde_json::to_string(&data) {
+                        let _ = db.save_data_cache(&cache_key, &json);
                     }
+                    Ok(data)
                 }
-                Err(e)
+                Err(e) => {
+                    if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
+                        if let Ok(cached) = serde_json::from_str(&json) {
+                            log::info!("luna_announce: cache fallback ({})", e);
+                            return Ok(cached);
+                        }
+                    }
+                    Err(e)
+                }
             }
-        },
+        }
         Err(e) => {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
