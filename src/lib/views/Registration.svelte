@@ -1,8 +1,8 @@
-<script lang="ts">
+  <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { fetchRegistration, isDemoActive } from "../api";
-  import { cachedFetch, onCacheUpdate } from "../stores";
+  import { isDemoActive } from "../api";
+  import { cachedBackendFetch, onCacheUpdate } from "../stores";
   import type { RegistrationData } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import StudentBar from "../StudentBar.svelte";
@@ -58,13 +58,13 @@
 
   onMount(async () => {
     try {
-      data = await cachedFetch("registration", fetchRegistration);
+      data = await cachedBackendFetch("registration");
     } catch (e: any) {
       error = e?.message || String(e);
       // Auto-retry once after 3s (covers kgc_gate contention / transient errors)
       setTimeout(async () => {
         try {
-          data = await cachedFetch("registration", fetchRegistration);
+          data = await cachedBackendFetch("registration");
           error = "";
         } catch { /* keep existing error */ }
       }, 3000);

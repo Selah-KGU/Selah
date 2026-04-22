@@ -1,7 +1,6 @@
-<script lang="ts">
+  <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchGrades } from "../api";
-  import { cachedFetch, onCacheUpdate } from "../stores";
+  import { cachedBackendFetch, onCacheUpdate } from "../stores";
   import type { GradesData, CurriculumRow } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import StudentBar from "../StudentBar.svelte";
@@ -15,7 +14,7 @@
 
   onMount(async () => {
     try {
-      data = await cachedFetch("grades", fetchGrades);
+      data = await cachedBackendFetch("grades");
     } catch (e: any) {
       error = e?.message || String(e);
     } finally {

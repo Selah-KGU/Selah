@@ -9,6 +9,7 @@ mod agent_provider;
 mod agent_tools;
 pub mod ai;
 mod auth;
+mod background_refresh;
 mod client;
 mod commands;
 pub(crate) mod config;
@@ -193,6 +194,7 @@ pub fn run() {
             )));
             app.manage(ThemeState(std::sync::Mutex::new("system".to_string())));
             app.manage(live::LiveState::new());
+            app.manage(background_refresh::BackendRefreshState::new());
             app.manage(notifier::NotificationPollState::new());
 
             // Initialize SQLite database for timetable enrichment
@@ -207,6 +209,7 @@ pub fn run() {
             app.manage(tray_status.clone());
             tray::setup_tray(app.handle())?;
             tray::start_tray_cycle(app.handle(), tray_status);
+            background_refresh::start_background_refresh_loop(app.handle());
             notifier::start_notification_loop(app.handle());
             #[cfg(target_os = "macos")]
             {
@@ -370,6 +373,8 @@ pub fn run() {
             commands::get_calendar_config,
             commands::save_calendar_config,
             notifier::notification_sync_now,
+            background_refresh::backend_refresh_now,
+            background_refresh::backend_sync_session_status_now,
             commands::list_downloads,
             commands::scan_download_dir,
             commands::check_file_downloaded,

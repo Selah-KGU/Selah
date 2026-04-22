@@ -302,6 +302,9 @@ pub async fn open_login_window(app: tauri::AppHandle) -> Result<(), String> {
         if let Err(e) = crate::notifier::notification_sync_now(app_clone.clone()).await {
             log::warn!("notification sync after login failed: {}", e);
         }
+        if let Err(e) = crate::background_refresh::refresh_backend_data_now(&app_clone).await {
+            log::warn!("background refresh after login failed: {}", e);
+        }
 
         if let Some(win) = app_clone.get_webview_window("login") {
             let _ = win.close();

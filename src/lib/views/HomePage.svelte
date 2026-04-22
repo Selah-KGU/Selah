@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
-  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
+  import { authState, lunaAuthState, kwicAuthState, activeTab, cachedBackendFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
   import type { NotificationsData, NotificationEntry } from "../stores";
-  import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, fetchWeather, isDemoActive } from "../api";
+  import { lunaInvoke, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, isDemoActive } from "../api";
   import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
   import type { LunaTodoItem, LunaNotification, ScheduleResponse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
@@ -280,7 +280,7 @@
     startSuggestionCycle();
     // Re-fetch timetable if cache is stale
     if (serverDataLoaded) {
-      cachedFetch<ScheduleResponse>("schedule_data", getScheduleSnapshot)
+      cachedBackendFetch<ScheduleResponse>("schedule_data")
         .then(tt => { if (tt) timetableData = tt; })
         .catch(() => {});
     }
@@ -301,7 +301,7 @@
     if (cachedNotifs) kgcNotifs = cachedNotifs.entries ?? [];
     if (cachedLunaNotifs) lunaNotifs = cachedLunaNotifs;
     if (cachedTT || cachedNotifs || cachedKwic) loading = false;
-    cachedFetch<WeatherData>("weather", fetchWeather).then(applyWeather).catch(() => {});
+    cachedBackendFetch<WeatherData>("weather").then(applyWeather).catch(() => {});
     checkAiConfig();
     if ($authState.authenticated) {
       await loadData();
@@ -356,8 +356,8 @@
   const unsubLunaAuth = lunaAuthState.subscribe((state) => {
     if (state.authenticated && !todoItems.length && !lunaNotifs.length) {
       Promise.allSettled([
-        cachedFetch<LunaTodoItem[]>("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo")),
-        cachedFetch<LunaNotification[]>("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates")),
+        cachedBackendFetch<LunaTodoItem[]>("luna_todo"),
+        cachedBackendFetch<LunaNotification[]>("luna_updates"),
       ]).then(([td, ln]) => {
         if (td.status === "fulfilled" && td.value) todoItems = td.value;
         if (ln.status === "fulfilled" && ln.value) lunaNotifs = ln.value as LunaNotification[];
@@ -368,7 +368,7 @@
   // Re-fetch KWIC data when KWIC authenticates
   const unsubKwicAuth = kwicAuthState.subscribe((state) => {
     if (state.authenticated && !kwicHome) {
-      cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome).then(kh => {
+      cachedBackendFetch<KwicPortalHome>("kwic_home").then(kh => {
         if (kh) kwicHome = kh;
       }).catch(() => {});
     }
@@ -380,16 +380,16 @@
     loading = true;
     try {
       const [tt, td, nt, ln, kh] = await Promise.allSettled([
-        cachedFetch<ScheduleResponse>("schedule_data", getScheduleSnapshot),
+        cachedBackendFetch<ScheduleResponse>("schedule_data"),
         $lunaAuthState.authenticated
-          ? cachedFetch<LunaTodoItem[]>("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"))
+          ? cachedBackendFetch<LunaTodoItem[]>("luna_todo")
           : Promise.resolve([]),
-        cachedFetch<NotificationsData>("notifications", fetchNotifications),
+        cachedBackendFetch<NotificationsData>("notifications"),
         $lunaAuthState.authenticated
-          ? cachedFetch<LunaNotification[]>("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"))
+          ? cachedBackendFetch<LunaNotification[]>("luna_updates")
           : Promise.resolve([]),
         $kwicAuthState.authenticated
-          ? cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome)
+          ? cachedBackendFetch<KwicPortalHome>("kwic_home")
           : Promise.resolve(null),
       ]);
       if (tt.status === "fulfilled" && tt.value) {

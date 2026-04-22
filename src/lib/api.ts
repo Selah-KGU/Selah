@@ -17,7 +17,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
@@ -95,6 +95,47 @@ listen("ai-config-changed", () => {
   });
 });
 
+listen<{ keys?: string[] }>("backend-cache-updated", (event) => {
+  const keys = event.payload?.keys ?? [];
+  if (!keys.length) return;
+  syncBackendManagedKeys(keys).catch((err) => {
+    console.warn("[Selah] backend cache sync failed:", err);
+  });
+});
+
+function applyBackendSessionStatus(status: BackendSessionStatus) {
+  lunaAuthState.set({ authenticated: status.luna_authenticated });
+  kwicAuthState.set({ authenticated: status.kwic_authenticated });
+  mailAuthState.set({
+    authenticated: status.mail_authenticated,
+    email: status.mail_email,
+    displayName: status.mail_display_name,
+  });
+
+  if (status.kgc_valid) {
+    setAuthFromSession({
+      username: status.username,
+      display_name: status.display_name,
+      student_id: status.student_id,
+      faculty: status.faculty,
+      department: status.department,
+    });
+    if (get(sessionExpired)) sessionExpired.set(false);
+    return;
+  }
+
+  const hadRealAuth = get(authState).authenticated || (() => {
+    try { return localStorage.getItem("selah-ever-auth") === "1"; } catch { return false; }
+  })();
+  if (status.session_expired || hadRealAuth) {
+    sessionExpired.set(true);
+  }
+}
+
+listen<BackendSessionStatus>("backend-session-status", (event) => {
+  applyBackendSessionStatus(event.payload);
+});
+
 interface SessionStatus {
   valid: boolean;
   username: string;
@@ -102,6 +143,21 @@ interface SessionStatus {
   student_id: string;
   faculty: string;
   department: string;
+}
+
+interface BackendSessionStatus {
+  kgc_valid: boolean;
+  session_expired: boolean;
+  username: string;
+  display_name: string;
+  student_id: string;
+  faculty: string;
+  department: string;
+  luna_authenticated: boolean;
+  kwic_authenticated: boolean;
+  mail_authenticated: boolean;
+  mail_email: string;
+  mail_display_name: string;
 }
 
 // ============ Unified Session Management ============
@@ -978,6 +1034,60 @@ export async function saveDataCache(key: string, json: string): Promise<void> {
   return invoke("save_data_cache", { key, json });
 }
 
+const BACKEND_CACHE_DB_KEY: Record<string, string> = {
+  exams: "exam_timetable",
+};
+
+async function loadBackendManagedCache(key: string): Promise<any | null> {
+  if (_isDemo()) return null;
+  if (key === "schedule_data") {
+    return getScheduleSnapshot();
+  }
+  const dbKey = BACKEND_CACHE_DB_KEY[key] ?? key;
+  const json = await getDataCache(dbKey);
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch (e) {
+    console.warn(`[Selah] backend cache parse failed for "${key}" from "${dbKey}":`, e);
+    return null;
+  }
+}
+
+async function syncBackendManagedKeys(keys: string[]): Promise<void> {
+  const uniqueKeys = [...new Set(keys.filter(Boolean))];
+  if (!uniqueKeys.length || _isDemo()) return;
+
+  await Promise.all(uniqueKeys.map(async (key) => {
+    const data = await loadBackendManagedCache(key);
+    if (data == null) return;
+    replaceCacheEntry(key, data);
+  }));
+
+  cacheStatus.update((s) => ({ ...s, lastUpdated: Date.now() }));
+}
+
+function refreshVisibleBackendCaches() {
+  void syncBackendManagedKeys([
+    "schedule_data",
+    "notifications",
+    "luna_updates",
+    "luna_todo",
+    "kwic_home",
+    "mail_inbox",
+    "weather",
+    "student_profile",
+    "mail_profile",
+    "exams",
+  ]);
+}
+
+async function syncBackendSessionStatusNow(): Promise<void> {
+  if (_isDemo()) return;
+  const status = await invoke<BackendSessionStatus>("backend_sync_session_status_now");
+  applyBackendSessionStatus(status);
+}
+
 // ---------- Public API ----------
 
 export async function openLoginWindow(): Promise<void> {
@@ -1579,125 +1689,12 @@ export async function showMainAgentWindow(): Promise<void> {
   return invoke<void>("show_main_agent_window");
 }
 
-// ============ Background Polling ============
-// Two tiers:
-//   - Volatile (5 min): notifications, todo, change info, weather
-//   - Stable (12 hours): schedule_data, grades, exams, registration
-
-const POLL_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const STABLE_POLL_INTERVAL = 12 * 60 * 60 * 1000; // 12 hours
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let stablePollTimer: ReturnType<typeof setInterval> | null = null;
-let initialPollTimeout: ReturnType<typeof setTimeout> | null = null;
-let stablePollInitTimeout: ReturnType<typeof setTimeout> | null = null;
-let preemptiveRenewalTimer: ReturnType<typeof setInterval> | null = null;
-
-interface PollTarget {
-  key: string;
-  fetcher: () => Promise<any>;
-  /** Only poll when this returns true */
-  guard?: () => boolean;
-}
-
-function getVolatileTargets(): PollTarget[] {
-  return [
-    { key: "notifications", fetcher: fetchNotifications },
-    { key: "luna_todo", fetcher: () => lunaInvoke<any>("luna_fetch_todo"), guard: () => get(lunaAuthState).authenticated },
-    { key: "luna_updates", fetcher: () => lunaInvoke<any>("luna_fetch_updates"), guard: () => get(lunaAuthState).authenticated },
-    { key: "kwic_home", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
-    { key: "weather", fetcher: fetchWeather },
-    { key: "mail_inbox", fetcher: () => mailFetchInbox(20, 0), guard: () => get(mailAuthState).authenticated },
-  ];
-}
-
-function getStableTargets(): PollTarget[] {
-  return [
-    { key: "grades", fetcher: fetchGrades },
-    { key: "exams", fetcher: fetchExamTimetable },
-    { key: "registration", fetcher: fetchRegistration },
-    { key: "cancellations", fetcher: fetchCancellations },
-    { key: "makeup", fetcher: fetchMakeupClasses },
-    { key: "rooms", fetcher: fetchRoomChanges },
-    { key: "student_profile", fetcher: fetchStudentProfile },
-    { key: "mail_profile", fetcher: mailFetchProfile, guard: () => get(mailAuthState).authenticated },
-  ];
-}
-
-function doPoll() {
-  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
-  const promises: Promise<any>[] = [];
-  for (const t of getVolatileTargets()) {
-    if (t.guard && !t.guard()) continue;
-    updateTask(t.key, { running: true });
-    cacheStatus.update(s => ({ ...s, refreshingCount: s.refreshingCount + 1 }));
-    const p = refreshCache(t.key, t.fetcher);
-    if (p) {
-      const tracked = p.then((data) => {
-        updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined });
-      }).finally(() => {
-        cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
-      });
-      promises.push(tracked);
-    } else {
-      updateTask(t.key, { running: false });
-      cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
-    }
-  }
-  if (promises.length) {
-    Promise.all(promises).then(() => {
-      cacheStatus.update(s => ({ ...s, lastUpdated: Date.now() }));
-    });
-  }
-}
-
-function doStablePoll() {
-  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
-  const promises: Promise<any>[] = [];
-  for (const t of getStableTargets()) {
-    if (t.guard && !t.guard()) continue;
-    updateTask(t.key, { running: true });
-    cacheStatus.update(s => ({ ...s, refreshingCount: s.refreshingCount + 1 }));
-    const p = refreshCache(t.key, t.fetcher);
-    if (p) {
-      const tracked = p.then((data) => {
-        updateTask(t.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined });
-      }).finally(() => {
-        cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
-      });
-      promises.push(tracked);
-    } else {
-      updateTask(t.key, { running: false });
-      cacheStatus.update(s => ({ ...s, refreshingCount: Math.max(0, s.refreshingCount - 1) }));
-    }
-  }
-  if (promises.length) {
-    Promise.all(promises).then(() => {
-      cacheStatus.update(s => ({ ...s, lastUpdated: Date.now() }));
-    });
-  }
-}
-
-const PREEMPTIVE_RENEWAL_THRESHOLD = 300; // 5 minutes in seconds
-
-async function getSessionExpiry(): Promise<number | null> {
-  return invoke<number | null>("get_session_expiry");
-}
-
-async function checkPreemptiveRenewal() {
-  if (!get(authState).authenticated || get(reloginInProgress) || get(sessionExpired)) return;
-  updateTask("preemptive_renewal", { running: true });
-  try {
-    const secs = await getSessionExpiry();
-    if (secs !== null && secs <= PREEMPTIVE_RENEWAL_THRESHOLD) {
-      console.log(`[preemptive-renewal] Cookie expiry in ${secs}s, triggering sync`);
-      await syncSession("all");
-    }
-    updateTask("preemptive_renewal", { running: false, lastRunTs: Date.now(), lastOk: true });
-  } catch (e) {
-    console.warn("[preemptive-renewal] check failed:", e);
-    updateTask("preemptive_renewal", { running: false, lastRunTs: Date.now(), lastOk: false });
-  }
-}
+// ============ Backend-Owned Refresh ============
+// Routine cache refresh, notification polling, and session pre-renewal now live
+// in Rust. The frontend keeps only:
+//   1. cache hydration from backend-emitted updates
+//   2. a foreground catch-up when the WebView becomes visible
+//   3. AI-only scheduling that still depends on frontend stores/views
 
 const TASK_LABELS: Record<string, string> = {
   notifications: "KGC お知らせ取得",
@@ -1718,49 +1715,34 @@ const TASK_LABELS: Record<string, string> = {
   ai_scheduler: "AI 定期更新",
 };
 
-function registerAllTasks() {
-  for (const t of getVolatileTargets()) registerTask(t.key, TASK_LABELS[t.key] ?? t.key, "volatile", POLL_INTERVAL);
-  for (const t of getStableTargets()) registerTask(t.key, TASK_LABELS[t.key] ?? t.key, "stable", STABLE_POLL_INTERVAL);
-  registerTask("preemptive_renewal", TASK_LABELS["preemptive_renewal"], "system", 3 * 60 * 1000);
-  registerTask("ai_scheduler", TASK_LABELS["ai_scheduler"], "stable", 0); // interval updated dynamically
-}
-
 export function startBackgroundPolling() {
   // Demo mode: no real polling
   if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") return;
 
   stopBackgroundPolling();
-  registerAllTasks();
-  // Initial volatile poll after a short delay (let views mount first)
-  initialPollTimeout = setTimeout(doPoll, 10_000);
-  pollTimer = setInterval(() => {
-    doPoll();
-  }, POLL_INTERVAL);
-  // Stable data: initial fetch after views mount, then refresh every 12 hours
-  stablePollInitTimeout = setTimeout(doStablePoll, 15_000);
-  stablePollTimer = setInterval(() => {
-    doStablePoll();
-  }, STABLE_POLL_INTERVAL);
-  // Preemptive session renewal: check cookie expiry every 3 min
-  preemptiveRenewalTimer = setInterval(checkPreemptiveRenewal, 3 * 60 * 1000);
-  // Also poll when window becomes visible after being hidden
   document.addEventListener("visibilitychange", handlePollVisibility);
-  // Start AI auto-refresh scheduler
+  // Routine cache/session refresh is backend-owned now. Frontend only keeps
+  // AI scheduling plus a foreground catch-up in case cache-update events were missed.
+  registerTask("ai_scheduler", TASK_LABELS["ai_scheduler"], "stable", 0);
+  refreshVisibleBackendCaches();
+  syncBackendSessionStatusNow().catch((err) => {
+    console.warn("[Selah] backend session status sync failed:", err);
+  });
   startAiScheduler();
 }
 
 export function stopBackgroundPolling() {
-  if (initialPollTimeout) { clearTimeout(initialPollTimeout); initialPollTimeout = null; }
-  if (stablePollInitTimeout) { clearTimeout(stablePollInitTimeout); stablePollInitTimeout = null; }
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  if (stablePollTimer) { clearInterval(stablePollTimer); stablePollTimer = null; }
-  if (preemptiveRenewalTimer) { clearInterval(preemptiveRenewalTimer); preemptiveRenewalTimer = null; }
   document.removeEventListener("visibilitychange", handlePollVisibility);
   stopAiScheduler();
 }
 
 function handlePollVisibility() {
-  if (document.visibilityState === "visible") doPoll();
+  if (document.visibilityState === "visible") {
+    refreshVisibleBackendCaches();
+    syncBackendSessionStatusNow().catch((err) => {
+      console.warn("[Selah] backend session status visibility sync failed:", err);
+    });
+  }
 }
 
 // ============ Unified AI Refresh Scheduler ============
@@ -1854,7 +1836,6 @@ interface RefreshStep {
   key: string;
   label: string;
   platform: string;
-  fetcher: () => Promise<any>;
   guard?: () => boolean;
 }
 
@@ -1862,24 +1843,24 @@ interface RefreshStep {
 function getRefreshSequence(): RefreshStep[] {
   return [
     // -- KGC stable (persistent) --
-    { key: "student_profile", label: TASK_LABELS.student_profile, platform: "KGC", fetcher: fetchStudentProfile },
-    { key: "grades", label: TASK_LABELS.grades, platform: "KGC", fetcher: fetchGrades },
-    { key: "exams", label: TASK_LABELS.exams, platform: "KGC", fetcher: fetchExamTimetable },
-    { key: "registration", label: TASK_LABELS.registration, platform: "KGC", fetcher: fetchRegistration },
-    { key: "cancellations", label: TASK_LABELS.cancellations, platform: "KGC", fetcher: fetchCancellations },
-    { key: "makeup", label: TASK_LABELS.makeup, platform: "KGC", fetcher: fetchMakeupClasses },
-    { key: "rooms", label: TASK_LABELS.rooms, platform: "KGC", fetcher: fetchRoomChanges },
+    { key: "student_profile", label: TASK_LABELS.student_profile, platform: "KGC" },
+    { key: "grades", label: TASK_LABELS.grades, platform: "KGC" },
+    { key: "exams", label: TASK_LABELS.exams, platform: "KGC" },
+    { key: "registration", label: TASK_LABELS.registration, platform: "KGC" },
+    { key: "cancellations", label: TASK_LABELS.cancellations, platform: "KGC" },
+    { key: "makeup", label: TASK_LABELS.makeup, platform: "KGC" },
+    { key: "rooms", label: TASK_LABELS.rooms, platform: "KGC" },
     // -- KGC volatile (real-time) --
-    { key: "notifications", label: TASK_LABELS.notifications, platform: "KGC", fetcher: fetchNotifications },
-    { key: "kwic_home", label: TASK_LABELS.kwic_home, platform: "KGC", fetcher: kwicFetchHome, guard: () => get(kwicAuthState).authenticated },
+    { key: "notifications", label: TASK_LABELS.notifications, platform: "KGC" },
+    { key: "kwic_home", label: TASK_LABELS.kwic_home, platform: "KGC", guard: () => get(kwicAuthState).authenticated },
     // -- Luna --
-    { key: "luna_todo", label: TASK_LABELS.luna_todo, platform: "Luna", fetcher: () => lunaInvoke<any>("luna_fetch_todo"), guard: () => get(lunaAuthState).authenticated },
-    { key: "luna_updates", label: TASK_LABELS.luna_updates, platform: "Luna", fetcher: () => lunaInvoke<any>("luna_fetch_updates"), guard: () => get(lunaAuthState).authenticated },
+    { key: "luna_todo", label: TASK_LABELS.luna_todo, platform: "Luna", guard: () => get(lunaAuthState).authenticated },
+    { key: "luna_updates", label: TASK_LABELS.luna_updates, platform: "Luna", guard: () => get(lunaAuthState).authenticated },
     // -- Mail stable then volatile --
-    { key: "mail_profile", label: TASK_LABELS.mail_profile, platform: "Mail", fetcher: mailFetchProfile, guard: () => get(mailAuthState).authenticated },
-    { key: "mail_inbox", label: TASK_LABELS.mail_inbox, platform: "Mail", fetcher: () => mailFetchInbox(20, 0), guard: () => get(mailAuthState).authenticated },
+    { key: "mail_profile", label: TASK_LABELS.mail_profile, platform: "Mail", guard: () => get(mailAuthState).authenticated },
+    { key: "mail_inbox", label: TASK_LABELS.mail_inbox, platform: "Mail", guard: () => get(mailAuthState).authenticated },
     // -- Other --
-    { key: "weather", label: TASK_LABELS.weather, platform: "Other", fetcher: fetchWeather },
+    { key: "weather", label: TASK_LABELS.weather, platform: "Other" },
   ];
 }
 
@@ -1922,7 +1903,7 @@ export async function refreshAllData(): Promise<void> {
       setItemStatus(step.key, "running");
       updateTask(step.key, { running: true });
       try {
-        const data = await refreshCache(step.key, step.fetcher);
+        const data = await refreshBackendManagedCache(step.key);
         updateTask(step.key, { running: false, lastRunTs: Date.now(), lastOk: data !== undefined });
         setItemStatus(step.key, "done");
       } catch {
@@ -1933,7 +1914,7 @@ export async function refreshAllData(): Promise<void> {
     // Schedule sync
     setItemStatus("schedule_sync", "running");
     try {
-      await syncScheduleData();
+      await refreshBackendManagedCache("schedule_data");
       setItemStatus("schedule_sync", "done");
     } catch {
       setItemStatus("schedule_sync", "error");

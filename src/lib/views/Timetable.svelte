@@ -2,8 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts, getAiConfig, resetAiReady, isDemoActive } from "../api";
-  import { lunaAuthState, gcalAuthState, sessionExpired, registerTask, updateTask, onCacheUpdate, aiReady } from "../stores";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive } from "../api";
+  import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
@@ -27,11 +27,6 @@
   let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") === "1");
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  let cacheReloadTimer: ReturnType<typeof setInterval> | undefined;
-  let calSyncTimer: ReturnType<typeof setInterval> | undefined;
-  let calSyncInitTimeout: ReturnType<typeof setTimeout> | undefined;
-  let lunaCountsInitTimeout: ReturnType<typeof setTimeout> | undefined;
-  let lunaCountsTimer: ReturnType<typeof setInterval> | undefined;
 
   // ── Constants ──
   const days: [number, string][] = [[1,"月"],[2,"火"],[3,"水"],[4,"木"],[5,"金"],[6,"土"]];
@@ -206,7 +201,7 @@
         const data: ExamTimetableData = JSON.parse(examJson);
         examEntries = data.entries || [];
       } else {
-        const data = await fetchExamTimetable();
+        const data = await cachedBackendFetch<ExamTimetableData>("exams");
         examEntries = data.entries || [];
       }
       console.log("[Timetable] exam entries:", examEntries.length);
@@ -614,154 +609,13 @@
     }
   }
 
-  // ── Sunday auto-refresh ──
-  // KGC server likely switches "current week" on Sunday, so cached Saturday
-  // data becomes stale. Force one raw data refresh per Sunday automatically.
-  async function checkSundayRefresh() {
-    if (syncing) return;
-    const now = new Date();
-    if (now.getDay() !== 0) return; // not Sunday
-
-    const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
-    if (localStorage.getItem("selah-sunday-refreshed") === todayKey) return;
-
-    console.log("[Timetable] Sunday auto-refresh triggered");
-    syncing = true;
-    try {
-      const data = await syncScheduleData();
-      scheduleData = data;
-      if (data.ai_result) aiResult = data.ai_result;
-      localStorage.setItem("selah-sunday-refreshed", todayKey);
-
-      // Sync calendars with refreshed data (unique week labels only)
-      for (const week of buildSyncWeeks(data.raw)) {
-        await autoSyncCalendars(week.entries, week.label);
-      }
-      localStorage.setItem("selah-cal-last-sync", String(Date.now()));
-      console.log("[Timetable] Sunday auto-refresh completed");
-    } catch (e) {
-      console.error("[Timetable] Sunday auto-refresh failed:", e);
-    } finally {
-      syncing = false;
-    }
-  }
-
-  // ── Luna activity counts auto-refresh (every 3 hours) ──
-  const LUNA_COUNTS_INTERVAL = 3 * 3600 * 1000; // 3 hours
-
-  async function autoRefreshLunaCounts() {
-    updateTask("luna_counts", { running: true });
-    try {
-      const updated = await refreshLunaCounts();
-      if (updated > 0) {
-        console.log(`[Timetable] Luna counts refreshed: ${updated} courses`);
-        // Reload snapshot to pick up new counts
-        const data = await getScheduleSnapshot();
-        scheduleData = data;
-        if (data.ai_result) aiResult = data.ai_result;
-      }
-      updateTask("luna_counts", { running: false, lastRunTs: Date.now(), lastOk: true });
-    } catch (e) {
-      console.error("[Timetable] Luna counts auto-refresh failed:", e);
-      updateTask("luna_counts", { running: false, lastRunTs: Date.now(), lastOk: false });
-    }
-  }
-
-  // ── Timer-based calendar auto-sync ──
-  const CAL_SYNC_CHECK_INTERVAL = 10 * 60 * 1000; // check every 10 minutes
-  const CAL_SYNC_DEFAULT_HOURS = 12;
-  const CAL_SYNC_MIN_HOURS = 6;
-  const CAL_SYNC_MAX_HOURS = 72;
-
-  function getCalSyncIntervalMs(): number {
-    const raw = parseInt(localStorage.getItem("selah-cal-sync-interval") || "", 10);
-    const hours = (Number.isFinite(raw) && raw >= CAL_SYNC_MIN_HOURS && raw <= CAL_SYNC_MAX_HOURS)
-      ? raw : CAL_SYNC_DEFAULT_HOURS;
-    return hours * 3600 * 1000;
-  }
-
-  async function timerCalendarSync() {
-    // Check if Google auto-sync is enabled
-    const gcalAuto = localStorage.getItem("selah-gcal-auto-sync") === "true";
-    if (!gcalAuto) return;
-
-    // Check interval
-    const lastSync = parseInt(localStorage.getItem("selah-cal-last-sync") || "0", 10);
-    const now = Date.now();
-    if (now - lastSync < getCalSyncIntervalMs()) return;
-
-    console.log("[Timetable] timer-based calendar sync triggered");
-
-    // Fetch fresh schedule data
-    try {
-      const data = await syncScheduleData();
-      scheduleData = data;
-      if (data.ai_result) aiResult = data.ai_result;
-
-      // Sync unique week labels only
-      for (const week of buildSyncWeeks(data.raw)) {
-        await autoSyncCalendars(week.entries, week.label);
-      }
-
-      localStorage.setItem("selah-cal-last-sync", String(now));
-      console.log("[Timetable] timer-based calendar sync completed");
-      updateTask("cal_sync", { running: false, lastRunTs: Date.now(), lastOk: true });
-    } catch (e) {
-      console.error("[Timetable] timer-based calendar sync failed:", e);
-      updateTask("cal_sync", { running: false, lastRunTs: Date.now(), lastOk: false });
-    }
-  }
-
-  function startCalSyncTimer() {
-    registerTask("cal_sync", "カレンダー自動同期", "system", CAL_SYNC_CHECK_INTERVAL);
-    registerTask("luna_counts", "Luna 活動カウント更新", "system", LUNA_COUNTS_INTERVAL);
-    // Run once on mount after a short delay, then periodically
-    calSyncInitTimeout = setTimeout(() => { updateTask("cal_sync", { running: true }); checkSundayRefresh(); timerCalendarSync(); }, 5000);
-    calSyncTimer = setInterval(() => { updateTask("cal_sync", { running: true }); checkSundayRefresh(); timerCalendarSync(); }, CAL_SYNC_CHECK_INTERVAL);
-  }
-
-  function stopCalSyncTimer() {
-    if (calSyncInitTimeout) { clearTimeout(calSyncInitTimeout); calSyncInitTimeout = undefined; }
-    if (calSyncTimer) { clearInterval(calSyncTimer); calSyncTimer = undefined; }
-  }
-
-  const CACHE_RELOAD_FG = 30 * 60 * 1000; // 30 minutes (foreground)
-  const CACHE_RELOAD_BG = 60 * 60 * 1000; // 1 hour (background)
-  let lastCacheReload = 0;
-
-  async function reloadFromCache() {
-    try {
-      const data = await getScheduleSnapshot();
-      scheduleData = data;
-      if (data.ai_result) aiResult = data.ai_result;
-      loadCachedExtras();
-      lastCacheReload = Date.now();
-      console.log("[Timetable] cache reload done");
-    } catch (e) {
-      console.warn("[Timetable] cache reload failed:", e);
-    }
-  }
-
-  function scheduleCacheReload() {
-    if (cacheReloadTimer) clearInterval(cacheReloadTimer);
-    const interval = document.visibilityState === "visible" ? CACHE_RELOAD_FG : CACHE_RELOAD_BG;
-    cacheReloadTimer = setInterval(reloadFromCache, interval);
-  }
-
   onMount(() => {
     getAiConfig().then(cfg => {
       aiProvider = cfg.provider || "";
     }).catch(() => {});
     isLocalStandard2b().then(v => { aiBlocked2b = v; }).catch(() => {});
     loadData();
-    lastCacheReload = Date.now();
     startTipCycle();
-    startCalSyncTimer();
-    // Periodic cache reload (no network, just re-read DB snapshot)
-    scheduleCacheReload();
-    // Luna activity counts: run once after 10s, then every 3 hours
-    lunaCountsInitTimeout = setTimeout(() => autoRefreshLunaCounts(), 10_000);
-    lunaCountsTimer = setInterval(() => autoRefreshLunaCounts(), LUNA_COUNTS_INTERVAL);
     window.addEventListener("keydown", handleKeydown);
     window.addEventListener("selah-fav-toggle", handleFavToggle as EventListener);
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -785,24 +639,22 @@
       getAiConfig().then(cfg => {
         aiProvider = cfg.provider || "";
       }).catch(() => {});
-      // Reload cache if stale when coming back to foreground
-      if (Date.now() - lastCacheReload >= CACHE_RELOAD_FG) reloadFromCache();
     }
-    scheduleCacheReload();
   }
 
   // SWR: pick up background poll refreshes
+  const unsubSchedule = onCacheUpdate<ScheduleResponse>("schedule_data", (fresh) => {
+    scheduleData = fresh;
+    if (fresh?.ai_result) aiResult = fresh.ai_result;
+  });
   const unsubExams = onCacheUpdate<ExamTimetableData>("exams", (fresh) => {
     examEntries = fresh?.entries || [];
   });
 
   onDestroy(() => {
+    unsubSchedule();
     unsubExams();
     stopTipCycle();
-    stopCalSyncTimer();
-    if (cacheReloadTimer) clearInterval(cacheReloadTimer);
-    if (lunaCountsTimer) clearInterval(lunaCountsTimer);
-    if (lunaCountsInitTimeout) clearTimeout(lunaCountsInitTimeout);
     if (toastTimer) clearTimeout(toastTimer);
     clearTimeout(cellInfoTimeout);
     window.removeEventListener("keydown", handleKeydown);

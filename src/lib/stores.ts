@@ -503,7 +503,11 @@ const DB_CACHE_KEYS = new Set([
   "grades", "registration",
   "kwic_home", "notifications", "luna_updates", "luna_todo",
   "cancellations", "makeup", "rooms", "mail_inbox",
+  "weather", "student_profile", "mail_profile",
 ]);
+const BACKEND_CACHE_DB_KEYS: Record<string, string> = {
+  exams: "exam_timetable",
+};
 const DISK_PREFIX = "selah_cache_";
 const DISK_CACHE_VERSION = 1;
 const DISK_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
@@ -545,6 +549,87 @@ export function onCacheUpdate<T>(key: string, cb: (data: T) => void): () => void
 
 function notifySwr(key: string, data: any) {
   swrListeners.get(key)?.forEach((cb) => { try { cb(data); } catch { /* ignore */ } });
+}
+
+function persistCacheValue<T>(key: string, data: T, ts: number, notify: boolean) {
+  cache.set(key, { data, ts });
+  if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
+  if (notify) notifySwr(key, data);
+}
+
+async function loadBackendManagedCache<T>(key: string): Promise<{ data: T; ts: number } | null> {
+  try {
+    if (key === "schedule_data") {
+      const data = await invoke<T>("get_schedule_snapshot");
+      return { data, ts: Date.now() };
+    }
+    const dbKey = BACKEND_CACHE_DB_KEYS[key] ?? key;
+    const json = await invoke<string | null>("get_data_cache", { key: dbKey });
+    if (!json) return null;
+    return { data: JSON.parse(json) as T, ts: Date.now() };
+  } catch {
+    return null;
+  }
+}
+
+function queueBackendManagedRefresh<T>(key: string, force: boolean, fallback?: T): Promise<T> {
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+
+  const refreshPromise = invoke<string[]>("backend_refresh_now", { keys: [key], force })
+    .then(async () => {
+      const loaded = await loadBackendManagedCache<T>(key);
+      if (!loaded) {
+        if (fallback !== undefined) return fallback;
+        throw new Error(`No backend cache available for "${key}"`);
+      }
+      persistCacheValue(key, loaded.data, loaded.ts, true);
+      return loaded.data;
+    })
+    .catch((err) => {
+      if (fallback !== undefined) return fallback;
+      throw err;
+    })
+    .finally(() => {
+      if (inflight.get(key) === refreshPromise) inflight.delete(key);
+    });
+  inflight.set(key, refreshPromise);
+  return refreshPromise;
+}
+
+export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<T> {
+  const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
+  const entry = cache.get(key);
+  if (entry && Date.now() - entry.ts < effectiveTtl) {
+    return entry.data as T;
+  }
+
+  if (entry) {
+    void queueBackendManagedRefresh<T>(key, false, entry.data as T);
+    return entry.data as T;
+  }
+
+  if (DISK_CACHE_KEYS.has(key)) {
+    const disk = loadDiskCache(key);
+    if (disk) {
+      persistCacheValue(key, disk.data as T, disk.ts, false);
+      void queueBackendManagedRefresh<T>(key, false, disk.data as T);
+      return disk.data as T;
+    }
+  }
+
+  const loaded = await loadBackendManagedCache<T>(key);
+  if (loaded) {
+    persistCacheValue(key, loaded.data, loaded.ts, false);
+    void queueBackendManagedRefresh<T>(key, false, loaded.data);
+    return loaded.data;
+  }
+
+  return queueBackendManagedRefresh<T>(key, true);
+}
+
+export function refreshBackendManagedCache<T>(key: string): Promise<T> {
+  return queueBackendManagedRefresh<T>(key, true);
 }
 
 /**
@@ -719,6 +804,12 @@ export function updateCacheEntry<T>(key: string, updater: (data: T) => T): void 
   cache.set(key, { data: updated, ts: now });
   if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, updated, now);
   notifySwr(key, updated);
+}
+
+export function replaceCacheEntry<T>(key: string, data: T, ts: number = Date.now()): void {
+  cache.set(key, { data, ts });
+  if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
+  notifySwr(key, data);
 }
 
 /**

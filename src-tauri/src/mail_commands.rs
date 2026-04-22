@@ -148,6 +148,11 @@ pub async fn mail_open_login(
                         {
                             log::warn!("notification sync after mail login failed: {}", e);
                         }
+                        if let Err(e) =
+                            crate::background_refresh::refresh_backend_data_now(&app_clone).await
+                        {
+                            log::warn!("background refresh after mail login failed: {}", e);
+                        }
                     }
                     Err(e) => {
                         log::error!("Microsoft mail login failed: {}", e);

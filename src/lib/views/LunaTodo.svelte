@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { lunaInvoke, aiAnalyzeTodo } from "../api";
-  import { cachedFetch, invalidateCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
+  import { cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
   import type { LunaTodoItem, AiTodoAnalysis } from "../types";
@@ -44,8 +44,7 @@
     loading = true;
     error = "";
     try {
-      invalidateCache("luna_todo");
-      todoItems = await cachedFetch("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"));
+      todoItems = await refreshBackendManagedCache("luna_todo");
     } catch (e: any) {
       error = String(e);
     }
@@ -142,7 +141,7 @@
     loading = true;
     error = "";
     try {
-      todoItems = await cachedFetch("luna_todo", () => lunaInvoke<LunaTodoItem[]>("luna_fetch_todo"));
+      todoItems = await cachedBackendFetch("luna_todo");
     } catch (e: any) {
       error = String(e);
     }

@@ -1,11 +1,12 @@
 use serde::Serialize;
 use std::collections::HashSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
+use crate::background_refresh;
 use crate::commands::{self, NotificationConfig};
 use crate::db::Database;
 use crate::kwic_commands::KwicPortalHome;
@@ -203,13 +204,13 @@ pub async fn debug_snapshot(app: &AppHandle) -> NotificationDebugInfo {
 
 #[tauri::command]
 pub async fn notification_sync_now(app: AppHandle) -> Result<(), String> {
-    sync_notifications_now(&app).await
+    sync_notifications_now(&app).await.map(|_| ())
 }
 
-async fn sync_notifications_now(app: &AppHandle) -> Result<(), String> {
+pub async fn sync_notifications_now(app: &AppHandle) -> Result<Vec<String>, String> {
     let state = app.state::<NotificationPollState>();
     if state.running.swap(true, Ordering::SeqCst) {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let result = sync_notifications_inner(app).await;
@@ -217,7 +218,7 @@ async fn sync_notifications_now(app: &AppHandle) -> Result<(), String> {
     result
 }
 
-async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
+async fn sync_notifications_inner(app: &AppHandle) -> Result<Vec<String>, String> {
     let cfg = commands::load_notification_config();
     let (kgc_authenticated, luna_authenticated, kwic_authenticated, mail_authenticated) = tokio::join!(
         is_kgc_authenticated(app),
@@ -243,10 +244,14 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
         suppress_push,
         ..Default::default()
     };
+    let mut updated_keys = Vec::new();
 
     if kgc_authenticated {
         match fetch_kgc_notifications(app).await {
-            Ok(data) => sync_kgc_notifications(app, &cfg, data, suppress_push, &mut run),
+            Ok(data) => {
+                sync_kgc_notifications(app, &cfg, data, suppress_push, &mut run);
+                updated_keys.push("notifications".to_string());
+            }
             Err(e) => {
                 log::warn!("notification sync: kgc fetch failed: {}", e);
                 run.fetch_failures.push(format!("kgc: {}", e));
@@ -256,7 +261,10 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
 
     if luna_authenticated {
         match fetch_luna_notifications(app).await {
-            Ok(items) => sync_luna_notifications(app, &cfg, items, suppress_push, &mut run),
+            Ok(items) => {
+                sync_luna_notifications(app, &cfg, items, suppress_push, &mut run);
+                updated_keys.push("luna_updates".to_string());
+            }
             Err(e) => {
                 log::warn!("notification sync: luna fetch failed: {}", e);
                 run.fetch_failures.push(format!("luna: {}", e));
@@ -266,7 +274,10 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
 
     if kwic_authenticated {
         match fetch_kwic_home(app).await {
-            Ok(home) => sync_kwic_notifications(app, &cfg, home, suppress_push, &mut run),
+            Ok(home) => {
+                sync_kwic_notifications(app, &cfg, home, suppress_push, &mut run);
+                updated_keys.push("kwic_home".to_string());
+            }
             Err(e) => {
                 log::warn!("notification sync: kwic fetch failed: {}", e);
                 run.fetch_failures.push(format!("kwic: {}", e));
@@ -276,7 +287,10 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
 
     if mail_authenticated {
         match crate::mail_commands::fetch_inbox_internal(app, 20, 0).await {
-            Ok(items) => sync_mail_notifications(app, &cfg, items, suppress_push, &mut run),
+            Ok(items) => {
+                sync_mail_notifications(app, &cfg, items, suppress_push, &mut run);
+                updated_keys.push("mail_inbox".to_string());
+            }
             Err(e) => {
                 log::warn!("notification sync: mail fetch failed: {}", e);
                 run.fetch_failures.push(format!("mail: {}", e));
@@ -289,8 +303,12 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
         log::info!("notification sync: initial bootstrap completed");
     }
 
+    if !updated_keys.is_empty() {
+        background_refresh::emit_cache_updates(app, updated_keys.clone());
+    }
+
     finish_sync_debug(app, run, "ok".to_string(), String::new());
-    Ok(())
+    Ok(updated_keys)
 }
 
 async fn fetch_kgc_notifications(app: &AppHandle) -> Result<NotificationsData, String> {
@@ -700,8 +718,12 @@ fn seed_seen_state(
     extend_seen_ids(&mut seen_ids, &mut seen_set, current_ids);
     crate::read_state::save_seen_notif_ids(db, source, seen_ids);
     crate::read_state::mark_seen_notif_initialized(db, source);
-    log::info!("notification sync: seeded seen-state baseline for {}", source);
-    run.seeded_sources.push(format!("{}({})", source, seeded_count));
+    log::info!(
+        "notification sync: seeded seen-state baseline for {}",
+        source
+    );
+    run.seeded_sources
+        .push(format!("{}({})", source, seeded_count));
     record_event(
         run,
         source,

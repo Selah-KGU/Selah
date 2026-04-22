@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchNotifications, lunaInvoke, kwicFetchHome, kwicOpenDetail, mailFetchInbox } from "../api";
+  import { kwicOpenDetail } from "../api";
   import type { MailMessage } from "../api";
-  import { cachedFetch, getCached, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead } from "../stores";
+  import { cachedBackendFetch, getCached, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead } from "../stores";
   import type { NotificationsData } from "../stores";
   import type { KwicPortalHome } from "../api";
   import ViewLoader from "../ViewLoader.svelte";
@@ -86,15 +86,15 @@
 
     try {
       const [kgc, luna, kwic, mail] = await Promise.allSettled([
-        cachedFetch("notifications", fetchNotifications),
+        cachedBackendFetch("notifications"),
         $lunaAuthState.authenticated
-          ? cachedFetch("luna_updates", () => lunaInvoke<LunaNotification[]>("luna_fetch_updates"))
+          ? cachedBackendFetch("luna_updates")
           : Promise.resolve([]),
         $kwicAuthState.authenticated
-          ? cachedFetch<KwicPortalHome>("kwic_home", kwicFetchHome)
+          ? cachedBackendFetch<KwicPortalHome>("kwic_home")
           : Promise.resolve(null),
         $mailAuthState.authenticated
-          ? cachedFetch<MailMessage[]>("mail_inbox", () => mailFetchInbox(20, 0))
+          ? cachedBackendFetch<MailMessage[]>("mail_inbox")
           : Promise.resolve([]),
       ]);
       if (kgc.status === "fulfilled" && kgc.value) {

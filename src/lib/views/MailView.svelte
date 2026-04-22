@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { mailAuthState, cachedFetch, onCacheUpdate, invalidateCache, getCacheTimestamp, unreadMailCount, updateCacheEntry } from "../stores";
+  import { mailAuthState, cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, getCacheTimestamp, unreadMailCount, updateCacheEntry } from "../stores";
   import { mailCheckSession, mailOpenLogin, mailFetchInbox, mailFetchMessage, mailFetchProfile, mailFetchAttachments, mailDownloadAttachment } from "../api";
   import type { MailMessage, MailDetail, MailAttachment } from "../api";
   import Icon from "../Icon.svelte";
@@ -72,8 +72,7 @@
     refreshing = messages.length > 0;
     error = "";
     try {
-      const fetcher = () => mailFetchInbox(PAGE_SIZE, 0);
-      messages = await cachedFetch("mail_inbox", fetcher);
+      messages = await cachedBackendFetch("mail_inbox");
       lastFetchTs = getCacheTimestamp("mail_inbox");
       startTick();
       page = 0;
@@ -86,8 +85,14 @@
   }
 
   async function manualRefresh() {
-    invalidateCache("mail_inbox");
-    await loadInbox();
+    refreshing = true;
+    try {
+      messages = await refreshBackendManagedCache("mail_inbox");
+      lastFetchTs = getCacheTimestamp("mail_inbox");
+      page = 0;
+    } finally {
+      refreshing = false;
+    }
   }
 
   async function loadMore() {

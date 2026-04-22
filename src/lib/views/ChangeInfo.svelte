@@ -1,7 +1,6 @@
-<script lang="ts">
+  <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { fetchCancellations, fetchMakeupClasses, fetchRoomChanges } from "../api";
-  import { authState, cachedFetch, onCacheUpdate, splitByFaculty } from "../stores";
+  import { authState, cachedBackendFetch, onCacheUpdate, splitByFaculty } from "../stores";
   import type { CancellationsData, MakeupData, RoomChangesData } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import DataTable from "../DataTable.svelte";
@@ -66,9 +65,9 @@
   onMount(async () => {
     try {
       const [c, m, r] = await Promise.all([
-        cachedFetch("cancellations", fetchCancellations),
-        cachedFetch("makeup", fetchMakeupClasses),
-        cachedFetch("rooms", fetchRoomChanges),
+        cachedBackendFetch("cancellations"),
+        cachedBackendFetch("makeup"),
+        cachedBackendFetch("rooms"),
       ]);
       cancellations = c;
       makeup = m;

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { authState, theme, cachedFetch, sessionExpired, reloginInProgress, cacheStatus, activeTab, agentReady } from "./stores";
+  import { authState, theme, cachedBackendFetch, sessionExpired, reloginInProgress, cacheStatus, activeTab, agentReady } from "./stores";
   import type { StudentInfo, RefreshItemStatus } from "./stores";
-  import { logout, fetchStudentProfile, openDownloadsWindow, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData, updateAiReadiness } from "./api";
+  import { logout, openDownloadsWindow, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData, updateAiReadiness } from "./api";
   import { emit } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { setAppTheme } from "./system";
@@ -30,7 +30,7 @@
     if (showProfile && !profile) {
       profileLoading = true;
       try {
-        profile = await cachedFetch("student_profile", fetchStudentProfile);
+        profile = await cachedBackendFetch("student_profile");
       } catch (e) {
         console.warn("Failed to fetch profile:", e);
       } finally {
