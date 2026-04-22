@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { openExternalUrl } from "./system";
 
 export interface ExternalLinkDelegateOptions {
   scopeSelector?: string;
@@ -34,7 +34,7 @@ export function externalLinkDelegate(
 
     event.preventDefault();
     event.stopPropagation();
-    invoke("open_external_url", { url: href }).catch((err) => {
+    openExternalUrl(href).catch((err) => {
       console.error("open_external_url failed:", err);
     });
   };

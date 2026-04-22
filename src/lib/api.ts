@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openExternalUrl } from "./system";
 import type {
   GradesData,
   CancellationsData,
@@ -780,7 +781,7 @@ export async function kwicFetchSubportal(tagCd: string): Promise<KwicSubportalDa
 export async function kwicOpenLink(url: string, title: string): Promise<void> {
   if (_isDemo()) {
     if (/^https?:\/\//i.test(url)) {
-      await invoke<void>("open_external_url", { url }).catch(() => {});
+      await openExternalUrl(url, { allowInDemo: true }).catch(() => {});
     }
     return;
   }
@@ -1513,6 +1514,15 @@ export async function liveFinishSession(): Promise<LiveSaveResult> {
 export async function openSettingsWindow(panel?: string): Promise<void> {
   if (panel) activeSettingsPanel.set(panel as any);
   activeTab.set("settings");
+}
+
+export async function openDownloadsWindow(): Promise<void> {
+  if (_isDemo()) {
+    activeSettingsPanel.set("download");
+    activeTab.set("settings");
+    return;
+  }
+  return invoke<void>("open_downloads_window");
 }
 
 export async function openProfileEditWindow(): Promise<void> {

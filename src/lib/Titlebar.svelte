@@ -1,10 +1,10 @@
 <script lang="ts">
   import { authState, theme, cachedFetch, sessionExpired, reloginInProgress, cacheStatus, activeTab, agentReady } from "./stores";
   import type { StudentInfo, RefreshItemStatus } from "./stores";
-  import { logout, fetchStudentProfile, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData, updateAiReadiness } from "./api";
+  import { logout, fetchStudentProfile, openDownloadsWindow, openSettingsWindow, openProfileEditWindow, initiateRelogin, refreshAllData, updateAiReadiness } from "./api";
   import { emit } from "@tauri-apps/api/event";
-  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { setAppTheme } from "./system";
   import Icon from "./Icon.svelte";
   import selahLogoUrl from "../assets/logo.png";
 
@@ -85,13 +85,9 @@
       document.documentElement.setAttribute("data-theme", next);
       localStorage.setItem("selah-theme", next);
       emit("theme-changed", next);
-      invoke("set_app_theme", { theme: next }).catch(console.error);
+      setAppTheme(next).catch(console.error);
       return next;
     });
-  }
-
-  function openDownloadsWindow() {
-    invoke("open_downloads_window").catch(console.error);
   }
 
   function toggleSettings() {

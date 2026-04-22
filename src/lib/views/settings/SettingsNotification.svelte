@@ -1,6 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { isDemoActive } from "../../api";
+
+  const DEMO_NOTIFICATION_CONFIG_KEY = "selah-demo-notification-config";
+
+  function readDemoNotificationConfig() {
+    try {
+      const raw = localStorage.getItem(DEMO_NOTIFICATION_CONFIG_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeDemoNotificationConfig(config: any) {
+    try { localStorage.setItem(DEMO_NOTIFICATION_CONFIG_KEY, JSON.stringify(config)); } catch { /* ignore */ }
+  }
 
   let permState = $state<"loading" | "ok" | "ng">("loading");
   let permLabel = $state("確認中...");
@@ -21,6 +37,11 @@
   let saveBusy = $state(false);
 
   async function checkPerm() {
+    if (isDemoActive()) {
+      permState = "ok";
+      permLabel = "演示モード";
+      return;
+    }
     try {
       const granted = await invoke<boolean>("plugin:notification|is_permission_granted");
       permState = granted ? "ok" : "ng";
@@ -32,6 +53,22 @@
   }
 
   async function loadConfig() {
+    if (isDemoActive()) {
+      const cfg = readDemoNotificationConfig();
+      notifImportant = cfg.notify_important !== false ? "true" : "false";
+      notifFaculty = cfg.notify_faculty !== false ? "true" : "false";
+      notifClass = cfg.notify_class !== false ? "true" : "false";
+      notifClassGeneral = cfg.notify_class_general !== false ? "true" : "false";
+      notifClassAnnouncement = cfg.notify_class_announcement !== false ? "true" : "false";
+      notifClassAssignment = cfg.notify_class_assignment !== false ? "true" : "false";
+      notifClassExam = cfg.notify_class_exam !== false ? "true" : "false";
+      notifClassDiscussion = cfg.notify_class_discussion !== false ? "true" : "false";
+      notifClassSurvey = cfg.notify_class_survey !== false ? "true" : "false";
+      notifClassAttendance = cfg.notify_class_attendance !== false ? "true" : "false";
+      notifOther = cfg.notify_other !== false ? "true" : "false";
+      notifMail = cfg.notify_mail !== false ? "true" : "false";
+      return;
+    }
     try {
       const cfg = await invoke<{
         notify_important?: boolean;
@@ -67,22 +104,22 @@
   export async function save() {
     saveBusy = true;
     try {
-      await invoke("save_notification_config", {
-        config: {
-          notify_important: notifImportant === "true",
-          notify_faculty: notifFaculty === "true",
-          notify_class: notifClass === "true",
-          notify_class_general: notifClassGeneral === "true",
-          notify_class_announcement: notifClassAnnouncement === "true",
-          notify_class_assignment: notifClassAssignment === "true",
-          notify_class_exam: notifClassExam === "true",
-          notify_class_discussion: notifClassDiscussion === "true",
-          notify_class_survey: notifClassSurvey === "true",
-          notify_class_attendance: notifClassAttendance === "true",
-          notify_other: notifOther === "true",
-          notify_mail: notifMail === "true",
-        },
-      });
+      const config = {
+        notify_important: notifImportant === "true",
+        notify_faculty: notifFaculty === "true",
+        notify_class: notifClass === "true",
+        notify_class_general: notifClassGeneral === "true",
+        notify_class_announcement: notifClassAnnouncement === "true",
+        notify_class_assignment: notifClassAssignment === "true",
+        notify_class_exam: notifClassExam === "true",
+        notify_class_discussion: notifClassDiscussion === "true",
+        notify_class_survey: notifClassSurvey === "true",
+        notify_class_attendance: notifClassAttendance === "true",
+        notify_other: notifOther === "true",
+        notify_mail: notifMail === "true",
+      };
+      if (isDemoActive()) writeDemoNotificationConfig(config);
+      else await invoke("save_notification_config", { config });
     } catch (e) {
       throw e;
     } finally {

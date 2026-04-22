@@ -14,6 +14,8 @@
     agentCancel,
     agentDeleteConversation,
     agentRenameConversation,
+    getAiConfig,
+    isDemoActive,
     isAiReady,
     type AgentConversationSummary,
     type AgentMessage,
@@ -76,7 +78,7 @@
 
   async function refreshConfig() {
     try {
-      aiCfg = await invoke<AiConfig>("get_ai_config");
+      aiCfg = await getAiConfig();
     } catch {
       aiCfg = null;
     }
@@ -263,6 +265,10 @@
   }
 
   async function send() {
+    if (isDemoActive()) {
+      alert("演示モードでは Agent チャットは無効です。");
+      return;
+    }
     let text = inputText.trim();
     if (!text) return;
     if (sending) return;
@@ -350,6 +356,10 @@
   let preemptedCaller = $state<string | null>(null);
 
   async function toggleStt() {
+    if (isDemoActive()) {
+      alert("演示モードでは Agent 音声入力は使えません。");
+      return;
+    }
     if (sttListening) {
       await stopStt();
       return;
@@ -367,6 +377,7 @@
   }
 
   async function stopStt() {
+    if (isDemoActive()) return;
     try {
       sttStopRequested = true;
       await invoke("stt_stop_stream");
@@ -427,6 +438,10 @@
   }
 
   async function refreshAgentSttState() {
+    if (isDemoActive()) {
+      sttListening = false;
+      return;
+    }
     try {
       const [running, caller] = await Promise.all([
         invoke<boolean>("stt_is_running"),
@@ -443,6 +458,11 @@
   onMount(async () => {
     document.addEventListener("mousedown", onDocClick);
     await refreshConfig();
+    if (isDemoActive()) {
+      conversations = [];
+      messages = [];
+      return;
+    }
     await refreshConversations();
     await refreshAgentSttState();
     unlistenSttPartial = await listen<{ text: string; caller: string }>("stt-partial", (ev) => {

@@ -2,6 +2,22 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { isDemoActive, mailCheckSession, mailFetchProfile } from "../../api";
+  import { openExternalUrl } from "../../system";
+
+  const DEMO_MAIL_CONFIG_KEY = "selah-demo-mail-config";
+
+  function readDemoMailConfig() {
+    try {
+      const raw = localStorage.getItem(DEMO_MAIL_CONFIG_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeDemoMailConfig(config: any) {
+    try { localStorage.setItem(DEMO_MAIL_CONFIG_KEY, JSON.stringify(config)); } catch { /* ignore */ }
+  }
 
   type Status = "loading" | "ok" | "ng" | "none";
 
@@ -15,6 +31,8 @@
 
   async function loadConfig() {
     if (isDemoActive()) {
+      const cfg = readDemoMailConfig();
+      clientId = cfg.client_id || "";
       void checkSession();
       return;
     }
@@ -84,7 +102,10 @@
   export async function save() {
     saveBusy = true;
     try {
-      if (isDemoActive()) return;
+      if (isDemoActive()) {
+        writeDemoMailConfig({ client_id: clientId.trim() });
+        return;
+      }
       await invoke("mail_save_config", { config: { client_id: clientId.trim() } });
       void checkSession();
     } catch (e) {
@@ -95,7 +116,7 @@
   }
 
   function openAzure() {
-    invoke("open_external_url", { url: "https://portal.azure.com" }).catch(console.error);
+    openExternalUrl("https://portal.azure.com", { allowInDemo: true }).catch(console.error);
   }
 
   onMount(() => {

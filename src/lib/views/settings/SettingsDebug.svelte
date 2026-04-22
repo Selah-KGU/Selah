@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import { getTaskSnapshot, onTaskChange } from "../../stores";
   import type { TaskInfo } from "../../stores";
-  import { fetchPage } from "../../api";
+  import { fetchPage, isDemoActive } from "../../api";
 
   interface DebugInfo {
     app_version: string;
@@ -17,6 +17,7 @@
     arch: string;
     stt_configured_backend: string;
     stt_configured_partial_mode: string;
+    stt_configured_sensitivity: string;
     stt_runtime_backend: string;
     stt_runtime_state: string;
     stt_active_caller: string;
@@ -73,6 +74,11 @@
     browserLoading = true;
     browserError = "";
     try {
+      if (isDemoActive()) {
+        browserHtml = `<!doctype html><html><body><h1>Debug Demo</h1><p>path: ${browserPath}</p></body></html>`;
+        addLog("info", `ブラウザ: ${browserPath} を演示モードで表示`);
+        return;
+      }
       browserHtml = await fetchPage(browserPath);
       addLog("info", `ブラウザ: ${browserPath} を取得 (${browserHtml.length} bytes)`);
     } catch (e: any) {
@@ -86,6 +92,25 @@
 
   async function fetchDebugInfo() {
     try {
+      if (isDemoActive()) {
+        debugInfo = {
+          app_version: "demo",
+          tauri_version: "demo",
+          auth_status: "demo",
+          username: "demo_user",
+          cookie_count: 0,
+          timestamp: new Date().toISOString(),
+          os: navigator.platform || "DemoOS",
+          arch: "universal",
+          stt_configured_backend: "demo",
+          stt_configured_partial_mode: "balanced",
+          stt_configured_sensitivity: "標準",
+          stt_runtime_backend: "demo",
+          stt_runtime_state: "idle",
+          stt_active_caller: "none",
+        };
+        return;
+      }
       debugInfo = await invoke<DebugInfo>("debug_info");
     } catch (e: any) {
       addLog("error", `デバッグ情報取得失敗: ${e}`);
@@ -96,6 +121,18 @@
     isPinging = true;
     pingResults = [];
     addLog("info", "ネットワーク診断を開始...");
+    if (isDemoActive()) {
+      pingResults = targets.map((target, idx) => ({
+        target: target.url,
+        reachable: true,
+        status_code: 200,
+        latency_ms: 40 + idx * 12,
+        error: "",
+      }));
+      addLog("info", "演示モードの接続テストを表示しました");
+      isPinging = false;
+      return;
+    }
     for (const target of targets) {
       try {
         const result = await invoke<PingResult>("debug_ping", { target: target.url });
@@ -114,6 +151,10 @@
 
   async function sendTestNotification() {
     try {
+      if (isDemoActive()) {
+        addLog("info", `演示通知: "${notifTestMsg}"`);
+        return;
+      }
       await invoke("debug_test_notification", { title: "Selah", body: notifTestMsg });
       addLog("info", `テスト通知送信: "${notifTestMsg}"`);
     } catch (e: any) {
@@ -132,6 +173,10 @@
       else if (cmd === "clear") logEntries = [];
       else if (cmd.startsWith("luna-page ")) {
         const path = cmd.slice(10).trim();
+        if (isDemoActive()) {
+          addLog("info", `Title: Luna Demo\nSize: 96\nLinks:\n/course/view.php?id=demo-course-1`);
+          return;
+        }
         addLog("info", `Luna fetching ${path}...`);
         const html = await invoke<string>("luna_fetch_page", { path });
         const titleMatch = html.match(/<title>([^<]*)<\/title>/);
@@ -251,6 +296,7 @@
         <div class="info-grid">
           <div class="info-row"><span class="info-key">STT Config</span><span class="info-val">{debugInfo.stt_configured_backend}</span></div>
           <div class="info-row"><span class="info-key">STT Partial</span><span class="info-val">{debugInfo.stt_configured_partial_mode}</span></div>
+          <div class="info-row"><span class="info-key">STT Sensitivity</span><span class="info-val">{debugInfo.stt_configured_sensitivity}</span></div>
           <div class="info-row"><span class="info-key">STT Runtime</span><span class="info-val">{debugInfo.stt_runtime_backend}</span></div>
           <div class="info-row"><span class="info-key">STT State</span><span class="info-val">{debugInfo.stt_runtime_state}</span></div>
           <div class="info-row"><span class="info-key">STT Caller</span><span class="info-val mono">{debugInfo.stt_active_caller}</span></div>

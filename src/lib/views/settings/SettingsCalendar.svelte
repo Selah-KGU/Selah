@@ -3,6 +3,23 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { gcalCheckSession, gcalClearCalendar, gcalDisconnect, gcalGetConfig, gcalOpenLogin, gcalSaveConfig, isDemoActive } from "../../api";
+  import { openExternalUrl } from "../../system";
+
+  const DEMO_CALENDAR_CONFIG_KEY = "selah-demo-calendar-config";
+
+  function readDemoCalendarConfig() {
+    try {
+      const raw = localStorage.getItem(DEMO_CALENDAR_CONFIG_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function writeDemoCalendarConfig(config: any) {
+    try { localStorage.setItem(DEMO_CALENDAR_CONFIG_KEY, JSON.stringify(config)); } catch { /* ignore */ }
+  }
 
   type Status = "loading" | "ok" | "ng" | "none";
 
@@ -22,6 +39,16 @@
   let unlistenLogin: (() => void) | null = null;
 
   async function loadCalendar() {
+    if (isDemoActive()) {
+      const c = readDemoCalendarConfig() || {};
+      springStart = c.spring_start || "2026-04-03";
+      fallStart = c.fall_start || "2026-09-21";
+      calSyncInterval = String(c.cal_sync_interval || 12);
+      gcalAutoSync = c.gcal_auto_sync ? "true" : "false";
+      localStorage.setItem("selah-gcal-auto-sync", gcalAutoSync);
+      localStorage.setItem("selah-cal-sync-interval", calSyncInterval);
+      return;
+    }
     try {
       const c = await invoke<any>("get_calendar_config");
       springStart = c.spring_start || "2026-04-03";
@@ -131,7 +158,11 @@
         gcal_auto_sync: gcalAutoSync === "true",
         cal_sync_interval: parseInt(calSyncInterval) || 12,
       };
-      await invoke("save_calendar_config", { config: cc });
+      if (isDemoActive()) {
+        writeDemoCalendarConfig(cc);
+      } else {
+        await invoke("save_calendar_config", { config: cc });
+      }
       await gcalSaveConfig(gcalClientId.trim(), gcalClientSecret.trim());
       localStorage.setItem("selah-gcal-auto-sync", String(cc.gcal_auto_sync));
       localStorage.setItem("selah-cal-sync-interval", String(cc.cal_sync_interval));
@@ -143,7 +174,7 @@
   }
 
   function openConsole() {
-    invoke("open_external_url", { url: "https://console.cloud.google.com" }).catch(() => {});
+    openExternalUrl("https://console.cloud.google.com", { allowInDemo: true }).catch(() => {});
   }
 
   onMount(async () => {

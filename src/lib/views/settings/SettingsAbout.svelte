@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { devModeActive } from "../../stores";
   import { logout, isDemoActive } from "../../api";
+  import { openExternalUrl } from "../../system";
   import { get } from "svelte/store";
   import logoUrl from "../../../assets/logo.png";
 
@@ -39,7 +40,7 @@
   }
 
   async function openUrl(url: string) {
-    try { await invoke("open_external_url", { url }); } catch (e) { console.error(e); }
+    try { await openExternalUrl(url, { allowInDemo: true }); } catch (e) { console.error(e); }
   }
 
   async function logoutAndReturn() {

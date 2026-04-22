@@ -23,6 +23,9 @@ const STT_BACKEND_DIRECTML: &str = "directml";
 const STT_PARTIAL_MODE_BALANCED: &str = "balanced";
 const STT_PARTIAL_MODE_POWER_SAVER: &str = "power_saver";
 const STT_PARTIAL_MODE_FINAL_ONLY: &str = "final_only";
+const STT_SENSITIVITY_LOW: &str = "low";
+const STT_SENSITIVITY_NORMAL: &str = "normal";
+const STT_SENSITIVITY_HIGH: &str = "high";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SttModelInfo {
@@ -98,6 +101,7 @@ pub struct SttConfig {
     pub language: String,
     pub execution_backend: String,
     pub partial_mode: String,
+    pub sensitivity: String,
 }
 
 impl Default for SttConfig {
@@ -107,6 +111,7 @@ impl Default for SttConfig {
             language: "ja".into(),
             execution_backend: STT_BACKEND_CPU.into(),
             partial_mode: STT_PARTIAL_MODE_BALANCED.into(),
+            sensitivity: STT_SENSITIVITY_NORMAL.into(),
         }
     }
 }
@@ -117,6 +122,18 @@ struct SttPartialThrottleProfile {
     min_interval_ms: u64,
     stable_interval_ms: u64,
     very_stable_interval_ms: u64,
+}
+
+/// VAD tuning knobs driven by the user-facing sensitivity setting. Higher
+/// sensitivity lowers every threshold so the recognizer triggers on quieter
+/// or shorter fragments; lower sensitivity is stricter (less false-triggering
+/// on keyboard / ambient noise) at the cost of missing whispered speech.
+#[derive(Debug, Clone, Copy)]
+struct SttSensitivityProfile {
+    vad_threshold: f32,
+    vad_min_speech: f32,
+    vad_min_silence: f32,
+    rms_gate: f32,
 }
 
 static STT_CONFIG_CACHE: LazyLock<Mutex<Option<SttConfig>>> = LazyLock::new(|| Mutex::new(None));
@@ -246,6 +263,45 @@ fn stt_partial_mode_label(mode: &str) -> &'static str {
     }
 }
 
+fn normalize_stt_sensitivity(requested: &str) -> String {
+    match requested.trim().to_ascii_lowercase().as_str() {
+        STT_SENSITIVITY_LOW => STT_SENSITIVITY_LOW.into(),
+        STT_SENSITIVITY_HIGH => STT_SENSITIVITY_HIGH.into(),
+        _ => STT_SENSITIVITY_NORMAL.into(),
+    }
+}
+
+fn stt_sensitivity_label(mode: &str) -> &'static str {
+    match mode {
+        STT_SENSITIVITY_LOW => "控えめ",
+        STT_SENSITIVITY_HIGH => "高感度",
+        _ => "標準",
+    }
+}
+
+fn stt_sensitivity_profile(mode: &str) -> SttSensitivityProfile {
+    match normalize_stt_sensitivity(mode).as_str() {
+        STT_SENSITIVITY_LOW => SttSensitivityProfile {
+            vad_threshold: 0.65,
+            vad_min_speech: 0.35,
+            vad_min_silence: 0.60,
+            rms_gate: 0.0035,
+        },
+        STT_SENSITIVITY_HIGH => SttSensitivityProfile {
+            vad_threshold: 0.35,
+            vad_min_speech: 0.15,
+            vad_min_silence: 0.30,
+            rms_gate: 0.0008,
+        },
+        _ => SttSensitivityProfile {
+            vad_threshold: 0.5,
+            vad_min_speech: 0.25,
+            vad_min_silence: 0.45,
+            rms_gate: RMS_GATE,
+        },
+    }
+}
+
 fn stt_partial_throttle_profile(mode: &str) -> SttPartialThrottleProfile {
     match normalize_stt_partial_mode(mode).as_str() {
         STT_PARTIAL_MODE_POWER_SAVER => SttPartialThrottleProfile {
@@ -289,6 +345,7 @@ fn normalized_stt_config(mut config: SttConfig) -> SttConfig {
     config.language = normalize_stt_language(&config.language);
     config.execution_backend = normalize_stt_execution_backend(&config.execution_backend);
     config.partial_mode = normalize_stt_partial_mode(&config.partial_mode);
+    config.sensitivity = normalize_stt_sensitivity(&config.sensitivity);
     config
 }
 
@@ -484,7 +541,7 @@ fn build_sense_voice_config_for_backend(
     Ok(config)
 }
 
-fn build_vad_config() -> Result<VadModelConfig, String> {
+fn build_vad_config(profile: &SttSensitivityProfile) -> Result<VadModelConfig, String> {
     let path = vad_model_path();
     if !path.exists() {
         return Err("VAD モデルがまだダウンロードされていません".into());
@@ -495,9 +552,9 @@ fn build_vad_config() -> Result<VadModelConfig, String> {
     config.provider = Some("cpu".into());
     config.silero_vad = SileroVadModelConfig {
         model: Some(path.to_string_lossy().into_owned()),
-        threshold: 0.5,
-        min_silence_duration: 0.45,
-        min_speech_duration: 0.25,
+        threshold: profile.vad_threshold,
+        min_silence_duration: profile.vad_min_silence,
+        min_speech_duration: profile.vad_min_speech,
         window_size: 512,
         max_speech_duration: 8.0,
     };
@@ -543,6 +600,7 @@ struct SttRuntimeDebugState {
 pub struct SttRuntimeDebugInfo {
     pub configured_backend: String,
     pub configured_partial_mode: String,
+    pub configured_sensitivity: String,
     pub runtime_backend: String,
     pub runtime_state: String,
     pub active_caller: String,
@@ -632,10 +690,12 @@ pub fn stt_runtime_debug_info() -> SttRuntimeDebugInfo {
     let config = load_config();
     let configured_backend = stt_execution_backend_label(&config.execution_backend).to_string();
     let configured_partial_mode = stt_partial_mode_label(&config.partial_mode).to_string();
+    let configured_sensitivity = stt_sensitivity_label(&config.sensitivity).to_string();
     if let Ok(debug) = STT_RUNTIME_DEBUG.lock() {
         return SttRuntimeDebugInfo {
             configured_backend,
             configured_partial_mode,
+            configured_sensitivity,
             runtime_backend: stt_runtime_backend_debug_label(
                 debug.execution_backend.as_deref(),
                 debug.fallback_from.as_deref(),
@@ -648,6 +708,7 @@ pub fn stt_runtime_debug_info() -> SttRuntimeDebugInfo {
     SttRuntimeDebugInfo {
         configured_backend,
         configured_partial_mode,
+        configured_sensitivity,
         runtime_backend: "未取得".into(),
         runtime_state: "待機".into(),
         active_caller: "-".into(),
@@ -1115,7 +1176,8 @@ fn run_stt_session(
             emit_info(&app, stt_fallback_message(fallback_from), caller);
         }
         let recognizer = recognizer_init.recognizer;
-        let vad = VoiceActivityDetector::create(&build_vad_config()?, 30.0)
+        let sensitivity_profile = stt_sensitivity_profile(&load_config().sensitivity);
+        let vad = VoiceActivityDetector::create(&build_vad_config(&sensitivity_profile)?, 30.0)
             .ok_or_else(|| "VAD の初期化に失敗しました".to_string())?;
 
         let host = cpal::default_host();
@@ -1211,7 +1273,7 @@ fn run_stt_session(
                     // below speech level, skip VAD entirely. Checked before
                     // AGC so amplified ambient noise can't trip the gate.
                     let in_utterance = !current_utterance.is_empty() || vad.detected();
-                    if !in_utterance && rms(&resampled) < RMS_GATE {
+                    if !in_utterance && rms(&resampled) < sensitivity_profile.rms_gate {
                         continue;
                     }
                     // Soft AGC: pull quiet mics up toward a conventional
@@ -1288,6 +1350,7 @@ pub fn save_stt_config(app: tauri::AppHandle, mut config: SttConfig) -> Result<(
     config.language = normalize_stt_language(&config.language);
     config.execution_backend = validate_stt_execution_backend(&config.execution_backend)?;
     config.partial_mode = normalize_stt_partial_mode(&config.partial_mode);
+    config.sensitivity = normalize_stt_sensitivity(&config.sensitivity);
     if stt_model_catalog()
         .iter()
         .all(|m| m.id != config.selected_model)

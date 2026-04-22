@@ -8,6 +8,7 @@
   import type { LunaTodoItem, LunaNotification, ScheduleResponse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
   import { invoke } from "@tauri-apps/api/core";
+  import { openExternalUrl } from "../system";
   import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
   import {
     AI_CACHE_KEY,
@@ -63,7 +64,7 @@
     if (!match) {
       // Fallback: open in browser for non-subportal links
       if (isDemoActive()) return;
-      await invoke("open_external_url", { url: item.url }).catch(e => console.error("open_external_url failed:", e));
+      await openExternalUrl(item.url).catch(e => console.error("open_external_url failed:", e));
       return;
     }
     subportalLoading = true;

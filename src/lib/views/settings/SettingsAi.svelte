@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
-  import { updateAiReadiness } from "../../api";
+  import { getAiConfig, isDemoActive, updateAiReadiness } from "../../api";
 
   interface LocalModel {
     id: string;
@@ -25,6 +25,7 @@
     language: string;
     execution_backend: string;
     partial_mode: string;
+    sensitivity: string;
   }
 
   interface SttExecutionBackendOption {
@@ -86,6 +87,38 @@
       description: "partial を止めて final のみ表示します。最も省電力ですが途中経過は出ません。",
     },
   ] as const;
+  const STT_SENSITIVITY_OPTIONS = [
+    {
+      id: "low",
+      label: "控えめ",
+      description: "小さな物音や相槌を拾いにくくなります。静かな発話は取りこぼす場合があります。",
+    },
+    {
+      id: "normal",
+      label: "標準",
+      description: "現在の既定値。ほとんどのシーンに適したバランスです。",
+    },
+    {
+      id: "high",
+      label: "高感度",
+      description: "控えめな声やごく短い発話も積極的に拾います。周囲が騒がしいと誤反応が増えることがあります。",
+    },
+  ] as const;
+  const DEMO_STT_CONFIG_KEY = "selah-demo-stt-config";
+  const DEMO_NATIVE_AGENT_KEY = "selah-demo-native-agent-config";
+  const DEMO_LOCAL_MODELS_KEY = "selah-demo-local-models";
+  const DEMO_STT_MODELS_KEY = "selah-demo-stt-models";
+
+  const DEMO_LOCAL_MODELS: LocalModel[] = [
+    { id: "qwen3.5-8b", name: "Qwen 3.5 8B", size_label: "5.1 GB", file_size_mb: 5100, downloaded: true },
+    { id: "qwen3.5-2b", name: "Qwen 3.5 2B", size_label: "1.5 GB", file_size_mb: 1500, downloaded: false },
+    { id: "llama3.2-3b", name: "Llama 3.2 3B", size_label: "2.0 GB", file_size_mb: 2000, downloaded: false },
+  ];
+
+  const DEMO_STT_MODELS: SttModel[] = [
+    { id: "sensevoice-ja-en", name: "SenseVoice JA/EN", size_label: "620 MB", file_size_mb: 620, downloaded: true },
+    { id: "sensevoice-small", name: "SenseVoice Small", size_label: "310 MB", file_size_mb: 310, downloaded: false },
+  ];
 
   let aiEnabled = $state("true");
   let aiProvider = $state("local");
@@ -107,6 +140,7 @@
   let sttLanguage = $state("ja");
   let selectedSttExecutionBackend = $state("cpu");
   let selectedSttPartialMode = $state("balanced");
+  let selectedSttSensitivity = $state("normal");
   let sttExecutionBackendOptions = $state<SttExecutionBackendOption[]>(DEFAULT_STT_BACKEND_OPTIONS);
   let sttDownloading = $state(false);
   let sttDownloadProgress = $state<{ modelId: string; name: string; percent: number; downloaded: number; total: number } | null>(null);
@@ -130,6 +164,21 @@
   let unlistenDlProgress: (() => void) | null = null;
   let unlistenSttDlProgress: (() => void) | null = null;
 
+  function readDemoState<T>(key: string, fallback: T): T {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(fallback) ? parsed : { ...fallback, ...parsed };
+    } catch {
+      return fallback;
+    }
+  }
+
+  function writeDemoState<T>(key: string, value: T) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+  }
+
   function isLocal() { return aiProvider === "local"; }
 
   function currentSttBackendOption() {
@@ -138,6 +187,10 @@
 
   function currentSttPartialModeOption() {
     return STT_PARTIAL_MODE_OPTIONS.find((option) => option.id === selectedSttPartialMode) || STT_PARTIAL_MODE_OPTIONS[0];
+  }
+
+  function currentSttSensitivityOption() {
+    return STT_SENSITIVITY_OPTIONS.find((option) => option.id === selectedSttSensitivity) || STT_SENSITIVITY_OPTIONS[1];
   }
 
   function getConfig(): AiConfig {
@@ -186,6 +239,10 @@
   }
 
   async function loadModelList() {
+    if (isDemoActive()) {
+      modelList = readDemoState(DEMO_LOCAL_MODELS_KEY, DEMO_LOCAL_MODELS);
+      return;
+    }
     try {
       modelList = await invoke<LocalModel[]>("list_local_models");
     } catch (e) {
@@ -194,6 +251,10 @@
   }
 
   async function loadSttModelList() {
+    if (isDemoActive()) {
+      sttModelList = readDemoState(DEMO_STT_MODELS_KEY, DEMO_STT_MODELS);
+      return;
+    }
     try {
       sttModelList = await invoke<SttModel[]>("list_stt_models");
     } catch (e) {
@@ -208,7 +269,13 @@
     if (!m) return;
     downloadProgress = { modelId, name: m.name, percent: 0, downloaded: 0, total: 0 };
     try {
+      if (isDemoActive()) {
+        const next = modelList.map((item) => item.id === modelId ? { ...item, downloaded: true } : item);
+        writeDemoState(DEMO_LOCAL_MODELS_KEY, next);
+        modelList = next;
+      } else {
       await invoke("download_local_model", { modelId });
+      }
       showStatus(m.name + " のダウンロードが完了しました", "success");
       await loadModelList();
       selectedLocalModel = modelId;
@@ -223,6 +290,12 @@
   }
 
   function cancelDownload() {
+    if (isDemoActive()) {
+      downloading = false;
+      downloadProgress = null;
+      showStatus("ダウンロードを中止しました", "error");
+      return;
+    }
     invoke("cancel_model_download").catch(() => {});
   }
 
@@ -233,7 +306,13 @@
     if (!m) return;
     sttDownloadProgress = { modelId, name: m.name, percent: 0, downloaded: 0, total: 0 };
     try {
+      if (isDemoActive()) {
+        const next = sttModelList.map((item) => item.id === modelId ? { ...item, downloaded: true } : item);
+        writeDemoState(DEMO_STT_MODELS_KEY, next);
+        sttModelList = next;
+      } else {
       await invoke("download_stt_model", { modelId });
+      }
       showStatus(m.name + " のダウンロードが完了しました", "success");
       await loadSttModelList();
       selectedSttModel = modelId;
@@ -247,13 +326,25 @@
   }
 
   function cancelSttDownload() {
+    if (isDemoActive()) {
+      sttDownloading = false;
+      sttDownloadProgress = null;
+      showStatus("STT モデルのダウンロードを中止しました", "error");
+      return;
+    }
     invoke("cancel_stt_model_download").catch(() => {});
   }
 
   async function deleteModel(modelId: string) {
     if (!confirm("このモデルを削除しますか？")) return;
     try {
+      if (isDemoActive()) {
+        const next = modelList.map((item) => item.id === modelId ? { ...item, downloaded: false } : item);
+        writeDemoState(DEMO_LOCAL_MODELS_KEY, next);
+        modelList = next;
+      } else {
       await invoke("delete_local_model", { modelId });
+      }
       showStatus("モデルを削除しました", "success");
       await loadModelList();
       updateAiReadiness().catch(() => {});
@@ -265,7 +356,13 @@
   async function deleteSttModel(modelId: string) {
     if (!confirm("この STT モデルを削除しますか？")) return;
     try {
+      if (isDemoActive()) {
+        const next = sttModelList.map((item) => item.id === modelId ? { ...item, downloaded: false } : item);
+        writeDemoState(DEMO_STT_MODELS_KEY, next);
+        sttModelList = next;
+      } else {
       await invoke("delete_stt_model", { modelId });
+      }
       showStatus("STT モデルを削除しました", "success");
       await loadSttModelList();
     } catch (e) {
@@ -275,9 +372,19 @@
 
   async function loadConfig() {
     try {
-      const c = await invoke<any>("get_ai_config");
-      const stt = await invoke<SttConfig>("get_stt_config");
-      sttExecutionBackendOptions = await invoke<SttExecutionBackendOption[]>("list_stt_execution_backends");
+      const c = await getAiConfig();
+      const stt = isDemoActive()
+        ? readDemoState<SttConfig>(DEMO_STT_CONFIG_KEY, {
+            selected_model: "sensevoice-ja-en",
+            language: "ja",
+            execution_backend: "cpu",
+            partial_mode: "balanced",
+            sensitivity: "normal",
+          })
+        : await invoke<SttConfig>("get_stt_config");
+      sttExecutionBackendOptions = isDemoActive()
+        ? DEFAULT_STT_BACKEND_OPTIONS
+        : await invoke<SttExecutionBackendOption[]>("list_stt_execution_backends");
       aiEnabled = c.ai_enabled !== false ? "true" : "false";
       aiProvider = c.provider || "local";
       selectedLocalModel = c.local_model || "qwen3.5-2b";
@@ -293,13 +400,19 @@
       sttLanguage = stt?.language || "ja";
       selectedSttExecutionBackend = stt?.execution_backend || "cpu";
       selectedSttPartialMode = stt?.partial_mode || "balanced";
+      selectedSttSensitivity = stt?.sensitivity || "normal";
       if (!sttExecutionBackendOptions.some((option) => option.id === selectedSttExecutionBackend && option.available)) {
         selectedSttExecutionBackend = sttExecutionBackendOptions.find((option) => option.available)?.id || "cpu";
       }
       if (!STT_PARTIAL_MODE_OPTIONS.some((option) => option.id === selectedSttPartialMode)) {
         selectedSttPartialMode = STT_PARTIAL_MODE_OPTIONS[0].id;
       }
-      const nativeAgent = await invoke<{ floating_orb_enabled?: boolean; subtitle_overlay_enabled?: boolean }>("get_native_agent_config");
+      if (!STT_SENSITIVITY_OPTIONS.some((option) => option.id === selectedSttSensitivity)) {
+        selectedSttSensitivity = "normal";
+      }
+      const nativeAgent = isDemoActive()
+        ? readDemoState<{ floating_orb_enabled?: boolean; subtitle_overlay_enabled?: boolean }>(DEMO_NATIVE_AGENT_KEY, { floating_orb_enabled: false, subtitle_overlay_enabled: false })
+        : await invoke<{ floating_orb_enabled?: boolean; subtitle_overlay_enabled?: boolean }>("get_native_agent_config");
       floatingOrbEnabled = nativeAgent?.floating_orb_enabled ? "true" : "false";
       lastSavedFloatingOrbEnabled = floatingOrbEnabled;
       subtitleOverlayEnabled = nativeAgent?.subtitle_overlay_enabled ? "true" : "false";
@@ -315,18 +428,34 @@
   export async function save() {
     saveBusy = true;
     try {
-      await invoke("save_ai_config", { config: getConfig() });
-      await invoke("save_stt_config", {
-        config: {
+      if (isDemoActive()) {
+        writeDemoState("selah-demo-ai-config", getConfig());
+        writeDemoState(DEMO_STT_CONFIG_KEY, {
           selected_model: selectedSttModel,
           language: sttLanguage,
           execution_backend: selectedSttExecutionBackend,
           partial_mode: selectedSttPartialMode,
-        },
-      });
-      await invoke("save_native_agent_config", {
-        config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
-      });
+          sensitivity: selectedSttSensitivity,
+        });
+        writeDemoState(DEMO_NATIVE_AGENT_KEY, {
+          floating_orb_enabled: floatingOrbEnabled === "true",
+          subtitle_overlay_enabled: subtitleOverlayEnabled === "true",
+        });
+      } else {
+        await invoke("save_ai_config", { config: getConfig() });
+        await invoke("save_stt_config", {
+          config: {
+            selected_model: selectedSttModel,
+            language: sttLanguage,
+            execution_backend: selectedSttExecutionBackend,
+            partial_mode: selectedSttPartialMode,
+            sensitivity: selectedSttSensitivity,
+          },
+        });
+        await invoke("save_native_agent_config", {
+          config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
+        });
+      }
       lastSavedFloatingOrbEnabled = floatingOrbEnabled;
       lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
       updateAiReadiness().catch(() => {});
@@ -341,8 +470,13 @@
     testBusy = true;
     showStatus("接続をテスト中...", "loading");
     try {
-      await invoke("save_ai_config", { config: getConfig() });
-      const r = await invoke<string>("ai_test_connection");
+      let r = "演示モード接続 OK";
+      if (isDemoActive()) {
+        writeDemoState("selah-demo-ai-config", getConfig());
+      } else {
+        await invoke("save_ai_config", { config: getConfig() });
+        r = await invoke<string>("ai_test_connection");
+      }
       showStatus("接続成功: " + r.substring(0, 80), "success");
     } catch (e) {
       showStatus(friendlyError(e), "error");
@@ -356,8 +490,13 @@
     localTestOk = null;
     localTestMsg = "モデルを読み込み中...";
     try {
-      await invoke("save_ai_config", { config: getConfig() });
-      const r = await invoke<string>("ai_test_connection");
+      let r = "演示モードのローカルモデルは利用可能です";
+      if (isDemoActive()) {
+        writeDemoState("selah-demo-ai-config", getConfig());
+      } else {
+        await invoke("save_ai_config", { config: getConfig() });
+        r = await invoke<string>("ai_test_connection");
+      }
       localTestOk = true;
       localTestMsg = "成功: " + r.substring(0, 80);
     } catch (e) {
@@ -373,15 +512,27 @@
     sttTestOk = null;
     sttTestMsg = "STT モデルを読み込み中...";
     try {
-      await invoke("save_stt_config", {
-        config: {
+      let r = "演示モードの STT モデルは利用可能です";
+      if (isDemoActive()) {
+        writeDemoState(DEMO_STT_CONFIG_KEY, {
           selected_model: selectedSttModel,
           language: sttLanguage,
           execution_backend: selectedSttExecutionBackend,
           partial_mode: selectedSttPartialMode,
-        },
-      });
-      const r = await invoke<string>("stt_test_model");
+          sensitivity: selectedSttSensitivity,
+        });
+      } else {
+        await invoke("save_stt_config", {
+          config: {
+            selected_model: selectedSttModel,
+            language: sttLanguage,
+            execution_backend: selectedSttExecutionBackend,
+            partial_mode: selectedSttPartialMode,
+            sensitivity: selectedSttSensitivity,
+          },
+        });
+        r = await invoke<string>("stt_test_model");
+      }
       sttTestOk = true;
       sttTestMsg = r;
     } catch (e) {
@@ -394,6 +545,7 @@
 
   onMount(async () => {
     await loadConfig();
+    if (isDemoActive()) return;
     unlistenDlProgress = await listen<{ percent: number; downloaded: number; total: number }>(
       "model-download-progress",
       (ev) => {
@@ -419,6 +571,13 @@
     if (floatingOrbEnabled === lastSavedFloatingOrbEnabled && subtitleOverlayEnabled === lastSavedSubtitleOverlayEnabled) return;
     lastSavedFloatingOrbEnabled = floatingOrbEnabled;
     lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
+    if (isDemoActive()) {
+      writeDemoState(DEMO_NATIVE_AGENT_KEY, {
+        floating_orb_enabled: floatingOrbEnabled === "true",
+        subtitle_overlay_enabled: subtitleOverlayEnabled === "true",
+      });
+      return;
+    }
     invoke("save_native_agent_config", {
       config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
     }).catch((e) => {
@@ -692,6 +851,18 @@
       </select>
       <div class="hint">{currentSttPartialModeOption().description}</div>
       <div class="hint">保存後は、LIVE 録音中でも次の partial 更新判定からそのまま反映されます。</div>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">音声感度</span>
+    <div class="row-input">
+      <select bind:value={selectedSttSensitivity}>
+        {#each STT_SENSITIVITY_OPTIONS as option}
+          <option value={option.id}>{option.label}</option>
+        {/each}
+      </select>
+      <div class="hint">{currentSttSensitivityOption().description}</div>
+      <div class="hint">高くするほど積極的に発話を検出します。変更は次回の録音開始から反映されます。</div>
     </div>
   </div>
   {#each sttModelList as m}

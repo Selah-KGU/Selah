@@ -1,5 +1,6 @@
 import { writable, get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
+import { setAppTheme } from "./system";
 
 interface AuthState {
   authenticated: boolean;
@@ -389,7 +390,7 @@ function initTheme(): "system" | "light" | "dark" {
     if (saved === "light" || saved === "dark") {
       document.documentElement.setAttribute("data-theme", saved);
       // Sync initial theme to Rust so child webviews can read it
-      invoke("set_app_theme", { theme: saved }).catch(() => {});
+      setAppTheme(saved).catch(() => {});
       return saved;
     }
   }

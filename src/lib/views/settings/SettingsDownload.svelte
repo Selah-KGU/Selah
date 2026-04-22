@@ -1,6 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { isDemoActive } from "../../api";
+
+  const DEMO_DOWNLOAD_CONFIG_KEY = "selah-demo-download-config";
+
+  function readDemoDownloadConfig() {
+    try {
+      const raw = localStorage.getItem(DEMO_DOWNLOAD_CONFIG_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeDemoDownloadConfig(config: any) {
+    try { localStorage.setItem(DEMO_DOWNLOAD_CONFIG_KEY, JSON.stringify(config)); } catch { /* ignore */ }
+  }
 
   let downloadDir = $state("");
   let classifyByCourse = $state("true");
@@ -9,6 +25,12 @@
   let statusColor = $state("");
 
   async function loadConfig() {
+    if (isDemoActive()) {
+      const cfg = readDemoDownloadConfig();
+      downloadDir = cfg.download_dir || "";
+      classifyByCourse = cfg.classify_by_course !== false ? "true" : "false";
+      return;
+    }
     try {
       const cfg = await invoke<{ download_dir?: string; classify_by_course?: boolean }>("get_download_config");
       downloadDir = cfg.download_dir || "";
@@ -19,6 +41,13 @@
   }
 
   async function browseDir() {
+    if (isDemoActive()) {
+      downloadDir = "/Users/demo/Documents/Selah";
+      statusColor = "var(--green)";
+      statusMsg = "演示用の保存先を選択しました";
+      setTimeout(() => { statusMsg = ""; }, 4000);
+      return;
+    }
     try {
       const dir = await invoke<string>("select_download_dir");
       downloadDir = dir;
@@ -35,7 +64,11 @@
     downloadDir = "";
     classifyByCourse = "true";
     try {
-      await invoke("save_download_config", { config: { download_dir: "", classify_by_course: true } });
+      if (isDemoActive()) {
+        writeDemoDownloadConfig({ download_dir: "", classify_by_course: true });
+      } else {
+        await invoke("save_download_config", { config: { download_dir: "", classify_by_course: true } });
+      }
       statusColor = "var(--green)";
       statusMsg = "デフォルトに戻しました";
     } catch (e) {
@@ -48,12 +81,12 @@
   export async function save() {
     saveBusy = true;
     try {
-      await invoke("save_download_config", {
-        config: {
-          download_dir: downloadDir,
-          classify_by_course: classifyByCourse === "true",
-        },
-      });
+      const config = {
+        download_dir: downloadDir,
+        classify_by_course: classifyByCourse === "true",
+      };
+      if (isDemoActive()) writeDemoDownloadConfig(config);
+      else await invoke("save_download_config", { config });
     } catch (e) {
       throw e;
     } finally {
