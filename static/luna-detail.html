@@ -625,14 +625,764 @@
     })();
 
     function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function decodeHtmlEntities(s) {
+      var raw = String(s || '');
+      if (!raw || raw.indexOf('&') < 0) return raw;
+      var t = document.createElement('textarea');
+      t.innerHTML = raw;
+      return t.value;
+    }
+    function isLunaTransientDetailError(err) {
+      var msg = String(err || '');
+      return msg.indexOf('読込が一時的に不安定') >= 0
+        || msg.indexOf('初回読込が安定していません') >= 0;
+    }
+    function delay(ms) {
+      return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+    async function invokeLunaDetailWithRetry(command, payload, attempt) {
+      var inv = window.__TAURI__?.core?.invoke;
+      if (!inv) throw new Error('Tauri IPC が利用できません');
+      try {
+        return await inv(command, payload);
+      } catch (err) {
+        if (attempt >= 2 || !isLunaTransientDetailError(err)) throw err;
+        await delay(500 * attempt);
+        return invokeLunaDetailWithRetry(command, payload, attempt + 1);
+      }
+    }
+    var UNIVERSITY_BASES = {
+      luna: 'https://luna.kwansei.ac.jp',
+      kwic: 'https://kwic.kwansei.ac.jp',
+      kgc: 'https://kg-course.kwansei.ac.jp'
+    };
+    var AUTO_LINK_RE = /(https?:\/\/[^\s<)\]]+|\/(?:lms|portal|uniasv2)\/[^\s<)\]]+)/g;
+    var LINK_MATCH_IGNORED_PARAMS = {
+      _cid: true,
+      _csrf: true,
+      screen: true,
+      directLink: true,
+      pageViewListNum: true,
+      selectCategoryCd: true
+    };
+    var _linkCacheJson = Object.create(null);
+    var _linkSchedulePromise = null;
+    var _linkLunaCourseCache = Object.create(null);
+    var _linkLunaCourseFetches = Object.create(null);
+
+    function guessBaseOriginForHref(href, currentMode) {
+      var raw = decodeHtmlEntities(href).trim();
+      if (raw.indexOf('/portal/') === 0) return UNIVERSITY_BASES.kwic;
+      if (raw.indexOf('/uniasv2/') === 0) return UNIVERSITY_BASES.kgc;
+      if (raw.indexOf('/lms/') === 0) return UNIVERSITY_BASES.luna;
+      if (currentMode === 'kwic') return UNIVERSITY_BASES.kwic;
+      if (currentMode === 'kgc' || currentMode === 'syllabus') return UNIVERSITY_BASES.kgc;
+      return UNIVERSITY_BASES.luna;
+    }
+
+    function linkifyEscapedText(escaped) {
+      return String(escaped || '').replace(AUTO_LINK_RE, function(raw) {
+        var href = escapeHtml(raw);
+        return '<a href="' + href + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;word-break:break-all;">' + raw + '</a>';
+      });
+    }
+
     function linkifyText(s) {
-      return escapeHtml(s).replace(/(https?:\/\/[^\s<)\]]+)/g,
-        '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;word-break:break-all;">$1</a>');
+      return linkifyEscapedText(escapeHtml(s));
     }
 
     function autoLinkEscaped(escaped) {
-      return String(escaped || '').replace(/(https?:\/\/[^\s<)\]]+)/g,
-        '<a href="$1" target="_blank" rel="noopener">$1</a>');
+      return linkifyEscapedText(escaped);
+    }
+
+    function resolveUniversityUrl(href) {
+      var raw = decodeHtmlEntities(href).trim();
+      if (!raw || raw === '#') return null;
+      var mode = new URLSearchParams(window.location.search).get('mode') || '';
+      try {
+        if (/^https?:\/\//i.test(raw)) return new URL(raw);
+        return new URL(raw, guessBaseOriginForHref(raw, mode));
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function detectUniversityService(url) {
+      if (!url) return '';
+      var host = (url.hostname || '').toLowerCase();
+      var path = url.pathname || '';
+      if (host.indexOf('luna.kwansei.ac.jp') >= 0 || path.indexOf('/lms/') === 0) return 'luna';
+      if (host.indexOf('kwic.kwansei.ac.jp') >= 0 || path.indexOf('/portal/') === 0) return 'kwic';
+      if (host.indexOf('kg-course.kwansei.ac.jp') >= 0 || path.indexOf('/uniasv2/') === 0) return 'kgc';
+      return '';
+    }
+
+    function normalizeMatchText(s) {
+      return String(s || '')
+        .toLowerCase()
+        .replace(/[\s\u3000\u00a0]+/g, '')
+        .replace(/[|｜:：()（）【】「」『』\[\]<>＜＞・,，.．]/g, '');
+    }
+
+    function titlesLooselyMatch(a, b) {
+      var na = normalizeMatchText(a);
+      var nb = normalizeMatchText(b);
+      if (!na || !nb) return false;
+      return na === nb || na.indexOf(nb) >= 0 || nb.indexOf(na) >= 0;
+    }
+
+    function exactParam(url, key) {
+      return (url && url.searchParams && url.searchParams.get(key)) || '';
+    }
+
+    function buildUrlMatchKey(input) {
+      var url = input instanceof URL ? input : resolveUniversityUrl(input);
+      if (!url) return '';
+      var params = Array.from(url.searchParams.entries())
+        .filter(function(pair) { return !LINK_MATCH_IGNORED_PARAMS[pair[0]]; })
+        .sort(function(a, b) {
+          return a[0] === b[0]
+            ? String(a[1]).localeCompare(String(b[1]))
+            : String(a[0]).localeCompare(String(b[0]));
+        });
+      var search = params.map(function(pair) {
+        return encodeURIComponent(pair[0]) + '=' + encodeURIComponent(pair[1]);
+      }).join('&');
+      return url.pathname + (search ? '?' + search : '');
+    }
+
+    function sameCoreUrl(a, b) {
+      var ka = buildUrlMatchKey(a);
+      var kb = buildUrlMatchKey(b);
+      return !!ka && ka === kb;
+    }
+
+    function readCurrentParam(name) {
+      return new URLSearchParams(window.location.search).get(name) || '';
+    }
+
+    async function readJsonCache(key) {
+      if (Object.prototype.hasOwnProperty.call(_linkCacheJson, key)) {
+        return _linkCacheJson[key];
+      }
+      var invoke = window.__TAURI__?.core?.invoke;
+      if (!invoke) return null;
+      try {
+        var raw = await invoke('get_data_cache', { key: key });
+        _linkCacheJson[key] = raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        _linkCacheJson[key] = null;
+      }
+      return _linkCacheJson[key];
+    }
+
+    async function readScheduleSnapshot() {
+      if (_linkSchedulePromise) return _linkSchedulePromise;
+      var invoke = window.__TAURI__?.core?.invoke;
+      if (!invoke) return null;
+      _linkSchedulePromise = invoke('get_schedule_snapshot').catch(function() { return null; });
+      return _linkSchedulePromise;
+    }
+
+    async function getKgcEntryByPath(path) {
+      var snap = await readScheduleSnapshot();
+      if (!snap || !snap.raw) return null;
+      var pools = []
+        .concat(snap.raw.kgc_entries_current || [])
+        .concat(snap.raw.kgc_entries_next || []);
+      for (var i = 0; i < pools.length; i++) {
+        if ((pools[i].detail_path || '') === path) return pools[i];
+      }
+      return null;
+    }
+
+    async function findKgcPathByCourseName(courseName) {
+      var name = String(courseName || '').trim();
+      if (!name) return '';
+      var snap = await readScheduleSnapshot();
+      if (!snap || !snap.raw) return '';
+      var pools = []
+        .concat(snap.raw.kgc_entries_current || [])
+        .concat(snap.raw.kgc_entries_next || []);
+      for (var i = 0; i < pools.length; i++) {
+        if ((pools[i].name || '').trim() === name && pools[i].detail_path) {
+          return pools[i].detail_path;
+        }
+      }
+      return '';
+    }
+
+    async function readKwicItemByInfoId(infoId) {
+      if (!infoId) return null;
+      var home = await readJsonCache('kwic_home');
+      var sections = home && Array.isArray(home.sections) ? home.sections : [];
+      for (var si = 0; si < sections.length; si++) {
+        var items = Array.isArray(sections[si].items) ? sections[si].items : [];
+        for (var ii = 0; ii < items.length; ii++) {
+          if ((items[ii].id || '') === infoId) return items[ii];
+        }
+      }
+      return null;
+    }
+
+    function resolveLunaIdnumber(url) {
+      return url.searchParams.get('idnumber') || readCurrentParam('idnumber') || '';
+    }
+
+    async function readLunaCourseDetail(idnumber) {
+      if (!idnumber) return null;
+      if (_linkLunaCourseCache[idnumber]) return _linkLunaCourseCache[idnumber];
+      if (_linkLunaCourseFetches[idnumber]) return _linkLunaCourseFetches[idnumber];
+
+      _linkLunaCourseFetches[idnumber] = (async function() {
+        var cached = await readJsonCache('luna_course:' + idnumber);
+        if (cached && cached.course_name) {
+          _linkLunaCourseCache[idnumber] = cached;
+          return cached;
+        }
+        var invoke = window.__TAURI__?.core?.invoke;
+        if (!invoke) return cached || null;
+        try {
+          var fresh = await invoke('luna_fetch_course_detail', { idnumber: idnumber });
+          if (fresh) {
+            _linkLunaCourseCache[idnumber] = fresh;
+            return fresh;
+          }
+        } catch (e) {}
+        return cached || null;
+      })();
+
+      try {
+        var resolved = await _linkLunaCourseFetches[idnumber];
+        if (resolved) _linkLunaCourseCache[idnumber] = resolved;
+        return resolved;
+      } finally {
+        delete _linkLunaCourseFetches[idnumber];
+      }
+    }
+
+    function lunaItemMatchesLink(url, item, anchorText) {
+      if (!item) return false;
+      if (item.url && sameCoreUrl(url, item.url)) return true;
+      if (item.url) {
+        var itemUrl = resolveUniversityUrl(item.url);
+        if (itemUrl) {
+          var keys = ['reportId', 'surveyId', 'forumId', 'threadId', 'idnumber'];
+          var sameKeys = false;
+          for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var av = url.searchParams.get(key) || '';
+            var bv = itemUrl.searchParams.get(key) || '';
+            if (av || bv) {
+              if (av !== bv) return false;
+              sameKeys = true;
+            }
+          }
+          if (sameKeys && url.pathname === itemUrl.pathname) return true;
+        }
+      }
+      return titlesLooselyMatch(anchorText, item.title);
+    }
+
+    function findLunaCourseItemMatch(course, url, anchorText) {
+      if (!course) return null;
+      var groups = [
+        { kind: 'report', list: course.reports || [] },
+        { kind: 'exam', list: course.examinations || [] },
+        { kind: 'discussion', list: course.discussions || [] },
+        { kind: 'survey', list: course.surveys || [] }
+      ];
+      for (var gi = 0; gi < groups.length; gi++) {
+        var group = groups[gi];
+        for (var ii = 0; ii < group.list.length; ii++) {
+          var item = group.list[ii];
+          if (lunaItemMatchesLink(url, item, anchorText)) {
+            return {
+              kind: group.kind,
+              item: item,
+              course_name: course.course_name || ''
+            };
+          }
+        }
+      }
+
+      if ((url.pathname || '').indexOf('/lms/coursetop/information/listdetail') === 0) {
+        var infoId = url.searchParams.get('informationId') || '';
+        var announcements = course.announcements || [];
+        for (var ai = 0; ai < announcements.length; ai++) {
+          var ann = announcements[ai];
+          if ((ann.info_id || '') === infoId || titlesLooselyMatch(anchorText, ann.title)) {
+            return {
+              kind: 'announcement',
+              item: ann,
+              course_name: course.course_name || ''
+            };
+          }
+        }
+      }
+
+      return null;
+    }
+
+    async function findLunaTodoMatch(url, anchorText) {
+      var todos = await readJsonCache('luna_todo');
+      if (!Array.isArray(todos)) return null;
+      for (var i = 0; i < todos.length; i++) {
+        var todo = todos[i];
+        if (todo.url && sameCoreUrl(url, todo.url)) return todo;
+      }
+      for (var j = 0; j < todos.length; j++) {
+        var item = todos[j];
+        if (titlesLooselyMatch(anchorText, item.content_name)) return item;
+      }
+      return null;
+    }
+
+    function findLunaExactCourseItem(course, url) {
+      if (!course || !url) return null;
+
+      var reportId = exactParam(url, 'reportId');
+      if (reportId && Array.isArray(course.reports)) {
+        for (var ri = 0; ri < course.reports.length; ri++) {
+          var report = course.reports[ri];
+          var reportUrl = resolveUniversityUrl(report.url || '');
+          if (reportUrl && exactParam(reportUrl, 'reportId') === reportId) {
+            return { kind: 'report', item: report, course_name: course.course_name || '' };
+          }
+        }
+      }
+
+      var examinationId = exactParam(url, 'examinationId');
+      if (examinationId && Array.isArray(course.examinations)) {
+        for (var ei = 0; ei < course.examinations.length; ei++) {
+          var exam = course.examinations[ei];
+          var examUrl = resolveUniversityUrl(exam.url || '');
+          if (examUrl && exactParam(examUrl, 'examinationId') === examinationId) {
+            return { kind: 'exam', item: exam, course_name: course.course_name || '' };
+          }
+        }
+      }
+
+      var surveyId = exactParam(url, 'surveyId');
+      if (surveyId && Array.isArray(course.surveys)) {
+        for (var si = 0; si < course.surveys.length; si++) {
+          var survey = course.surveys[si];
+          var surveyUrl = resolveUniversityUrl(survey.url || '');
+          if (surveyUrl && exactParam(surveyUrl, 'surveyId') === surveyId) {
+            return { kind: 'survey', item: survey, course_name: course.course_name || '' };
+          }
+        }
+      }
+
+      var forumId = exactParam(url, 'forumId');
+      var threadId = exactParam(url, 'threadId');
+      if (forumId && Array.isArray(course.discussions)) {
+        for (var di = 0; di < course.discussions.length; di++) {
+          var disc = course.discussions[di];
+          var discUrl = resolveUniversityUrl(disc.url || '');
+          if (!discUrl || exactParam(discUrl, 'forumId') !== forumId) continue;
+          if (threadId && exactParam(discUrl, 'threadId') && exactParam(discUrl, 'threadId') !== threadId) continue;
+          return {
+            kind: exactParam(discUrl, 'threadId') ? 'thread' : 'discussion',
+            item: disc,
+            course_name: course.course_name || ''
+          };
+        }
+      }
+
+      if ((url.pathname || '').indexOf('/lms/coursetop/information/listdetail') === 0) {
+        var infoId = exactParam(url, 'informationId');
+        var announcements = course.announcements || [];
+        for (var ai = 0; ai < announcements.length; ai++) {
+          if ((announcements[ai].info_id || '') === infoId) {
+            return { kind: 'announcement', item: announcements[ai], course_name: course.course_name || '' };
+          }
+        }
+      }
+
+      return null;
+    }
+
+    async function findLunaExactTodoMatch(url) {
+      var todos = await readJsonCache('luna_todo');
+      if (!Array.isArray(todos)) return null;
+
+      var idnumber = exactParam(url, 'idnumber');
+      var reportId = exactParam(url, 'reportId');
+      var examinationId = exactParam(url, 'examinationId');
+      var surveyId = exactParam(url, 'surveyId');
+      var forumId = exactParam(url, 'forumId');
+      var threadId = exactParam(url, 'threadId');
+
+      for (var i = 0; i < todos.length; i++) {
+        var todo = todos[i];
+        var todoUrl = resolveUniversityUrl(todo.url || '');
+        if (!todoUrl) continue;
+        if (idnumber && exactParam(todoUrl, 'idnumber') && exactParam(todoUrl, 'idnumber') !== idnumber) continue;
+        if (reportId && exactParam(todoUrl, 'reportId') === reportId) return todo;
+        if (examinationId && exactParam(todoUrl, 'examinationId') === examinationId) return todo;
+        if (surveyId && exactParam(todoUrl, 'surveyId') === surveyId) return todo;
+        if (forumId && exactParam(todoUrl, 'forumId') === forumId) {
+          if (!threadId || !exactParam(todoUrl, 'threadId') || exactParam(todoUrl, 'threadId') === threadId) return todo;
+        }
+      }
+
+      return null;
+    }
+
+    function internalTargetLabel(target) {
+      return String((target && target.title) || '').trim();
+    }
+
+    function looksLikeRawLinkLabel(text, href) {
+      var rawText = String(text || '').trim();
+      var rawHref = String(href || '').trim();
+      if (!rawText) return true;
+      if (rawText === rawHref) return true;
+      var resolved = resolveUniversityUrl(rawHref);
+      return !!resolved && rawText === resolved.toString();
+    }
+
+    async function hydrateInternalLinkLabels(root) {
+      var scope = root || document;
+      var anchors = Array.from(scope.querySelectorAll('a[href]'));
+      for (var i = 0; i < anchors.length; i++) {
+        var a = anchors[i];
+        var href = a.getAttribute('href') || '';
+        if (!href || !looksLikeRawLinkLabel(a.textContent, href)) continue;
+        try {
+          var target = await resolveUniversityLinkTarget(href, a.textContent.trim() || href);
+          var label = internalTargetLabel(target);
+          if (!label) continue;
+          if (!a.getAttribute('title')) {
+            var full = resolveUniversityUrl(href);
+            a.setAttribute('title', full ? full.toString() : href);
+          }
+          a.textContent = label;
+        } catch (e) {}
+      }
+    }
+
+    async function buildReportFallbackData(path, currentTitle, currentCourseName) {
+      var url = resolveUniversityUrl(path);
+      if (!url) return null;
+
+      var idnumber = exactParam(url, 'idnumber');
+      var todo = await findLunaExactTodoMatch(url);
+      var course = idnumber ? await readLunaCourseDetail(idnumber) : null;
+      var courseMatch = findLunaExactCourseItem(course, url);
+      var item = courseMatch && courseMatch.item ? courseMatch.item : null;
+
+      var title = (item && item.title) || (todo && todo.content_name) || currentTitle || '';
+      var courseName = (course && course.course_name) || (courseMatch && courseMatch.course_name) || (todo && todo.course_name) || currentCourseName || '';
+
+      var meta = [];
+      if (item && item.period) meta.push(['公開期間', item.period]);
+      if (todo && todo.deadline) meta.push(['締切', todo.deadline]);
+      if (item && item.status) meta.push(['状態', item.status]);
+      else if (todo && todo.status) meta.push(['状態', todo.status]);
+      if (todo && todo.content_type) meta.push(['種別', todo.content_type]);
+
+      if (!title && !courseName && meta.length === 0) return null;
+
+      meta.push(['詳細', '課題本文は取得できませんでしたが、この課題はローカルキャッシュから特定しました。']);
+
+      return {
+        title: title,
+        course_name: courseName,
+        sections: [],
+        attachments: [],
+        meta: meta
+      };
+    }
+
+    async function resolveUniversityLinkTarget(href, anchorText) {
+      var url = resolveUniversityUrl(href);
+      if (!url) return null;
+
+      var service = detectUniversityService(url);
+      if (!service) return null;
+
+      if (service === 'kwic') {
+        if ((url.pathname || '').indexOf('/portal/home/information/detail') === 0) {
+          var infoId = url.searchParams.get('informationId') || '';
+          if (infoId) {
+            var kwicItem = await readKwicItemByInfoId(infoId);
+            if (kwicItem) {
+              return {
+                action: 'kwic_detail',
+                title: kwicItem.title || anchorText || 'KWIC',
+                information_id: kwicItem.id,
+                information_type: kwicItem.information_type || '',
+                person_category_cd: kwicItem.person_category_cd || '',
+                category_cd: kwicItem.category_cd || ''
+              };
+            }
+          }
+        }
+        return { action: 'browser', url: url.toString(), title: anchorText || 'KWIC' };
+      }
+
+      if (service === 'kgc') {
+        var kgcEntry = await getKgcEntryByPath(url.pathname + url.search);
+        if (!kgcEntry) kgcEntry = await getKgcEntryByPath(url.pathname);
+        if (kgcEntry && kgcEntry.detail_path) {
+          return {
+            action: 'kgc_detail',
+            path: kgcEntry.detail_path,
+            title: kgcEntry.name || anchorText || '授業詳細'
+          };
+        }
+        return { action: 'browser', url: url.toString(), title: anchorText || 'KG-Course' };
+      }
+
+      if (service === 'luna') {
+        var idnumber = resolveLunaIdnumber(url);
+        var currentCourseName = readCurrentParam('courseName') || _currentCourseName || '';
+
+        if ((url.pathname || '') === '/lms/course' || (url.pathname || '') === '/lms/contents') {
+          if (url.hash === '#attendance' && idnumber) {
+            return {
+              action: 'luna_attendance',
+              idnumber: idnumber,
+              title: anchorText || '出席'
+            };
+          }
+          if (!idnumber) {
+            return {
+              action: 'browser',
+              url: url.toString(),
+              title: anchorText || currentCourseName || 'Luna'
+            };
+          }
+          return {
+            action: 'luna_course',
+            idnumber: idnumber,
+            title: anchorText || currentCourseName || '授業',
+            kgc_path: await findKgcPathByCourseName(currentCourseName)
+          };
+        }
+
+        var course = idnumber ? await readLunaCourseDetail(idnumber) : null;
+        var courseMatch = findLunaExactCourseItem(course, url) || findLunaCourseItemMatch(course, url, anchorText);
+
+        if (courseMatch && courseMatch.kind === 'announcement' && idnumber) {
+          return {
+            action: 'luna_announcement',
+            idnumber: idnumber,
+            info_id: courseMatch.item.info_id || url.searchParams.get('informationId') || '',
+            title: courseMatch.item.title || anchorText || 'お知らせ',
+            course_name: courseMatch.course_name || currentCourseName
+          };
+        }
+
+        if (courseMatch && courseMatch.kind === 'report') {
+          return {
+            action: 'luna_report',
+            path: courseMatch.item.url || (url.pathname + url.search),
+            idnumber: idnumber,
+            report_id: url.searchParams.get('reportId') || '',
+            title: courseMatch.item.title || anchorText || '課題',
+            course_name: courseMatch.course_name || currentCourseName
+          };
+        }
+
+        if (courseMatch && courseMatch.kind === 'discussion') {
+          return {
+            action: 'luna_discussion',
+            path: courseMatch.item.url || (url.pathname + url.search),
+            title: courseMatch.item.title || anchorText || '掲示板'
+          };
+        }
+
+        if (courseMatch && courseMatch.kind === 'thread') {
+          return {
+            action: 'luna_thread',
+            path: courseMatch.item.url || (url.pathname + url.search),
+            title: courseMatch.item.title || anchorText || '掲示板スレッド'
+          };
+        }
+
+        if (courseMatch && courseMatch.kind === 'survey') {
+          return {
+            action: 'luna_survey',
+            path: courseMatch.item.url || (url.pathname + url.search),
+            title: courseMatch.item.title || anchorText || 'アンケート',
+            course_name: courseMatch.course_name || currentCourseName
+          };
+        }
+
+        if (courseMatch && courseMatch.kind === 'exam') {
+          var examUrl = resolveUniversityUrl(courseMatch.item.url || '') || url;
+          return {
+            action: 'browser',
+            url: examUrl.toString(),
+            title: courseMatch.item.title || anchorText || 'テスト'
+          };
+        }
+
+        if ((url.pathname || '').indexOf('/lms/coursetop/information/listdetail') === 0 && idnumber) {
+          return {
+            action: 'luna_announcement',
+            idnumber: idnumber,
+            info_id: url.searchParams.get('informationId') || '',
+            title: anchorText || 'お知らせ',
+            course_name: currentCourseName
+          };
+        }
+
+        if ((url.pathname || '').indexOf('/lms/course/report/submission') === 0) {
+          var todoMatch = await findLunaExactTodoMatch(url) || await findLunaTodoMatch(url, anchorText);
+          return {
+            action: 'luna_report',
+            path: url.pathname + url.search,
+            idnumber: idnumber,
+            report_id: url.searchParams.get('reportId') || '',
+            title: (todoMatch && todoMatch.content_name) || anchorText || '課題',
+            course_name: (todoMatch && todoMatch.course_name) || currentCourseName
+          };
+        }
+
+        if ((url.pathname || '').indexOf('/lms/course/forums/thread') === 0) {
+          return {
+            action: 'luna_thread',
+            path: url.pathname + url.search,
+            title: anchorText || '掲示板スレッド'
+          };
+        }
+
+        if ((url.pathname || '').indexOf('/lms/course/forums/themetop') === 0) {
+          return {
+            action: 'luna_discussion',
+            path: url.pathname + url.search,
+            title: anchorText || '掲示板'
+          };
+        }
+
+        if ((url.pathname || '').indexOf('/lms/course/surveys') === 0) {
+          return {
+            action: 'luna_survey',
+            path: url.pathname + url.search,
+            title: anchorText || 'アンケート',
+            course_name: currentCourseName
+          };
+        }
+
+        return {
+          action: 'browser',
+          url: url.toString(),
+          title: anchorText || currentCourseName || 'Luna'
+        };
+      }
+
+      return null;
+    }
+
+    async function openResolvedUniversityLink(target) {
+      var invoke = window.__TAURI__?.core?.invoke;
+      if (!invoke || !target) return false;
+
+      if (target.action === 'kwic_detail') {
+        await invoke('kwic_open_detail_window', {
+          title: target.title,
+          informationId: target.information_id,
+          informationType: target.information_type,
+          personCategoryCd: target.person_category_cd,
+          categoryCd: target.category_cd
+        });
+        return true;
+      }
+
+      if (target.action === 'kgc_detail') {
+        await invoke('open_detail_window', {
+          path: target.path,
+          courseName: target.title
+        });
+        return true;
+      }
+
+      if (target.action === 'luna_course') {
+        await invoke('luna_open_detail_window', {
+          path: '',
+          title: target.title,
+          mode: 'course',
+          idnumber: target.idnumber,
+          kgcPath: target.kgc_path || null
+        });
+        return true;
+      }
+
+      if (target.action === 'luna_attendance') {
+        await invoke('luna_open_detail_window', {
+          path: '',
+          title: target.title,
+          mode: 'attendance',
+          idnumber: target.idnumber
+        });
+        return true;
+      }
+
+      if (target.action === 'luna_announcement') {
+        await invoke('luna_open_detail_window', {
+          path: '',
+          title: target.title,
+          mode: 'announcement',
+          idnumber: target.idnumber,
+          infoId: target.info_id,
+          courseName: target.course_name || null
+        });
+        return true;
+      }
+
+      if (target.action === 'luna_report') {
+        await invoke('luna_open_detail_window', {
+          path: target.path,
+          title: target.title,
+          mode: 'report',
+          idnumber: target.idnumber || null,
+          infoId: target.report_id || null,
+          courseName: target.course_name || null
+        });
+        return true;
+      }
+
+      if (target.action === 'luna_discussion') {
+        await invoke('luna_open_detail_window', {
+          path: target.path,
+          title: target.title,
+          mode: 'discussion'
+        });
+        return true;
+      }
+
+      if (target.action === 'luna_thread') {
+        await invoke('luna_open_detail_window', {
+          path: target.path,
+          title: target.title,
+          mode: 'thread'
+        });
+        return true;
+      }
+
+      if (target.action === 'luna_survey') {
+        await invoke('luna_open_detail_window', {
+          path: target.path,
+          title: target.title,
+          mode: 'survey',
+          courseName: target.course_name || null
+        });
+        return true;
+      }
+
+      if (target.action === 'browser' && target.url) {
+        await invoke('kwic_open_link', {
+          url: target.url,
+          title: target.title || target.url
+        });
+        return true;
+      }
+
+      return false;
     }
 
     function sanitizeRichTextHtml(input) {
@@ -989,6 +1739,7 @@
         h += '<div class="card-empty" style="padding:40px 0">\u8a73\u7d30\u60c5\u5831\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f</div>';
       h += '</div>';
       c.innerHTML = h;
+      hydrateInternalLinkLabels(c);
       c.querySelectorAll('.attachment').forEach(function(b) {
         var type = b.dataset.type || 'file';
         var att = _detailAttachments[parseInt(b.dataset.attIdx)] || {};
@@ -2244,10 +2995,11 @@
       h += '<div class="meta-table">';
       for (var i = 0; i < fields.length; i++) {
         var label = fields[i][0] || '', value = fields[i][1] || '—';
-        h += '<div class="meta-row"><span class="meta-key">' + escapeHtml(label) + '</span><span class="meta-value">' + escapeHtml(value) + '</span></div>';
+        h += '<div class="meta-row"><span class="meta-key">' + escapeHtml(label) + '</span><span class="meta-value">' + linkifyText(value) + '</span></div>';
       }
       h += '</div></div>';
       c.innerHTML = h;
+      hydrateInternalLinkLabels(c);
     }
 
     // KWIC Portal Detail
@@ -2288,6 +3040,7 @@
       }
       h += '</div>';
       c.innerHTML = h;
+      hydrateInternalLinkLabels(c);
       c.querySelectorAll('.kwic-att').forEach(function(b) {
         b.addEventListener('click', function() {
           var url = b.dataset.url;
@@ -2301,7 +3054,7 @@
     // Router
     document.addEventListener('DOMContentLoaded', async function() {
       var params = new URLSearchParams(window.location.search);
-      var mode = params.get('mode'), path = params.get('path');
+      var mode = params.get('mode'), path = decodeHtmlEntities(params.get('path') || '');
       // Hide titlebar for modes that don't need it
       if (mode === 'kgc' || mode === 'syllabus' || mode === 'kwic') {
         document.getElementById('titlebar').style.display = 'none';
@@ -2322,24 +3075,23 @@
           var idn2 = params.get('idnumber'), infoId = params.get('infoId');
           if (!idn2 || !infoId) { renderDetail({ error: '\u30d1\u30e9\u30e1\u30fc\u30bf\u304c\u4e0d\u8db3\u3057\u3066\u3044\u307e\u3059' }); return; }
           if (params.get('courseName')) _currentCourseName = params.get('courseName');
-          renderDetail(await invoke('luna_fetch_announcement_detail', {
+          renderDetail(await invokeLunaDetailWithRetry('luna_fetch_announcement_detail', {
             idnumber: idn2,
             infoId: infoId,
             expectedTitle: params.get('title') || ''
-          }));
+          }, 1));
         } else if (mode === 'report') {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
           _currentPagePath = path;
           if (params.get('courseName')) _currentCourseName = params.get('courseName');
           var reportData;
           try {
-            reportData = await invoke('luna_fetch_detail', {
+            reportData = await invokeLunaDetailWithRetry('luna_fetch_detail', {
               path: path,
               expectedTitle: params.get('title') || ''
-            });
+            }, 1);
           } catch(detailErr) {
-            var detailMsg = String(detailErr || '');
-            if (detailMsg.indexOf('初回読込が安定していません') >= 0) {
+            if (isLunaTransientDetailError(detailErr)) {
               reportData = {
                 title: params.get('title') || '',
                 course_name: params.get('courseName') || '',
@@ -2353,6 +3105,18 @@
           }
           if (!reportData.title) reportData.title = params.get('title') || '';
           if (!reportData.course_name && params.get('courseName')) reportData.course_name = params.get('courseName');
+          if ((!reportData.sections || !reportData.sections.length)
+            && (!reportData.meta || !reportData.meta.length)
+            && (!reportData.attachments || !reportData.attachments.length)) {
+            var reportFallback = await buildReportFallbackData(
+              path,
+              params.get('title') || reportData.title || '',
+              params.get('courseName') || reportData.course_name || ''
+            );
+            if (reportFallback) {
+              reportData = reportFallback;
+            }
+          }
           if ((!reportData.sections || !reportData.sections.length)
             && (!reportData.meta || !reportData.meta.length)
             && (!reportData.attachments || !reportData.attachments.length)) {
@@ -2565,10 +3329,10 @@
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
           _currentPagePath = path;
           if (params.get('courseName')) _currentCourseName = params.get('courseName');
-          renderDetail(await invoke('luna_fetch_detail', {
+          renderDetail(await invokeLunaDetailWithRetry('luna_fetch_detail', {
             path: path,
             expectedTitle: params.get('title') || ''
-          }));
+          }, 1));
         }
       } catch(e) { renderDetail({ error: String(e) }); }
     });
@@ -2578,11 +3342,19 @@
       var a = e.target.closest?.('a[href]'); if (!a) return;
       var href = a.getAttribute('href'); if (!href || href === '#') return;
       e.preventDefault(); e.stopPropagation();
-      var _currentMode = new URLSearchParams(window.location.search).get('mode');
-      if (href.startsWith('/')) href = (_currentMode === 'kgc' || _currentMode === 'syllabus') ? 'https://kg-course.kwansei.ac.jp' + href : 'https://luna.kwansei.ac.jp' + href;
-      if (!href.startsWith('http://') && !href.startsWith('https://')) return;
-      var inv = window.__TAURI__?.core?.invoke;
-      if (inv) inv('kwic_open_link', { url: href, title: a.textContent.trim() || href });
+      (async function() {
+        var title = a.textContent.trim() || href;
+        var target = await resolveUniversityLinkTarget(href, title);
+        if (target && await openResolvedUniversityLink(target)) return;
+        var fallback = resolveUniversityUrl(href);
+        if (!fallback) return;
+        var inv = window.__TAURI__?.core?.invoke;
+        if (inv) {
+          await inv('kwic_open_link', { url: fallback.toString(), title: title || fallback.toString() });
+        }
+      })().catch(function(err) {
+        console.warn('internal link open failed:', err);
+      });
     }, true);
   </script>
 

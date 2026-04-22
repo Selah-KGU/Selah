@@ -7,6 +7,8 @@ export interface UnifiedNotif {
   title: string;
   category: string;
   date: string;
+  section?: string;
+  sender?: string;
   url?: string;
   body?: string;
   kwicId?: string;
@@ -77,7 +79,7 @@ const GREETINGS: Record<string, string[]> = {
   ],
 };
 
-export const AI_CACHE_KEY = "ai-notif-cache";
+export const AI_CACHE_KEY = "ai-notif-cache:v2";
 export const AI_REFRESH_MS = 12 * 60 * 60 * 1000;
 
 export function getGreetingSlot(date: Date) {
@@ -141,6 +143,7 @@ export function getRecentNotifications(
           title: item.title,
           category: item.category || section.title,
           date: item.date,
+          section: section.title,
           kwicId: item.id,
           informationType: item.information_type,
           personCategoryCd: item.person_category_cd,

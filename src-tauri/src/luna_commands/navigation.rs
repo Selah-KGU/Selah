@@ -3,6 +3,48 @@ use crate::{config, luna_client, LunaState};
 use std::sync::atomic::Ordering;
 use tauri::{Manager, State};
 
+fn infer_luna_window_target(
+    path: &str,
+    mode: Option<&str>,
+    idnumber: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    if mode.is_some() {
+        return (mode.map(ToString::to_string), idnumber.map(ToString::to_string));
+    }
+
+    let raw = path.trim();
+    if raw.is_empty() {
+        return (None, idnumber.map(ToString::to_string));
+    }
+
+    let full = if raw.starts_with("http://") || raw.starts_with("https://") {
+        raw.to_string()
+    } else {
+        format!("{}{}", config::LUNA_BASE, raw)
+    };
+    let Ok(url) = url::Url::parse(&full) else {
+        return (None, idnumber.map(ToString::to_string));
+    };
+
+    let inferred_idnumber = url
+        .query_pairs()
+        .find_map(|(k, v)| (k == "idnumber").then(|| v.into_owned()))
+        .or_else(|| idnumber.map(ToString::to_string));
+    let path_name = url.path();
+
+    if path_name == "/lms/course" || path_name == "/lms/contents" {
+        let hash = url.fragment().unwrap_or_default();
+        let inferred_mode = if hash == "attendance" {
+            "attendance"
+        } else {
+            "course"
+        };
+        return (Some(inferred_mode.to_string()), inferred_idnumber);
+    }
+
+    (None, inferred_idnumber)
+}
+
 /// Open a Luna detail page in a separate native window
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -28,6 +70,8 @@ pub async fn luna_open_detail_window(
     }
     let id = LUNA_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("luna-detail-{}", id);
+    let (mode, idnumber) =
+        infer_luna_window_target(&path, mode.as_deref(), idnumber.as_deref());
 
     let url_str = match mode.as_deref() {
         Some("material") => {
@@ -199,4 +243,42 @@ pub async fn luna_reveal_file(app: tauri::AppHandle, path: String) -> Result<(),
         .reveal_item_in_dir(&canonical)
         .map_err(|e| format!("ファイルを表示できませんでした: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::infer_luna_window_target;
+
+    #[test]
+    fn infers_course_mode_from_course_top_url() {
+        let (mode, idnumber) = infer_luna_window_target(
+            "/lms/course?idnumber=2026341810090201#information",
+            None,
+            None,
+        );
+        assert_eq!(mode.as_deref(), Some("course"));
+        assert_eq!(idnumber.as_deref(), Some("2026341810090201"));
+    }
+
+    #[test]
+    fn infers_attendance_mode_from_attendance_hash() {
+        let (mode, idnumber) = infer_luna_window_target(
+            "/lms/course?idnumber=2026341810090201#attendance",
+            None,
+            None,
+        );
+        assert_eq!(mode.as_deref(), Some("attendance"));
+        assert_eq!(idnumber.as_deref(), Some("2026341810090201"));
+    }
+
+    #[test]
+    fn leaves_detail_paths_unmodified() {
+        let (mode, idnumber) = infer_luna_window_target(
+            "/lms/course/report/submission?idnumber=2026341810090201&reportId=1",
+            None,
+            None,
+        );
+        assert!(mode.is_none());
+        assert_eq!(idnumber.as_deref(), Some("2026341810090201"));
+    }
 }

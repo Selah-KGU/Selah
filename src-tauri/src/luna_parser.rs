@@ -771,6 +771,38 @@ mod tests {
     }
 
     #[test]
+    fn test_blacklist_keeps_real_body_when_notice_lines_are_mixed_in() {
+        let html = r#"
+            <html>
+              <head><title>課題1 提出</title></head>
+              <body>
+                <div class="course-title-txt">データサイエンス入門</div>
+                <div class="contents-title-txt">課題1 提出</div>
+                <div class="contents-detail contents-vertical">
+                  <div class="contents-header-txt"><span class="bold-txt">内容</span></div>
+                  <div class="contents-input-area">
+                    <script>
+                      _QuillUtil.reportBody.setJsonData("{\"ops\":[{\"insert\":\"時間割\\n■「ゲストアクセス」と「履修登録」は違います。\\n履修データ連携に関する補足\\nレポート本文をPDFで提出してください。\\n提出時に表紙は不要です。\\n\"}]}", 'reference');
+                    </script>
+                  </div>
+                </div>
+              </body>
+            </html>
+        "#;
+
+        let result = parse_luna_detail_page(html);
+        assert_eq!(result.sections.len(), 1);
+        assert!(result.sections[0]
+            .body
+            .contains("レポート本文をPDFで提出してください。"));
+        assert!(result.sections[0]
+            .body
+            .contains("提出時に表紙は不要です。"));
+        assert!(!result.sections[0].body.contains("ゲストアクセス"));
+        assert!(!result.sections[0].body.contains("履修データ連携"));
+    }
+
+    #[test]
     fn test_extract_quill_delta_text() {
         let script = r#"
             _QuillUtil.materialContents_0.setJsonData("{\"ops\":[{\"insert\":\"\u51FA\u5E2D\u78BA\u8A8D\u306F\u6388\u696D\u5192\u982D\u306B\u884C\u3044\u307E\u3059\u3002\\n\"},{\"attributes\":{\"bold\":true},\"insert\":\"\u5EA7\u5E2D\u8868\u304C\u3042\u308A\u307E\u3059\u3002\"},{\"insert\":\"\\n\"}]}", 'reference');

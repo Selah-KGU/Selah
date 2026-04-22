@@ -1,8 +1,9 @@
+use serde::Serialize;
 use std::collections::HashSet;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use tauri::{AppHandle, Manager};
 
 use crate::commands::{self, NotificationConfig};
@@ -18,14 +19,52 @@ const BOOTSTRAP_GRACE_PERIOD: Duration = Duration::from_secs(6 * 60);
 
 pub struct NotificationPollState {
     running: AtomicBool,
+    debug: Mutex<NotificationRuntimeDebugState>,
 }
 
 impl NotificationPollState {
     pub fn new() -> Self {
         Self {
             running: AtomicBool::new(false),
+            debug: Mutex::new(NotificationRuntimeDebugState::default()),
         }
     }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct NotificationEventDebugInfo {
+    pub at_epoch: i64,
+    pub source: String,
+    pub status: String,
+    pub title: String,
+    pub body: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct NotificationLastSyncDebugInfo {
+    pub started_at_epoch: Option<i64>,
+    pub finished_at_epoch: Option<i64>,
+    pub status: String,
+    pub error: String,
+    pub bootstrap_mode: String,
+    pub suppress_push: bool,
+    pub dispatched: usize,
+    pub failed: usize,
+    pub suppressed: usize,
+    pub muted: usize,
+    pub seeded_sources: Vec<String>,
+    pub fetch_failures: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct NotificationRuntimeDebugState {
+    last_sync: NotificationLastSyncDebugInfo,
+    recent_events: Vec<NotificationEventDebugInfo>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +85,45 @@ enum BootstrapMode {
     Normal,
 }
 
+#[derive(Debug, Serialize)]
+pub struct NotificationSourceDebugInfo {
+    pub source: String,
+    pub authenticated: bool,
+    pub initialized: bool,
+    pub has_seen_state: bool,
+    pub seen_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NotificationDebugInfo {
+    pub poll_running: bool,
+    pub delivery_note: String,
+    pub bootstrap_mode: String,
+    pub suppress_push: bool,
+    pub bootstrap_complete: bool,
+    pub bootstrap_started_at_epoch: Option<i64>,
+    pub bootstrap_started_ago_secs: Option<i64>,
+    pub grace_period_secs: u64,
+    pub authenticated_sources: Vec<String>,
+    pub sources: Vec<NotificationSourceDebugInfo>,
+    pub last_sync: NotificationLastSyncDebugInfo,
+    pub recent_events: Vec<NotificationEventDebugInfo>,
+}
+
+#[derive(Default)]
+struct SyncRunDebug {
+    started_at_epoch: i64,
+    bootstrap_mode: String,
+    suppress_push: bool,
+    dispatched: usize,
+    failed: usize,
+    suppressed: usize,
+    muted: usize,
+    seeded_sources: Vec<String>,
+    fetch_failures: Vec<String>,
+    recent_events: Vec<NotificationEventDebugInfo>,
+}
+
 pub fn start_notification_loop(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -64,6 +142,63 @@ pub fn start_notification_loop(app: &AppHandle) {
             }
         }
     });
+}
+
+pub async fn debug_snapshot(app: &AppHandle) -> NotificationDebugInfo {
+    let (kgc_authenticated, luna_authenticated, kwic_authenticated, mail_authenticated) = tokio::join!(
+        is_kgc_authenticated(app),
+        is_luna_authenticated(app),
+        is_kwic_authenticated(app),
+        is_mail_authenticated(app)
+    );
+    let db = app.state::<Database>();
+    let authenticated_sources: Vec<&str> = [
+        ("kgc", kgc_authenticated),
+        ("luna", luna_authenticated),
+        ("kwic", kwic_authenticated),
+        ("mail", mail_authenticated),
+    ]
+    .into_iter()
+    .filter_map(|(source, authenticated)| authenticated.then_some(source))
+    .collect();
+    let bootstrap_mode = current_bootstrap_mode(&db, &authenticated_sources);
+    let started_at = crate::read_state::get_seen_notif_bootstrap_started_at(&db);
+    let now = epoch_secs();
+
+    let sources = ["kgc", "luna", "kwic", "mail"]
+        .into_iter()
+        .map(|source| NotificationSourceDebugInfo {
+            source: source.to_string(),
+            authenticated: authenticated_sources.contains(&source),
+            initialized: crate::read_state::is_seen_notif_initialized(&db, source),
+            has_seen_state: crate::read_state::has_seen_notif_state(&db, source),
+            seen_count: crate::read_state::get_seen_notif_ids(&db, source).len(),
+        })
+        .collect();
+    let (last_sync, recent_events) = app
+        .state::<NotificationPollState>()
+        .debug
+        .lock()
+        .map(|state| (state.last_sync.clone(), state.recent_events.clone()))
+        .unwrap_or_default();
+
+    NotificationDebugInfo {
+        poll_running: app.state::<NotificationPollState>().is_running(),
+        delivery_note: delivery_note().to_string(),
+        bootstrap_mode: bootstrap_mode_label(bootstrap_mode).to_string(),
+        suppress_push: !matches!(bootstrap_mode, BootstrapMode::Normal),
+        bootstrap_complete: crate::read_state::is_seen_notif_bootstrap_complete(&db),
+        bootstrap_started_at_epoch: started_at,
+        bootstrap_started_ago_secs: started_at.map(|value| now.saturating_sub(value)),
+        grace_period_secs: BOOTSTRAP_GRACE_PERIOD.as_secs(),
+        authenticated_sources: authenticated_sources
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        sources,
+        last_sync,
+        recent_events,
+    }
 }
 
 #[tauri::command]
@@ -91,36 +226,61 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
         is_mail_authenticated(app)
     );
     let db = app.state::<Database>();
-    let has_authenticated_source =
-        kgc_authenticated || luna_authenticated || kwic_authenticated || mail_authenticated;
-    let bootstrap_mode = current_bootstrap_mode(&db, has_authenticated_source);
+    let authenticated_sources: Vec<&str> = [
+        ("kgc", kgc_authenticated),
+        ("luna", luna_authenticated),
+        ("kwic", kwic_authenticated),
+        ("mail", mail_authenticated),
+    ]
+    .into_iter()
+    .filter_map(|(source, authenticated)| authenticated.then_some(source))
+    .collect();
+    let bootstrap_mode = current_bootstrap_mode(&db, &authenticated_sources);
     let suppress_push = !matches!(bootstrap_mode, BootstrapMode::Normal);
+    let mut run = SyncRunDebug {
+        started_at_epoch: epoch_secs(),
+        bootstrap_mode: bootstrap_mode_label(bootstrap_mode).to_string(),
+        suppress_push,
+        ..Default::default()
+    };
 
     if kgc_authenticated {
         match fetch_kgc_notifications(app).await {
-            Ok(data) => sync_kgc_notifications(app, &cfg, data, suppress_push),
-            Err(e) => log::warn!("notification sync: kgc fetch failed: {}", e),
+            Ok(data) => sync_kgc_notifications(app, &cfg, data, suppress_push, &mut run),
+            Err(e) => {
+                log::warn!("notification sync: kgc fetch failed: {}", e);
+                run.fetch_failures.push(format!("kgc: {}", e));
+            }
         }
     }
 
     if luna_authenticated {
         match fetch_luna_notifications(app).await {
-            Ok(items) => sync_luna_notifications(app, &cfg, items, suppress_push),
-            Err(e) => log::warn!("notification sync: luna fetch failed: {}", e),
+            Ok(items) => sync_luna_notifications(app, &cfg, items, suppress_push, &mut run),
+            Err(e) => {
+                log::warn!("notification sync: luna fetch failed: {}", e);
+                run.fetch_failures.push(format!("luna: {}", e));
+            }
         }
     }
 
     if kwic_authenticated {
         match fetch_kwic_home(app).await {
-            Ok(home) => sync_kwic_notifications(app, &cfg, home, suppress_push),
-            Err(e) => log::warn!("notification sync: kwic fetch failed: {}", e),
+            Ok(home) => sync_kwic_notifications(app, &cfg, home, suppress_push, &mut run),
+            Err(e) => {
+                log::warn!("notification sync: kwic fetch failed: {}", e);
+                run.fetch_failures.push(format!("kwic: {}", e));
+            }
         }
     }
 
     if mail_authenticated {
         match crate::mail_commands::fetch_inbox_internal(app, 20, 0).await {
-            Ok(items) => sync_mail_notifications(app, &cfg, items, suppress_push),
-            Err(e) => log::warn!("notification sync: mail fetch failed: {}", e),
+            Ok(items) => sync_mail_notifications(app, &cfg, items, suppress_push, &mut run),
+            Err(e) => {
+                log::warn!("notification sync: mail fetch failed: {}", e);
+                run.fetch_failures.push(format!("mail: {}", e));
+            }
         }
     }
 
@@ -129,6 +289,7 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
         log::info!("notification sync: initial bootstrap completed");
     }
 
+    finish_sync_debug(app, run, "ok".to_string(), String::new());
     Ok(())
 }
 
@@ -176,6 +337,7 @@ fn sync_kgc_notifications(
     cfg: &NotificationConfig,
     data: NotificationsData,
     suppress_push: bool,
+    run: &mut SyncRunDebug,
 ) {
     let source = "kgc";
     let db = app.state::<Database>();
@@ -187,7 +349,7 @@ fn sync_kgc_notifications(
     let (initialized, mut seen_ids, mut seen_set) = load_seen_state(&db, source);
 
     if !initialized {
-        seed_seen_state(&db, source, seen_ids, seen_set, current_ids);
+        seed_seen_state(&db, source, seen_ids, seen_set, current_ids, run);
         return;
     }
 
@@ -197,15 +359,29 @@ fn sync_kgc_notifications(
         .filter(|item| !item.id.is_empty() && !seen_set.contains(&item.id))
         .collect();
 
-    if !suppress_push && course_notification_allowed(CourseNotificationKind::General, cfg) {
+    if suppress_push {
+        run.suppressed += new_entries.len();
+        for item in &new_entries {
+            record_event(
+                run,
+                source,
+                "suppressed",
+                item.title.clone(),
+                item.date.clone(),
+                "bootstrap_silent".to_string(),
+            );
+        }
+    } else if course_notification_allowed(CourseNotificationKind::General, cfg) {
         for item in &new_entries {
             let title = if item.category.is_empty() {
                 item.title.clone()
             } else {
                 format!("[{}] {}", item.category, item.title)
             };
-            let _ = crate::ai::send_native_notification(app, &title, &item.date);
+            dispatch_notification(app, run, source, title, item.date.clone());
         }
+    } else {
+        run.muted += new_entries.len();
     }
 
     extend_seen_ids(&mut seen_ids, &mut seen_set, current_ids);
@@ -218,6 +394,7 @@ fn sync_luna_notifications(
     cfg: &NotificationConfig,
     items: Vec<crate::luna_parser::LunaNotification>,
     suppress_push: bool,
+    run: &mut SyncRunDebug,
 ) {
     let source = "luna";
     let db = app.state::<Database>();
@@ -225,7 +402,7 @@ fn sync_luna_notifications(
     let (initialized, mut seen_ids, mut seen_set) = load_seen_state(&db, source);
 
     if !initialized {
-        seed_seen_state(&db, source, seen_ids, seen_set, current_ids);
+        seed_seen_state(&db, source, seen_ids, seen_set, current_ids, run);
         return;
     }
 
@@ -234,16 +411,26 @@ fn sync_luna_notifications(
         if seen_set.contains(&key) {
             continue;
         }
-        if !suppress_push
-            && course_notification_allowed(classify_course_notification(&item.module), cfg)
-        {
+        if suppress_push {
+            run.suppressed += 1;
+            record_event(
+                run,
+                source,
+                "suppressed",
+                item.content.clone(),
+                item.date.clone(),
+                "bootstrap_silent".to_string(),
+            );
+        } else if course_notification_allowed(classify_course_notification(&item.module), cfg) {
             let title = if item.module.is_empty() {
                 item.content.clone()
             } else {
                 format!("[{}] {}", item.module, item.content)
             };
             let body = format!("{} — {}", item.course_info, item.date);
-            let _ = crate::ai::send_native_notification(app, &title, &body);
+            dispatch_notification(app, run, source, title, body);
+        } else {
+            run.muted += 1;
         }
     }
 
@@ -257,6 +444,7 @@ fn sync_kwic_notifications(
     cfg: &NotificationConfig,
     home: KwicPortalHome,
     suppress_push: bool,
+    run: &mut SyncRunDebug,
 ) {
     let source = "kwic";
     let db = app.state::<Database>();
@@ -273,7 +461,7 @@ fn sync_kwic_notifications(
     let (initialized, mut seen_ids, mut seen_set) = load_seen_state(&db, source);
 
     if !initialized {
-        seed_seen_state(&db, source, seen_ids, seen_set, current_ids);
+        seed_seen_state(&db, source, seen_ids, seen_set, current_ids, run);
         return;
     }
 
@@ -282,13 +470,25 @@ fn sync_kwic_notifications(
             if item.id.is_empty() || seen_set.contains(&item.id) {
                 continue;
             }
-            if !suppress_push && kwic_section_allowed(&section.title, cfg) {
+            if suppress_push {
+                run.suppressed += 1;
+                record_event(
+                    run,
+                    source,
+                    "suppressed",
+                    item.title.clone(),
+                    item.date.clone(),
+                    "bootstrap_silent".to_string(),
+                );
+            } else if kwic_section_allowed(&section.title, cfg) {
                 let title = if item.category.is_empty() {
                     item.title.clone()
                 } else {
                     format!("[{}] {}", item.category, item.title)
                 };
-                let _ = crate::ai::send_native_notification(app, &title, &item.date);
+                dispatch_notification(app, run, source, title, item.date.clone());
+            } else {
+                run.muted += 1;
             }
         }
     }
@@ -303,6 +503,7 @@ fn sync_mail_notifications(
     cfg: &NotificationConfig,
     items: Vec<MailMessage>,
     suppress_push: bool,
+    run: &mut SyncRunDebug,
 ) {
     let source = "mail";
     let db = app.state::<Database>();
@@ -313,15 +514,29 @@ fn sync_mail_notifications(
     let (initialized, mut seen_ids, mut seen_set) = load_seen_state(&db, source);
 
     if !initialized {
-        seed_seen_state(&db, source, seen_ids, seen_set, current_ids);
+        seed_seen_state(&db, source, seen_ids, seen_set, current_ids, run);
         return;
     }
 
-    if !suppress_push && cfg.notify_mail {
-        for item in &items {
-            if item.id.is_empty() || seen_set.contains(&item.id) || item.is_read.unwrap_or(false) {
-                continue;
-            }
+    for item in &items {
+        if item.id.is_empty() || seen_set.contains(&item.id) || item.is_read.unwrap_or(false) {
+            continue;
+        }
+        if suppress_push {
+            run.suppressed += 1;
+            record_event(
+                run,
+                source,
+                "suppressed",
+                item.subject
+                    .clone()
+                    .unwrap_or_else(|| "(件名なし)".to_string()),
+                item.id.clone(),
+                "bootstrap_silent".to_string(),
+            );
+            continue;
+        }
+        if cfg.notify_mail {
             let sender = item
                 .from
                 .as_ref()
@@ -336,7 +551,9 @@ fn sync_mail_notifications(
                 .subject
                 .clone()
                 .unwrap_or_else(|| "(件名なし)".to_string());
-            let _ = crate::ai::send_native_notification(app, &sender, &subject);
+            dispatch_notification(app, run, source, sender, subject);
+        } else {
+            run.muted += 1;
         }
     }
 
@@ -352,19 +569,23 @@ fn load_seen_state(db: &Database, source: &str) -> (bool, Vec<String>, HashSet<S
     (initialized, seen_ids, seen_set)
 }
 
-fn current_bootstrap_mode(db: &Database, has_authenticated_source: bool) -> BootstrapMode {
+fn current_bootstrap_mode(db: &Database, authenticated_sources: &[&str]) -> BootstrapMode {
     if crate::read_state::is_seen_notif_bootstrap_complete(db) {
         return BootstrapMode::Normal;
     }
 
     let started_at = crate::read_state::get_seen_notif_bootstrap_started_at(db);
+    let all_authenticated_sources_have_seen_state = !authenticated_sources.is_empty()
+        && authenticated_sources
+            .iter()
+            .all(|source| crate::read_state::has_seen_notif_state(db, source));
 
-    if started_at.is_none() && crate::read_state::has_any_seen_notif_state(db) {
+    if started_at.is_none() && all_authenticated_sources_have_seen_state {
         crate::read_state::mark_seen_notif_bootstrap_complete(db);
         return BootstrapMode::Normal;
     }
 
-    if !has_authenticated_source {
+    if authenticated_sources.is_empty() {
         return BootstrapMode::Silent;
     }
 
@@ -381,16 +602,114 @@ fn current_bootstrap_mode(db: &Database, has_authenticated_source: bool) -> Boot
     }
 }
 
+fn bootstrap_mode_label(mode: BootstrapMode) -> &'static str {
+    match mode {
+        BootstrapMode::Silent => "silent",
+        BootstrapMode::Finalize => "finalize",
+        BootstrapMode::Normal => "normal",
+    }
+}
+
+fn dispatch_notification(
+    app: &AppHandle,
+    run: &mut SyncRunDebug,
+    source: &str,
+    title: String,
+    body: String,
+) {
+    match crate::ai::send_native_notification(app, &title, &body) {
+        Ok(detail) => {
+            run.dispatched += 1;
+            record_event(run, source, "dispatched", title, body, detail);
+        }
+        Err(error) => {
+            run.failed += 1;
+            record_event(run, source, "failed", title, body, error);
+        }
+    }
+}
+
+fn record_event(
+    run: &mut SyncRunDebug,
+    source: &str,
+    status: &str,
+    title: String,
+    body: String,
+    detail: String,
+) {
+    run.recent_events.push(NotificationEventDebugInfo {
+        at_epoch: epoch_secs(),
+        source: source.to_string(),
+        status: status.to_string(),
+        title,
+        body,
+        detail,
+    });
+    if run.recent_events.len() > 12 {
+        let drop_count = run.recent_events.len() - 12;
+        run.recent_events.drain(0..drop_count);
+    }
+}
+
+fn finish_sync_debug(app: &AppHandle, run: SyncRunDebug, status: String, error: String) {
+    if let Ok(mut debug) = app.state::<NotificationPollState>().debug.lock() {
+        debug.last_sync = NotificationLastSyncDebugInfo {
+            started_at_epoch: Some(run.started_at_epoch),
+            finished_at_epoch: Some(epoch_secs()),
+            status,
+            error,
+            bootstrap_mode: run.bootstrap_mode,
+            suppress_push: run.suppress_push,
+            dispatched: run.dispatched,
+            failed: run.failed,
+            suppressed: run.suppressed,
+            muted: run.muted,
+            seeded_sources: run.seeded_sources,
+            fetch_failures: run.fetch_failures,
+        };
+        for event in run.recent_events {
+            debug.recent_events.push(event);
+        }
+        if debug.recent_events.len() > 20 {
+            let drop_count = debug.recent_events.len() - 20;
+            debug.recent_events.drain(0..drop_count);
+        }
+    }
+}
+
+fn delivery_note() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macOS: dispatched means notify-rust accepted the request; OS display happens asynchronously."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "dispatched means the platform notification API accepted the request."
+    }
+}
+
 fn seed_seen_state(
     db: &Database,
     source: &str,
     mut seen_ids: Vec<String>,
     mut seen_set: HashSet<String>,
     current_ids: Vec<String>,
+    run: &mut SyncRunDebug,
 ) {
+    let seeded_count = current_ids.len();
     extend_seen_ids(&mut seen_ids, &mut seen_set, current_ids);
     crate::read_state::save_seen_notif_ids(db, source, seen_ids);
     crate::read_state::mark_seen_notif_initialized(db, source);
+    log::info!("notification sync: seeded seen-state baseline for {}", source);
+    run.seeded_sources.push(format!("{}({})", source, seeded_count));
+    record_event(
+        run,
+        source,
+        "seeded",
+        format!("baseline seeded for {}", source),
+        format!("{} items", seeded_count),
+        "first_sync_baseline".to_string(),
+    );
 }
 
 fn extend_seen_ids(

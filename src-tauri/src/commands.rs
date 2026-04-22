@@ -1,5 +1,6 @@
 use crate::client;
 use crate::config;
+use crate::notifier;
 use crate::stt;
 use serde::Serialize;
 #[cfg(debug_assertions)]
@@ -426,17 +427,23 @@ pub struct DebugInfo {
     pub stt_runtime_backend: String,
     pub stt_runtime_state: String,
     pub stt_active_caller: String,
+    pub notification_debug: notifier::NotificationDebugInfo,
 }
 
 #[tauri::command]
-pub async fn debug_info(state: State<'_, KgcState>) -> Result<DebugInfo, String> {
+pub async fn debug_info(
+    app: tauri::AppHandle,
+    state: State<'_, KgcState>,
+) -> Result<DebugInfo, String> {
     let client = state.client.lock().await;
     let (auth_status, username) = if let Some(session) = &client.session {
         ("authenticated".to_string(), session.username.clone())
     } else {
         ("not_authenticated".to_string(), String::new())
     };
+    drop(client);
     let stt_debug = stt::stt_runtime_debug_info();
+    let notification_debug = notifier::debug_snapshot(&app).await;
 
     Ok(DebugInfo {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -453,6 +460,7 @@ pub async fn debug_info(state: State<'_, KgcState>) -> Result<DebugInfo, String>
         stt_runtime_backend: stt_debug.runtime_backend,
         stt_runtime_state: stt_debug.runtime_state,
         stt_active_caller: stt_debug.active_caller,
+        notification_debug,
     })
 }
 

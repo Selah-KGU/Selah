@@ -19,6 +19,7 @@ static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
 const LUNA_DETAIL_CACHE_VERSION: &str = "v2";
 const LUNA_REPORT_DETAIL_CACHE_VERSION: &str = "v1";
 const LUNA_ANNOUNCEMENT_CACHE_VERSION: &str = "v2";
+const LUNA_DETAIL_RETRY_ATTEMPTS: usize = 3;
 
 // ── Cached selectors (compiled once, reused across all calls) ──
 macro_rules! sel {
@@ -100,6 +101,18 @@ fn is_report_detail_path(path: &str) -> bool {
     path.contains("/lms/course/report/submission")
 }
 
+fn is_course_top_path(path: &str) -> bool {
+    let raw = path.split('#').next().unwrap_or(path);
+    raw == "/lms/course"
+        || raw.starts_with("/lms/course?")
+        || raw == "/lms/contents"
+        || raw.starts_with("/lms/contents?")
+}
+
+fn normalize_luna_detail_path(path: &str) -> String {
+    path.replace("&amp;", "&")
+}
+
 fn finalize_report_detail(
     mut data: luna_parser::LunaDetailPage,
     expected_title: Option<&str>,
@@ -116,6 +129,18 @@ fn has_blacklisted_cached_sections(data: &luna_parser::LunaDetailPage) -> bool {
     data.sections
         .iter()
         .any(|section| crate::luna_parser::is_blacklisted_system_notice_text(&section.body))
+}
+
+fn finalize_generic_detail(
+    mut data: luna_parser::LunaDetailPage,
+    expected_title: Option<&str>,
+) -> luna_parser::LunaDetailPage {
+    if data.title.trim().is_empty() {
+        if let Some(expected) = expected_title.filter(|s| !s.trim().is_empty()) {
+            data.title = expected.to_string();
+        }
+    }
+    data
 }
 
 fn has_generic_detail_structure(html: &str) -> bool {
@@ -173,7 +198,43 @@ fn is_usable_cached_detail_response(
     if is_report_detail_path(path) {
         return true;
     }
-    title_matches_expected(&data.title, expected_title) && has_detail_payload(data)
+    let _ = expected_title;
+    has_detail_payload(data)
+}
+
+fn is_soft_usable_generic_detail_response(
+    html: &str,
+    data: &luna_parser::LunaDetailPage,
+    expected_title: Option<&str>,
+) -> bool {
+    has_detail_payload(data)
+        && has_generic_detail_structure(html)
+        && (title_matches_expected(&data.title, expected_title) || data.title.trim().is_empty())
+}
+
+fn is_soft_usable_announcement_detail_response(
+    html: &str,
+    data: &luna_parser::LunaDetailPage,
+    expected_title: Option<&str>,
+) -> bool {
+    has_detail_payload(data)
+        && has_announcement_detail_structure(html)
+        && (title_matches_expected(&data.title, expected_title) || data.title.trim().is_empty())
+}
+
+async fn refresh_luna_detail_context(http: &reqwest::Client) {
+    let _ = luna_get(http, "/lms/home").await;
+}
+
+fn unstable_detail_error_message(kind: &str) -> String {
+    match kind {
+        "announcement" => {
+            "Luna お知らせ詳細の読込が一時的に不安定でした。自動で再取得できなかったため、少し待ってから再度お試しください。".into()
+        }
+        _ => {
+            "Luna 詳細ページの読込が一時的に不安定でした。自動で再取得できなかったため、少し待ってから再度お試しください。".into()
+        }
+    }
 }
 
 /// Luna GET with Referer header — required for form pages that serve CSRF tokens.
@@ -447,9 +508,16 @@ pub async fn luna_fetch_detail(
     path: String,
     expected_title: Option<String>,
 ) -> Result<luna_parser::LunaDetailPage, String> {
+    let path = normalize_luna_detail_path(&path);
     // Reject absolute URLs and enforce known Luna path prefixes
     if path.starts_with("http") || !path.starts_with('/') {
         return Err("許可されていないパスです".into());
+    }
+    if is_course_top_path(&path) {
+        return Err(
+            "Lunaの授業トップURLです。詳細ページではなくコース画面として開いてください。"
+                .into(),
+        );
     }
     let is_report = is_report_detail_path(&path);
     let cache_key = if is_report {
@@ -482,24 +550,43 @@ pub async fn luna_fetch_detail(
                     }
                     return Ok(data);
                 }
+                let mut accepted_soft = false;
                 if !is_valid_generic_detail_response(&html, &data, expected_title) {
-                    log::warn!(
-                        "Luna detail page for '{}' looked unstable on first load (title='{}'), retrying",
-                        path,
-                        data.title
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    let retry_html = luna_get(&http, &path).await?;
-                    let retry_data = luna_parser::parse_luna_detail_page(&retry_html);
-                    if is_valid_generic_detail_response(&retry_html, &retry_data, expected_title) {
-                        html = retry_html;
-                        data = retry_data;
-                    } else {
-                        return Err(
-                            "Luna 詳細ページの初回読込が安定していません。もう一度お試しください。"
-                                .into(),
+                    for attempt in 1..LUNA_DETAIL_RETRY_ATTEMPTS {
+                        log::warn!(
+                            "Luna detail page for '{}' looked unstable on attempt {}/{} (title='{}', sections={}, meta={}, attachments={}), refreshing and retrying",
+                            path,
+                            attempt,
+                            LUNA_DETAIL_RETRY_ATTEMPTS,
+                            data.title,
+                            data.sections.len(),
+                            data.meta.len(),
+                            data.attachments.len()
                         );
+                        refresh_luna_detail_context(&http).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(250 * attempt as u64))
+                            .await;
+                        html = luna_get(&http, &path).await?;
+                        data = luna_parser::parse_luna_detail_page(&html);
+                        if is_valid_generic_detail_response(&html, &data, expected_title) {
+                            break;
+                        }
                     }
+                    if !is_valid_generic_detail_response(&html, &data, expected_title) {
+                        if is_soft_usable_generic_detail_response(&html, &data, expected_title) {
+                            log::warn!(
+                                "Luna detail page for '{}' still looked atypical after retries; accepting soft-valid payload",
+                                path
+                            );
+                            accepted_soft = true;
+                            data = finalize_generic_detail(data, expected_title);
+                        } else {
+                            return Err(unstable_detail_error_message("detail"));
+                        }
+                    }
+                }
+                if !accepted_soft {
+                    data = finalize_generic_detail(data, expected_title);
                 }
 
                 #[cfg(debug_assertions)]
@@ -589,29 +676,42 @@ pub async fn luna_fetch_announcement_detail(
                 let mut data = luna_parser::parse_luna_announcement_detail(&html);
 
                 if !is_valid_announcement_detail_response(&html, &data, expected_title) {
-                    log::warn!(
-                        "Luna announcement detail for '{}:{}' looked unstable on first load (title='{}'), retrying",
-                        idnumber,
-                        info_id,
-                        data.title
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    let retry_html = luna_get(&http, &path).await?;
-                    let retry_data = luna_parser::parse_luna_announcement_detail(&retry_html);
-                    if is_valid_announcement_detail_response(
-                        &retry_html,
-                        &retry_data,
-                        expected_title,
-                    ) {
-                        html = retry_html;
-                        data = retry_data;
-                    } else {
-                        return Err(
-                            "Luna お知らせ詳細の初回読込が安定していません。もう一度お試しください。"
-                                .into(),
+                    for attempt in 1..LUNA_DETAIL_RETRY_ATTEMPTS {
+                        log::warn!(
+                            "Luna announcement detail for '{}:{}' looked unstable on attempt {}/{} (title='{}', sections={}, meta={}, attachments={}), refreshing and retrying",
+                            idnumber,
+                            info_id,
+                            attempt,
+                            LUNA_DETAIL_RETRY_ATTEMPTS,
+                            data.title,
+                            data.sections.len(),
+                            data.meta.len(),
+                            data.attachments.len()
                         );
+                        refresh_luna_detail_context(&http).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(250 * attempt as u64))
+                            .await;
+                        html = luna_get(&http, &path).await?;
+                        data = luna_parser::parse_luna_announcement_detail(&html);
+                        if is_valid_announcement_detail_response(&html, &data, expected_title) {
+                            break;
+                        }
+                    }
+                    if !is_valid_announcement_detail_response(&html, &data, expected_title) {
+                        if is_soft_usable_announcement_detail_response(&html, &data, expected_title)
+                        {
+                            log::warn!(
+                                "Luna announcement detail for '{}:{}' still looked atypical after retries; accepting soft-valid payload",
+                                idnumber,
+                                info_id
+                            );
+                            data = finalize_generic_detail(data, expected_title);
+                        } else {
+                            return Err(unstable_detail_error_message("announcement"));
+                        }
                     }
                 }
+                data = finalize_generic_detail(data, expected_title);
 
                 #[cfg(debug_assertions)]
                 {

@@ -167,6 +167,27 @@ fn normalize_detail_text(s: &str) -> String {
     s.split_whitespace().collect::<String>()
 }
 
+fn normalize_notice_body_lines(s: &str) -> Vec<String> {
+    static RE_TAGS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?is)<[^>]+>").expect("valid regex"));
+
+    let normalized = s
+        .replace("<br />", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br>", "\n")
+        .replace("</p>", "\n")
+        .replace("</div>", "\n")
+        .replace("</li>", "\n")
+        .replace("&nbsp;", " ");
+    let plain = RE_TAGS.replace_all(&normalized, "");
+    plain
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 pub(crate) fn is_blacklisted_system_notice_text(s: &str) -> bool {
     let text = s.trim();
     if text.is_empty() {
@@ -204,6 +225,52 @@ pub(crate) fn is_blacklisted_system_notice_text(s: &str) -> bool {
     grouped_patterns
         .iter()
         .any(|group| group.iter().all(|pattern| text.contains(pattern)))
+}
+
+fn is_system_notice_line(line: &str) -> bool {
+    const LINE_PATTERNS: &[&str] = &[
+        "時間割",
+        "ゲストアクセス",
+        "履修登録",
+        "履修データ連携",
+        "教務連携スケジュール",
+        "このセッションの表示アクセス権がありません。",
+        "アクセス権をリクエスト",
+        "学生キャビネット",
+        "LUNA・ポートフォリオ",
+        "KG Chatbot",
+        "学生向け動画マニュアル",
+        "LUNAの定期メンテナンスについて",
+        "メンテナンス時間帯において、接続が切れる場合があります。",
+        "LUNAサポートへお問い合わせいただく前に",
+        "macを利用されている学生は注意ください",
+        "AM2:00 - AM2:30",
+    ];
+    LINE_PATTERNS.iter().any(|pattern| line.contains(pattern))
+}
+
+fn sanitize_blacklisted_notice_body(body: &str) -> Option<String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+    if !is_blacklisted_system_notice_text(body) {
+        return Some(body.to_string());
+    }
+
+    let kept_lines: Vec<String> = normalize_notice_body_lines(body)
+        .into_iter()
+        .filter(|line| !is_system_notice_line(line))
+        .collect();
+    if kept_lines.is_empty() {
+        return None;
+    }
+
+    let candidate = kept_lines.join("\n").trim().to_string();
+    if candidate.is_empty() || is_blacklisted_system_notice_text(&candidate) {
+        return None;
+    }
+    Some(candidate)
 }
 
 fn extract_filtered_input_text(area: scraper::ElementRef) -> String {
@@ -251,12 +318,12 @@ fn push_unique_section(
     heading: impl Into<String>,
     body: impl Into<String>,
 ) {
-    let body = body.into().trim().to_string();
-    if body.is_empty() {
-        return;
-    }
-    if is_blacklisted_system_notice_text(&body) {
+    let Some(body) = sanitize_blacklisted_notice_body(&body.into()) else {
         log::debug!("[luna_detail] dropped blacklisted system notice candidate");
+        return;
+    };
+    let body = body.trim().to_string();
+    if body.is_empty() {
         return;
     }
     let normalized = normalize_detail_text(&body);

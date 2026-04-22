@@ -454,6 +454,20 @@
       // Collect all notifications with rich context
       const stripHtml = (html: string) => html.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
       const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max) + "…" : s;
+      const isLunaCourseTopUrl = (raw: string) => {
+        if (!raw) return false;
+        try {
+          const url = new URL(raw, "https://luna.kwansei.ac.jp");
+          return url.pathname === "/lms/course" || url.pathname === "/lms/contents";
+        } catch {
+          return /^\/lms\/(?:course|contents)(?:[?#]|$)/.test(raw);
+        }
+      };
+      const pushExtra = (parts: string[], label: string, value: string | null | undefined) => {
+        const text = (value || "").trim();
+        if (!text) return;
+        parts.push(`${label}: ${text}`);
+      };
 
       const allNotifs: { source: string; title: string; category: string; date: string; extra: string; body: string }[] = [];
       for (const n of kgcNotifs) {
@@ -471,8 +485,15 @@
           for (const item of sec.items) {
             const flags: string[] = [];
             if (item.important) flags.push("★重要");
-            if (item.category) flags.push(`分類: ${item.category}`);
-            allNotifs.push({ source: "KWIC", title: item.title, category: sec.title, date: item.date, extra: flags.join(", "), body: "" });
+            pushExtra(flags, "区分", sec.title);
+            allNotifs.push({
+              source: "KWIC",
+              title: item.title,
+              category: item.category || sec.title,
+              date: item.date,
+              extra: flags.join(", "),
+              body: "",
+            });
           }
         }
       }
@@ -484,7 +505,7 @@
       const lunaItems: { idx: number; url: string; title: string }[] = [];
       let idx = kgcNotifs.length;
       for (const n of lunaNotifs) {
-        if (n.url && lunaItems.length < detailLimit) {
+        if (n.url && !isLunaCourseTopUrl(n.url) && lunaItems.length < detailLimit) {
           lunaItems.push({ idx, url: n.url, title: n.content || "" });
         }
         idx++;
@@ -509,6 +530,11 @@
           kwicFetchDetail(item as KwicPortalNotification)
             .then(d => {
               const body = truncate(stripHtml(d.body_html), bodyMaxLen);
+              const extraParts = allNotifs[i].extra
+                ? allNotifs[i].extra.split(/\s*,\s*/).filter(Boolean)
+                : [];
+              pushExtra(extraParts, "送信者", d.sender);
+              allNotifs[i].extra = extraParts.join(", ");
               if (body) allNotifs[i].body = body;
             })
             .catch(e => console.warn(`[AI] KWIC detail fetch failed for idx=${i}:`, e))
@@ -551,6 +577,7 @@
           for (const item of sec.items) {
             unifiedLookup.push({
               source: "kwic", title: item.title, category: item.category || sec.title, date: item.date,
+              section: sec.title,
               kwicId: item.id, informationType: item.information_type,
               personCategoryCd: item.person_category_cd, categoryCd: item.category_cd,
             });

@@ -21,6 +21,54 @@
     stt_runtime_backend: string;
     stt_runtime_state: string;
     stt_active_caller: string;
+    notification_debug: NotificationDebugInfo;
+  }
+
+  interface NotificationSourceDebugInfo {
+    source: string;
+    authenticated: boolean;
+    initialized: boolean;
+    has_seen_state: boolean;
+    seen_count: number;
+  }
+
+  interface NotificationDebugInfo {
+    poll_running: boolean;
+    delivery_note: string;
+    bootstrap_mode: string;
+    suppress_push: boolean;
+    bootstrap_complete: boolean;
+    bootstrap_started_at_epoch: number | null;
+    bootstrap_started_ago_secs: number | null;
+    grace_period_secs: number;
+    authenticated_sources: string[];
+    sources: NotificationSourceDebugInfo[];
+    last_sync: NotificationLastSyncDebugInfo;
+    recent_events: NotificationEventDebugInfo[];
+  }
+
+  interface NotificationLastSyncDebugInfo {
+    started_at_epoch: number | null;
+    finished_at_epoch: number | null;
+    status: string;
+    error: string;
+    bootstrap_mode: string;
+    suppress_push: boolean;
+    dispatched: number;
+    failed: number;
+    suppressed: number;
+    muted: number;
+    seeded_sources: string[];
+    fetch_failures: string[];
+  }
+
+  interface NotificationEventDebugInfo {
+    at_epoch: number;
+    source: string;
+    status: string;
+    title: string;
+    body: string;
+    detail: string;
   }
 
   interface PingResult {
@@ -52,6 +100,7 @@
   let browserError = $state("");
 
   let notifTestMsg = $state("Selah テスト通知");
+  let notifSyncing = $state(false);
   let unlistenSttState: (() => void) | null = null;
   let unlistenSttConfigChanged: (() => void) | null = null;
 
@@ -108,6 +157,38 @@
           stt_runtime_backend: "demo",
           stt_runtime_state: "idle",
           stt_active_caller: "none",
+          notification_debug: {
+            poll_running: false,
+            delivery_note: "demo",
+            bootstrap_mode: "silent",
+            suppress_push: true,
+            bootstrap_complete: false,
+            bootstrap_started_at_epoch: null,
+            bootstrap_started_ago_secs: null,
+            grace_period_secs: 360,
+            authenticated_sources: [],
+            sources: [
+              { source: "kgc", authenticated: false, initialized: false, has_seen_state: false, seen_count: 0 },
+              { source: "luna", authenticated: false, initialized: false, has_seen_state: false, seen_count: 0 },
+              { source: "kwic", authenticated: false, initialized: false, has_seen_state: false, seen_count: 0 },
+              { source: "mail", authenticated: false, initialized: false, has_seen_state: false, seen_count: 0 },
+            ],
+            last_sync: {
+              started_at_epoch: null,
+              finished_at_epoch: null,
+              status: "idle",
+              error: "",
+              bootstrap_mode: "silent",
+              suppress_push: true,
+              dispatched: 0,
+              failed: 0,
+              suppressed: 0,
+              muted: 0,
+              seeded_sources: [],
+              fetch_failures: [],
+            },
+            recent_events: [],
+          },
         };
         return;
       }
@@ -160,6 +241,36 @@
     } catch (e: any) {
       addLog("error", `通知送信失敗: ${e}`);
     }
+  }
+
+  async function syncNotificationsNow() {
+    notifSyncing = true;
+    try {
+      if (isDemoActive()) {
+        addLog("info", "演示モード: 通知同期をスキップ");
+        return;
+      }
+      await invoke("notification_sync_now");
+      addLog("info", "通知同期を手動実行しました");
+      await fetchDebugInfo();
+    } catch (e: any) {
+      addLog("error", `通知同期失敗: ${e}`);
+    } finally {
+      notifSyncing = false;
+    }
+  }
+
+  function boolLabel(value: boolean): string {
+    return value ? "yes" : "no";
+  }
+
+  function formatEpoch(epoch: number | null): string {
+    if (!epoch) return "-";
+    return new Date(epoch * 1000).toLocaleString("ja-JP");
+  }
+
+  function formatEventTime(epoch: number): string {
+    return new Date(epoch * 1000).toLocaleTimeString("ja-JP");
   }
 
   async function runConsoleCommand() {
@@ -301,6 +412,74 @@
           <div class="info-row"><span class="info-key">STT State</span><span class="info-val">{debugInfo.stt_runtime_state}</span></div>
           <div class="info-row"><span class="info-key">STT Caller</span><span class="info-val mono">{debugInfo.stt_active_caller}</span></div>
         </div>
+      {/if}
+
+      <div class="section-header">
+        <h4>通知</h4>
+        <div class="header-actions">
+          <button class="sm-btn" onclick={() => void fetchDebugInfo()}>更新</button>
+          <button class="sm-btn" onclick={syncNotificationsNow} disabled={notifSyncing}>
+            {notifSyncing ? "同期中..." : "今すぐ同期"}
+          </button>
+        </div>
+      </div>
+      {#if debugInfo}
+        <div class="info-grid">
+          <div class="info-row"><span class="info-key">Poll Running</span><span class="info-val">{debugInfo.notification_debug.poll_running ? "running" : "idle"}</span></div>
+          <div class="info-row"><span class="info-key">Bootstrap Mode</span><span class="info-val mono">{debugInfo.notification_debug.bootstrap_mode}</span></div>
+          <div class="info-row"><span class="info-key">Suppress Push</span><span class="info-val">{boolLabel(debugInfo.notification_debug.suppress_push)}</span></div>
+          <div class="info-row"><span class="info-key">Bootstrap Done</span><span class="info-val">{boolLabel(debugInfo.notification_debug.bootstrap_complete)}</span></div>
+          <div class="info-row"><span class="info-key">Started At</span><span class="info-val mono">{formatEpoch(debugInfo.notification_debug.bootstrap_started_at_epoch)}</span></div>
+          <div class="info-row"><span class="info-key">Started Ago</span><span class="info-val mono">{debugInfo.notification_debug.bootstrap_started_ago_secs !== null ? `${debugInfo.notification_debug.bootstrap_started_ago_secs}s` : "-"}</span></div>
+          <div class="info-row"><span class="info-key">Grace</span><span class="info-val mono">{debugInfo.notification_debug.grace_period_secs}s</span></div>
+          <div class="info-row"><span class="info-key">Authed Sources</span><span class="info-val mono">{debugInfo.notification_debug.authenticated_sources.length ? debugInfo.notification_debug.authenticated_sources.join(", ") : "-"}</span></div>
+          <div class="info-row"><span class="info-key">Dispatch Note</span><span class="info-val">{debugInfo.notification_debug.delivery_note}</span></div>
+        </div>
+
+        <div class="info-grid compact-grid">
+          {#each debugInfo.notification_debug.sources as source}
+            <div class="info-row">
+              <span class="info-key source-key mono">{source.source}</span>
+              <span class="info-val source-flags mono">
+                auth={boolLabel(source.authenticated)}
+                init={boolLabel(source.initialized)}
+                state={boolLabel(source.has_seen_state)}
+                seen={source.seen_count}
+              </span>
+            </div>
+          {/each}
+        </div>
+
+        <h4>通知 Last Sync</h4>
+        <div class="info-grid compact-grid">
+          <div class="info-row"><span class="info-key">Status</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.status || "-"}</span></div>
+          <div class="info-row"><span class="info-key">Started</span><span class="info-val mono">{formatEpoch(debugInfo.notification_debug.last_sync.started_at_epoch)}</span></div>
+          <div class="info-row"><span class="info-key">Finished</span><span class="info-val mono">{formatEpoch(debugInfo.notification_debug.last_sync.finished_at_epoch)}</span></div>
+          <div class="info-row"><span class="info-key">Sync Mode</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.bootstrap_mode || "-"}</span></div>
+          <div class="info-row"><span class="info-key">Suppress Push</span><span class="info-val">{boolLabel(debugInfo.notification_debug.last_sync.suppress_push)}</span></div>
+          <div class="info-row"><span class="info-key">Dispatched</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.dispatched}</span></div>
+          <div class="info-row"><span class="info-key">Failed</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.failed}</span></div>
+          <div class="info-row"><span class="info-key">Suppressed</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.suppressed}</span></div>
+          <div class="info-row"><span class="info-key">Muted</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.muted}</span></div>
+          <div class="info-row"><span class="info-key">Seeded</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.seeded_sources.length ? debugInfo.notification_debug.last_sync.seeded_sources.join(", ") : "-"}</span></div>
+          <div class="info-row"><span class="info-key">Fetch Errors</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.fetch_failures.length ? debugInfo.notification_debug.last_sync.fetch_failures.join(" | ") : "-"}</span></div>
+          <div class="info-row"><span class="info-key">Sync Error</span><span class="info-val mono">{debugInfo.notification_debug.last_sync.error || "-"}</span></div>
+        </div>
+
+        <h4>通知 Events</h4>
+        {#if debugInfo.notification_debug.recent_events.length > 0}
+          <div class="log-scroll">
+            {#each debugInfo.notification_debug.recent_events.slice().reverse() as event}
+              <div class="log-line" class:log-error={event.status === "failed"} class:log-warn={event.status === "suppressed"} class:log-info={event.status === "dispatched" || event.status === "seeded"}>
+                <span class="lt">{formatEventTime(event.at_epoch)}</span>
+                <span class="ll">[{event.source}/{event.status}]</span>
+                <span class="lm">{event.title} :: {event.body}{event.detail ? ` (${event.detail})` : ""}</span>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="muted">通知イベントはまだありません</p>
+        {/if}
       {/if}
     </div>
 
@@ -508,11 +687,19 @@
     justify-content: space-between;
     align-items: center;
   }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
 
   .info-grid {
     background: var(--bg-secondary);
     border-radius: 8px;
     overflow: hidden;
+  }
+  .compact-grid {
+    margin-top: 8px;
   }
   .info-row {
     display: flex;
@@ -530,12 +717,19 @@
     width: 100px;
     flex-shrink: 0;
   }
+  .source-key {
+    text-transform: uppercase;
+  }
   .info-val {
     font-size: 11px;
     color: var(--text-primary);
     display: flex;
     align-items: center;
     gap: 4px;
+  }
+  .source-flags {
+    flex-wrap: wrap;
+    row-gap: 2px;
   }
   .mono {
     font-family: "SF Mono", "Menlo", monospace;
