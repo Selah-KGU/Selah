@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { devModeActive } from "../../stores";
+  import { logout, isDemoActive } from "../../api";
   import { get } from "svelte/store";
   import logoUrl from "../../../assets/logo.png";
 
@@ -43,7 +44,7 @@
 
   async function logoutAndReturn() {
     try {
-      await invoke("logout");
+      await logout();
       location.reload();
     } catch (e) {
       console.error("logout failed:", e);
@@ -56,6 +57,10 @@
   }
 
   async function confirmDelete() {
+    if (isDemoActive()) {
+      deleteErr = "演示モードではローカルデータ削除は実行しません。";
+      return;
+    }
     try {
       await invoke("delete_all_local_data");
       try { localStorage.clear(); } catch { /* noop */ }

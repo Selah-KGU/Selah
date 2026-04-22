@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { kwicOpenLink } from "../api";
+  import { kwicOpenLink, isDemoActive } from "../api";
 
   interface IctTool {
     id: string;
@@ -64,11 +64,16 @@
   async function openTool(tool: IctTool) {
     try {
       if (tool.id === "facility") {
+        if (isDemoActive()) return;
         await invoke("open_facility_reservation");
         return;
       }
       if (!tool.url) return;
       if (tool.systemBrowser) {
+        if (isDemoActive()) {
+          await kwicOpenLink(tool.url, tool.title);
+          return;
+        }
         await invoke("open_in_system_browser", { url: tool.url });
         return;
       }

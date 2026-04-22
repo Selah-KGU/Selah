@@ -84,32 +84,40 @@ async fn sync_notifications_now(app: &AppHandle) -> Result<(), String> {
 
 async fn sync_notifications_inner(app: &AppHandle) -> Result<(), String> {
     let cfg = commands::load_notification_config();
+    let (kgc_authenticated, luna_authenticated, kwic_authenticated, mail_authenticated) = tokio::join!(
+        is_kgc_authenticated(app),
+        is_luna_authenticated(app),
+        is_kwic_authenticated(app),
+        is_mail_authenticated(app)
+    );
     let db = app.state::<Database>();
-    let bootstrap_mode = current_bootstrap_mode(&db);
+    let has_authenticated_source =
+        kgc_authenticated || luna_authenticated || kwic_authenticated || mail_authenticated;
+    let bootstrap_mode = current_bootstrap_mode(&db, has_authenticated_source);
     let suppress_push = !matches!(bootstrap_mode, BootstrapMode::Normal);
 
-    if is_kgc_authenticated(app).await {
+    if kgc_authenticated {
         match fetch_kgc_notifications(app).await {
             Ok(data) => sync_kgc_notifications(app, &cfg, data, suppress_push),
             Err(e) => log::warn!("notification sync: kgc fetch failed: {}", e),
         }
     }
 
-    if is_luna_authenticated(app).await {
+    if luna_authenticated {
         match fetch_luna_notifications(app).await {
             Ok(items) => sync_luna_notifications(app, &cfg, items, suppress_push),
             Err(e) => log::warn!("notification sync: luna fetch failed: {}", e),
         }
     }
 
-    if is_kwic_authenticated(app).await {
+    if kwic_authenticated {
         match fetch_kwic_home(app).await {
             Ok(home) => sync_kwic_notifications(app, &cfg, home, suppress_push),
             Err(e) => log::warn!("notification sync: kwic fetch failed: {}", e),
         }
     }
 
-    if is_mail_authenticated(app).await {
+    if mail_authenticated {
         match crate::mail_commands::fetch_inbox_internal(app, 20, 0).await {
             Ok(items) => sync_mail_notifications(app, &cfg, items, suppress_push),
             Err(e) => log::warn!("notification sync: mail fetch failed: {}", e),
@@ -344,17 +352,27 @@ fn load_seen_state(db: &Database, source: &str) -> (bool, Vec<String>, HashSet<S
     (initialized, seen_ids, seen_set)
 }
 
-fn current_bootstrap_mode(db: &Database) -> BootstrapMode {
+fn current_bootstrap_mode(db: &Database, has_authenticated_source: bool) -> BootstrapMode {
     if crate::read_state::is_seen_notif_bootstrap_complete(db) {
         return BootstrapMode::Normal;
     }
 
+    let started_at = crate::read_state::get_seen_notif_bootstrap_started_at(db);
+
+    if started_at.is_none() && crate::read_state::has_any_seen_notif_state(db) {
+        crate::read_state::mark_seen_notif_bootstrap_complete(db);
+        return BootstrapMode::Normal;
+    }
+
+    if !has_authenticated_source {
+        return BootstrapMode::Silent;
+    }
+
     let now = epoch_secs();
-    let started_at =
-        crate::read_state::get_seen_notif_bootstrap_started_at(db).unwrap_or_else(|| {
-            crate::read_state::mark_seen_notif_bootstrap_started_at(db, now);
-            now
-        });
+    let started_at = started_at.unwrap_or_else(|| {
+        crate::read_state::mark_seen_notif_bootstrap_started_at(db, now);
+        now
+    });
 
     if now.saturating_sub(started_at) >= BOOTSTRAP_GRACE_PERIOD.as_secs() as i64 {
         BootstrapMode::Finalize
@@ -397,6 +415,8 @@ fn classify_course_notification(module: &str) -> CourseNotificationKind {
         return CourseNotificationKind::General;
     }
     if normalized.contains("掲示板")
+        || normalized.contains("ディスカッション")
+        || normalized.contains("フォーラム")
         || normalized.contains("forum")
         || normalized.contains("discussion")
         || normalized.contains("comment")
@@ -410,12 +430,16 @@ fn classify_course_notification(module: &str) -> CourseNotificationKind {
     {
         return CourseNotificationKind::Survey;
     }
-    if normalized.contains("出席") || normalized.contains("attendance") {
+    if normalized.contains("出席")
+        || normalized.contains("出欠")
+        || normalized.contains("attendance")
+    {
         return CourseNotificationKind::Attendance;
     }
     if normalized.contains("小テスト")
         || normalized.contains("テスト")
         || normalized.contains("試験")
+        || normalized.contains("examination")
         || normalized.contains("exam")
         || normalized.contains("quiz")
     {
@@ -431,6 +455,8 @@ fn classify_course_notification(module: &str) -> CourseNotificationKind {
     }
     if normalized.contains("お知らせ")
         || normalized.contains("資料")
+        || normalized.contains("教材")
+        || normalized.contains("information")
         || normalized.contains("announcement")
         || normalized.contains("material")
         || normalized.contains("連絡")

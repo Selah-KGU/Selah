@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts, getAiConfig, resetAiReady } from "../api";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, fetchExamTimetable, openSyllabusDetail, refreshLunaCounts, getAiConfig, resetAiReady, isDemoActive } from "../api";
   import { lunaAuthState, gcalAuthState, sessionExpired, registerTask, updateTask, onCacheUpdate, aiReady } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
@@ -164,6 +164,7 @@
   async function handleCellClick(c: CellData) {
     const name = cellName(c);
     if (!name) return;
+    if (isDemoActive()) return;
     if (c.luna && $lunaAuthState.authenticated) {
       try {
         await invoke("luna_open_detail_window", {
@@ -179,6 +180,7 @@
   }
 
   function openLunaCourse(idnumber: string, name: string) {
+    if (isDemoActive()) return;
     invoke("luna_open_detail_window", {
       path: "", title: name, mode: "course", idnumber,
       kgcPath: null,

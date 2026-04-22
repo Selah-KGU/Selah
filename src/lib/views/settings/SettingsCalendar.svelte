@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { gcalCheckSession, gcalClearCalendar, gcalDisconnect, gcalGetConfig, gcalOpenLogin, gcalSaveConfig, isDemoActive } from "../../api";
 
   type Status = "loading" | "ok" | "ng" | "none";
 
@@ -36,7 +37,7 @@
 
   async function loadGcal() {
     try {
-      const cfg = await invoke<{ client_id?: string; client_secret?: string }>("gcal_get_config");
+      const cfg = await gcalGetConfig();
       gcalClientId = cfg.client_id || "";
       gcalClientSecret = cfg.client_secret || "";
     } catch (e) {
@@ -49,7 +50,7 @@
     gcalState = "loading";
     gcalLabel = "確認中...";
     try {
-      const s = await invoke<{ authenticated: boolean; calendar_exists?: boolean; synced_events?: number }>("gcal_check_session");
+      const s = await gcalCheckSession();
       if (s.authenticated) {
         gcalState = "ok";
         gcalLabel = s.calendar_exists ? `認証済み (${s.synced_events ?? 0}件同期済)` : "認証済み (未同期)";
@@ -65,12 +66,10 @@
 
   async function gcalLogin() {
     try {
-      await invoke("gcal_save_config", {
-        config: { client_id: gcalClientId.trim(), client_secret: gcalClientSecret.trim() },
-      });
-      await invoke("gcal_open_login");
+      await gcalSaveConfig(gcalClientId.trim(), gcalClientSecret.trim());
+      await gcalOpenLogin();
       gcalStatusColor = "var(--text-secondary)";
-      gcalStatusMsg = "ブラウザで認証中...";
+      gcalStatusMsg = isDemoActive() ? "演示モードでは認証処理を行いません" : "ブラウザで認証中...";
     } catch (e) {
       gcalStatusColor = "var(--red)";
       gcalStatusMsg = "認証失敗: " + String(e);
@@ -80,9 +79,9 @@
 
   async function gcalLogout() {
     try {
-      await invoke("gcal_disconnect");
+      await gcalDisconnect();
       gcalStatusColor = "var(--green)";
-      gcalStatusMsg = "連携を解除しました";
+      gcalStatusMsg = isDemoActive() ? "演示モードでは連携状態を変更しません" : "連携を解除しました";
       void checkGcalSession();
     } catch (e) {
       gcalStatusColor = "var(--red)";
@@ -93,7 +92,8 @@
 
   async function gcalClear() {
     try {
-      const r = await invoke<string>("gcal_clear_calendar", { deleteCalendar: false });
+      await gcalClearCalendar();
+      const r = isDemoActive() ? "演示モードではカレンダーを変更しません" : "Google Calendar のイベントを削除しました";
       gcalStatusColor = "var(--green)";
       gcalStatusMsg = r;
       void checkGcalSession();
@@ -106,7 +106,10 @@
 
   async function gcalDeleteCal() {
     try {
-      const r = await invoke<string>("gcal_clear_calendar", { deleteCalendar: true });
+      if (!isDemoActive()) {
+        await invoke<string>("gcal_clear_calendar", { deleteCalendar: true });
+      }
+      const r = isDemoActive() ? "演示モードではカレンダーを削除しません" : "Google Calendar を削除しました";
       gcalStatusColor = "var(--green)";
       gcalStatusMsg = r;
       void checkGcalSession();
@@ -129,9 +132,7 @@
         cal_sync_interval: parseInt(calSyncInterval) || 12,
       };
       await invoke("save_calendar_config", { config: cc });
-      await invoke("gcal_save_config", {
-        config: { client_id: gcalClientId.trim(), client_secret: gcalClientSecret.trim() },
-      });
+      await gcalSaveConfig(gcalClientId.trim(), gcalClientSecret.trim());
       localStorage.setItem("selah-gcal-auto-sync", String(cc.gcal_auto_sync));
       localStorage.setItem("selah-cal-sync-interval", String(cc.cal_sync_interval));
     } catch (e) {

@@ -167,6 +167,45 @@ fn normalize_detail_text(s: &str) -> String {
     s.split_whitespace().collect::<String>()
 }
 
+pub(crate) fn is_blacklisted_system_notice_text(s: &str) -> bool {
+    let text = s.trim();
+    if text.is_empty() {
+        return false;
+    }
+
+    // Luna occasionally returns university-wide support/maintenance notices in place
+    // of the actual activity body on the first request. These are stable enough to
+    // blacklist explicitly instead of further tightening the structural parser.
+    const STRONG_PATTERNS: &[&str] = &[
+        "ゲストアクセス」と「履修登録」は違います",
+        "履修データ連携に関する補足",
+        "このセッションの表示アクセス権がありません。",
+        "学生キャビネット ＞ 教務機構 ＞ LUNA・ポートフォリオ",
+        "macを利用されている学生は注意ください",
+        "LUNAサポートへお問い合わせいただく前に",
+        "メンテナンス時間帯において、接続が切れる場合があります。",
+    ];
+    if STRONG_PATTERNS.iter().any(|pattern| text.contains(pattern)) {
+        return true;
+    }
+
+    let grouped_patterns: &[&[&str]] = &[
+        &["時間割", "ゲストアクセス", "履修登録"],
+        &["KG Chatbot", "学生向け動画マニュアル"],
+        &["Panoptoボタン", "アクセス権をリクエスト"],
+        &[
+            "Panoptoボタン",
+            "このセッションの表示アクセス権がありません。",
+        ],
+        &["教務連携スケジュール", "履修データ連携"],
+        &["LUNAの定期メンテナンスについて", "AM2:00 - AM2:30"],
+        &["学生キャビネット", "LUNA・ポートフォリオ"],
+    ];
+    grouped_patterns
+        .iter()
+        .any(|group| group.iter().all(|pattern| text.contains(pattern)))
+}
+
 fn extract_filtered_input_text(area: scraper::ElementRef) -> String {
     let mut text_parts = Vec::new();
     for child in area.text() {
@@ -201,6 +240,10 @@ fn push_unique_section(
 ) {
     let body = body.into().trim().to_string();
     if body.is_empty() {
+        return;
+    }
+    if is_blacklisted_system_notice_text(&body) {
+        log::debug!("[luna_detail] dropped blacklisted system notice candidate");
         return;
     }
     let normalized = normalize_detail_text(&body);

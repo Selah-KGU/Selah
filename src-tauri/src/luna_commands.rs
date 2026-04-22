@@ -16,6 +16,8 @@ pub use downloads::*;
 pub use navigation::*;
 
 static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
+const LUNA_DETAIL_CACHE_VERSION: &str = "v2";
+const LUNA_ANNOUNCEMENT_CACHE_VERSION: &str = "v2";
 
 // ── Cached selectors (compiled once, reused across all calls) ──
 macro_rules! sel {
@@ -93,6 +95,12 @@ fn has_detail_payload(data: &luna_parser::LunaDetailPage) -> bool {
     !data.sections.is_empty() || !data.meta.is_empty() || !data.attachments.is_empty()
 }
 
+fn has_blacklisted_cached_sections(data: &luna_parser::LunaDetailPage) -> bool {
+    data.sections
+        .iter()
+        .any(|section| crate::luna_parser::is_blacklisted_system_notice_text(&section.body))
+}
+
 fn has_generic_detail_structure(html: &str) -> bool {
     let doc = scraper::Html::parse_document(html);
     let has_title =
@@ -135,6 +143,15 @@ fn is_valid_announcement_detail_response(
     title_matches_expected(&data.title, expected_title)
         && has_detail_payload(data)
         && has_announcement_detail_structure(html)
+}
+
+fn is_usable_cached_detail_response(
+    data: &luna_parser::LunaDetailPage,
+    expected_title: Option<&str>,
+) -> bool {
+    title_matches_expected(&data.title, expected_title)
+        && has_detail_payload(data)
+        && !has_blacklisted_cached_sections(data)
 }
 
 /// Luna GET with Referer header — required for form pages that serve CSRF tokens.
@@ -412,10 +429,10 @@ pub async fn luna_fetch_detail(
     if path.starts_with("http") || !path.starts_with('/') {
         return Err("許可されていないパスです".into());
     }
-    let cache_key = format!("luna_detail:{}", path);
+    let cache_key = format!("luna_detail:{}:{}", LUNA_DETAIL_CACHE_VERSION, path);
+    let expected_title = expected_title.as_deref();
     match luna_http(&state).await {
         Ok(http) => {
-            let expected_title = expected_title.as_deref();
             let fetch = async {
                 let mut html = luna_get(&http, &path).await?;
                 let mut data = luna_parser::parse_luna_detail_page(&html);
@@ -465,8 +482,11 @@ pub async fn luna_fetch_detail(
                 Err(e) => {
                     if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                         if let Ok(cached) = serde_json::from_str(&json) {
-                            log::info!("luna_detail: cache fallback ({})", e);
-                            return Ok(cached);
+                            if is_usable_cached_detail_response(&cached, expected_title) {
+                                log::info!("luna_detail: cache fallback ({})", e);
+                                return Ok(cached);
+                            }
+                            log::warn!("luna_detail: ignored stale/invalid cache fallback");
                         }
                     }
                     Err(e)
@@ -476,8 +496,11 @@ pub async fn luna_fetch_detail(
         Err(e) => {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
-                    log::info!("luna_detail: cache fallback ({})", e);
-                    return Ok(cached);
+                    if is_usable_cached_detail_response(&cached, expected_title) {
+                        log::info!("luna_detail: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                    log::warn!("luna_detail: ignored stale/invalid cache fallback");
                 }
             }
             Err(e)
@@ -497,14 +520,17 @@ pub async fn luna_fetch_announcement_detail(
     if !is_safe_param(&idnumber) || !is_safe_param(&info_id) {
         return Err("無効なパラメータです".into());
     }
-    let cache_key = format!("luna_announce:{}:{}", idnumber, info_id);
+    let cache_key = format!(
+        "luna_announce:{}:{}:{}",
+        LUNA_ANNOUNCEMENT_CACHE_VERSION, idnumber, info_id
+    );
+    let expected_title = expected_title.as_deref();
     let path = format!(
         "/lms/coursetop/information/listdetail?idnumber={}&informationId={}",
         idnumber, info_id
     );
     match luna_http(&state).await {
         Ok(http) => {
-            let expected_title = expected_title.as_deref();
             let fetch = async {
                 let mut html = luna_get(&http, &path).await?;
                 let mut data = luna_parser::parse_luna_announcement_detail(&html);
@@ -554,8 +580,11 @@ pub async fn luna_fetch_announcement_detail(
                 Err(e) => {
                     if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                         if let Ok(cached) = serde_json::from_str(&json) {
-                            log::info!("luna_announce: cache fallback ({})", e);
-                            return Ok(cached);
+                            if is_usable_cached_detail_response(&cached, expected_title) {
+                                log::info!("luna_announce: cache fallback ({})", e);
+                                return Ok(cached);
+                            }
+                            log::warn!("luna_announce: ignored stale/invalid cache fallback");
                         }
                     }
                     Err(e)
@@ -565,8 +594,11 @@ pub async fn luna_fetch_announcement_detail(
         Err(e) => {
             if let Ok(Some((json, _))) = db.get_data_cache(&cache_key) {
                 if let Ok(cached) = serde_json::from_str(&json) {
-                    log::info!("luna_announce: cache fallback ({})", e);
-                    return Ok(cached);
+                    if is_usable_cached_detail_response(&cached, expected_title) {
+                        log::info!("luna_announce: cache fallback ({})", e);
+                        return Ok(cached);
+                    }
+                    log::warn!("luna_announce: ignored stale/invalid cache fallback");
                 }
             }
             Err(e)

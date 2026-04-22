@@ -16,6 +16,9 @@ import {
   type ExamTimetableData,
   type NotificationsData,
   type StudentInfo,
+  type SyllabusSearchParams,
+  type SyllabusSearchResult,
+  type SyllabusEntry,
 } from "./stores";
 import type {
   ScheduleResponse,
@@ -24,7 +27,14 @@ import type {
   KgcCourseRow,
   LunaCourseRow,
 } from "./types";
-import type { WeatherData, KwicPortalHome, MailMessage } from "./api";
+import type {
+  WeatherData,
+  KwicPortalHome,
+  KwicSubportalData,
+  KwicPortalNotification,
+  MailMessage,
+  MailAttachment,
+} from "./api";
 
 // ---- Store ----
 
@@ -105,6 +115,136 @@ function futureISO(days: number, hour = 9, min = 0): string {
   d.setDate(d.getDate() + days);
   d.setHours(hour, min, 0, 0);
   return d.toISOString();
+}
+
+const TERM_LABELS: Record<string, string> = {
+  "01": "通年",
+  "02": "春学期",
+  "03": "秋学期",
+  "04": "春学期前半",
+  "05": "春学期後半",
+  "06": "秋学期前半",
+  "07": "秋学期後半",
+  "20": "通年集中",
+  "21": "春学期集中",
+  "22": "秋学期集中",
+};
+
+const CAMPUS_LABELS: Record<string, string> = {
+  "1": "西宮上ケ原",
+  "2": "神戸三田",
+  "3": "大阪梅田",
+  "5": "西宮聖和",
+  "6": "オンライン",
+  "7": "東京丸の内",
+  "8": "西宮北口",
+};
+
+const DEPARTMENT_LABELS: Record<string, string> = {
+  "28": "理工学部",
+  "36": "理学部",
+  "37": "工学部",
+  "38": "生命環境学部",
+  "39": "建築学部",
+  "42": "共通教育センター",
+  "45": "言語教育研究センター",
+};
+
+const demoSyllabusCatalog: SyllabusEntry[] = [
+  {
+    academic_year: "2026",
+    department: "理工学部",
+    class_code: "CS301",
+    course_title: "アルゴリズムとデータ構造",
+    instructor: "田中 一郎",
+    term: "春学期",
+    day_period: "月2",
+    campus: "神戸三田",
+    credits: "2",
+    bookmarked: true,
+    refer_index: "syllabus-cs301",
+    register_index: "syllabus-cs301",
+  },
+  {
+    academic_year: "2026",
+    department: "理工学部",
+    class_code: "CS302",
+    course_title: "オペレーティングシステム",
+    instructor: "佐藤 花子",
+    term: "春学期",
+    day_period: "火3",
+    campus: "神戸三田",
+    credits: "2",
+    bookmarked: false,
+    refer_index: "syllabus-cs302",
+    register_index: "syllabus-cs302",
+  },
+  {
+    academic_year: "2026",
+    department: "理工学部",
+    class_code: "CS330",
+    course_title: "ヒューマンコンピュータインタラクション",
+    instructor: "中村 佳奈",
+    term: "春学期",
+    day_period: "火5",
+    campus: "神戸三田",
+    credits: "2",
+    bookmarked: true,
+    refer_index: "syllabus-cs330",
+    register_index: "syllabus-cs330",
+  },
+  {
+    academic_year: "2026",
+    department: "理工学部",
+    class_code: "CS360",
+    course_title: "情報理論",
+    instructor: "木村 恒一",
+    term: "春学期",
+    day_period: "金3",
+    campus: "神戸三田",
+    credits: "2",
+    bookmarked: false,
+    refer_index: "syllabus-cs360",
+    register_index: "syllabus-cs360",
+  },
+  {
+    academic_year: "2026",
+    department: "共通教育センター",
+    class_code: "GE210",
+    course_title: "データサイエンス実践",
+    instructor: "藤井 直人",
+    term: "春学期",
+    day_period: "木4",
+    campus: "オンライン",
+    credits: "2",
+    bookmarked: false,
+    refer_index: "syllabus-ge210",
+    register_index: "syllabus-ge210",
+  },
+];
+
+const demoSyllabusBookmarks = new Set(
+  demoSyllabusCatalog.filter((entry) => entry.bookmarked).map((entry) => entry.class_code),
+);
+
+function cloneSyllabusEntry(entry: SyllabusEntry): SyllabusEntry {
+  return {
+    ...entry,
+    bookmarked: demoSyllabusBookmarks.has(entry.class_code),
+  };
+}
+
+function buildSyllabusResult(entries: SyllabusEntry[]): SyllabusSearchResult {
+  return {
+    entries: entries.map(cloneSyllabusEntry),
+    total_count: entries.length,
+    current_page: 1,
+    total_pages: entries.length > 0 ? 1 : 0,
+  };
+}
+
+function includesFolded(value: string, needle: string): boolean {
+  return value.toLowerCase().includes(needle.toLowerCase());
 }
 
 // ---- Demo Data Generators ----
@@ -241,31 +381,31 @@ export function demoExams(): ExamTimetableData {
 export function demoNotifications(): NotificationsData {
   return {
     entries: [
-      { id: "n1", title: "春学期の履修登録確認について", date: todayStr(), category: "教務" },
-      { id: "n2", title: "学生証再発行の手続き変更", date: futureDate(-1), category: "学生生活" },
-      { id: "n3", title: "図書館の開館時間延長のお知らせ", date: futureDate(-2), category: "施設" },
-      { id: "n4", title: "奨学金の申請締切について", date: futureDate(-3), category: "奨学金" },
-      { id: "n5", title: "夏季休業中の事務室開室日程", date: futureDate(-5), category: "教務" },
+      { id: "春学期の履修登録確認について|" + todayStr(), title: "春学期の履修登録確認について", date: todayStr(), category: "教務" },
+      { id: "第8回 アルゴリズム演習の提出について|" + futureDate(-1), title: "第8回 アルゴリズム演習の提出について", date: futureDate(-1), category: "授業" },
+      { id: "学生証再発行の手続き変更|" + futureDate(-2), title: "学生証再発行の手続き変更", date: futureDate(-2), category: "学生生活" },
+      { id: "奨学金の申請締切について|" + futureDate(-3), title: "奨学金の申請締切について", date: futureDate(-3), category: "奨学金" },
+      { id: "夏季休業中の事務室開室日程|" + futureDate(-5), title: "夏季休業中の事務室開室日程", date: futureDate(-5), category: "教務" },
     ],
   };
 }
 
 export function demoLunaTodo(): LunaTodoItem[] {
   return [
-    { course_name: "アルゴリズムとデータ構造", content_type: "レポート", content_name: "第7回 レポート課題", url: "#", deadline: futureISO(3, 23, 59), status: "未提出", feedback: "" },
-    { course_name: "オペレーティングシステム", content_type: "小テスト", content_name: "プロセス管理 確認テスト", url: "#", deadline: futureISO(5, 23, 59), status: "未提出", feedback: "" },
-    { course_name: "データベース概論", content_type: "レポート", content_name: "SQL演習課題 第3回", url: "#", deadline: futureISO(7, 23, 59), status: "未提出", feedback: "" },
-    { course_name: "Academic English III", content_type: "課題", content_name: "Essay Draft Submission", url: "#", deadline: futureISO(2, 17, 0), status: "未提出", feedback: "" },
-    { course_name: "ソフトウェア工学", content_type: "レポート", content_name: "UML設計課題", url: "#", deadline: futureISO(-1, 23, 59), status: "提出済", feedback: "合格" },
+    { course_name: "アルゴリズムとデータ構造", content_type: "レポート", content_name: "第7回 レポート課題", url: "/mod/assign/view.php?id=demo-report-1", deadline: futureISO(3, 23, 59), status: "未提出", feedback: "" },
+    { course_name: "オペレーティングシステム", content_type: "小テスト", content_name: "プロセス管理 確認テスト", url: "/mod/quiz/view.php?id=demo-quiz-1", deadline: futureISO(5, 23, 59), status: "未提出", feedback: "" },
+    { course_name: "データベース概論", content_type: "レポート", content_name: "SQL演習課題 第3回", url: "/mod/assign/view.php?id=demo-report-2", deadline: futureISO(7, 23, 59), status: "未提出", feedback: "" },
+    { course_name: "Academic English III", content_type: "課題", content_name: "Essay Draft Submission", url: "/mod/assign/view.php?id=demo-essay-1", deadline: futureISO(2, 17, 0), status: "未提出", feedback: "" },
+    { course_name: "ソフトウェア工学", content_type: "レポート", content_name: "UML設計課題", url: "/mod/assign/view.php?id=demo-report-3", deadline: futureISO(-1, 23, 59), status: "提出済", feedback: "合格" },
   ];
 }
 
 export function demoLunaUpdates(): LunaNotification[] {
   return [
-    { date: todayStr(), course_info: "アルゴリズムとデータ構造", module: "お知らせ", content: "第8回の授業資料をアップロードしました", url: "#", idnumber: "L001" },
-    { date: futureDate(-1), course_info: "オペレーティングシステム", module: "レポート", content: "中間テストの範囲を公開しました", url: "#", idnumber: "L002" },
-    { date: futureDate(-2), course_info: "データベース概論", module: "お知らせ", content: "来週の授業は演習室で行います", url: "#", idnumber: "L003" },
-    { date: futureDate(-3), course_info: "Academic English III", module: "課題", content: "Essay topic has been updated", url: "#", idnumber: "L005" },
+    { date: todayStr(), course_info: "アルゴリズムとデータ構造", module: "お知らせ", content: "第8回の授業資料をアップロードしました", url: "/mod/forum/discuss.php?d=demo-forum-1", idnumber: "L001" },
+    { date: futureDate(-1), course_info: "オペレーティングシステム", module: "レポート", content: "中間テストの範囲を公開しました", url: "/mod/quiz/view.php?id=demo-quiz-1", idnumber: "L002" },
+    { date: futureDate(-2), course_info: "データベース概論", module: "お知らせ", content: "来週の授業は演習室で行います", url: "/mod/forum/discuss.php?d=demo-forum-2", idnumber: "L003" },
+    { date: futureDate(-3), course_info: "Academic English III", module: "課題", content: "Essay topic has been updated", url: "/mod/assign/view.php?id=demo-essay-1", idnumber: "L005" },
   ];
 }
 
@@ -273,20 +413,101 @@ export function demoKwicHome(): KwicPortalHome {
   return {
     sections: [
       {
-        title: "重要なお知らせ",
+        title: "メインリンク",
         items: [
-          { id: "k1", title: "2026年度 春学期の時間割変更について", date: todayStr(), category: "教務", url: "#", important: true, information_type: "1", person_category_cd: "1", category_cd: "1" },
-          { id: "k2", title: "新型コロナウイルス感染症対策の変更", date: futureDate(-2), category: "健康", url: "#", important: true, information_type: "1", person_category_cd: "1", category_cd: "2" },
+          { id: "kwic-main-1", title: "学生支援ポータル", date: "", category: "", url: "/portal/subportal?tagCd=1", important: false, information_type: "", person_category_cd: "", category_cd: "" },
+          { id: "kwic-main-2", title: "教学サポート", date: "", category: "", url: "/portal/subportal?tagCd=2", important: false, information_type: "", person_category_cd: "", category_cd: "" },
+          { id: "kwic-main-3", title: "キャリア・就職", date: "", category: "", url: "/portal/subportal?tagCd=3", important: false, information_type: "", person_category_cd: "", category_cd: "" },
+          { id: "kwic-main-4", title: "ICTサポート", date: "", category: "", url: "/portal/subportal?tagCd=4", important: false, information_type: "", person_category_cd: "", category_cd: "" },
         ],
       },
       {
-        title: "一般",
+        title: "注目コンテンツ",
         items: [
-          { id: "k3", title: "キャリアセンター 就職ガイダンス開催", date: futureDate(-1), category: "キャリア", url: "#", important: false, information_type: "1", person_category_cd: "1", category_cd: "3" },
-          { id: "k4", title: "学食メニューリニューアルのお知らせ", date: futureDate(-4), category: "施設", url: "#", important: false, information_type: "1", person_category_cd: "1", category_cd: "4" },
+          { id: "kwic-feature-1", title: "履修登録の事前確認ガイド", date: todayStr(), category: "教務", url: "https://kwansei.example/guide", important: false, information_type: "", person_category_cd: "", category_cd: "" },
+          { id: "kwic-feature-2", title: "春学期サポート窓口一覧", date: futureDate(-1), category: "学生生活", url: "https://kwansei.example/support", important: false, information_type: "", person_category_cd: "", category_cd: "" },
+        ],
+      },
+      {
+        title: "呼出し・重要なお知らせ",
+        items: [
+          { id: "k1", title: "2026年度 春学期の時間割変更について", date: todayStr(), category: "教務", url: "", important: true, information_type: "1", person_category_cd: "1", category_cd: "1" },
+          { id: "k2", title: "学生定期健康診断の事前回答", date: futureDate(-2), category: "保健館", url: "", important: true, information_type: "1", person_category_cd: "1", category_cd: "2" },
+        ],
+      },
+      {
+        title: "学部・研究科からのお知らせ",
+        items: [
+          { id: "k3", title: "理工学部オリエンテーション補足資料", date: futureDate(-1), category: "理工学部", url: "", important: false, information_type: "1", person_category_cd: "1", category_cd: "3" },
+          { id: "k4", title: "実験レポート提出ルールの更新", date: futureDate(-4), category: "理工学部", url: "", important: false, information_type: "1", person_category_cd: "1", category_cd: "4" },
+        ],
+      },
+      {
+        title: "その他",
+        items: [
+          { id: "k5", title: "キャリアセンター 就職ガイダンス開催", date: futureDate(-1), category: "キャリア", url: "", important: false, information_type: "1", person_category_cd: "1", category_cd: "5" },
+          { id: "k6", title: "図書館の開館時間延長のお知らせ", date: futureDate(-4), category: "施設", url: "", important: false, information_type: "1", person_category_cd: "1", category_cd: "6" },
         ],
       },
     ],
+  };
+}
+
+export function demoKwicSubportal(tagCd: string): KwicSubportalData {
+  const data: Record<string, KwicSubportalData> = {
+    "1": {
+      title: "学生支援ポータル",
+      links: [
+        { title: "奨学金案内", url: "https://example.com/scholarship", icon_url: "", description: "申請スケジュールと募集要項" },
+        { title: "学生相談室", url: "https://example.com/counseling", icon_url: "", description: "相談窓口と利用方法" },
+      ],
+      notifications: [
+        { id: "sub-1", title: "奨学金説明会の録画公開", date: futureDate(-1), category: "奨学金", important: false, information_type: "1", person_category_cd: "1", category_cd: "10" },
+      ],
+    },
+    "2": {
+      title: "教学サポート",
+      links: [
+        { title: "履修登録 FAQ", url: "https://example.com/faq", icon_url: "", description: "履修・時間割まわりのよくある質問" },
+        { title: "シラバス検索", url: "https://example.com/syllabus", icon_url: "", description: "授業情報の検索" },
+      ],
+      notifications: [
+        { id: "sub-2", title: "履修登録修正期間の案内", date: todayStr(), category: "教務", important: true, information_type: "1", person_category_cd: "1", category_cd: "11" },
+      ],
+    },
+    "3": {
+      title: "キャリア・就職",
+      links: [
+        { title: "インターン情報", url: "https://example.com/intern", icon_url: "", description: "募集一覧と締切" },
+      ],
+      notifications: [],
+    },
+    "4": {
+      title: "ICTサポート",
+      links: [
+        { title: "アカウント設定", url: "https://example.com/account", icon_url: "", description: "大学アカウントの設定" },
+      ],
+      notifications: [],
+    },
+  };
+  return data[tagCd] ?? { title: "サブポータル", links: [], notifications: [] };
+}
+
+export function demoKwicDetail(n: Pick<KwicPortalNotification, "id" | "title">) {
+  const bodies: Record<string, string> = {
+    k1: "<p>来週から一部科目の教室が変更されます。時間割の最新表示を確認してください。</p>",
+    k2: "<p>健康診断の事前問診は 4 月 25 日までに回答してください。未回答者は当日の受付に時間がかかります。</p>",
+    k3: "<p>理工学部向けの補足資料を掲載しました。実験科目の初回ガイダンスに関する説明を含みます。</p>",
+    k4: "<p>レポート提出時のファイル命名規則と締切時刻の扱いを更新しました。</p>",
+    k5: "<p>就職ガイダンスは今週金曜 16:30 から実施します。参加方法は事前登録制です。</p>",
+    k6: "<p>試験期間中は図書館の開館時間を 21:00 まで延長します。</p>",
+  };
+  return {
+    title: n.title,
+    date: futureDate(-1),
+    sender: "KWIC ポータル",
+    body_html: bodies[n.id] ?? "<p>演示用の詳細本文です。</p>",
+    attachments: [],
   };
 }
 
@@ -308,6 +529,123 @@ export function demoMailInbox(): MailMessage[] {
     { id: "m4", subject: "図書館システムメンテナンスのお知らせ", bodyPreview: "4月20日（日）9:00-17:00の間、図書館システムのメンテナンスを実施します...", from: { emailAddress: { name: "図書館", address: "library@kwansei.ac.jp" } }, receivedDateTime: futureISO(-3, 11, 0), isRead: true, hasAttachments: false },
     { id: "m5", subject: "サークル新歓イベントの案内", bodyPreview: "プログラミングサークルの新歓イベントを開催します。日時: 4月25日 18:00...", from: { emailAddress: { name: "プログラミングサークル", address: "progcircle@kwansei.ac.jp" } }, receivedDateTime: futureISO(-5, 16, 20), isRead: true, hasAttachments: false },
   ];
+}
+
+export function demoMailAttachments(messageId: string): MailAttachment[] {
+  if (messageId !== "m2") return [];
+  return [
+    { id: "mail-attachment-1", name: "report-guideline.pdf", contentType: "application/pdf", size: 235520 },
+  ];
+}
+
+export function demoStudentProfile(): StudentInfo {
+  return { ...demoStudent };
+}
+
+export function demoLunaDetail(path: string) {
+  const courseName =
+    path.includes("demo-quiz-1") ? "オペレーティングシステム" :
+    path.includes("demo-report-2") ? "データベース概論" :
+    path.includes("demo-essay-1") ? "Academic English III" :
+    "アルゴリズムとデータ構造";
+
+  return {
+    title:
+      path.includes("demo-quiz-1") ? "プロセス管理 確認テスト" :
+      path.includes("demo-report-2") ? "SQL演習課題 第3回" :
+      path.includes("demo-essay-1") ? "Essay Draft Submission" :
+      path.includes("demo-forum-2") ? "来週の授業は演習室で行います" :
+      "第7回 レポート課題",
+    course_name: courseName,
+    sections: [
+      {
+        heading: "概要",
+        body: "演示用の Luna 詳細です。授業の要点、提出条件、注意事項をここで確認できます。",
+      },
+      {
+        heading: "ポイント",
+        body:
+          path.includes("demo-quiz-1")
+            ? "プロセス管理、スケジューリング、排他制御の理解を確認します。"
+            : "締切前に形式と提出先を見直しておくと安心です。",
+      },
+    ],
+    attachments: [],
+    meta: {
+      course: courseName,
+      updated_at: todayStr(),
+    },
+  };
+}
+
+export function demoLunaPage(path: string): string {
+  return `<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Luna Demo - ${path}</title>
+  </head>
+  <body>
+    <h1>Luna Demo</h1>
+    <p>パス: ${path}</p>
+    <a href="/course/view.php?id=demo-course-1">Course</a>
+    <a href="/mod/assign/view.php?id=demo-report-1">Assignment</a>
+  </body>
+</html>`;
+}
+
+export function demoSearchSyllabus(params: SyllabusSearchParams): SyllabusSearchResult {
+  const termLabel = TERM_LABELS[params.term] ?? "";
+  const campusLabel = CAMPUS_LABELS[params.campus] ?? "";
+  const departmentLabel = DEPARTMENT_LABELS[params.department] ?? "";
+  const yearFrom = parseInt(params.year_from || "0", 10);
+  const yearTo = parseInt(params.year_to || "9999", 10);
+
+  const filtered = demoSyllabusCatalog.filter((entry) => {
+    const year = parseInt(entry.academic_year || "0", 10);
+    if (Number.isFinite(year) && (year < yearFrom || year > yearTo)) return false;
+    if (termLabel && !entry.term.includes(termLabel)) return false;
+    if (campusLabel && !entry.campus.includes(campusLabel)) return false;
+    if (departmentLabel && !entry.department.includes(departmentLabel)) return false;
+    if (params.day_period && !entry.day_period.includes(params.day_period.replace(/^([A-F])/, (_m, g1) => ["A", "B", "C", "D", "E", "F"].includes(g1) ? ["月", "火", "水", "木", "金", "土"][["A", "B", "C", "D", "E", "F"].indexOf(g1)] : g1))) return false;
+    if (params.class_code && !includesFolded(entry.class_code, params.class_code)) return false;
+    if (params.keyword && !includesFolded(`${entry.course_title} ${entry.department}`, params.keyword)) return false;
+    if (params.instructor && !includesFolded(entry.instructor, params.instructor)) return false;
+    return true;
+  });
+
+  return buildSyllabusResult(filtered);
+}
+
+export function demoSyllabusFavorites(): SyllabusSearchResult {
+  return buildSyllabusResult(
+    demoSyllabusCatalog.filter((entry) => demoSyllabusBookmarks.has(entry.class_code)),
+  );
+}
+
+export function demoToggleSyllabusBookmark(classCode: string): boolean {
+  if (demoSyllabusBookmarks.has(classCode)) demoSyllabusBookmarks.delete(classCode);
+  else demoSyllabusBookmarks.add(classCode);
+  return demoSyllabusBookmarks.has(classCode);
+}
+
+export function demoFetchPage(path: string): string {
+  return `<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Selah Demo Page</title>
+  </head>
+  <body>
+    <h1>Selah Demo</h1>
+    <p>このページは演示モード用の簡易 HTML です。</p>
+    <p>path: ${path}</p>
+    <table class="output">
+      <tr><th>タイトル</th><th>掲示日</th><th>分類</th></tr>
+      <tr><td>春学期の履修登録確認について</td><td>${todayStr()}</td><td>教務</td></tr>
+    </table>
+  </body>
+</html>`;
 }
 
 // ---- Demo AI data generators ----
@@ -490,6 +828,8 @@ export function populateDemoCache() {
   writeCache("kwic_home", demoKwicHome());
   writeCache("weather", demoWeather());
   writeCache("mail_inbox", demoMailInbox());
-  writeCache("student_profile", demoStudent);
-  writeCache("favorites", { entries: [], total_count: 0, current_page: 1, total_pages: 0 });
+  writeCache("student_profile", demoStudentProfile());
+  writeCache("favorites", demoSyllabusFavorites());
+  writeCache("syllabus_favorites", demoSyllabusFavorites());
+  writeCache("mail_profile", { displayName: demoStudent.name, mail: "taro@kwansei.ac.jp", userPrincipalName: "taro@kwansei.ac.jp" });
 }

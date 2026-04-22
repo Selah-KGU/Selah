@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { isDemoActive, mailCheckSession, mailFetchProfile } from "../../api";
 
   type Status = "loading" | "ok" | "ng" | "none";
 
@@ -13,6 +14,10 @@
   let saveBusy = $state(false);
 
   async function loadConfig() {
+    if (isDemoActive()) {
+      void checkSession();
+      return;
+    }
     try {
       const cfg = await invoke<{ client_id?: string }>("mail_get_config");
       clientId = cfg.client_id || "";
@@ -27,7 +32,7 @@
     sessionLabel = "確認中...";
     accountInfo = "";
     try {
-      const s = await invoke<{ authenticated: boolean; display_name?: string; email?: string }>("mail_check_session");
+      const s = await mailCheckSession();
       if (s.authenticated) {
         sessionState = "ok";
         sessionLabel = "認証済み";
@@ -38,7 +43,7 @@
           accountInfo = parts.join(" — ");
         } else {
           try {
-            const p = await invoke<{ displayName?: string; mail?: string; userPrincipalName?: string }>("mail_fetch_profile");
+            const p = await mailFetchProfile();
             const parts2: string[] = [];
             if (p.displayName) parts2.push(p.displayName);
             if (p.mail || p.userPrincipalName) parts2.push(p.mail || p.userPrincipalName || "");
@@ -58,6 +63,12 @@
   }
 
   async function logout() {
+    if (isDemoActive()) {
+      statusColor = "var(--text-secondary)";
+      statusMsg = "演示モードではメール連携を解除しません";
+      setTimeout(() => { statusMsg = ""; }, 4000);
+      return;
+    }
     try {
       await invoke("mail_logout");
       statusColor = "var(--green)";
@@ -73,6 +84,7 @@
   export async function save() {
     saveBusy = true;
     try {
+      if (isDemoActive()) return;
       await invoke("mail_save_config", { config: { client_id: clientId.trim() } });
       void checkSession();
     } catch (e) {

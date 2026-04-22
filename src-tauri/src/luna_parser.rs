@@ -12,6 +12,7 @@ mod overview;
 pub use course::*;
 #[cfg(test)]
 use course::{extract_quill_delta_html, extract_quill_delta_text};
+pub(crate) use detail::is_blacklisted_system_notice_text;
 #[allow(unused_imports)]
 use detail::{classify_link, extract_named_quill_text, extract_quill_rich_html};
 #[allow(unused_imports)]
@@ -682,6 +683,57 @@ mod tests {
             .meta
             .iter()
             .any(|(k, v)| k == "提出期限" && v == "2026/04/30 23:59"));
+    }
+
+    #[test]
+    fn test_parse_announcement_detail_blacklists_system_notice_body() {
+        let html = r#"
+            <div id="osiraseTitle">授業内お知らせ</div>
+            <div class="contents-detail contents-vertical">
+              <div class="contents-header-txt"><span class="bold-txt">内容</span></div>
+              <div class="contents-input-area">
+                <script>
+                  _QuillUtil.infoBody.setJsonData("{\"ops\":[{\"insert\":\"時間割\\n■「ゲストアクセス」と「履修登録」は違います。単位を取得するためには、履修登録期間中に kwic にて履修登録を必ず行ってください。\\n■LUNAの定期メンテナンスについて\\n\"}]}", 'reference');
+                </script>
+              </div>
+            </div>
+            <div class="contents-detail contents-vertical">
+              <div class="contents-header-txt"><span class="bold-txt">発信者</span></div>
+              <div class="contents-input-area">LUNAサポート</div>
+            </div>
+        "#;
+
+        let result = parse_luna_announcement_detail(html);
+        assert_eq!(result.title, "授業内お知らせ");
+        assert!(
+            result.sections.is_empty(),
+            "blacklisted notice body should be dropped"
+        );
+        assert!(result
+            .meta
+            .iter()
+            .any(|(k, v)| k == "発信者" && v == "LUNAサポート"));
+    }
+
+    #[test]
+    fn test_blacklist_does_not_drop_normal_course_body_with_single_keyword() {
+        let html = r#"
+            <div id="osiraseTitle">動画視聴について</div>
+            <div class="contents-detail contents-vertical">
+              <div class="contents-header-txt"><span class="bold-txt">内容</span></div>
+              <div class="contents-input-area">
+                <script>
+                  _QuillUtil.infoBody.setJsonData("{\"ops\":[{\"insert\":\"講義動画はPanoptoボタンから確認してください。レポート提出方法は次回説明します。\\n\"}]}", 'reference');
+                </script>
+              </div>
+            </div>
+        "#;
+
+        let result = parse_luna_announcement_detail(html);
+        assert_eq!(result.sections.len(), 1);
+        assert!(result.sections[0]
+            .body
+            .contains("講義動画はPanoptoボタンから確認してください。"));
     }
 
     #[test]

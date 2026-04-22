@@ -1,6 +1,6 @@
-<script lang="ts">
+  <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { validateSession, lunaCheckSession, kwicCheckSession, syncSession, initiateRelogin, isDemoActive } from "../../api";
 
   type SvcState = { state: "loading" | "ok" | "ng"; label: string };
 
@@ -16,7 +16,7 @@
   async function checkKg(): Promise<boolean> {
     kg = { state: "loading", label: "確認中..." };
     try {
-      const s = await invoke<{ valid: boolean; student_id?: string }>("validate_session");
+      const s = await validateSession();
       const label = s.valid ? "有効" + (s.student_id ? ` (${s.student_id})` : "") : "無効・期限切れ";
       kg = { state: s.valid ? "ok" : "ng", label };
       return s.valid;
@@ -28,7 +28,7 @@
   async function checkLuna(): Promise<boolean> {
     luna = { state: "loading", label: "確認中..." };
     try {
-      const ok = await invoke<boolean>("luna_check_session");
+      const ok = await lunaCheckSession();
       luna = { state: ok ? "ok" : "ng", label: ok ? "有効" : "無効・未接続" };
       return ok;
     } catch {
@@ -39,7 +39,7 @@
   async function checkKwic(): Promise<boolean> {
     kwic = { state: "loading", label: "確認中..." };
     try {
-      const ok = await invoke<boolean>("kwic_check_session");
+      const ok = await kwicCheckSession();
       kwic = { state: ok ? "ok" : "ng", label: ok ? "有効" : "無効・未接続" };
       return ok;
     } catch {
@@ -65,7 +65,7 @@
         let anyRecovered = false;
         await Promise.all(dead.map(async (svc) => {
           try {
-            const ok = await invoke<boolean>("sync_session", { service: svc });
+            const ok = await syncSession(svc);
             if (ok) anyRecovered = true;
           } catch { /* ignore */ }
         }));
@@ -89,13 +89,19 @@
     statusColor = "var(--text-secondary)";
     statusMsg = "再ログイン中...";
     try {
-      const ok = await invoke<boolean>("sync_session", { service: "all" });
-      if (ok) {
+      if (isDemoActive()) {
+        await initiateRelogin();
         statusColor = "var(--green)";
-        statusMsg = "再ログイン成功";
+        statusMsg = "演示モードの再認証状態を更新しました";
       } else {
-        statusColor = "var(--red)";
-        statusMsg = "Okta SSO 期限切れ - アプリ内で再ログインしてください";
+        const ok = await syncSession("all");
+        if (ok) {
+          statusColor = "var(--green)";
+          statusMsg = "再ログイン成功";
+        } else {
+          statusColor = "var(--red)";
+          statusMsg = "Okta SSO 期限切れ - アプリ内で再ログインしてください";
+        }
       }
       await Promise.all([checkKg(), checkLuna(), checkKwic()]);
     } catch (e) {

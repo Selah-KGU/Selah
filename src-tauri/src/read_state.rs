@@ -145,6 +145,12 @@ pub fn mark_seen_notif_initialized(db: &Database, source: &str) {
     }
 }
 
+pub fn has_any_seen_notif_state(db: &Database) -> bool {
+    ["kgc", "luna", "kwic", "mail"].iter().any(|source| {
+        is_seen_notif_initialized(db, source) || !get_seen_notif_ids(db, source).is_empty()
+    })
+}
+
 pub fn get_seen_notif_bootstrap_started_at(db: &Database) -> Option<i64> {
     match db.get_data_cache(SEEN_BOOTSTRAP_STARTED_AT_KEY) {
         Ok(Some((json, _))) => serde_json::from_str::<i64>(&json).ok(),

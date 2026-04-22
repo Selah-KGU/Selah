@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { fetchRegistration } from "../api";
+  import { fetchRegistration, isDemoActive } from "../api";
   import { cachedFetch, onCacheUpdate } from "../stores";
   import type { RegistrationData } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
@@ -42,6 +42,7 @@
   }
 
   async function openRegistration() {
+    if (isDemoActive()) return;
     try {
       await invoke("open_registration_window");
     } catch (e: any) {

@@ -24,6 +24,28 @@ function _isDemo(): boolean {
   try { return localStorage.getItem("selah-demo-mode") === "1"; } catch { return false; }
 }
 
+export function isDemoActive(): boolean {
+  return _isDemo();
+}
+
+const DEMO_AI_CONFIG_KEY = "selah-demo-ai-config";
+const DEMO_GCAL_CONFIG_KEY = "selah-demo-gcal-config";
+
+function readDemoJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return { ...fallback, ...parsed };
+  } catch {
+    return fallback;
+  }
+}
+
+function writeDemoJson<T>(key: string, value: T): void {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
 // Global listeners — app-lifetime, no cleanup needed
 listen("luna-login-success", () => {
   lunaAuthState.set({ authenticated: true });
@@ -236,6 +258,7 @@ async function getSessionStates(): Promise<SessionStates> {
 const _syncInFlight = new Map<string, Promise<boolean>>();
 
 export async function syncSession(service: string): Promise<boolean> {
+  if (_isDemo()) return true;
   const existing = _syncInFlight.get(service);
   if (existing) return existing;
 
@@ -351,6 +374,10 @@ export function triggerRelogin(): Promise<void> {
  * Opens a visible login window and on success clears sessionExpired + refreshes all data.
  */
 export async function initiateRelogin(): Promise<void> {
+  if (_isDemo()) {
+    sessionExpired.set(false);
+    return;
+  }
   try {
     await openVisibleLogin();
     sessionExpired.set(false);
@@ -477,6 +504,16 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
  * Returns KGC session status, or null if KGC session is invalid.
  */
 export async function restoreAllSessions(): Promise<SessionStatus | null> {
+  if (_isDemo()) {
+    return {
+      valid: true,
+      username: "demo_user",
+      display_name: "関学 太郎",
+      student_id: "12345678",
+      faculty: "理工学部",
+      department: "情報科学科",
+    };
+  }
   const [initialStatus, states] = await Promise.all([
     checkSession(),
     getSessionStates().catch(() => ({ kgc: false, luna: false, kwic: false })),
@@ -599,6 +636,23 @@ export async function lunaInvoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
+  if (_isDemo()) {
+    const demo = await import("./demo");
+    switch (command) {
+      case "luna_fetch_todo":
+        return demo.demoLunaTodo() as T;
+      case "luna_fetch_updates":
+        return demo.demoLunaUpdates() as T;
+      case "luna_fetch_detail":
+        return demo.demoLunaDetail(String(args?.path ?? "")) as T;
+      case "luna_fetch_page":
+        return demo.demoLunaPage(String(args?.path ?? "/")) as T;
+      case "luna_open_detail_window":
+        return undefined as T;
+      default:
+        throw new Error(`[Demo] Unsupported Luna command: ${command}`);
+    }
+  }
   return withSessionGuard(() => invoke<T>(command, args));
 }
 
@@ -667,14 +721,20 @@ export interface KwicSubportalData {
 }
 
 export async function lunaCheckSession(): Promise<boolean> {
+  if (_isDemo()) return true;
   return invoke<boolean>("luna_check_session");
 }
 
 export async function kwicCheckSession(): Promise<boolean> {
+  if (_isDemo()) return true;
   return invoke<boolean>("kwic_check_session");
 }
 
 export async function kwicFetchHome(): Promise<KwicPortalHome> {
+  if (_isDemo()) {
+    const { demoKwicHome } = await import("./demo");
+    return demoKwicHome();
+  }
   return kwicInvoke<KwicPortalHome>("kwic_fetch_home");
 }
 
@@ -689,10 +749,18 @@ export interface WeatherData {
 }
 
 export async function fetchWeather(): Promise<WeatherData> {
+  if (_isDemo()) {
+    const { demoWeather } = await import("./demo");
+    return demoWeather();
+  }
   return invoke<WeatherData>("fetch_weather");
 }
 
 export async function kwicFetchDetail(n: KwicPortalNotification): Promise<KwicNotificationDetail> {
+  if (_isDemo()) {
+    const { demoKwicDetail } = await import("./demo");
+    return demoKwicDetail(n);
+  }
   return kwicInvoke<KwicNotificationDetail>("kwic_fetch_detail", {
     informationId: n.id,
     informationType: n.information_type,
@@ -702,14 +770,25 @@ export async function kwicFetchDetail(n: KwicPortalNotification): Promise<KwicNo
 }
 
 export async function kwicFetchSubportal(tagCd: string): Promise<KwicSubportalData> {
+  if (_isDemo()) {
+    const { demoKwicSubportal } = await import("./demo");
+    return demoKwicSubportal(tagCd);
+  }
   return kwicInvoke<KwicSubportalData>("kwic_fetch_subportal", { tagCd });
 }
 
 export async function kwicOpenLink(url: string, title: string): Promise<void> {
+  if (_isDemo()) {
+    if (/^https?:\/\//i.test(url)) {
+      await invoke<void>("open_external_url", { url }).catch(() => {});
+    }
+    return;
+  }
   return invoke<void>("kwic_open_link", { url, title });
 }
 
 export async function kwicOpenDetail(item: { id: string; title: string; information_type: string; person_category_cd: string; category_cd: string }): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("kwic_open_detail_window", {
     title: item.title,
     informationId: item.id,
@@ -768,6 +847,7 @@ export async function mailCheckSession(): Promise<MailSessionStatus> {
 }
 
 export async function mailOpenLogin(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("mail_open_login");
 }
 
@@ -777,6 +857,13 @@ export async function mailFetchProfile(): Promise<MailProfile> {
 }
 
 export async function mailFetchInbox(top?: number, skip?: number): Promise<MailMessage[]> {
+  if (_isDemo()) {
+    const { demoMailInbox } = await import("./demo");
+    const all = demoMailInbox();
+    const start = skip ?? 0;
+    const end = start + (top ?? 20);
+    return all.slice(start, end);
+  }
   return withSessionGuard(() => invoke<MailMessage[]>("mail_fetch_inbox", { top: top ?? 20, skip: skip ?? 0 }));
 }
 
@@ -800,11 +887,15 @@ export async function mailFetchMessage(messageId: string): Promise<MailDetail> {
 }
 
 export async function mailFetchAttachments(messageId: string): Promise<MailAttachment[]> {
-  if (_isDemo()) return [];
+  if (_isDemo()) {
+    const { demoMailAttachments } = await import("./demo");
+    return demoMailAttachments(messageId);
+  }
   return withSessionGuard(() => invoke<MailAttachment[]>("mail_fetch_attachments", { messageId }));
 }
 
 export async function mailDownloadAttachment(messageId: string, attachmentId: string, fileName: string): Promise<string> {
+  if (_isDemo()) return `/DemoDownloads/${fileName}`;
   return withSessionGuard(() => invoke<string>("mail_download_attachment", { messageId, attachmentId, fileName }));
 }
 
@@ -826,31 +917,40 @@ interface GcalSyncEntry {
 }
 
 export async function gcalCheckSession(): Promise<GcalStatus> {
-  if (_isDemo()) return { authenticated: false, calendar_exists: false, synced_events: 0, calendar_id: "" };
+  if (_isDemo()) return { authenticated: true, calendar_exists: true, synced_events: 24, calendar_id: "demo-selah-calendar" };
   return invoke<GcalStatus>("gcal_check_session");
 }
 
 export async function gcalSyncTimetable(entries: GcalSyncEntry[], weekLabel: string): Promise<string> {
+  if (_isDemo()) return `演示モード: ${entries.length}件を ${weekLabel || "今週"} として同期した体験を表示しました`;
   return invoke<string>("gcal_sync_timetable", { entries, weekLabel });
 }
 
 export async function gcalOpenLogin(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("gcal_open_login");
 }
 
 export async function gcalDisconnect(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("gcal_disconnect");
 }
 
 export async function gcalGetConfig(): Promise<{ client_id: string; client_secret: string }> {
+  if (_isDemo()) return readDemoJson(DEMO_GCAL_CONFIG_KEY, { client_id: "", client_secret: "" });
   return invoke("gcal_get_config");
 }
 
 export async function gcalSaveConfig(clientId: string, clientSecret: string): Promise<void> {
+  if (_isDemo()) {
+    writeDemoJson(DEMO_GCAL_CONFIG_KEY, { client_id: clientId, client_secret: clientSecret });
+    return;
+  }
   return invoke("gcal_save_config", { clientId, clientSecret });
 }
 
 export async function gcalClearCalendar(): Promise<void> {
+  if (_isDemo()) return;
   return invoke("gcal_clear_calendar");
 }
 
@@ -858,7 +958,7 @@ export async function getDataCache(key: string): Promise<string | null> {
   if (_isDemo()) {
     const DEMO_DB_MAP: Record<string, () => any> = {
       exam_timetable: () => import("./demo").then(m => m.demoExams()),
-      syllabus_favorites: () => import("./demo").then(m => ({ entries: [], total_count: 0, current_page: 1, total_pages: 0 })),
+      syllabus_favorites: () => import("./demo").then(m => m.demoSyllabusFavorites()),
     };
     const gen = DEMO_DB_MAP[key];
     if (gen) return JSON.stringify(await gen());
@@ -875,6 +975,7 @@ export async function saveDataCache(key: string, json: string): Promise<void> {
 // ---------- Public API ----------
 
 export async function openLoginWindow(): Promise<void> {
+  if (_isDemo()) return;
   await invoke("open_login_window");
 }
 
@@ -905,6 +1006,16 @@ async function checkSession(): Promise<SessionStatus> {
 }
 
 export async function validateSession(): Promise<SessionStatus> {
+  if (_isDemo()) {
+    return {
+      valid: true,
+      username: "demo_user",
+      display_name: "関学 太郎",
+      student_id: "12345678",
+      faculty: "理工学部",
+      department: "情報科学科",
+    };
+  }
   return await invoke<SessionStatus>("validate_session");
 }
 
@@ -924,6 +1035,7 @@ export async function syncScheduleData(): Promise<ScheduleResponse> {
 }
 
 export async function enrichSchedule(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("enrich_schedule");
 }
 
@@ -959,61 +1071,131 @@ export async function aiAnalyzeTodo(force: boolean = false): Promise<AiTodoAnaly
 }
 
 export async function fetchGrades(): Promise<GradesData> {
+  if (_isDemo()) {
+    const { demoGrades } = await import("./demo");
+    return demoGrades();
+  }
   return withSessionGuard(() => invoke<GradesData>("fetch_grades"));
 }
 
 export async function fetchCancellations(): Promise<CancellationsData> {
+  if (_isDemo()) {
+    const { demoCancellations } = await import("./demo");
+    return demoCancellations();
+  }
   return withSessionGuard(() => invoke<CancellationsData>("fetch_cancellations"));
 }
 
 export async function fetchMakeupClasses(): Promise<MakeupData> {
+  if (_isDemo()) {
+    const { demoMakeup } = await import("./demo");
+    return demoMakeup();
+  }
   return withSessionGuard(() => invoke<MakeupData>("fetch_makeup_classes"));
 }
 
 export async function fetchRoomChanges(): Promise<RoomChangesData> {
+  if (_isDemo()) {
+    const { demoRoomChanges } = await import("./demo");
+    return demoRoomChanges();
+  }
   return withSessionGuard(() => invoke<RoomChangesData>("fetch_room_changes"));
 }
 
 export async function fetchRegistration(): Promise<RegistrationData> {
+  if (_isDemo()) {
+    const { demoRegistration } = await import("./demo");
+    return demoRegistration();
+  }
   return withSessionGuard(() => invoke<RegistrationData>("fetch_registration"));
 }
 
 export async function fetchExamTimetable(): Promise<ExamTimetableData> {
+  if (_isDemo()) {
+    const { demoExams } = await import("./demo");
+    return demoExams();
+  }
   return withSessionGuard(() => invoke<ExamTimetableData>("fetch_exam_timetable"));
 }
 
 export async function fetchNotifications(): Promise<NotificationsData> {
+  if (_isDemo()) {
+    const { demoNotifications } = await import("./demo");
+    return demoNotifications();
+  }
   return withSessionGuard(() => invoke<NotificationsData>("fetch_notifications"));
 }
 
 export async function fetchPage(path: string): Promise<string> {
+  if (_isDemo()) {
+    const { demoFetchPage } = await import("./demo");
+    return demoFetchPage(path);
+  }
   return withSessionGuard(() => invoke<string>("fetch_page", { path }));
 }
 
 export async function fetchStudentProfile(): Promise<StudentInfo> {
+  if (_isDemo()) {
+    const { demoStudentProfile } = await import("./demo");
+    return demoStudentProfile();
+  }
   return withSessionGuard(() => invoke<StudentInfo>("fetch_student_profile"));
 }
 
 export async function searchSyllabus(params: SyllabusSearchParams): Promise<SyllabusSearchResult> {
+  if (_isDemo()) {
+    const { demoSearchSyllabus } = await import("./demo");
+    return demoSearchSyllabus(params);
+  }
   return withSessionGuard(() => invoke<SyllabusSearchResult>("search_syllabus", { params }));
 }
 
 export async function fetchSyllabusFavorites(): Promise<SyllabusSearchResult> {
+  if (_isDemo()) {
+    const { demoSyllabusFavorites } = await import("./demo");
+    return demoSyllabusFavorites();
+  }
   return withSessionGuard(() => invoke<SyllabusSearchResult>("fetch_syllabus_favorites"));
 }
 
 export async function toggleSyllabusBookmark(classCode: string): Promise<boolean> {
+  if (_isDemo()) {
+    const demo = await import("./demo");
+    const next = demo.demoToggleSyllabusBookmark(classCode);
+    const now = Date.now();
+    const favorites = demo.demoSyllabusFavorites();
+    try {
+      localStorage.setItem("selah_cache_favorites", JSON.stringify({ v: 1, data: favorites, ts: now }));
+      localStorage.setItem("selah_cache_syllabus_favorites", JSON.stringify({ v: 1, data: favorites, ts: now }));
+    } catch {}
+    return next;
+  }
   return withSessionGuard(() => invoke<boolean>("toggle_syllabus_bookmark", { classCode }));
 }
 
 export async function openSyllabusDetail(classCode: string, courseName: string): Promise<void> {
+  if (_isDemo()) return;
   return withSessionGuard(() => invoke<void>("open_syllabus_detail", { classCode, courseName }));
 }
 
 // ---------- AI API ----------
 
 export async function getAiConfig(): Promise<AiConfig> {
-  if (_isDemo()) return { ai_enabled: false, api_key: "demo", model: "demo", provider: "local", local_model: "", base_url: "", max_tokens: 0, temperature: 0, reply_language: "ja", ai_refresh_interval: 0, live_summary_interval_minutes: 5 };
+  if (_isDemo()) {
+    return readDemoJson(DEMO_AI_CONFIG_KEY, {
+      ai_enabled: true,
+      api_key: "demo",
+      model: "",
+      provider: "local",
+      local_model: "qwen3.5-8b",
+      base_url: "",
+      max_tokens: 0,
+      temperature: 0.7,
+      reply_language: "ja",
+      ai_refresh_interval: 0,
+      live_summary_interval_minutes: 5,
+    } satisfies AiConfig);
+  }
   return invoke<AiConfig>("get_ai_config");
 }
 
@@ -1025,6 +1207,10 @@ export async function getAiConfig(): Promise<AiConfig> {
 let _aiReadyCache: boolean | null = null;
 let _aiReadyPromise: Promise<boolean> | null = null;
 export async function isAiReady(): Promise<boolean> {
+  if (_isDemo()) {
+    const cfg = await getAiConfig();
+    return cfg.ai_enabled !== false;
+  }
   if (_aiReadyCache !== null) return _aiReadyCache;
   if (_aiReadyPromise) return _aiReadyPromise;
   _aiReadyPromise = (async () => {
@@ -1063,6 +1249,12 @@ export function resetAiReady() { _aiReadyCache = null; }
  */
 export async function updateAiReadiness(): Promise<void> {
   resetAiReady();
+  if (_isDemo()) {
+    const cfg = await getAiConfig();
+    aiReady.set(cfg.ai_enabled !== false);
+    agentReady.set(false);
+    return;
+  }
   try {
     const cfg = await getAiConfig();
     if (!cfg || cfg.ai_enabled === false) {
@@ -1089,6 +1281,10 @@ export async function updateAiReadiness(): Promise<void> {
 
 /** Returns true when local provider is using the standard 2B model. */
 export async function isLocalStandard2b(): Promise<boolean> {
+  if (_isDemo()) {
+    const cfg = await getAiConfig();
+    return cfg.provider === "local" && cfg.local_model === "qwen3.5-2b";
+  }
   try {
     const cfg = await getAiConfig();
     return cfg.provider === "local" && cfg.local_model === "qwen3.5-2b";
@@ -1145,35 +1341,172 @@ export interface LiveSaveResult {
   snapshot: LiveSessionSnapshot;
 }
 
+const DEMO_LIVE_KEY = "selah-demo-live-session";
+
+function emptyDemoLiveSession(): LiveSessionSnapshot {
+  return {
+    active: false,
+    course: null,
+    started_at: null,
+    transcript_lines: [],
+    pending_lines: [],
+    summaries: [],
+  };
+}
+
+function loadDemoLiveSession(): LiveSessionSnapshot {
+  if (!_isDemo()) return emptyDemoLiveSession();
+  try {
+    const raw = localStorage.getItem(DEMO_LIVE_KEY);
+    if (!raw) return emptyDemoLiveSession();
+    const parsed = JSON.parse(raw) as Partial<LiveSessionSnapshot>;
+    return {
+      active: parsed.active === true,
+      course: parsed.course ?? null,
+      started_at: parsed.started_at ?? null,
+      transcript_lines: Array.isArray(parsed.transcript_lines) ? parsed.transcript_lines : [],
+      pending_lines: Array.isArray(parsed.pending_lines) ? parsed.pending_lines : [],
+      summaries: Array.isArray(parsed.summaries) ? parsed.summaries : [],
+    };
+  } catch {
+    return emptyDemoLiveSession();
+  }
+}
+
+function saveDemoLiveSession(snapshot: LiveSessionSnapshot): LiveSessionSnapshot {
+  if (_isDemo()) {
+    try { localStorage.setItem(DEMO_LIVE_KEY, JSON.stringify(snapshot)); } catch {}
+  }
+  return snapshot;
+}
+
+function demoLiveCourseMatches(a: LiveCourseInfo | null, b: LiveCourseInfo | null): boolean {
+  if (!a || !b) return false;
+  return a.course_name === b.course_name && a.day === b.day && a.period === b.period;
+}
+
+function buildDemoLiveSummaries(lines: LiveTranscriptLine[]): LiveSummaryChunk[] {
+  if (lines.length === 0) return [];
+  const recent = lines.slice(-3).map((line) => line.text).join(" / ");
+  return [{
+    title: "演示要約",
+    range_label: "最近",
+    body: `### 全体要約\n${recent || "このセッションでは授業内容の要点がまとめられます。"}\n\n### 次に見るポイント\n- キーワードを 2〜3 個に絞って見返す\n- 宿題や小テストに関係する箇所を先に確認する`,
+    line_count: lines.length,
+  }];
+}
+
+function buildDemoLiveTranscript(course: LiveCourseInfo): LiveTranscriptLine[] {
+  const now = new Date();
+  const at = (offsetMin: number) =>
+    new Date(now.getTime() + offsetMin * 60_000).toLocaleTimeString("ja-JP", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const name = course.course_name || "自由ノート";
+  return [
+    { at: at(0), text: `${name} の演示セッションを開始しました。今日のテーマと到達目標を確認します。` },
+    { at: at(2), text: "授業で強調されたキーワードを短くメモし、あとで見返しやすい形に整理します。" },
+    { at: at(4), text: "課題や小テストにつながるポイントを先に押さえておくと復習が楽になります。" },
+  ];
+}
+
 export async function liveGetSession(): Promise<LiveSessionSnapshot> {
+  if (_isDemo()) return loadDemoLiveSession();
   return invoke<LiveSessionSnapshot>("live_get_session");
 }
 
 export async function livePeekDayCache(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
+  if (_isDemo()) {
+    const snapshot = loadDemoLiveSession();
+    return demoLiveCourseMatches(snapshot.course, course) ? snapshot : emptyDemoLiveSession();
+  }
   return invoke<LiveSessionSnapshot>("live_peek_day_cache", { course });
 }
 
 export async function liveStartSession(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
+  if (_isDemo()) {
+    const transcript_lines = buildDemoLiveTranscript(course);
+    return saveDemoLiveSession({
+      active: true,
+      course,
+      started_at: new Date().toISOString(),
+      transcript_lines,
+      pending_lines: [],
+      summaries: buildDemoLiveSummaries(transcript_lines),
+    });
+  }
   return invoke<LiveSessionSnapshot>("live_start_session", { course });
 }
 
 export async function liveAppendTranscript(text: string): Promise<LiveSessionSnapshot> {
+  if (_isDemo()) {
+    const snapshot = loadDemoLiveSession();
+    if (!snapshot.active || !text.trim()) return snapshot;
+    const next: LiveSessionSnapshot = {
+      ...snapshot,
+      transcript_lines: [
+        ...snapshot.transcript_lines,
+        {
+          text: text.trim(),
+          at: new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }),
+        },
+      ],
+      pending_lines: [],
+    };
+    return saveDemoLiveSession(next);
+  }
   return invoke<LiveSessionSnapshot>("live_append_transcript", { text });
 }
 
 export async function liveFlushSummary(force: boolean = false): Promise<LiveSessionSnapshot> {
+  if (_isDemo()) {
+    const snapshot = loadDemoLiveSession();
+    if (!force && snapshot.transcript_lines.length === 0) return snapshot;
+    const next = {
+      ...snapshot,
+      summaries: buildDemoLiveSummaries(snapshot.transcript_lines),
+    };
+    return saveDemoLiveSession(next);
+  }
   return invoke<LiveSessionSnapshot>("live_flush_summary", { force });
 }
 
 export async function liveCancelSession(): Promise<void> {
+  if (_isDemo()) {
+    saveDemoLiveSession(emptyDemoLiveSession());
+    return;
+  }
   return invoke<void>("live_cancel_session");
 }
 
 export async function liveClearDayCache(course: LiveCourseInfo): Promise<void> {
+  if (_isDemo()) {
+    const snapshot = loadDemoLiveSession();
+    if (demoLiveCourseMatches(snapshot.course, course)) {
+      saveDemoLiveSession(emptyDemoLiveSession());
+    }
+    return;
+  }
   return invoke<void>("live_clear_day_cache", { course });
 }
 
 export async function liveFinishSession(): Promise<LiveSaveResult> {
+  if (_isDemo()) {
+    const snapshot = await liveFlushSummary(true);
+    const saved = snapshot.transcript_lines.length > 0;
+    const markdown = saved
+      ? `# ${snapshot.course?.course_name ?? "LIVE Demo"}\n\n${snapshot.summaries.map((chunk) => chunk.body).join("\n\n")}\n\n## Transcript\n${snapshot.transcript_lines.map((line) => `- ${line.at} ${line.text}`).join("\n")}`
+      : "";
+    const result: LiveSaveResult = {
+      saved,
+      path: saved ? `/DemoNotes/${(snapshot.course?.course_name ?? "live-demo").replace(/[^\w\u3040-\u30ff\u4e00-\u9faf-]+/g, "_")}.md` : "",
+      markdown,
+      snapshot: emptyDemoLiveSession(),
+    };
+    saveDemoLiveSession(emptyDemoLiveSession());
+    return result;
+  }
   return invoke<LiveSaveResult>("live_finish_session");
 }
 
@@ -1183,26 +1516,32 @@ export async function openSettingsWindow(panel?: string): Promise<void> {
 }
 
 export async function openProfileEditWindow(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("open_profile_edit_window");
 }
 
 export async function openAgentFloatWindow(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("open_agent_float_window");
 }
 
 export async function openSubtitleOverlay(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("open_subtitle_overlay");
 }
 
 export async function closeSubtitleOverlay(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("close_subtitle_overlay");
 }
 
 export async function subtitleOverlayIsOpen(): Promise<boolean> {
+  if (_isDemo()) return false;
   return invoke<boolean>("subtitle_overlay_is_open");
 }
 
 export async function showMainAgentWindow(): Promise<void> {
+  if (_isDemo()) return;
   return invoke<void>("show_main_agent_window");
 }
 
@@ -1630,14 +1969,17 @@ export type AgentStreamEvent =
   | { type: "error"; message: string };
 
 export async function agentListConversations(): Promise<AgentConversationSummary[]> {
+  if (_isDemo()) return [];
   return invoke<AgentConversationSummary[]>("agent_list_conversations");
 }
 
 export async function agentCreateConversation(title?: string): Promise<string> {
+  if (_isDemo()) throw new Error("演示モードでは Agent は利用できません");
   return invoke<string>("agent_create_conversation", { title: title ?? null });
 }
 
 export async function agentLoadMessages(convId: string): Promise<AgentMessage[]> {
+  if (_isDemo()) return [];
   return invoke<AgentMessage[]>("agent_load_messages", { convId });
 }
 
@@ -1646,17 +1988,21 @@ export async function agentSend(
   content: string,
   images: AgentImagePart[] = [],
 ): Promise<void> {
+  if (_isDemo()) throw new Error("演示モードでは Agent は利用できません");
   return invoke("agent_send", { convId, content, images });
 }
 
 export async function agentCancel(convId: string): Promise<void> {
+  if (_isDemo()) return;
   return invoke("agent_cancel", { convId });
 }
 
 export async function agentDeleteConversation(convId: string): Promise<void> {
+  if (_isDemo()) return;
   return invoke("agent_delete_conversation", { convId });
 }
 
 export async function agentRenameConversation(convId: string, title: string): Promise<void> {
+  if (_isDemo()) return;
   return invoke("agent_rename_conversation", { convId, title });
 }

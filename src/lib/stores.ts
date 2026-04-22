@@ -564,7 +564,12 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
     if (entry) return Promise.resolve(entry.data as T);
     const disk = loadDiskCache(key);
     if (disk) { cache.set(key, disk); return Promise.resolve(disk.data as T); }
-    return Promise.reject(new Error(`[Demo] No cached data for "${key}"`));
+    return fetcher().then((data) => {
+      const now = Date.now();
+      cache.set(key, { data, ts: now });
+      if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, now);
+      return data;
+    });
   }
 
   const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;

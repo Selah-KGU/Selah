@@ -3,7 +3,7 @@
   import { get } from "svelte/store";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
   import type { NotificationsData, NotificationEntry } from "../stores";
-  import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, fetchWeather } from "../api";
+  import { getScheduleSnapshot, fetchNotifications, lunaInvoke, kwicFetchHome, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, fetchWeather, isDemoActive } from "../api";
   import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
   import type { LunaTodoItem, LunaNotification, ScheduleResponse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
@@ -62,6 +62,7 @@
     const match = item.url.match(/tagCd=(\d+)/);
     if (!match) {
       // Fallback: open in browser for non-subportal links
+      if (isDemoActive()) return;
       await invoke("open_external_url", { url: item.url }).catch(e => console.error("open_external_url failed:", e));
       return;
     }
@@ -479,10 +480,12 @@
       // Local: limit to 5 each to reduce prompt size; Cloud: up to 10 each
       const detailLimit = aiProvider === "local" ? 5 : 10;
       const kwicItems: { idx: number; item: { id: string; information_type: string; person_category_cd: string; category_cd: string } }[] = [];
-      const lunaItems: { idx: number; url: string }[] = [];
+      const lunaItems: { idx: number; url: string; title: string }[] = [];
       let idx = kgcNotifs.length;
       for (const n of lunaNotifs) {
-        if (n.url && lunaItems.length < detailLimit) lunaItems.push({ idx, url: n.url });
+        if (n.url && lunaItems.length < detailLimit) {
+          lunaItems.push({ idx, url: n.url, title: n.content || "" });
+        }
         idx++;
       }
       if (kwicHome) {
@@ -510,9 +513,9 @@
             .catch(e => console.warn(`[AI] KWIC detail fetch failed for idx=${i}:`, e))
         );
       }
-      for (const { idx: i, url } of lunaItems) {
+      for (const { idx: i, url, title } of lunaItems) {
         detailPromises.push(
-          lunaInvoke<{ title: string; course_name: string; sections: { heading: string; body: string }[]; attachments: { name: string; url: string }[]; meta: Record<string, string> }>("luna_fetch_detail", { path: url })
+          lunaInvoke<{ title: string; course_name: string; sections: { heading: string; body: string }[]; attachments: { name: string; url: string }[]; meta: Record<string, string> }>("luna_fetch_detail", { path: url, expectedTitle: title })
             .then(d => {
               const text = d.sections.map(s => (s.heading ? s.heading + ": " : "") + stripHtml(s.body || "")).join(" ");
               const body = truncate(text, bodyMaxLen);
@@ -759,6 +762,10 @@ suggestionsのルール：
   }
 
   async function openDetail(entry: CourseSlot) {
+    if (isDemoActive()) {
+      navigate("timetable");
+      return;
+    }
     // Prefer Luna if authenticated and course has luna_id
     if ($lunaAuthState.authenticated && entry.luna_id) {
       try {
@@ -783,6 +790,10 @@ suggestionsのルール：
 
   async function openLunaDetail(path: string, title: string) {
     if (!path) return;
+    if (isDemoActive()) {
+      navigate("todo");
+      return;
+    }
     try {
       await invoke("luna_open_detail_window", { path, title });
     } catch (e) {
@@ -794,6 +805,10 @@ suggestionsのルール：
     if (n.source === "luna" && n.url) {
       openLunaDetail(n.url, n.title);
     } else if (n.source === "kwic" && n.kwicId) {
+      if (isDemoActive()) {
+        navigate("notifications");
+        return;
+      }
       kwicOpenDetail({
         id: n.kwicId,
         title: n.title,

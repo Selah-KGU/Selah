@@ -17,6 +17,7 @@
     liveGetSession,
     livePeekDayCache,
     liveStartSession,
+    isDemoActive,
     openSettingsWindow,
     openSubtitleOverlay,
     closeSubtitleOverlay,
@@ -568,7 +569,13 @@
       snapshot = await liveStartSession(course);
       partialText = "";
       lastSaved = null;
-      await invoke("stt_start_stream", { caller: "live" });
+      if (isDemoActive()) {
+        sttListening = true;
+        sttPhase = "listening";
+        clearSttNotice();
+      } else {
+        await invoke("stt_start_stream", { caller: "live" });
+      }
       autoFollow = true;
       startFlushTimer();
     } catch (e: any) {
@@ -603,9 +610,11 @@
     pendingActivationMode = null;
     cancelSessionOnStartFailure = false;
     try {
-      try {
-        await invoke("stt_stop_stream");
-      } catch {}
+      if (!isDemoActive()) {
+        try {
+          await invoke("stt_stop_stream");
+        } catch {}
+      }
       sttListening = false;
       sttPhase = "idle";
       partialText = "";
@@ -631,7 +640,13 @@
       await ensureReadyToStart();
       sttPhase = "starting";
       setSttNotice("音声入力を起動中…");
-      await invoke("stt_start_stream", { caller: "live" });
+      if (isDemoActive()) {
+        sttListening = true;
+        sttPhase = "listening";
+        clearSttNotice();
+      } else {
+        await invoke("stt_start_stream", { caller: "live" });
+      }
       autoFollow = true;
       startFlushTimer();
     } catch (e: any) {
@@ -655,9 +670,11 @@
     sttPhase = "idle";
     saveProgress = "録音を停止中…";
     try {
-      try {
-        await invoke("stt_stop_stream");
-      } catch {}
+      if (!isDemoActive()) {
+        try {
+          await invoke("stt_stop_stream");
+        } catch {}
+      }
       sttListening = false;
       partialText = "";
       snapshot = await liveGetSession();
@@ -705,9 +722,11 @@
       pendingActivationMode = null;
       cancelSessionOnStartFailure = false;
       sttPhase = "idle";
-      try {
-        await invoke("stt_stop_stream");
-      } catch {}
+      if (!isDemoActive()) {
+        try {
+          await invoke("stt_stop_stream");
+        } catch {}
+      }
       await liveCancelSession();
       snapshot = await liveGetSession();
       partialText = "";
@@ -766,6 +785,11 @@
   }
 
   async function refreshLiveSttState() {
+    if (isDemoActive()) {
+      sttListening = false;
+      sttPhase = "idle";
+      return;
+    }
     try {
       const [running, caller] = await Promise.all([
         invoke<boolean>("stt_is_running"),
