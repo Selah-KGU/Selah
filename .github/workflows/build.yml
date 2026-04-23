@@ -36,7 +36,7 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app (universal, signed + notarized)
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         env:
           # Developer ID signing
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -241,7 +241,7 @@ jobs:
             -RuntimeStageDir "$PWD\src-tauri\windows-runtime"
 
       - name: Build Tauri app (Windows x64, DirectML bundled)
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         env:
           RUST_BACKTRACE: 1
           CARGO_TARGET_DIR: D:/t
