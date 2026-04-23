@@ -7,8 +7,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ── Read version (shared) ─────────────────────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
   # ── macOS (universal) ─────────────────────────────────────────────────────
   build-macos:
+    needs: prepare
     runs-on: macos-latest
 
     steps:
@@ -55,11 +71,18 @@ jobs:
           # Temporary keychain password (any random string works)
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           SHERPA_ONNX_LIB_DIR: /tmp/sherpa-universal-lib
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target universal-apple-darwin --features stt-shared --config '{"bundle":{"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
+          releaseBody: "See the assets for installers."
+          releaseDraft: true
+          prerelease: false
 
   # ── Windows (x64) ─────────────────────────────────────────────────────────
   build-windows:
+    needs: prepare
     runs-on: windows-latest
 
     steps:
@@ -265,9 +288,15 @@ jobs:
           CXXFLAGS: /FS
           SELAH_ENABLE_STT_DIRECTML: 1
           SHERPA_ONNX_LIB_DIR: D:/directml-runtime/lib
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: s
           args: --target x86_64-pc-windows-msvc --features stt-shared -- --no-default-features
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
+          releaseBody: "See the assets for installers."
+          releaseDraft: true
+          prerelease: false
 
       - name: Verify DirectML runtime staging
         shell: pwsh

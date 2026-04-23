@@ -643,12 +643,28 @@
     const studentName = auth.displayName || "";
     const studentFaculty = auth.faculty ? `${auth.faculty}${auth.department ? " / " + auth.department : ""}` : "";
 
-    // 1. Capture the timetable grid as-is (no DOM changes)
-    const rawDataUrl = await toPng(captureRef, {
-      pixelRatio: 2,
-      backgroundColor: bg,
-      cacheBust: true,
-    });
+    // 1. Force fixed width on the DOM element for consistent capture
+    const RENDER_WIDTH = 880;
+    const origStyle = captureRef.getAttribute("style") || "";
+    captureRef.style.width = `${RENDER_WIDTH}px`;
+    captureRef.style.minWidth = `${RENDER_WIDTH}px`;
+    captureRef.style.maxWidth = `${RENDER_WIDTH}px`;
+
+    let rawDataUrl: string;
+    try {
+      rawDataUrl = await toPng(captureRef, {
+        pixelRatio: 2,
+        backgroundColor: bg,
+        cacheBust: true,
+      });
+    } finally {
+      // Restore original style immediately
+      if (origStyle) {
+        captureRef.setAttribute("style", origStyle);
+      } else {
+        captureRef.removeAttribute("style");
+      }
+    }
 
     // 2. Load raw capture + logo into Image elements
     const [rawImg, logoImg] = await Promise.all([
