@@ -260,7 +260,7 @@ jobs:
           SHERPA_ONNX_LIB_DIR: D:/directml-runtime/lib
         with:
           projectPath: s
-          args: --target x86_64-pc-windows-msvc --no-default-features --features stt-shared
+          args: --target x86_64-pc-windows-msvc --features stt-shared -- --no-default-features
 
       - name: Verify DirectML runtime staging
         shell: pwsh

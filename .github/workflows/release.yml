@@ -301,4 +301,4 @@ jobs:
           releaseBody: "See the assets to download and install this release."
           releaseDraft: false
           prerelease: false
-          args: --target x86_64-pc-windows-msvc --no-default-features --features stt-shared --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          args: --target x86_64-pc-windows-msvc --features stt-shared --config '{"bundle":{"createUpdaterArtifacts":true}}' -- --no-default-features
