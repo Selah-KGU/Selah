@@ -103,10 +103,17 @@ pub struct ReadIdsResponse {
 // ── Seen notification IDs (push dedup) ──
 
 const SEEN_CACHE_PREFIX: &str = "seen_notifs_";
+const SEEN_LUNA_OBJECTS_KEY: &str = "seen_notifs_luna_objects";
 const SEEN_INIT_PREFIX: &str = "seen_notifs_init_";
 const SEEN_BOOTSTRAP_STARTED_AT_KEY: &str = "seen_notifs_bootstrap_started_at";
 const SEEN_BOOTSTRAP_COMPLETE_KEY: &str = "seen_notifs_bootstrap_complete";
 const MAX_SEEN_IDS: usize = 500;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LunaNotifSeenEntry {
+    pub base_key: String,
+    pub revision_key: String,
+}
 
 pub fn get_seen_notif_ids(db: &Database, source: &str) -> Vec<String> {
     let key = format!("{}{}", SEEN_CACHE_PREFIX, source);
@@ -127,6 +134,25 @@ pub fn save_seen_notif_ids(db: &Database, source: &str, ids: Vec<String>) {
     };
     if let Ok(json) = serde_json::to_string(&trimmed) {
         let _ = db.save_data_cache(&key, &json);
+    }
+}
+
+pub fn get_luna_notif_seen_entries(db: &Database) -> Vec<LunaNotifSeenEntry> {
+    match db.get_data_cache(SEEN_LUNA_OBJECTS_KEY) {
+        Ok(Some((json, _))) => serde_json::from_str(&json).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+pub fn save_luna_notif_seen_entries(db: &Database, entries: Vec<LunaNotifSeenEntry>) {
+    let trimmed: Vec<LunaNotifSeenEntry> = if entries.len() > MAX_SEEN_IDS {
+        let skip = entries.len() - MAX_SEEN_IDS;
+        entries.into_iter().skip(skip).collect()
+    } else {
+        entries
+    };
+    if let Ok(json) = serde_json::to_string(&trimmed) {
+        let _ = db.save_data_cache(SEEN_LUNA_OBJECTS_KEY, &json);
     }
 }
 

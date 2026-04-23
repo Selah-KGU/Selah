@@ -124,10 +124,7 @@ function applyBackendSessionStatus(status: BackendSessionStatus) {
     return;
   }
 
-  const hadRealAuth = get(authState).authenticated || (() => {
-    try { return localStorage.getItem("selah-ever-auth") === "1"; } catch { return false; }
-  })();
-  if (status.session_expired || hadRealAuth) {
+  if (status.session_expired) {
     sessionExpired.set(true);
   }
 }

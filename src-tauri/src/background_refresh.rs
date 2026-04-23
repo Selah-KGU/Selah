@@ -65,7 +65,8 @@ struct BackendRefreshRequest {
 impl BackendRefreshRequest {
     fn new(keys: Option<&[String]>, force: bool) -> Self {
         let keys = keys.map(|items| {
-            items.iter()
+            items
+                .iter()
                 .map(|key| key.trim().to_string())
                 .filter(|key| !key.is_empty())
                 .collect::<BTreeSet<_>>()
@@ -74,7 +75,10 @@ impl BackendRefreshRequest {
     }
 
     fn wants(&self, key: &str) -> bool {
-        self.keys.as_ref().map(|keys| keys.contains(key)).unwrap_or(true)
+        self.keys
+            .as_ref()
+            .map(|keys| keys.contains(key))
+            .unwrap_or(true)
     }
 
     fn wants_any(&self, keys: &[&str]) -> bool {
@@ -433,9 +437,10 @@ async fn sync_backend_session_status_inner(
     } else {
         false
     };
+    let mut kgc_session_present = is_kgc_authenticated(app).await;
 
     if attempt_recovery {
-        if kgc_had_session && !kgc_status.valid {
+        if kgc_had_session && !kgc_status.valid && !kgc_session_present {
             let _ = crate::commands::sync_session(
                 app.clone(),
                 app.state::<KgcState>(),
@@ -447,6 +452,7 @@ async fn sync_backend_session_status_inner(
             kgc_status = crate::commands::check_session(app.state::<KgcState>())
                 .await
                 .unwrap_or(kgc_status);
+            kgc_session_present = is_kgc_authenticated(app).await;
             if luna_had_session {
                 luna_valid = crate::luna_commands::luna_check_session(app.state::<LunaState>())
                     .await
@@ -497,7 +503,7 @@ async fn sync_backend_session_status_inner(
 
     Ok(BackendSessionStatusPayload {
         kgc_valid: kgc_status.valid,
-        session_expired: kgc_had_session && !kgc_status.valid,
+        session_expired: kgc_had_session && !kgc_status.valid && !kgc_session_present,
         username: if kgc_status.valid {
             kgc_status.username
         } else {
@@ -729,7 +735,10 @@ async fn maybe_auto_sync_calendars(
     ) {
         Ok(raw) => raw,
         Err(e) => {
-            log::warn!("background refresh: build raw schedule for gcal sync failed: {}", e);
+            log::warn!(
+                "background refresh: build raw schedule for gcal sync failed: {}",
+                e
+            );
             return;
         }
     };

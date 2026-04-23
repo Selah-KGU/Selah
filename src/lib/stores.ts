@@ -394,6 +394,10 @@ function initTheme(): "system" | "light" | "dark" {
       return saved;
     }
   }
+  if (typeof window !== "undefined") {
+    const effective = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    setAppTheme(effective).catch(() => {});
+  }
   return "system";
 }
 export const theme = writable<"system" | "light" | "dark">(initTheme());
@@ -557,6 +561,12 @@ function persistCacheValue<T>(key: string, data: T, ts: number, notify: boolean)
   if (notify) notifySwr(key, data);
 }
 
+function readAnyDiskCache<T>(key: string): { data: T; ts: number } | null {
+  const disk = loadDiskCache(key);
+  if (!disk) return null;
+  return { data: disk.data as T, ts: disk.ts };
+}
+
 async function loadBackendManagedCache<T>(key: string): Promise<{ data: T; ts: number } | null> {
   try {
     if (key === "schedule_data") {
@@ -573,6 +583,18 @@ async function loadBackendManagedCache<T>(key: string): Promise<{ data: T; ts: n
 }
 
 function queueBackendManagedRefresh<T>(key: string, force: boolean, fallback?: T): Promise<T> {
+  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
+    const entry = cache.get(key);
+    if (entry) return Promise.resolve(entry.data as T);
+    const disk = readAnyDiskCache<T>(key);
+    if (disk) {
+      persistCacheValue(key, disk.data, disk.ts, false);
+      return Promise.resolve(disk.data);
+    }
+    if (fallback !== undefined) return Promise.resolve(fallback);
+    return Promise.reject(new Error(`No demo cache available for "${key}"`));
+  }
+
   const pending = inflight.get(key);
   if (pending) return pending as Promise<T>;
 
@@ -598,6 +620,16 @@ function queueBackendManagedRefresh<T>(key: string, force: boolean, fallback?: T
 }
 
 export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<T> {
+  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
+    const entry = cache.get(key);
+    if (entry) return entry.data as T;
+    const disk = readAnyDiskCache<T>(key);
+    if (disk) {
+      persistCacheValue(key, disk.data, disk.ts, false);
+      return disk.data;
+    }
+  }
+
   const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
   const entry = cache.get(key);
   if (entry && Date.now() - entry.ts < effectiveTtl) {

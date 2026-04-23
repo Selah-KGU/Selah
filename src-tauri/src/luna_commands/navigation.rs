@@ -9,7 +9,10 @@ fn infer_luna_window_target(
     idnumber: Option<&str>,
 ) -> (Option<String>, Option<String>) {
     if mode.is_some() {
-        return (mode.map(ToString::to_string), idnumber.map(ToString::to_string));
+        return (
+            mode.map(ToString::to_string),
+            idnumber.map(ToString::to_string),
+        );
     }
 
     let raw = path.trim();
@@ -70,8 +73,7 @@ pub async fn luna_open_detail_window(
     }
     let id = LUNA_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("luna-detail-{}", id);
-    let (mode, idnumber) =
-        infer_luna_window_target(&path, mode.as_deref(), idnumber.as_deref());
+    let (mode, idnumber) = infer_luna_window_target(&path, mode.as_deref(), idnumber.as_deref());
 
     let url_str = match mode.as_deref() {
         Some("material") => {

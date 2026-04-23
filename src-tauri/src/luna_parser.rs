@@ -795,9 +795,7 @@ mod tests {
         assert!(result.sections[0]
             .body
             .contains("レポート本文をPDFで提出してください。"));
-        assert!(result.sections[0]
-            .body
-            .contains("提出時に表紙は不要です。"));
+        assert!(result.sections[0].body.contains("提出時に表紙は不要です。"));
         assert!(!result.sections[0].body.contains("ゲストアクセス"));
         assert!(!result.sections[0].body.contains("履修データ連携"));
     }

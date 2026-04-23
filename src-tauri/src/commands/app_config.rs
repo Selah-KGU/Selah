@@ -182,6 +182,14 @@ pub fn save_native_agent_config(
             let _ = crate::macos_subtitle_overlay::close_overlay(&_app);
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        if config.subtitle_overlay_enabled {
+            let _ = crate::windows_subtitle_overlay::open_overlay(&_app);
+        } else {
+            let _ = crate::windows_subtitle_overlay::close_overlay(&_app);
+        }
+    }
 
     Ok(())
 }
@@ -189,12 +197,19 @@ pub fn save_native_agent_config(
 /// Open the real-time subtitle floating overlay and start STT.
 #[tauri::command]
 pub fn open_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
+    if !load_native_agent_config().subtitle_overlay_enabled {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
         return crate::macos_subtitle_overlay::open_overlay(&_app);
     }
-    #[cfg(not(target_os = "macos"))]
-    Err("Real-time subtitle overlay is currently macOS-only".into())
+    #[cfg(target_os = "windows")]
+    {
+        return crate::windows_subtitle_overlay::open_overlay(&_app);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    Err("Real-time subtitle overlay is not supported on this platform".into())
 }
 
 /// Stop STT and close the subtitle overlay.
@@ -204,7 +219,11 @@ pub fn close_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
     {
         return crate::macos_subtitle_overlay::close_overlay(&_app);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        return crate::windows_subtitle_overlay::close_overlay(&_app);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     Ok(())
 }
 
@@ -215,7 +234,11 @@ pub fn subtitle_overlay_is_open() -> bool {
     {
         return crate::macos_subtitle_overlay::is_open();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        return crate::windows_subtitle_overlay::is_open();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     false
 }
 

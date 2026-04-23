@@ -804,7 +804,7 @@
         <option value="false">無効</option>
         <option value="true">有効</option>
       </select>
-      <div class="hint">macOS ネイティブのリアルタイム字幕浮窗を表示します。Live 録課セッション中に最新の文字起こし内容を画面下部に表示します。</div>
+      <div class="hint">macOS / Windows ネイティブのリアルタイム字幕浮窗を表示します。Live 録課セッション中に最新の文字起こし内容を画面下部に表示します。</div>
     </div>
   </div>
 </div>

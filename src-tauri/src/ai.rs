@@ -658,7 +658,7 @@ pub fn send_native_notification(
                 log::warn!("notify-rust show failed: {}", e);
             }
         });
-        Ok("Notification sent".to_string())
+        Ok("Notification queued".to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {

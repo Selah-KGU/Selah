@@ -40,8 +40,10 @@ mod syllabus;
 mod timetable;
 mod tray;
 mod webview_toolbar;
+#[cfg(target_os = "windows")]
+mod windows_subtitle_overlay;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 // ── Decoupled per-service states (independent locking, zero cross-service contention) ──
@@ -88,8 +90,9 @@ fn get_app_theme(state: tauri::State<'_, ThemeState>) -> String {
 }
 
 #[tauri::command]
-fn set_app_theme(state: tauri::State<'_, ThemeState>, theme: String) {
+fn set_app_theme(app: tauri::AppHandle, state: tauri::State<'_, ThemeState>, theme: String) {
     *state.0.lock().unwrap_or_else(|e| e.into_inner()) = theme;
+    let _ = app.emit("app-theme-changed", ());
 }
 
 #[tauri::command]
@@ -219,8 +222,17 @@ pub fn run() {
                 if native_agent_cfg.floating_orb_enabled {
                     let _ = macos_native_agent::open_orb(app.handle());
                 }
-                // 字幕浮窗は常にセットアップ済み。Live ページの表示/非表示でフロントから制御する。
-                let _ = macos_subtitle_overlay::open_overlay(app.handle());
+                if native_agent_cfg.subtitle_overlay_enabled {
+                    let _ = macos_subtitle_overlay::open_overlay(app.handle());
+                }
+            }
+            #[cfg(target_os = "windows")]
+            {
+                windows_subtitle_overlay::setup(app.handle());
+                let native_agent_cfg = commands::load_native_agent_config();
+                if native_agent_cfg.subtitle_overlay_enabled {
+                    let _ = windows_subtitle_overlay::open_overlay(app.handle());
+                }
             }
 
             // Hide main window on close instead of quitting (keep in tray)

@@ -84,6 +84,12 @@ llama-cpp-2 = { version = "0.1", features = ["metal"] }
 keyring = { version = "3", features = ["windows-native"] }
 webview2-com = "0.38"
 windows-core = "0.61"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_WindowsAndMessaging"
+] }
 tauri-plugin-single-instance = "2"
 sherpa-onnx = { version = "1.12.39", default-features = false }
 llama-cpp-2 = { version = "0.1", features = ["vulkan"] }

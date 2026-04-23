@@ -515,8 +515,7 @@ pub async fn luna_fetch_detail(
     }
     if is_course_top_path(&path) {
         return Err(
-            "Lunaの授業トップURLです。詳細ページではなくコース画面として開いてください。"
-                .into(),
+            "Lunaの授業トップURLです。詳細ページではなくコース画面として開いてください。".into(),
         );
     }
     let is_report = is_report_detail_path(&path);
