@@ -73,6 +73,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build sherpa-onnx universal shared runtime
+        run: |
+          ./scripts/build-macos-sherpa-runtime.sh \
+            --lib-dir /tmp/sherpa-universal-lib \
+            --framework-dir "$PWD/src-tauri/macos-runtime"
+
       - name: Build and publish macOS release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -86,13 +92,14 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          SHERPA_ONNX_LIB_DIR: /tmp/sherpa-universal-lib
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
           releaseBody: "See the assets to download and install this release."
           releaseDraft: false
           prerelease: false
-          args: --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist"},"targets":["dmg","app"]}}'
+          args: --target universal-apple-darwin --features stt-shared --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
 
   release-windows:
     needs: prepare

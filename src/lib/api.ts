@@ -2013,3 +2013,28 @@ export async function agentRenameConversation(convId: string, title: string): Pr
   if (_isDemo()) return;
   return invoke("agent_rename_conversation", { convId, title });
 }
+
+// ============ Image Share ============
+
+/** Save PNG image data to a file using the native save dialog. */
+export async function saveImageFile(data: Uint8Array, defaultName: string): Promise<string> {
+  return invoke<string>("save_image_file", {
+    data: Array.from(data),
+    defaultName,
+  });
+}
+
+/** Copy PNG image data to the system clipboard using native APIs. */
+export async function copyImageToClipboard(data: Uint8Array): Promise<void> {
+  return invoke("copy_image_to_clipboard", {
+    data: Array.from(data),
+  });
+}
+
+/** Share PNG image data via the native OS share sheet. */
+export async function shareImageNative(data: Uint8Array, fileName: string): Promise<void> {
+  return invoke("share_image_native", {
+    data: Array.from(data),
+    fileName,
+  });
+}

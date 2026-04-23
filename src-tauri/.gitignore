@@ -4,3 +4,5 @@
 /gen/schemas
 /windows-runtime/*
 !/windows-runtime/.gitkeep
+/macos-runtime/*
+!/macos-runtime/.gitkeep

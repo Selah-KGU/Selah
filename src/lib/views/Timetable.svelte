@@ -2,8 +2,10 @@
   import { onMount, onDestroy } from "svelte";
   import { get } from "svelte/store";
   import { invoke } from "@tauri-apps/api/core";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive } from "../api";
-  import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady } from "../stores";
+  import { toPng } from "html-to-image";
+  import selahLogoUrl from "../../assets/logo.png";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive, saveImageFile, copyImageToClipboard, shareImageNative } from "../api";
+  import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady, authState } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
@@ -27,6 +29,9 @@
   let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") === "1");
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let shareInProgress = $state(false);
+  let shareMenuOpen = $state(false);
+  let captureRef: HTMLDivElement;
 
   // ── Constants ──
   const days: [number, string][] = [[1,"月"],[2,"火"],[3,"水"],[4,"木"],[5,"金"],[6,"土"]];
@@ -609,7 +614,182 @@
     }
   }
 
+  // ── Share as image (Canvas post-processing — no DOM changes) ──
+  function getCaptureBackground(): string {
+    const isDark = document.documentElement.getAttribute("data-theme") === "dark"
+      || (window.matchMedia("(prefers-color-scheme: dark)").matches
+          && document.documentElement.getAttribute("data-theme") !== "light");
+    return isDark ? "#1c1c1e" : "#ffffff";
+  }
+
+  function loadImage(src: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("画像の読み込みに失敗"));
+      img.src = src;
+    });
+  }
+
+  async function captureImage(): Promise<Blob> {
+    const FIXED_WIDTH = 1760; // 880px * 2 (retina)
+    const HEADER_H = 120;    // header area at the top
+    const bg = getCaptureBackground();
+    const isDark = bg === "#1c1c1e";
+    const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', sans-serif";
+
+    // Get student info
+    const auth = get(authState);
+    const studentName = auth.displayName || "";
+    const studentFaculty = auth.faculty ? `${auth.faculty}${auth.department ? " / " + auth.department : ""}` : "";
+
+    // 1. Capture the timetable grid as-is (no DOM changes)
+    const rawDataUrl = await toPng(captureRef, {
+      pixelRatio: 2,
+      backgroundColor: bg,
+      cacheBust: true,
+    });
+
+    // 2. Load raw capture + logo into Image elements
+    const [rawImg, logoImg] = await Promise.all([
+      loadImage(rawDataUrl),
+      loadImage(selahLogoUrl).catch(() => null),
+    ]);
+
+    // 3. Scale to fixed width via Canvas
+    const scale = FIXED_WIDTH / rawImg.width;
+    const scaledH = Math.round(rawImg.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = FIXED_WIDTH;
+    canvas.height = HEADER_H + scaledH;
+    const ctx = canvas.getContext("2d")!;
+
+    // Background fill
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 4. Draw header at the TOP
+    const logoSize = 48;
+    const padX = 36;
+    const headerCenterY = HEADER_H / 2;
+
+    // Left side: logo + "Selah" + tagline
+    if (logoImg) {
+      ctx.drawImage(logoImg, padX, headerCenterY - logoSize / 2, logoSize, logoSize);
+    }
+
+    ctx.textBaseline = "middle";
+    ctx.font = `bold 32px ${font}`;
+    ctx.fillStyle = isDark ? "#f2f2f7" : "#1c1c1e";
+    const nameX = padX + logoSize + 14;
+    ctx.fillText("Selah", nameX, headerCenterY - 2);
+    const nameW = ctx.measureText("Selah").width;
+
+    ctx.font = `500 22px ${font}`;
+    ctx.fillStyle = "#8e8e93";
+    ctx.fillText("新月の下で、知性を繋ぐ。", nameX + nameW + 12, headerCenterY - 2);
+
+    // Right side: student name + faculty
+    if (studentName) {
+      ctx.font = `600 22px ${font}`;
+      ctx.fillStyle = isDark ? "#f2f2f7" : "#1c1c1e";
+      ctx.textAlign = "right";
+      ctx.fillText(studentName, FIXED_WIDTH - padX, headerCenterY - (studentFaculty ? 10 : 0));
+
+      if (studentFaculty) {
+        ctx.font = `500 17px ${font}`;
+        ctx.fillStyle = "#8e8e93";
+        ctx.fillText(studentFaculty, FIXED_WIDTH - padX, headerCenterY + 16);
+      }
+      ctx.textAlign = "left";
+    }
+
+    // Subtle separator line
+    ctx.beginPath();
+    ctx.strokeStyle = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+    ctx.lineWidth = 1;
+    ctx.moveTo(padX, HEADER_H - 1);
+    ctx.lineTo(FIXED_WIDTH - padX, HEADER_H - 1);
+    ctx.stroke();
+
+    // 5. Draw the scaled timetable below the header
+    ctx.drawImage(rawImg, 0, HEADER_H, FIXED_WIDTH, scaledH);
+
+    // 6. Export as PNG blob
+    return new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error("画像の生成に失敗しました"));
+      }, "image/png");
+    });
+  }
+
+  function getFileName(): string {
+    const weekStr = weekLabel.replace(/\s/g, "");
+    return `Selah_時間割_${weekStr}.png`;
+  }
+
+  async function handleCopyToClipboard() {
+    shareMenuOpen = false;
+    shareInProgress = true;
+    try {
+      const blob = await captureImage();
+      const arr = new Uint8Array(await blob.arrayBuffer());
+      await copyImageToClipboard(arr);
+      showToast("クリップボードにコピーしました");
+    } catch (e: any) {
+      console.error("[Timetable] clipboard copy failed:", e);
+      showToast("コピーに失敗しました", "error");
+    } finally {
+      shareInProgress = false;
+    }
+  }
+
+  async function handleSaveAsFile() {
+    shareMenuOpen = false;
+    shareInProgress = true;
+    try {
+      const blob = await captureImage();
+      const arr = new Uint8Array(await blob.arrayBuffer());
+      await saveImageFile(arr, getFileName());
+      showToast("画像を保存しました");
+    } catch (e: any) {
+      if (String(e).includes("cancelled")) return;
+      console.error("[Timetable] save failed:", e);
+      showToast("保存に失敗しました", "error");
+    } finally {
+      shareInProgress = false;
+    }
+  }
+
+  async function handleNativeShare() {
+    shareMenuOpen = false;
+    shareInProgress = true;
+    try {
+      const blob = await captureImage();
+      const arr = new Uint8Array(await blob.arrayBuffer());
+      await shareImageNative(arr, getFileName());
+    } catch (e: any) {
+      console.error("[Timetable] native share failed:", e);
+      showToast("共有に失敗しました", "error");
+    } finally {
+      shareInProgress = false;
+    }
+  }
+
+  function toggleShareMenu() {
+    shareMenuOpen = !shareMenuOpen;
+  }
+
+  function closeShareMenu(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (!target.closest(".share-menu-wrap")) {
+      shareMenuOpen = false;
+    }
+  }
+
   onMount(() => {
+    document.addEventListener("click", closeShareMenu);
     getAiConfig().then(cfg => {
       aiProvider = cfg.provider || "";
     }).catch(() => {});
@@ -660,6 +840,7 @@
     window.removeEventListener("keydown", handleKeydown);
     window.removeEventListener("selah-fav-toggle", handleFavToggle as EventListener);
     document.removeEventListener("visibilitychange", handleVisibilityChange);
+    document.removeEventListener("click", closeShareMenu);
   });
 </script>
 
@@ -755,6 +936,55 @@
             {/if}
             <span class="action-label-ai">AI 日程</span>
           </button>
+          <!-- Share button -->
+          <div class="share-menu-wrap">
+            <button
+              class="action-btn"
+              onclick={(e: MouseEvent) => { e.stopPropagation(); toggleShareMenu(); }}
+              disabled={shareInProgress}
+              title="時間割を画像として共有"
+            >
+              {#if shareInProgress}
+                <span class="mini-spinner"></span>
+              {:else}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path d="M5 6.5L8 3.5L11 6.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M8 3.5V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                  <path d="M3 11v1.5a1 1 0 001 1h8a1 1 0 001-1V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              {/if}
+              <span class="action-label">共有</span>
+            </button>
+            {#if shareMenuOpen}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="share-dropdown" onclick={(e: MouseEvent) => e.stopPropagation()}>
+                <button class="share-option" onclick={handleCopyToClipboard}>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <rect x="5" y="5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                    <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" stroke="currentColor" stroke-width="1.2"/>
+                  </svg>
+                  <span>クリップボードにコピー</span>
+                </button>
+                <button class="share-option" onclick={handleSaveAsFile}>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 2v8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                    <path d="M5 7.5L8 10.5L11 7.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M3 12.5h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                  </svg>
+                  <span>画像として保存</span>
+                </button>
+                <div class="share-divider"></div>
+                <button class="share-option" onclick={handleNativeShare}>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M5 6.5L8 3.5L11 6.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M8 3.5V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                    <path d="M3 11v1.5a1 1 0 001 1h8a1 1 0 001-1V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>共有...</span>
+                </button>
+              </div>
+            {/if}
+          </div>
         {/if}
       </div>
     </div>
@@ -794,7 +1024,7 @@
   <ViewLoader {loading} {error} empty={!loading && !error && !hasEntries} emptyMessage="登録されている授業はありません">
 
     <!-- Grid timetable -->
-    <div class="grid-outer">
+    <div class="grid-outer" bind:this={captureRef}>
       <div class="grid-wrap">
         <div class="timetable">
           <!-- Header row -->
@@ -927,6 +1157,7 @@
       </div>
     {/if}
     </div>
+
 
     <!-- Communities -->
     {#if scheduleData?.luna_communities && scheduleData.luna_communities.length > 0}
@@ -1565,5 +1796,71 @@
   @keyframes toast-slide-up {
     from { transform: translateX(-50%) translateY(20px); opacity: 0; }
     to { transform: translateX(-50%) translateY(0); opacity: 1; }
+  }
+
+  /* ── Share menu ── */
+  .share-menu-wrap {
+    position: relative;
+  }
+  .share-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 200px;
+    padding: 4px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 0.5px solid var(--border);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.08);
+    z-index: 100;
+    animation: share-menu-in 0.15s ease;
+  }
+  @keyframes share-menu-in {
+    from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .share-dropdown {
+      background: rgba(44, 44, 46, 0.96);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+  }
+  :global([data-theme="dark"]) .share-dropdown {
+    background: rgba(44, 44, 46, 0.96);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+  .share-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.12s ease;
+    text-align: left;
+  }
+  .share-option:hover {
+    background: var(--bg-hover);
+  }
+  .share-option:active {
+    background: var(--bg-active);
+  }
+  .share-option svg {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+  .share-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 3px 8px;
   }
 </style>

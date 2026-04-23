@@ -35,6 +35,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build sherpa-onnx universal shared runtime
+        run: |
+          ./scripts/build-macos-sherpa-runtime.sh \
+            --lib-dir /tmp/sherpa-universal-lib \
+            --framework-dir "$PWD/src-tauri/macos-runtime"
+
       - name: Build Tauri app (universal, signed + notarized)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -48,8 +54,9 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Temporary keychain password (any random string works)
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          SHERPA_ONNX_LIB_DIR: /tmp/sherpa-universal-lib
         with:
-          args: --target universal-apple-darwin --config '{"bundle":{"macOS":{"entitlements":"Entitlements.DeveloperID.plist"},"targets":["dmg","app"]}}'
+          args: --target universal-apple-darwin --features stt-shared --config '{"bundle":{"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
 
   # ── Windows (x64) ─────────────────────────────────────────────────────────
   build-windows:
