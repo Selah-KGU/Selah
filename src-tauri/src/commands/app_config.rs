@@ -136,14 +136,17 @@ pub fn save_notification_config(config: NotificationConfig) -> Result<(), String
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NativeAgentConfig {
-    pub floating_orb_enabled: bool,
+    #[serde(alias = "floating_orb_enabled")]
+    pub voice_shortcut_enabled: bool,
+    pub voice_shortcut: String,
     pub subtitle_overlay_enabled: bool,
 }
 
 impl Default for NativeAgentConfig {
     fn default() -> Self {
         Self {
-            floating_orb_enabled: false,
+            voice_shortcut_enabled: false,
+            voice_shortcut: "fn".into(),
             subtitle_overlay_enabled: false,
         }
     }
@@ -171,11 +174,7 @@ pub fn save_native_agent_config(
 
     #[cfg(target_os = "macos")]
     {
-        if config.floating_orb_enabled {
-            let _ = crate::macos_native_agent::open_orb(&_app);
-        } else {
-            let _ = crate::macos_native_agent::close_orb(&_app);
-        }
+        let _ = crate::macos_native_agent::apply_config(&_app, &config);
         if config.subtitle_overlay_enabled {
             let _ = crate::macos_subtitle_overlay::open_overlay(&_app);
         } else {
@@ -185,9 +184,9 @@ pub fn save_native_agent_config(
     #[cfg(target_os = "windows")]
     {
         if config.subtitle_overlay_enabled {
-            let _ = crate::windows_subtitle_overlay::open_overlay(&_app);
+            crate::windows_subtitle_overlay::open_overlay(&_app)?;
         } else {
-            let _ = crate::windows_subtitle_overlay::close_overlay(&_app);
+            crate::windows_subtitle_overlay::close_overlay(&_app)?;
         }
     }
 

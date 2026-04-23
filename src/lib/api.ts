@@ -1661,11 +1661,6 @@ export async function openProfileEditWindow(): Promise<void> {
   return invoke<void>("open_profile_edit_window");
 }
 
-export async function openAgentFloatWindow(): Promise<void> {
-  if (_isDemo()) return;
-  return invoke<void>("open_agent_float_window");
-}
-
 export async function openSubtitleOverlay(): Promise<void> {
   if (_isDemo()) return;
   return invoke<void>("open_subtitle_overlay");

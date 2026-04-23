@@ -6,6 +6,7 @@
   import { authState, sessionExpired, invalidateCache } from "./lib/stores";
   import { restoreAllSessions, startBackgroundPolling, stopBackgroundPolling, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
+  import { startSilentUpdateCheck } from "./lib/updater";
   import { listen } from "@tauri-apps/api/event";
   import { get } from "svelte/store";
   import { onMount, onDestroy } from "svelte";
@@ -65,6 +66,7 @@
     if (await restoreDemoState()) {
       demoBootFlag = true;
       startTrayStatus();
+      void startSilentUpdateCheck();
       restoring = false;
       return;
     }
@@ -94,6 +96,7 @@
       }
     } finally {
       restoring = false;
+      void startSilentUpdateCheck();
     }
   });
 

@@ -16,21 +16,22 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject,
-    DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, ReleaseDC, RoundRect, SelectObject,
-    SetBkMode, SetTextColor, DEFAULT_CHARSET, DEFAULT_PITCH, DEFAULT_QUALITY, DT_CENTER,
-    DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_BOLD, HGDIOBJ,
-    OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
+    DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect,
+    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, UpdateWindow, DEFAULT_CHARSET,
+    DEFAULT_PITCH, DEFAULT_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
+    DT_VCENTER, FF_DONTCARE, FW_BOLD, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
+    TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetSystemMetrics, InvalidateRect, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SetLayeredWindowAttributes, SetWindowPos, SetWindowRgn, ShowWindow, SystemParametersInfoW,
-    TranslateMessage, UpdateWindow, CS_DBLCLKS, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, IDC_ARROW,
-    LWA_ALPHA, MA_NOACTIVATE, MSG, SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_CLOSE,
-    WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    GetSystemMetrics, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SetLayeredWindowAttributes, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    CS_DBLCLKS, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, LWA_ALPHA, MA_NOACTIVATE, MSG,
+    SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const SUB_H: i32 = 52;
@@ -50,6 +51,7 @@ const SPRING_SETTLE: f64 = 0.25;
 const FADE_FRAMES: u64 = 20;
 
 const CLASS_NAME: &str = "SelahSubtitleOverlayWindow";
+type RawHwnd = isize;
 
 static HIDE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
@@ -59,7 +61,7 @@ static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 #[derive(Default)]
 struct OverlayWindow {
-    hwnd: HWND,
+    hwnd: RawHwnd,
     width: i32,
     center_x: i32,
     top_y: i32,
@@ -76,6 +78,7 @@ struct SharedState {
 static WINDOW: LazyLock<Mutex<OverlayWindow>> =
     LazyLock::new(|| Mutex::new(OverlayWindow::default()));
 static SHARED: LazyLock<Mutex<SharedState>> = LazyLock::new(|| Mutex::new(SharedState::default()));
+static CREATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Clone, Copy)]
 struct Spring {
@@ -131,9 +134,9 @@ fn create_overlay_font() -> HGDIOBJ {
             0,
             0,
             DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS,
+            OUT_DEFAULT_PRECIS as u32,
             0,
-            DEFAULT_QUALITY,
+            DEFAULT_QUALITY as u32,
             (DEFAULT_PITCH | FF_DONTCARE) as u32,
             font_name.as_ptr(),
         ) as HGDIOBJ
@@ -172,7 +175,8 @@ fn estimate_text_w(text: &str) -> i32 {
 
 fn prefers_dark(app: &AppHandle) -> bool {
     let theme = app.state::<crate::ThemeState>();
-    theme.0.lock().unwrap_or_else(|e| e.into_inner()).as_str() != "light"
+    let is_dark = theme.0.lock().unwrap_or_else(|e| e.into_inner()).as_str() != "light";
+    is_dark
 }
 
 fn work_area() -> RECT {
@@ -201,9 +205,13 @@ fn apply_window_region(hwnd: HWND, width: i32, height: i32) {
     }
 }
 
+fn hwnd_from_raw(raw: RawHwnd) -> HWND {
+    raw as HWND
+}
+
 fn window_snapshot() -> Option<OverlayWindow> {
     let state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-    if state.hwnd.is_null() {
+    if state.hwnd == 0 {
         None
     } else {
         Some(OverlayWindow {
@@ -224,9 +232,9 @@ fn set_theme_mode(dark: bool) {
         state.dark = dark;
         state.hwnd
     };
-    if !hwnd.is_null() {
+    if hwnd != 0 {
         unsafe {
-            let _ = InvalidateRect(hwnd, null(), 1);
+            let _ = InvalidateRect(hwnd_from_raw(hwnd), null(), 1);
         }
     }
 }
@@ -234,12 +242,13 @@ fn set_theme_mode(dark: bool) {
 fn set_alpha(alpha: u8) {
     let hwnd = {
         let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-        if state.hwnd.is_null() {
+        if state.hwnd == 0 {
             return;
         }
         state.alpha = alpha;
         state.hwnd
     };
+    let hwnd = hwnd_from_raw(hwnd);
     unsafe {
         let _ = SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
         if alpha == 0 {
@@ -262,7 +271,7 @@ fn set_alpha(alpha: u8) {
 fn apply_frame(width: i32, center_x: i32, top_y: i32) {
     let hwnd = {
         let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-        if state.hwnd.is_null() {
+        if state.hwnd == 0 {
             return;
         }
         state.width = width;
@@ -270,6 +279,7 @@ fn apply_frame(width: i32, center_x: i32, top_y: i32) {
         state.top_y = top_y;
         state.hwnd
     };
+    let hwnd = hwnd_from_raw(hwnd);
     let x = center_x - width / 2;
     unsafe {
         apply_window_region(hwnd, width, SUB_H);
@@ -321,11 +331,13 @@ unsafe extern "system" fn overlay_wndproc(
         }
         WM_DESTROY => {
             let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-            state.hwnd = null_mut();
-            state.width = 0;
-            state.alpha = 0;
-            state.text.clear();
-            OVERLAY_OPEN.store(false, Ordering::Relaxed);
+            if state.hwnd == hwnd as RawHwnd {
+                state.hwnd = 0;
+                state.width = 0;
+                state.alpha = 0;
+                state.text.clear();
+                OVERLAY_OPEN.store(false, Ordering::Relaxed);
+            }
             PostQuitMessage(0);
             0
         }
@@ -462,7 +474,7 @@ fn spawn_overlay_thread(app: &AppHandle) -> Result<(), String> {
 
         {
             let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-            state.hwnd = hwnd;
+            state.hwnd = hwnd as RawHwnd;
             state.width = width;
             state.center_x = center_x;
             state.top_y = top_y;
@@ -485,6 +497,7 @@ fn spawn_overlay_thread(app: &AppHandle) -> Result<(), String> {
 }
 
 fn ensure_overlay_window(app: &AppHandle) -> Result<(), String> {
+    let _create_guard = CREATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if window_snapshot().is_some() {
         return Ok(());
     }
@@ -529,15 +542,16 @@ fn show_text(app: &AppHandle, text: String, is_final: bool) {
     let target_w = estimate_text_w(&text);
     {
         let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-        if state.hwnd.is_null() {
+        if state.hwnd == 0 {
             return;
         }
         state.text = text;
+        let hwnd = hwnd_from_raw(state.hwnd);
         unsafe {
-            ShowWindow(state.hwnd, SW_SHOWNOACTIVATE);
-            let _ = InvalidateRect(state.hwnd, null(), 1);
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            let _ = InvalidateRect(hwnd, null(), 1);
             let _ = SetWindowPos(
-                state.hwnd,
+                hwnd,
                 null_mut(),
                 0,
                 0,
@@ -683,9 +697,25 @@ pub fn close_overlay(_app: &AppHandle) -> Result<(), String> {
     FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
     MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
 
-    if let Some(snapshot) = window_snapshot() {
+    let closing_hwnd = {
+        let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+        if state.hwnd == 0 {
+            None
+        } else {
+            let hwnd = state.hwnd;
+            state.hwnd = 0;
+            state.width = 0;
+            state.alpha = 0;
+            state.text.clear();
+            Some(hwnd)
+        }
+    };
+
+    if let Some(hwnd) = closing_hwnd {
+        let hwnd = hwnd_from_raw(hwnd);
         unsafe {
-            let _ = PostMessageW(snapshot.hwnd, WM_CLOSE, 0, 0);
+            ShowWindow(hwnd, SW_HIDE);
+            let _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
     }
     Ok(())

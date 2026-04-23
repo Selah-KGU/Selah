@@ -9,173 +9,142 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{msg_send, AnyThread, MainThreadMarker, MainThreadOnly};
+use objc2_core_foundation::CFRetained;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSFloatingWindowLevel, NSFont, NSImage,
-    NSPanel, NSScreen, NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSFloatingWindowLevel,
+    NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode,
+    NSMutableParagraphStyle, NSPanel, NSParagraphStyleAttributeName, NSScreen, NSTextAlignment,
+    NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSVisualEffectView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString};
+use objc2_core_graphics::CGPath;
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect,
+    NSSize, NSString,
+};
+use objc2_quartz_core::{kCAGradientLayerConic, CAGradientLayer, CAShapeLayer};
 use serde_json::Value;
 use std::ptr::NonNull;
-use tauri::{AppHandle, Listener, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::agent;
+use crate::commands::NativeAgentConfig;
 use crate::db::Database;
 use crate::stt;
-use crate::tray;
 
-#[path = "macos_native_agent/ui_support.rs"]
-mod ui_support;
+const DEFAULT_SHORTCUT: &str = "fn";
 
-use ui_support::*;
+// ─ Capsule dimensions ────────────────────────────────────────────────────────
+const LISTEN_W: f64 = 540.0;
+const LISTEN_H: f64 = 76.0;
+const PROCESS_W: f64 = 124.0;
+const PROCESS_H: f64 = 52.0;
+const RESULT_W: f64 = 720.0;
+const RESULT_MIN_H: f64 = 124.0;
+const RESULT_MAX_H: f64 = 440.0;
+const NOTICE_W: f64 = 460.0;
+const NOTICE_H: f64 = 60.0;
 
-// ── Capsule Dimensions ─────────────────────────────────────────────────────
+const CORNER_RADIUS: f64 = 22.0;
+const TOP_MARGIN: f64 = 16.0;
+const PAD_X: f64 = 28.0;
+const PAD_Y: f64 = 18.0;
+const RESULT_PAD_X: f64 = 28.0;
+const RESULT_PAD_Y: f64 = 22.0;
 
-const CAP_IDLE_W: f64 = 110.0;
-const CAP_H: f64 = 46.0;
-const CAP_CORNER: f64 = CAP_H / 2.0;
-const CAP_MARGIN_RIGHT: f64 = 24.0;
-const CAP_MARGIN_BOTTOM: f64 = 28.0;
+// Loading dots
+const PROCESS_DOT_SIZE: f64 = 7.0;
+const PROCESS_DOT_GAP: f64 = 10.0;
 
-// Listening / processing / result widths
-const CAP_LISTENING_W: f64 = 360.0;
-const CAP_PROCESSING_W: f64 = 160.0;
-const CAP_RESULT_W: f64 = 380.0;
-const CAP_RESULT_MAX_H: f64 = 280.0;
+// Typography
+const LISTEN_FONT: f64 = 18.5;
+const RESULT_BODY_FONT: f64 = 15.0;
+const RESULT_CODE_FONT: f64 = 13.5;
+const RESULT_H1_FONT: f64 = 20.5;
+const RESULT_H2_FONT: f64 = 17.5;
+const RESULT_H3_FONT: f64 = 16.0;
+const RESULT_LINE_HEIGHT_MUL: f64 = 1.52;
+const RESULT_PARAGRAPH_SPACING: f64 = 8.0;
+const RESULT_MAX_VISIBLE_LINES: usize = 11;
+const NOTICE_FONT: f64 = 14.5;
 
-// Idle: logo + mic
-const LOGO_SIZE: f64 = 28.0;
-const LOGO_HALO_SIZE: f64 = 34.0;
-const MIC_CAPSULE_W: f64 = 42.0;
-const MIC_CAPSULE_H: f64 = 34.0;
-const BAR_W: f64 = 2.5;
-const BAR_GAP: f64 = 4.0;
-const BAR_IDLE: [f64; 4] = [10.0, 15.0, 7.0, 12.0];
+// Animation
+const ANIM_MS: u64 = 16;
+const FADE_FRAMES: u64 = 14;
+const SPRING_K: f64 = 340.0;
+const SPRING_D: f64 = 26.0;
+const SPRING_M: f64 = 1.0;
+const SPRING_DT: f64 = 0.016;
+const SPRING_SETTLE: f64 = 0.3;
+const RESULT_AUTO_CLOSE_SECS: u64 = 14;
+const NOTICE_AUTO_CLOSE_MS: u64 = 1800;
+const FN_POLL_MS: u64 = 25;
+const SHORTCUT_HOLD_MS: u64 = 140;
 
-// Listening: speech text + done button
-const LISTEN_TEXT_LEFT: f64 = 16.0;
-const LISTEN_DONE_SIZE: f64 = 30.0;
-const LISTEN_DONE_RIGHT: f64 = 8.0;
-const LISTEN_TEXT_FONT: f64 = 13.5;
+// Border
+const BORDER_IDLE_W: f64 = 1.0;
+const BORDER_GRADIENT_W: f64 = 1.7;
+const GRADIENT_ROTATION_PERIOD_SEC: f64 = 2.6;
 
-// Processing: three dots
-const DOT_SIZE: f64 = 8.0;
-const DOT_GAP: f64 = 10.0;
-
-// Result: text + continue button
-const RESULT_PAD_X: f64 = 20.0;
-const RESULT_PAD_Y: f64 = 12.0;
-const RESULT_FONT: f64 = 13.0;
-const RESULT_LINE_H: f64 = RESULT_FONT * 1.44;
-const RESULT_MAX_LINES: usize = 10;
-const RESULT_BTN_SIZE: f64 = 30.0;
-const RESULT_BTN_RIGHT: f64 = 10.0;
-const RESULT_AUTO_CLOSE_SECS: u64 = 20;
-
-// ── Animation ───────────────────────────────────────────────────────────────
-
-const ANIM_MS: u64 = 16; // ~60 fps
-const FADE_IN_FRAMES: u64 = 18;
-
-// Spring physics for morph — tuned for Dynamic-Island-like feel
-const SPRING_STIFFNESS: f64 = 280.0; // Higher = faster snap
-const SPRING_DAMPING: f64 = 22.0; // Higher = less oscillation
-const SPRING_MASS: f64 = 1.0;
-const SPRING_DT: f64 = 0.016; // timestep per frame (60fps)
-const SPRING_SETTLE: f64 = 0.3; // velocity+distance threshold to stop
-
-// ── State ───────────────────────────────────────────────────────────────────
-
-// Thread-local: holds NSView references (must stay on main thread)
-thread_local! {
-    static UI: RefCell<CapsuleViews> = RefCell::new(CapsuleViews::default());
-}
-
-// Cross-thread shared state (accessed from event listeners on tokio threads)
-static SHARED: std::sync::LazyLock<Mutex<SharedState>> =
-    std::sync::LazyLock::new(|| Mutex::new(SharedState::default()));
-
-static WAVE_TOKEN: AtomicU64 = AtomicU64::new(0);
-static WAVE_ACTIVE: AtomicBool = AtomicBool::new(false);
-static MORPH_TOKEN: AtomicU64 = AtomicU64::new(0);
-static DOTS_TOKEN: AtomicU64 = AtomicU64::new(0);
-static BORDER_ANIM_TOKEN: AtomicU64 = AtomicU64::new(0);
-static RESULT_CLOSE_TOKEN: AtomicU64 = AtomicU64::new(0);
-static RESULT_GLOW_TOKEN: AtomicU64 = AtomicU64::new(0);
-static CONTENT_FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
-static IDLE_WAVE_TOKEN: AtomicU64 = AtomicU64::new(0);
-/// Cached system dark-mode flag; cheaply read by animation loops.
+// ─ State tokens ──────────────────────────────────────────────────────────────
+static PANEL_OPEN: AtomicBool = AtomicBool::new(false);
 static SYSTEM_IS_DARK: AtomicBool = AtomicBool::new(true);
+static MORPH_TOKEN: AtomicU64 = AtomicU64::new(0);
+static FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
+static BORDER_TOKEN: AtomicU64 = AtomicU64::new(0);
+static AUTO_CLOSE_TOKEN: AtomicU64 = AtomicU64::new(0);
+static FN_PRESSED: AtomicBool = AtomicBool::new(false);
+static FN_POLL_TOKEN: AtomicU64 = AtomicU64::new(0);
+static SHORTCUT_DOWN: AtomicBool = AtomicBool::new(false);
+static SHORTCUT_ARM_TOKEN: AtomicU64 = AtomicU64::new(0);
+static DOTS_TOKEN: AtomicU64 = AtomicU64::new(0);
+static LISTEN_PULSE_TOKEN: AtomicU64 = AtomicU64::new(0);
+static SHORTCUT_REGISTERED: std::sync::LazyLock<Mutex<Option<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum CapsuleMode {
-    Idle,
     Listening,
     Processing,
     Result,
+    Notice,
 }
 
-/// Shared mutable state accessed from any thread (event listeners, tokio tasks).
 #[derive(Default)]
 struct SharedState {
     mode: Option<CapsuleMode>,
     stop_requested: bool,
     last_final_text: String,
     current_speech: String,
-    conv_id: Option<String>,
     agent_listener: Option<tauri::EventId>,
     result_accumulated: String,
 }
 
-/// Thread-local view state — only touched on the main thread.
 #[derive(Default)]
 struct CapsuleViews {
     panel: Option<Retained<NSPanel>>,
     root_view: Option<Retained<NSView>>,
-    capsule_view: Option<Retained<NSView>>, // shadow host
+    capsule_view: Option<Retained<NSView>>,
     vfx_view: Option<Retained<NSVisualEffectView>>,
-    bg_overlay: Option<Retained<NSView>>, // dark opacity layer
-
-    // Idle sub-views
-    idle_logo_halo: Option<Retained<NSView>>,
-    idle_logo: Option<Retained<NSView>>,
-    idle_mic_capsule: Option<Retained<NSView>>,
-    idle_separator: Option<Retained<NSView>>,
-    idle_wave_bars: Vec<Retained<NSView>>,
-
-    // Listening sub-views
-    listen_text: Option<Retained<NSTextField>>,
-    listen_done_btn: Option<Retained<NSView>>,
-    listen_done_icon: Option<Retained<NSView>>,
-
-    // Processing sub-views
-    proc_dots: Vec<Retained<NSView>>,
-
-    // Result sub-views
-    result_text: Option<Retained<NSTextField>>,
-    result_btn: Option<Retained<NSView>>,
-    result_btn_icon: Option<Retained<NSView>>,
-
-    // Interaction
+    bg_overlay: Option<Retained<NSView>>,
+    text_label: Option<Retained<NSTextField>>,
+    listen_indicator: Option<Retained<NSView>>,
+    processing_dots: Vec<Retained<NSView>>,
+    gradient_border: Option<Retained<CAGradientLayer>>,
+    gradient_mask: Option<Retained<CAShapeLayer>>,
+    screen_center_x: f64,
+    screen_top_y: f64,
     event_monitor: Option<Retained<AnyObject>>,
 }
 
-// ── Easing & Spring ─────────────────────────────────────────────────────────
-
-/// Corner radius that never exceeds the idle-capsule pill radius,
-/// so tall result views stay a rounded rectangle instead of an oval.
-#[inline]
-fn cap_radius(h: f64) -> f64 {
-    (h / 2.0).min(CAP_CORNER)
+thread_local! {
+    static UI: RefCell<CapsuleViews> = RefCell::new(CapsuleViews::default());
 }
 
-#[inline]
-fn ease_out_quart(t: f64) -> f64 {
-    1.0 - (1.0 - t).powi(4)
-}
+static SHARED: std::sync::LazyLock<Mutex<SharedState>> =
+    std::sync::LazyLock::new(|| Mutex::new(SharedState::default()));
 
-/// Single-axis critically-damped spring state.
 #[derive(Clone, Copy)]
 struct Spring {
     pos: f64,
@@ -191,93 +160,150 @@ impl Spring {
             target: pos,
         }
     }
-    fn set_target(&mut self, t: f64) {
-        self.target = t;
+
+    fn set_target(&mut self, target: f64) {
+        self.target = target;
     }
-    /// Advance one tick. Returns true if still moving.
+
     fn tick(&mut self) -> bool {
         let dx = self.pos - self.target;
-        let accel = (-SPRING_STIFFNESS * dx - SPRING_DAMPING * self.vel) / SPRING_MASS;
+        let accel = (-SPRING_K * dx - SPRING_D * self.vel) / SPRING_M;
         self.vel += accel * SPRING_DT;
         self.pos += self.vel * SPRING_DT;
         dx.abs() > SPRING_SETTLE || self.vel.abs() > SPRING_SETTLE
     }
 }
 
-// ── Helpers: NSVisualEffectView ─────────────────────────────────────────────
-
-fn new_vibrancy_view(
-    mtm: MainThreadMarker,
-    frame: NSRect,
-    material: NSVisualEffectMaterial,
-    radius: f64,
-) -> Retained<NSVisualEffectView> {
-    let vfx: Retained<NSVisualEffectView> =
-        unsafe { msg_send![NSVisualEffectView::alloc(mtm), initWithFrame: frame] };
-    vfx.setMaterial(material);
-    vfx.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-    vfx.setState(NSVisualEffectState::Active);
-    vfx.setWantsLayer(true);
-    if let Some(layer) = vfx.layer() {
-        layer.setCornerRadius(radius);
-        layer.setMasksToBounds(true);
-    }
-    vfx
+// ─ Theme ─────────────────────────────────────────────────────────────────────
+#[derive(Clone, Copy)]
+struct Theme {
+    is_dark: bool,
 }
 
-// ── Appearance Change Observer ───────────────────────────────────────────────
+impl Theme {
+    fn current() -> Self {
+        Self {
+            is_dark: SYSTEM_IS_DARK.load(Ordering::Relaxed),
+        }
+    }
 
-/// Registers for macOS distributed notification `AppleInterfaceThemeChangedNotification`.
-/// Must be called from the main thread.
-fn register_appearance_observer(app: AppHandle) {
-    // Store app handle in a leaked Box so the raw pointer lives forever.
-    let app_ptr = Box::into_raw(Box::new(app)) as usize;
+    fn background(&self) -> (u8, u8, u8, f64) {
+        if self.is_dark {
+            (22, 20, 28, 0.988)
+        } else {
+            (250, 248, 253, 0.988)
+        }
+    }
 
-    unsafe {
-        // Get NSDistributedNotificationCenter defaultCenter
-        let dnc_cls = AnyClass::get(c"NSDistributedNotificationCenter").unwrap();
-        let dnc: *mut AnyObject = msg_send![dnc_cls, defaultCenter];
+    fn label_color(&self) -> Retained<NSColor> {
+        if self.is_dark {
+            srgb(246, 246, 250, 0.985)
+        } else {
+            srgb(30, 24, 54, 0.985)
+        }
+    }
 
-        // Notification name
-        let notif_name = NSString::from_str("AppleInterfaceThemeChangedNotification");
+    fn muted_label(&self) -> Retained<NSColor> {
+        if self.is_dark {
+            srgb(184, 184, 204, 0.72)
+        } else {
+            srgb(94, 90, 122, 0.70)
+        }
+    }
 
-        // Use a raw block via block2
-        let block = RcBlock::new(move |_notif: *mut AnyObject| {
-            // Reconstruct (borrow) the AppHandle from the leaked pointer
-            let app_ref = &*(app_ptr as *const AppHandle);
-            let app_clone = app_ref.clone();
-            let _ = app_clone.run_on_main_thread(move || {
-                let dark = is_dark_mode_macos();
-                SYSTEM_IS_DARK.store(dark, Ordering::Relaxed);
-                UI.with(|s| {
-                    let s = s.borrow();
-                    if s.panel.is_some() {
-                        apply_theme_to_capsule(&s, Theme { is_dark: dark });
-                    }
-                });
-            });
-        });
+    fn border_idle(&self) -> (u8, u8, u8, f64) {
+        if self.is_dark {
+            (167, 132, 232, 0.28)
+        } else {
+            (161, 98, 222, 0.26)
+        }
+    }
 
-        let _: () = msg_send![
-            dnc,
-            addObserverForName: &*notif_name,
-            object: std::ptr::null::<AnyObject>(),
-            queue: std::ptr::null::<AnyObject>(),
-            usingBlock: &*block
-        ];
+    fn border_result(&self) -> (u8, u8, u8, f64) {
+        if self.is_dark {
+            (146, 120, 210, 0.22)
+        } else {
+            (144, 94, 210, 0.20)
+        }
+    }
+
+    fn border_notice(&self) -> (u8, u8, u8, f64) {
+        if self.is_dark {
+            (232, 168, 108, 0.34)
+        } else {
+            (214, 132, 60, 0.30)
+        }
+    }
+
+    fn accent(&self) -> Retained<NSColor> {
+        if self.is_dark {
+            srgb(200, 154, 248, 0.96)
+        } else {
+            srgb(150, 84, 220, 0.96)
+        }
+    }
+
+    fn code_bg(&self) -> Retained<NSColor> {
+        if self.is_dark {
+            srgb(255, 255, 255, 0.06)
+        } else {
+            srgb(0, 0, 0, 0.05)
+        }
+    }
+
+    fn code_fg(&self) -> Retained<NSColor> {
+        if self.is_dark {
+            srgb(255, 176, 214, 0.95)
+        } else {
+            srgb(190, 60, 130, 0.96)
+        }
+    }
+
+    // Four-stop conic gradient for the loading border.
+    fn gradient_stops(&self) -> [Retained<NSColor>; 5] {
+        if self.is_dark {
+            [
+                srgb(186, 118, 250, 0.92),
+                srgb(122, 168, 248, 0.92),
+                srgb(238, 138, 196, 0.92),
+                srgb(138, 206, 238, 0.92),
+                srgb(186, 118, 250, 0.92),
+            ]
+        } else {
+            [
+                srgb(158, 88, 224, 0.98),
+                srgb(96, 138, 232, 0.98),
+                srgb(228, 110, 172, 0.98),
+                srgb(110, 188, 232, 0.98),
+                srgb(158, 88, 224, 0.98),
+            ]
+        }
+    }
+
+    fn listen_indicator(&self) -> Retained<NSColor> {
+        if self.is_dark {
+            srgb(255, 120, 158, 0.92)
+        } else {
+            srgb(228, 78, 132, 0.94)
+        }
     }
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
-
+// ─ Public setup ──────────────────────────────────────────────────────────────
 pub fn setup(app: &AppHandle) {
-    // Observe macOS appearance changes (Dark ↔ Light) — must run on main thread
+    SYSTEM_IS_DARK.store(effective_is_dark(app), Ordering::Relaxed);
+
     let app_theme = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        register_appearance_observer(app_theme);
+    let _ = app.run_on_main_thread(move || register_appearance_observer(app_theme));
+
+    let app_theme_event = app.clone();
+    app.listen("app-theme-changed", move |_event| {
+        let dark = effective_is_dark(&app_theme_event);
+        SYSTEM_IS_DARK.store(dark, Ordering::Relaxed);
+        let app_main = app_theme_event.clone();
+        let _ = app_main.run_on_main_thread(move || apply_theme(&Theme::current()));
     });
 
-    // stt-final: user finished speaking a phrase
     let app_final = app.clone();
     app.listen("stt-final", move |event| {
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
@@ -288,11 +314,10 @@ pub fn setup(app: &AppHandle) {
             .get("text")
             .and_then(|t| t.as_str())
             .unwrap_or_default()
-            .to_owned();
+            .to_string();
 
-        // Always show final text in the listening label
-        if !text.trim().is_empty() {
-            update_listening_text(&app_final, &text);
+        if !text.trim().is_empty() && should_render_listening_text() {
+            update_text(&app_final, CapsuleMode::Listening, &text);
         }
 
         let pending = {
@@ -312,7 +337,6 @@ pub fn setup(app: &AppHandle) {
         }
     });
 
-    // stt-partial: live transcription updates
     let app_partial = app.clone();
     app.listen("stt-partial", move |event| {
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
@@ -323,14 +347,19 @@ pub fn setup(app: &AppHandle) {
             .get("text")
             .and_then(|t| t.as_str())
             .unwrap_or_default()
-            .to_owned();
+            .to_string();
         if text.trim().is_empty() {
             return;
         }
-        update_listening_text(&app_partial, &text);
+        {
+            let mut sh = SHARED.lock().unwrap();
+            sh.current_speech = text.clone();
+        }
+        if should_render_listening_text() {
+            update_text(&app_partial, CapsuleMode::Listening, &text);
+        }
     });
 
-    // stt-state: listening started/stopped
     let app_state = app.clone();
     app.listen("stt-state", move |event| {
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
@@ -340,54 +369,47 @@ pub fn setup(app: &AppHandle) {
         let state_name = payload
             .get("state")
             .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_owned();
-        let listening = matches!(state_name.as_str(), "initializing" | "listening");
+            .unwrap_or_default();
+        let listening = matches!(state_name, "initializing" | "listening");
 
         if listening {
-            // Transition to listening mode (if not already)
-            transition_to_listening(&app_state);
-        } else {
-            // STT stopped — check if we have text to submit
-            let pending = {
-                let mut sh = SHARED.lock().unwrap();
-                // If already transitioned to processing (stt-final fast-path submitted),
-                // don't submit again.
-                if sh.mode == Some(CapsuleMode::Processing) || sh.mode == Some(CapsuleMode::Result)
-                {
-                    sh.last_final_text.clear();
-                    sh.current_speech.clear();
-                    None
-                } else if sh.stop_requested {
-                    // User clicked done — use final text if available, otherwise try current speech
-                    let text = if !sh.last_final_text.trim().is_empty() {
-                        sh.last_final_text.trim().to_string()
-                    } else {
-                        sh.current_speech.trim().to_string()
-                    };
-                    sh.stop_requested = false;
-                    sh.last_final_text.clear();
-                    sh.current_speech.clear();
-                    Some(text) // may be empty -> will go to idle
-                } else {
-                    // Natural end of STT — auto-submit the accumulated speech
-                    let text = if !sh.current_speech.trim().is_empty() {
-                        sh.current_speech.trim().to_string()
-                    } else {
-                        sh.last_final_text.trim().to_string()
-                    };
-                    sh.last_final_text.clear();
-                    sh.current_speech.clear();
-                    Some(text) // may be empty -> will go to idle
-                }
-            };
+            transition_to_listening(&app_state, None);
+            return;
+        }
 
-            if let Some(text) = pending {
-                if text.is_empty() {
-                    transition_to_idle(&app_state);
+        let pending = {
+            let mut sh = SHARED.lock().unwrap();
+            if sh.mode == Some(CapsuleMode::Processing) || sh.mode == Some(CapsuleMode::Result) {
+                sh.last_final_text.clear();
+                sh.current_speech.clear();
+                None
+            } else if sh.stop_requested {
+                let text = if !sh.last_final_text.trim().is_empty() {
+                    sh.last_final_text.trim().to_string()
                 } else {
-                    submit_to_agent(app_state.clone(), text);
-                }
+                    sh.current_speech.trim().to_string()
+                };
+                sh.stop_requested = false;
+                sh.last_final_text.clear();
+                sh.current_speech.clear();
+                Some(text)
+            } else {
+                let text = if !sh.current_speech.trim().is_empty() {
+                    sh.current_speech.trim().to_string()
+                } else {
+                    sh.last_final_text.trim().to_string()
+                };
+                sh.last_final_text.clear();
+                sh.current_speech.clear();
+                Some(text)
+            }
+        };
+
+        if let Some(text) = pending {
+            if text.is_empty() {
+                close_panel(&app_state, false);
+            } else {
+                submit_to_agent(app_state.clone(), text);
             }
         }
     });
@@ -400,1053 +422,835 @@ pub fn setup(app: &AppHandle) {
             sh.last_final_text.clear();
             sh.current_speech.clear();
         }
-        transition_to_idle(&app_err);
+        transition_to_notice(&app_err, "音声入力を開始できませんでした");
     });
 }
 
-pub fn open_orb(app: &AppHandle) -> Result<(), String> {
-    let app_handle = app.clone();
-    app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let mut s = s.borrow_mut();
-            if let Some(panel) = &s.panel {
-                panel.setAlphaValue(1.0);
-                panel.orderFrontRegardless();
-                panel.makeKeyAndOrderFront(None);
-                return;
-            }
-            build_capsule(&mut s, &app_handle);
-            install_event_monitor(&mut s, app_handle.clone());
-        });
-    })
-    .map_err(|e| format!("capsule open failed: {}", e))?;
+fn should_render_listening_text() -> bool {
+    let sh = SHARED.lock().unwrap();
+    sh.mode == Some(CapsuleMode::Listening) && !sh.stop_requested
+}
 
-    // Fade in
-    let app_anim = app.clone();
-    tauri::async_runtime::spawn(async move {
-        for i in 1..=FADE_IN_FRAMES {
-            let alpha = ease_out_quart(i as f64 / FADE_IN_FRAMES as f64);
-            let _ = app_anim.run_on_main_thread(move || {
-                UI.with(|s| {
-                    if let Some(panel) = &s.borrow().panel {
-                        panel.setAlphaValue(alpha);
-                    }
-                });
-            });
-            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
+pub fn apply_config(app: &AppHandle, config: &NativeAgentConfig) -> Result<(), String> {
+    let shortcut = normalize_shortcut(&config.voice_shortcut);
+    let manager = app.global_shortcut();
+    let mut registered = SHORTCUT_REGISTERED.lock().unwrap();
+    stop_fn_polling();
+
+    if let Some(prev) = registered.clone() {
+        if prev != shortcut && manager.is_registered(prev.as_str()) {
+            manager
+                .unregister(prev.as_str())
+                .map_err(|e| format!("failed to unregister voice shortcut: {e}"))?;
         }
-    });
+    }
+
+    if config.voice_shortcut_enabled {
+        if shortcut == "fn" {
+            start_fn_polling(app.clone());
+        } else if registered.as_deref() != Some(shortcut.as_str())
+            || !manager.is_registered(shortcut.as_str())
+        {
+            let shortcut_for_handler = shortcut.clone();
+            manager
+                .on_shortcut(shortcut.as_str(), move |app, _shortcut, event| {
+                    handle_shortcut_event(app.clone(), shortcut_for_handler.clone(), event.state);
+                })
+                .map_err(|e| format!("failed to register voice shortcut: {e}"))?;
+        }
+        *registered = Some(shortcut);
+    } else {
+        if let Some(prev) = registered.take() {
+            if manager.is_registered(prev.as_str()) {
+                manager
+                    .unregister(prev.as_str())
+                    .map_err(|e| format!("failed to unregister voice shortcut: {e}"))?;
+            }
+        }
+        clear_agent_listener(app);
+        SHORTCUT_DOWN.store(false, Ordering::Relaxed);
+        SHORTCUT_ARM_TOKEN.fetch_add(1, Ordering::Relaxed);
+        FN_PRESSED.store(false, Ordering::Relaxed);
+        if stt::stt_get_active_caller().as_deref() == Some("agent") {
+            let _ = stt::stt_stop_stream();
+        }
+        close_panel(app, true);
+    }
 
     Ok(())
 }
 
-pub fn close_orb(app: &AppHandle) -> Result<(), String> {
-    // Cancel all animations
-    WAVE_ACTIVE.store(false, Ordering::Relaxed);
-    WAVE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
-    DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
-    BORDER_ANIM_TOKEN.fetch_add(1, Ordering::Relaxed);
-    RESULT_CLOSE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    RESULT_GLOW_TOKEN.fetch_add(1, Ordering::Relaxed);
-    CONTENT_FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    IDLE_WAVE_TOKEN.fetch_add(1, Ordering::Relaxed);
+fn handle_shortcut_event(app: AppHandle, _shortcut: String, state: ShortcutState) {
+    match state {
+        ShortcutState::Pressed => handle_shortcut_pressed(app),
+        ShortcutState::Released => handle_shortcut_released(),
+    }
+}
 
-    app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let mut s = s.borrow_mut();
-            if let Some(panel) = s.panel.take() {
-                panel.setAlphaValue(0.0);
-                panel.orderOut(None);
-                panel.close();
+fn handle_fn_flags_changed(app: AppHandle, flags: NSEventModifierFlags) {
+    let has_fn = flags.contains(NSEventModifierFlags::Function);
+    let was_pressed = FN_PRESSED.swap(has_fn, Ordering::Relaxed);
+    if has_fn && !was_pressed {
+        handle_shortcut_pressed(app);
+    } else if !has_fn && was_pressed {
+        handle_shortcut_released();
+    }
+}
+
+fn start_fn_polling(app: AppHandle) {
+    let token = FN_POLL_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if FN_POLL_TOKEN.load(Ordering::Relaxed) != token {
+                break;
             }
-            // Clear views
-            s.root_view = None;
-            s.capsule_view = None;
-            s.vfx_view = None;
-            s.bg_overlay = None;
-            s.idle_logo_halo = None;
-            s.idle_logo = None;
-            s.idle_mic_capsule = None;
-            s.idle_separator = None;
-            s.idle_wave_bars.clear();
-            s.listen_text = None;
-            s.listen_done_btn = None;
-            s.listen_done_icon = None;
-            s.proc_dots.clear();
-            s.result_text = None;
-            s.result_btn = None;
-            s.result_btn_icon = None;
-        });
-        // Clear shared state
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let app_for_main = app.clone();
+            let _ = app_for_main.run_on_main_thread(move || {
+                let flags = NSEvent::modifierFlags_class();
+                let _ = tx.send(flags);
+            });
+
+            if let Ok(flags) = rx.recv_timeout(Duration::from_millis(100)) {
+                handle_fn_flags_changed(app.clone(), flags);
+            }
+
+            tokio::time::sleep(Duration::from_millis(FN_POLL_MS)).await;
+        }
+    });
+}
+
+fn stop_fn_polling() {
+    FN_POLL_TOKEN.fetch_add(1, Ordering::Relaxed);
+}
+
+fn handle_shortcut_pressed(app: AppHandle) {
+    SHORTCUT_DOWN.store(true, Ordering::Relaxed);
+    let token = SHORTCUT_ARM_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(SHORTCUT_HOLD_MS)).await;
+        if SHORTCUT_ARM_TOKEN.load(Ordering::Relaxed) != token
+            || !SHORTCUT_DOWN.load(Ordering::Relaxed)
+        {
+            return;
+        }
+        start_agent_capture(app);
+    });
+}
+
+fn handle_shortcut_released() {
+    SHORTCUT_DOWN.store(false, Ordering::Relaxed);
+    SHORTCUT_ARM_TOKEN.fetch_add(1, Ordering::Relaxed);
+    if stt::stt_get_active_caller().as_deref() != Some("agent") {
+        return;
+    }
+    SHARED.lock().unwrap().stop_requested = true;
+    let _ = stt::stt_stop_stream();
+}
+
+fn start_agent_capture(app: AppHandle) {
+    cancel_auto_close();
+    clear_agent_listener(&app);
+
+    if stt::stt_is_running() {
+        match stt::stt_get_active_caller().as_deref() {
+            Some("agent") => return,
+            Some(_) => {
+                transition_to_notice(&app, "ほかの音声入力が動作中です");
+                return;
+            }
+            None => {}
+        }
+    }
+
+    {
         let mut sh = SHARED.lock().unwrap();
-        sh.mode = None;
         sh.stop_requested = false;
         sh.last_final_text.clear();
         sh.current_speech.clear();
-        sh.conv_id = None;
-        sh.agent_listener = None;
         sh.result_accumulated.clear();
-    })
-    .map_err(|e| format!("capsule close failed: {}", e))
+        sh.mode = Some(CapsuleMode::Listening);
+    }
+
+    transition_to_listening(&app, Some("話してください"));
+
+    if let Err(err) = stt::stt_start_stream(app.clone(), "agent".to_string(), Some(false)) {
+        transition_to_notice(&app, &err);
+    }
 }
 
-// ── Capsule Construction ────────────────────────────────────────────────────
+// ─ Mode transitions ──────────────────────────────────────────────────────────
+fn transition_to_listening(app: &AppHandle, text: Option<&str>) {
+    cancel_auto_close();
+    SHARED.lock().unwrap().mode = Some(CapsuleMode::Listening);
+    ensure_panel(app, LISTEN_W, LISTEN_H);
+    let display_text = if let Some(text) = text {
+        text.to_string()
+    } else {
+        let sh = SHARED.lock().unwrap();
+        if sh.current_speech.trim().is_empty() {
+            "話してください".to_string()
+        } else {
+            sh.current_speech.trim().to_string()
+        }
+    };
+    update_text(app, CapsuleMode::Listening, &display_text);
+    update_border(app.clone(), CapsuleMode::Listening);
+    start_processing_dots_animation(app.clone(), CapsuleMode::Listening);
+    start_listen_pulse_animation(app.clone(), CapsuleMode::Listening);
+}
 
-fn build_capsule(s: &mut CapsuleViews, app: &AppHandle) {
+fn transition_to_processing(app: &AppHandle) {
+    cancel_auto_close();
+    {
+        let mut sh = SHARED.lock().unwrap();
+        sh.mode = Some(CapsuleMode::Processing);
+        sh.current_speech.clear();
+        sh.last_final_text.clear();
+    }
+    ensure_panel(app, PROCESS_W, PROCESS_H);
+    update_text(app, CapsuleMode::Processing, "");
+    update_border(app.clone(), CapsuleMode::Processing);
+    start_processing_dots_animation(app.clone(), CapsuleMode::Processing);
+    start_listen_pulse_animation(app.clone(), CapsuleMode::Processing);
+}
+
+fn transition_to_result(app: &AppHandle, text: &str) {
+    cancel_auto_close();
+    SHARED.lock().unwrap().mode = Some(CapsuleMode::Result);
+    let target_h = compute_result_height(text);
+    ensure_panel(app, RESULT_W, target_h);
+    update_text(app, CapsuleMode::Result, text);
+    update_border(app.clone(), CapsuleMode::Result);
+    start_processing_dots_animation(app.clone(), CapsuleMode::Result);
+    start_listen_pulse_animation(app.clone(), CapsuleMode::Result);
+    schedule_close(app.clone(), Duration::from_secs(RESULT_AUTO_CLOSE_SECS));
+}
+
+fn transition_to_notice(app: &AppHandle, message: &str) {
+    cancel_auto_close();
+    SHARED.lock().unwrap().mode = Some(CapsuleMode::Notice);
+    ensure_panel(app, NOTICE_W, NOTICE_H);
+    update_text(app, CapsuleMode::Notice, message);
+    update_border(app.clone(), CapsuleMode::Notice);
+    start_processing_dots_animation(app.clone(), CapsuleMode::Notice);
+    start_listen_pulse_animation(app.clone(), CapsuleMode::Notice);
+    schedule_close(app.clone(), Duration::from_millis(NOTICE_AUTO_CLOSE_MS));
+}
+
+// ─ Text rendering ────────────────────────────────────────────────────────────
+fn update_text(app: &AppHandle, mode: CapsuleMode, text: &str) {
+    if mode == CapsuleMode::Listening && text != "話してください" {
+        SHARED.lock().unwrap().current_speech = text.to_string();
+    }
+
+    let text = text.to_string();
+    let _ = app.run_on_main_thread(move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        UI.with(|ui| {
+            let ui = ui.borrow();
+            let Some(label) = &ui.text_label else {
+                return;
+            };
+
+            match mode {
+                CapsuleMode::Processing => {
+                    label.setStringValue(&NSString::from_str(""));
+                    label.setHidden(true);
+                }
+                CapsuleMode::Result => {
+                    label.setHidden(false);
+                    label.setAlignment(NSTextAlignment::Left);
+                    let theme = Theme::current();
+                    let attr = build_markdown_attributed(&text, theme);
+                    label.setAttributedStringValue(&attr);
+                    label.setMaximumNumberOfLines(0);
+                    if let Some(cell) = label.cell() {
+                        cell.setUsesSingleLineMode(false);
+                        cell.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+                    }
+                }
+                CapsuleMode::Listening | CapsuleMode::Notice => {
+                    label.setHidden(false);
+                    label.setStringValue(&NSString::from_str(&text));
+                    label.setAlignment(NSTextAlignment::Center);
+                    let theme = Theme::current();
+                    let font = if mode == CapsuleMode::Listening {
+                        NSFont::systemFontOfSize(LISTEN_FONT)
+                    } else {
+                        NSFont::systemFontOfSize(NOTICE_FONT)
+                    };
+                    label.setFont(Some(&font));
+                    let color = if mode == CapsuleMode::Listening
+                        && (text == "話してください"
+                            || SHARED.lock().unwrap().current_speech.trim().is_empty())
+                    {
+                        theme.muted_label()
+                    } else {
+                        theme.label_color()
+                    };
+                    label.setTextColor(Some(&color));
+                    label.setMaximumNumberOfLines(2);
+                    if let Some(cell) = label.cell() {
+                        cell.setUsesSingleLineMode(false);
+                        cell.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+                    }
+                }
+            }
+
+            layout_label(&ui, mode);
+            layout_processing_dots(&ui, mode);
+            layout_listen_indicator(&ui, mode);
+        });
+        let _ = mtm;
+    });
+}
+
+// ─ Panel / layout ────────────────────────────────────────────────────────────
+fn ensure_panel(app: &AppHandle, width: f64, height: f64) {
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        UI.with(|ui| {
+            let mut ui = ui.borrow_mut();
+            if ui.panel.is_none() {
+                build_panel(&mut ui);
+                install_click_monitor(&mut ui, app_handle.clone());
+            }
+        });
+    });
+
+    let token = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    fade_to(app.clone(), 1.0, token);
+    animate_to(app.clone(), width, height);
+}
+
+fn build_panel(ui: &mut CapsuleViews) {
     let mtm = MainThreadMarker::new().expect("main thread");
-    let visible = visible_frame(mtm);
-    let rect = NSRect::new(
-        NSPoint::new(
-            visible.origin.x + visible.size.width - CAP_IDLE_W - CAP_MARGIN_RIGHT,
-            visible.origin.y + CAP_MARGIN_BOTTOM,
-        ),
-        NSSize::new(CAP_IDLE_W, CAP_H),
+    let theme = Theme::current();
+
+    let visible = NSScreen::mainScreen(mtm)
+        .as_ref()
+        .map(|s| s.visibleFrame())
+        .unwrap_or_else(|| NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0)));
+
+    let center_x = visible.origin.x + visible.size.width / 2.0;
+    let top_y = visible.origin.y + visible.size.height - TOP_MARGIN;
+    let frame = NSRect::new(
+        NSPoint::new(center_x - LISTEN_W / 2.0, top_y - LISTEN_H),
+        NSSize::new(LISTEN_W, LISTEN_H),
     );
 
-    let panel = base_panel(mtm, rect, true);
-    panel.setMovableByWindowBackground(true);
-    panel.setAcceptsMouseMovedEvents(true);
-    panel.setAlphaValue(0.0);
+    let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
+        NSPanel::alloc(mtm),
+        frame,
+        NSWindowStyleMask::NonactivatingPanel,
+        NSBackingStoreType::Buffered,
+        false,
+    );
+    panel.setFloatingPanel(true);
+    panel.setBecomesKeyOnlyIfNeeded(true);
+    panel.setWorksWhenModal(true);
+    panel.setOpaque(false);
+    panel.setHasShadow(false);
+    panel.setHidesOnDeactivate(false);
+    panel.setLevel(NSFloatingWindowLevel);
+    panel.setBackgroundColor(Some(&NSColor::clearColor()));
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Transient,
+    );
+    unsafe { panel.setReleasedWhenClosed(false) };
 
-    // Detect and cache current dark/light mode
-    let dark = is_dark_mode_macos();
-    SYSTEM_IS_DARK.store(dark, Ordering::Relaxed);
-    let theme = Theme { is_dark: dark };
-
-    // Root clear view
     let root = NSView::initWithFrame(
         NSView::alloc(mtm),
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CAP_IDLE_W, CAP_H)),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H)),
     );
     root.setWantsLayer(true);
     if let Some(layer) = root.layer() {
         layer.setBackgroundColor(Some(&NSColor::clearColor().CGColor()));
     }
 
-    // Shadow host capsule
     let capsule = NSView::initWithFrame(
         NSView::alloc(mtm),
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CAP_IDLE_W, CAP_H)),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H)),
     );
     capsule.setWantsLayer(true);
     if let Some(layer) = capsule.layer() {
-        layer.setCornerRadius(CAP_CORNER);
+        layer.setCornerRadius(CORNER_RADIUS);
         layer.setBackgroundColor(Some(&NSColor::clearColor().CGColor()));
+        // Subtle drop shadow for depth.
+        let (sr, sg, sb) = if theme.is_dark { (6, 4, 12) } else { (60, 40, 120) };
+        layer.setShadowColor(Some(&srgb(sr, sg, sb, 0.62).CGColor()));
+        layer.setShadowOffset(NSSize::new(0.0, -6.0));
+        layer.setShadowRadius(22.0);
+        layer.setShadowOpacity(if theme.is_dark { 0.30 } else { 0.14 });
     }
 
-    // Frosted glass base (subtle vibrancy underneath)
-    let vfx = new_vibrancy_view(
-        mtm,
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CAP_IDLE_W, CAP_H)),
-        NSVisualEffectMaterial::HUDWindow,
-        CAP_CORNER,
-    );
+    let vfx: Retained<NSVisualEffectView> = unsafe {
+        msg_send![
+            NSVisualEffectView::alloc(mtm),
+            initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H))
+        ]
+    };
+    vfx.setMaterial(NSVisualEffectMaterial::HUDWindow);
+    vfx.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+    vfx.setState(NSVisualEffectState::Active);
+    vfx.setWantsLayer(true);
+    if let Some(layer) = vfx.layer() {
+        layer.setCornerRadius(CORNER_RADIUS);
+        layer.setMasksToBounds(true);
+        let (r, g, b, a) = theme.border_idle();
+        layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
+        layer.setBorderWidth(BORDER_IDLE_W);
+    }
 
-    // Near-opaque overlay on top of vibrancy (color depends on mode)
-    let overlay = NSView::initWithFrame(
+    let bg = NSView::initWithFrame(
         NSView::alloc(mtm),
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CAP_IDLE_W, CAP_H)),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H)),
     );
-    overlay.setWantsLayer(true);
-    if let Some(layer) = overlay.layer() {
-        let (r, g, b, a) = theme.overlay_bg();
+    bg.setWantsLayer(true);
+    if let Some(layer) = bg.layer() {
+        let (r, g, b, a) = theme.background();
         layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
-        layer.setCornerRadius(CAP_CORNER);
+        layer.setCornerRadius(CORNER_RADIUS);
     }
-    vfx.addSubview(&overlay);
+    vfx.addSubview(&bg);
 
-    // Subtle inner border
-    if let Some(vfx_layer) = vfx.layer() {
-        let (r, g, b, a) = theme.vfx_border();
-        vfx_layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
-        vfx_layer.setBorderWidth(0.5);
+    // Pulsing left-side listen indicator (small orb that breathes during listening).
+    let listen_indicator = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(8.0, 8.0)),
+    );
+    listen_indicator.setWantsLayer(true);
+    if let Some(layer) = listen_indicator.layer() {
+        layer.setBackgroundColor(Some(&theme.listen_indicator().CGColor()));
+        layer.setCornerRadius(4.0);
+        layer.setShadowColor(Some(&theme.listen_indicator().CGColor()));
+        layer.setShadowRadius(9.0);
+        layer.setShadowOpacity(0.6);
+        layer.setShadowOffset(NSSize::new(0.0, 0.0));
+        layer.setOpacity(0.0);
+    }
+    vfx.addSubview(&listen_indicator);
+
+    // Main text label
+    let label = NSTextField::labelWithString(&NSString::from_str("話してください"), mtm);
+    label.setTranslatesAutoresizingMaskIntoConstraints(true);
+    label.setFrame(NSRect::new(
+        NSPoint::new(PAD_X, PAD_Y),
+        NSSize::new(LISTEN_W - PAD_X * 2.0, LISTEN_H - PAD_Y * 2.0),
+    ));
+    label.setWantsLayer(true);
+    label.setTextColor(Some(&theme.muted_label()));
+    label.setFont(Some(&NSFont::systemFontOfSize(LISTEN_FONT)));
+    label.setAlignment(NSTextAlignment::Center);
+    label.setMaximumNumberOfLines(2);
+    label.setPreferredMaxLayoutWidth(LISTEN_W - PAD_X * 2.0);
+    if let Some(cell) = label.cell() {
+        cell.setUsesSingleLineMode(false);
+        cell.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    }
+    vfx.addSubview(&label);
+
+    // Processing dots (stay in view tree, hidden when not processing)
+    let mut processing_dots = Vec::new();
+    for _ in 0..3 {
+        let dot = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(PROCESS_DOT_SIZE, PROCESS_DOT_SIZE),
+            ),
+        );
+        dot.setWantsLayer(true);
+        if let Some(layer) = dot.layer() {
+            layer.setBackgroundColor(Some(&theme.accent().CGColor()));
+            layer.setCornerRadius(PROCESS_DOT_SIZE / 2.0);
+            layer.setOpacity(0.0);
+            layer.setShadowColor(Some(&theme.accent().CGColor()));
+            layer.setShadowRadius(6.0);
+            layer.setShadowOpacity(0.0);
+            layer.setShadowOffset(NSSize::new(0.0, 0.0));
+        }
+        vfx.addSubview(&dot);
+        processing_dots.push(dot);
     }
 
-    // Shadow
-    if let Some(layer) = capsule.layer() {
-        let (r, g, b, a) = theme.capsule_shadow();
-        layer.setShadowColor(Some(&srgb(r, g, b, a).CGColor()));
-        layer.setShadowRadius(30.0);
-        layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
-        layer.setShadowOffset(NSSize::new(0.0, -10.0));
+    // Animated gradient border — hidden at rest, only shown during Processing.
+    let gradient = CAGradientLayer::new();
+    gradient.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H)));
+    gradient.setType(unsafe { kCAGradientLayerConic });
+    gradient.setStartPoint(NSPoint::new(0.5, 0.5));
+    gradient.setEndPoint(NSPoint::new(1.0, 0.5));
+    set_gradient_colors(&gradient, &theme);
+    set_gradient_locations(&gradient);
+    gradient.setHidden(true);
+
+    let mask_shape = CAShapeLayer::new();
+    mask_shape.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H)));
+    mask_shape.setFillColor(Some(&NSColor::clearColor().CGColor()));
+    mask_shape.setStrokeColor(Some(&NSColor::blackColor().CGColor()));
+    mask_shape.setLineWidth(BORDER_GRADIENT_W);
+    unsafe {
+        mask_shape.setPath(Some(&rounded_rect_path(
+            LISTEN_W,
+            LISTEN_H,
+            CORNER_RADIUS,
+            BORDER_GRADIENT_W,
+        )));
+        gradient.setMask(Some(&*mask_shape));
+    }
+    if let Some(cap_layer) = capsule.layer() {
+        cap_layer.addSublayer(&gradient);
     }
 
     capsule.addSubview(&vfx);
     root.addSubview(&capsule);
     panel.setContentView(Some(&root));
+    panel.setAlphaValue(0.0);
     panel.orderFrontRegardless();
+    PANEL_OPEN.store(true, Ordering::Relaxed);
 
-    s.panel = Some(panel);
-    s.root_view = Some(root);
-    s.capsule_view = Some(capsule);
-    s.vfx_view = Some(Retained::clone(&vfx));
-    s.bg_overlay = Some(overlay);
-    SHARED.lock().unwrap().mode = Some(CapsuleMode::Idle);
-
-    // Build idle sub-views
-    build_idle_views(s, &vfx, mtm);
-
-    // Start idle wave animation
-    let token = IDLE_WAVE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    start_idle_wave_anim(app.clone(), token);
+    ui.panel = Some(panel);
+    ui.root_view = Some(root);
+    ui.capsule_view = Some(capsule);
+    ui.vfx_view = Some(vfx);
+    ui.bg_overlay = Some(bg);
+    ui.text_label = Some(label);
+    ui.listen_indicator = Some(listen_indicator);
+    ui.processing_dots = processing_dots;
+    ui.gradient_border = Some(gradient);
+    ui.gradient_mask = Some(mask_shape);
+    ui.screen_center_x = center_x;
+    ui.screen_top_y = top_y;
 }
 
-fn build_idle_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThreadMarker) {
-    let theme = Theme::current();
-    let cy = CAP_H / 2.0;
-
-    // Layout: [logo | gap | separator | gap | mic_capsule] — centered in capsule
-    let gap = 6.0;
-    let sep_w = 0.5;
-    let content_w = LOGO_SIZE + gap + sep_w + gap + MIC_CAPSULE_W;
-    let start_x = (CAP_IDLE_W - content_w) / 2.0;
-
-    let logo_x = start_x;
-    let sep_x = logo_x + LOGO_SIZE + gap;
-    let mic_x = sep_x + sep_w + gap;
-
-    // Logo glow ring
-    let halo_offset = (LOGO_HALO_SIZE - LOGO_SIZE) / 2.0;
-    let halo = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(logo_x - halo_offset, cy - LOGO_HALO_SIZE / 2.0),
-            NSSize::new(LOGO_HALO_SIZE, LOGO_HALO_SIZE),
-        ),
-    );
-    halo.setWantsLayer(true);
-    if let Some(layer) = halo.layer() {
-        layer.setCornerRadius(LOGO_HALO_SIZE / 2.0);
-        let (r, g, b, a) = theme.halo_idle();
-        layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
-    }
-    vfx.addSubview(&halo);
-
-    // Logo image — transparent version
-    let logo_view = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(logo_x, cy - LOGO_SIZE / 2.0),
-            NSSize::new(LOGO_SIZE, LOGO_SIZE),
-        ),
-    );
-    logo_view.setWantsLayer(true);
-    if let Some(layer) = logo_view.layer() {
-        layer.setCornerRadius(LOGO_SIZE / 2.0);
-        layer.setMasksToBounds(true);
-        if let Some(logo) = load_app_logo() {
-            let obj: &AnyObject = &logo;
-            unsafe {
-                layer.setContents(Some(obj));
-            }
-        }
-    }
-    vfx.addSubview(&logo_view);
-
-    // Vertical separator — centered vertically
-    let sep_h = CAP_H * 0.48;
-    let sep = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(sep_x, cy - sep_h / 2.0),
-            NSSize::new(sep_w, sep_h),
-        ),
-    );
-    sep.setWantsLayer(true);
-    if let Some(layer) = sep.layer() {
-        let (r, g, b, a) = theme.separator_color();
-        layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
-    }
-    vfx.addSubview(&sep);
-
-    // Mic capsule area — centered vertically
-    let mic_y = cy - MIC_CAPSULE_H / 2.0;
-    let mic_capsule = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(mic_x, mic_y),
-            NSSize::new(MIC_CAPSULE_W, MIC_CAPSULE_H),
-        ),
-    );
-    mic_capsule.setWantsLayer(true);
-    if let Some(layer) = mic_capsule.layer() {
-        let (r, g, b, a) = theme.mic_bg();
-        layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
-        layer.setCornerRadius(MIC_CAPSULE_H / 2.0);
-    }
-    vfx.addSubview(&mic_capsule);
-
-    // Wave bars — centered inside mic_capsule
-    let bar_count = 4usize;
-    let total_bars = BAR_W * bar_count as f64 + BAR_GAP * (bar_count as f64 - 1.0);
-    let bars_start_x = mic_x + (MIC_CAPSULE_W - total_bars) / 2.0;
-    let mut bars = Vec::with_capacity(bar_count);
-    for (i, h) in BAR_IDLE.iter().enumerate() {
-        let x = bars_start_x + (i as f64) * (BAR_W + BAR_GAP);
-        let bar = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            NSRect::new(NSPoint::new(x, cy - h / 2.0), NSSize::new(BAR_W, *h)),
-        );
-        bar.setWantsLayer(true);
-        if let Some(layer) = bar.layer() {
-            let (r, g, b, a) = theme.bar_color();
-            layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
-            layer.setCornerRadius(BAR_W / 2.0);
-        }
-        vfx.addSubview(&bar);
-        bars.push(bar);
-    }
-
-    s.idle_logo_halo = Some(halo);
-    s.idle_logo = Some(logo_view);
-    s.idle_mic_capsule = Some(mic_capsule);
-    s.idle_separator = Some(sep);
-    s.idle_wave_bars = bars;
-}
-
-fn build_listening_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThreadMarker) {
-    let theme = Theme::current();
-    let text_right = LISTEN_DONE_SIZE + LISTEN_DONE_RIGHT * 2.0;
-    let text_w = CAP_LISTENING_W - LISTEN_TEXT_LEFT - text_right;
-    // Vertically center the text label
-    let text_h = CAP_H - 12.0;
-    let text_y = (CAP_H - text_h) / 2.0;
-    let label = make_wrapping_label(
-        mtm,
-        "",
-        NSRect::new(
-            NSPoint::new(LISTEN_TEXT_LEFT, text_y),
-            NSSize::new(text_w, text_h),
-        ),
-        LISTEN_TEXT_FONT,
-        &theme.label_color(),
-        NSTextAlignment::Left,
-        2,
-    );
-    vfx.addSubview(&label);
-
-    // Done button — solid accent blue circle, centered vertically
-    let btn_x = CAP_LISTENING_W - LISTEN_DONE_SIZE - LISTEN_DONE_RIGHT;
-    let btn_y = (CAP_H - LISTEN_DONE_SIZE) / 2.0;
-    let done_btn = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(btn_x, btn_y),
-            NSSize::new(LISTEN_DONE_SIZE, LISTEN_DONE_SIZE),
-        ),
-    );
-    done_btn.setWantsLayer(true);
-    if let Some(layer) = done_btn.layer() {
-        layer.setBackgroundColor(Some(&srgb(74, 158, 255, 1.0).CGColor()));
-        layer.setCornerRadius(LISTEN_DONE_SIZE / 2.0);
-        layer.setShadowColor(Some(&srgb(74, 158, 255, 0.60).CGColor()));
-        layer.setShadowRadius(8.0);
-        layer.setShadowOpacity(0.35);
-        layer.setShadowOffset(NSSize::new(0.0, -2.0));
-    }
-    vfx.addSubview(&done_btn);
-
-    // Stop-square icon — pure NSView, guaranteed centered
-    let sq = 11.0_f64;
-    let sq_r = 2.5_f64;
-    let sq_x = (LISTEN_DONE_SIZE - sq) / 2.0;
-    let sq_y = (LISTEN_DONE_SIZE - sq) / 2.0;
-    let icon = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(NSPoint::new(sq_x, sq_y), NSSize::new(sq, sq)),
-    );
-    icon.setWantsLayer(true);
-    if let Some(layer) = icon.layer() {
-        layer.setBackgroundColor(Some(&srgb(255, 255, 255, 1.0).CGColor()));
-        layer.setCornerRadius(sq_r);
-    }
-    done_btn.addSubview(&icon);
-
-    s.listen_text = Some(label);
-    s.listen_done_btn = Some(done_btn);
-    s.listen_done_icon = Some(icon);
-}
-
-fn build_processing_views(s: &mut CapsuleViews, vfx: &NSVisualEffectView, mtm: MainThreadMarker) {
-    let total_w = DOT_SIZE * 3.0 + DOT_GAP * 2.0;
-    let start_x = (CAP_PROCESSING_W - total_w) / 2.0;
-    let cy = CAP_H / 2.0;
-    let mut dots = Vec::with_capacity(3);
-    for i in 0..3 {
-        let x = start_x + (i as f64) * (DOT_SIZE + DOT_GAP);
-        let dot = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(x, cy - DOT_SIZE / 2.0),
-                NSSize::new(DOT_SIZE, DOT_SIZE),
-            ),
-        );
-        dot.setWantsLayer(true);
-        if let Some(layer) = dot.layer() {
-            layer.setBackgroundColor(Some(&srgb(74, 158, 255, 0.85).CGColor()));
-            layer.setCornerRadius(DOT_SIZE / 2.0);
-            // Per-dot glow
-            layer.setShadowColor(Some(&srgb(74, 158, 255, 0.50).CGColor()));
-            layer.setShadowRadius(6.0);
-            layer.setShadowOpacity(0.30);
-            layer.setShadowOffset(NSSize::new(0.0, 0.0));
-        }
-        vfx.addSubview(&dot);
-        dots.push(dot);
-    }
-    s.proc_dots = dots;
-}
-
-fn build_result_views(
-    s: &mut CapsuleViews,
-    vfx: &NSVisualEffectView,
-    mtm: MainThreadMarker,
-    cap_w: f64,
-    cap_h: f64,
-) {
-    let theme = Theme::current();
-    let text_w = cap_w - RESULT_PAD_X * 2.0 - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
-    let text_h = cap_h - RESULT_PAD_Y * 2.0;
-    let label = make_wrapping_label(
-        mtm,
-        "",
-        NSRect::new(
-            NSPoint::new(RESULT_PAD_X, RESULT_PAD_Y),
-            NSSize::new(text_w, text_h),
-        ),
-        RESULT_FONT,
-        &theme.label_color(),
-        NSTextAlignment::Left,
-        RESULT_MAX_LINES,
-    );
-    vfx.addSubview(&label);
-
-    // Continue button — circle, vertically centered on right
-    let btn_x = cap_w - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
-    let btn_y = (cap_h - RESULT_BTN_SIZE) / 2.0;
-    let btn = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(
-            NSPoint::new(btn_x, btn_y),
-            NSSize::new(RESULT_BTN_SIZE, RESULT_BTN_SIZE),
-        ),
-    );
-    btn.setWantsLayer(true);
-    if let Some(layer) = btn.layer() {
-        layer.setBackgroundColor(Some(&srgb(74, 158, 255, 0.15).CGColor()));
-        layer.setCornerRadius(RESULT_BTN_SIZE / 2.0);
-        layer.setBorderColor(Some(&srgb(74, 158, 255, 0.25).CGColor()));
-        layer.setBorderWidth(0.5);
-        layer.setShadowColor(Some(&srgb(0, 0, 0, 0.25).CGColor()));
-        layer.setShadowRadius(4.0);
-        layer.setShadowOpacity(0.12);
-        layer.setShadowOffset(NSSize::new(0.0, -1.0));
-    }
-    vfx.addSubview(&btn);
-
-    // 3 mini wave bars inside button (represents "continue speaking")
-    let mini_bar_w = 2.0_f64;
-    let mini_bar_gap = 3.0_f64;
-    let mini_bar_heights = [7.0_f64, 11.0, 7.0];
-    let mini_total = mini_bar_w * 3.0 + mini_bar_gap * 2.0;
-    let mini_start_x = (RESULT_BTN_SIZE - mini_total) / 2.0;
-    let btn_cy = RESULT_BTN_SIZE / 2.0;
-    for (i, bh) in mini_bar_heights.iter().enumerate() {
-        let bx = mini_start_x + (i as f64) * (mini_bar_w + mini_bar_gap);
-        let mini_bar = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(bx, btn_cy - bh / 2.0),
-                NSSize::new(mini_bar_w, *bh),
-            ),
-        );
-        mini_bar.setWantsLayer(true);
-        if let Some(layer) = mini_bar.layer() {
-            layer.setBackgroundColor(Some(&srgb(74, 158, 255, 0.90).CGColor()));
-            layer.setCornerRadius(mini_bar_w / 2.0);
-        }
-        btn.addSubview(&mini_bar);
-    }
-
-    // Invisible placeholder (kept for struct consistency)
-    let icon = NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
-    );
-    btn.addSubview(&icon);
-
-    s.result_text = Some(label);
-    s.result_btn = Some(btn);
-    s.result_btn_icon = Some(icon);
-}
-
-// ── Mode Transitions ────────────────────────────────────────────────────────
-
-fn transition_to_listening(app: &AppHandle) {
-    IDLE_WAVE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    {
-        let mut sh = SHARED.lock().unwrap();
-        if sh.mode == Some(CapsuleMode::Listening) {
-            return;
-        }
-        sh.current_speech.clear();
-        sh.mode = Some(CapsuleMode::Listening);
-    }
-
-    let _ = app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let mut s = s.borrow_mut();
-            if s.panel.is_none() {
-                return;
-            }
-            clear_mode_views(&mut s);
-            let mtm = MainThreadMarker::new().expect("main thread");
-            let vfx = s.vfx_view.clone();
-            if let Some(vfx) = &vfx {
-                build_listening_views(&mut s, vfx, mtm);
-            }
-            // Start content at 0 opacity for fade-in
-            set_content_opacity(&s, 0.0);
-        });
-    });
-
-    morph_capsule_to(app.clone(), CAP_LISTENING_W, CAP_H);
-    fade_content_in(app.clone());
-
-    let token = BORDER_ANIM_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    start_listening_border_anim(app.clone(), token);
-}
-
-fn transition_to_processing(app: &AppHandle) {
-    // Stop border animation
-    BORDER_ANIM_TOKEN.fetch_add(1, Ordering::Relaxed);
-    WAVE_ACTIVE.store(false, Ordering::Relaxed);
-    WAVE_TOKEN.fetch_add(1, Ordering::Relaxed);
-
-    SHARED.lock().unwrap().mode = Some(CapsuleMode::Processing);
-
-    let _ = app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let mut s = s.borrow_mut();
-            if s.panel.is_none() {
-                return;
-            }
-            clear_mode_views(&mut s);
-
-            let mtm = MainThreadMarker::new().expect("main thread");
-            let vfx = s.vfx_view.clone();
-            if let Some(vfx) = &vfx {
-                build_processing_views(&mut s, vfx, mtm);
-            }
-
-            // Reset capsule shadow to neutral
-            let theme = Theme::current();
-            if let Some(capsule) = &s.capsule_view {
-                if let Some(layer) = capsule.layer() {
-                    let (r, g, b, a) = theme.capsule_shadow();
-                    layer.setShadowColor(Some(&srgb(r, g, b, a).CGColor()));
-                    layer.setShadowRadius(30.0);
-                    layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
-                    layer.setShadowOffset(NSSize::new(0.0, -10.0));
-                    layer.setBorderWidth(0.0);
-                }
-            }
-            // Reset vfx border
-            if let Some(vfx) = &s.vfx_view {
-                if let Some(layer) = vfx.layer() {
-                    let (r, g, b, a) = theme.vfx_border();
-                    layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
-                    layer.setBorderWidth(0.5);
-                }
-            }
-        });
-    });
-
-    morph_capsule_to(app.clone(), CAP_PROCESSING_W, CAP_H);
-
-    // Start dot bounce animation
-    let token = DOTS_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    start_dots_animation(app.clone(), token);
-}
-
-fn transition_to_result(app: &AppHandle) {
-    DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
-    BORDER_ANIM_TOKEN.fetch_add(1, Ordering::Relaxed);
-
-    let text = {
-        let mut sh = SHARED.lock().unwrap();
-        sh.mode = Some(CapsuleMode::Result);
-        sh.result_accumulated.clone()
+fn layout_label(ui: &CapsuleViews, mode: CapsuleMode) {
+    let Some(panel) = &ui.panel else {
+        return;
     };
-    let result_h = compute_result_height(&text);
+    let Some(label) = &ui.text_label else {
+        return;
+    };
+    let frame = panel.frame();
+    let width = frame.size.width;
+    let height = frame.size.height;
 
-    // Flash the border bright on transition
-    let app_flash = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let s = s.borrow();
-            if let Some(capsule) = &s.capsule_view {
-                if let Some(layer) = capsule.layer() {
-                    layer.setShadowColor(Some(&srgb(74, 158, 255, 0.55).CGColor()));
-                    layer.setShadowRadius(40.0);
-                    layer.setShadowOpacity(0.50);
-                }
-            }
-            if let Some(vfx) = &s.vfx_view {
-                if let Some(layer) = vfx.layer() {
-                    layer.setBorderColor(Some(&srgb(74, 158, 255, 0.40).CGColor()));
-                    layer.setBorderWidth(1.5);
-                }
-            }
-        });
-    });
-    // Fade the flash over ~200ms (handled by the result glow anim taking over)
-
-    let text_for_ui = text.clone();
-    let _ = app_flash.run_on_main_thread(move || {
-        UI.with(|s| {
-            let mut s = s.borrow_mut();
-            if s.panel.is_none() {
-                return;
-            }
-            clear_mode_views(&mut s);
-
-            let cap_h = compute_result_height(&text_for_ui);
-            let mtm = MainThreadMarker::new().expect("main thread");
-            let vfx = s.vfx_view.clone();
-            if let Some(vfx) = &vfx {
-                build_result_views(&mut s, vfx, mtm, CAP_RESULT_W, cap_h);
-                if let Some(label) = &s.result_text {
-                    label.setStringValue(&NSString::from_str(&text_for_ui));
-                }
-            }
-        });
-    });
-
-    morph_capsule_to(app.clone(), CAP_RESULT_W, result_h);
-
-    // Start subtle breathing glow for result mode
-    let glow_token = RESULT_GLOW_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    start_result_glow_anim(app.clone(), glow_token);
-
-    // Auto-close timer
-    let close_token = RESULT_CLOSE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    let app_close = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(RESULT_AUTO_CLOSE_SECS)).await;
-        if RESULT_CLOSE_TOKEN.load(Ordering::Relaxed) == close_token {
-            transition_to_idle(&app_close);
+    match mode {
+        CapsuleMode::Processing => {
+            label.setFrame(NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(0.0, 0.0),
+            ));
         }
-    });
-}
-
-/// Update result text and smoothly animate capsule to fit new content.
-fn update_result_live(app: &AppHandle, text: String, cap_w: f64, cap_h: f64) {
-    // Update text + internal content frames on main thread
-    let _ = app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let s = s.borrow();
-
-            // Update text label
-            if let Some(label) = &s.result_text {
-                label.setStringValue(&NSString::from_str(&text));
-                let text_w = cap_w - RESULT_PAD_X * 2.0 - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
-                let text_h = cap_h - RESULT_PAD_Y * 2.0;
-                label.setFrame(NSRect::new(
-                    NSPoint::new(RESULT_PAD_X, RESULT_PAD_Y),
-                    NSSize::new(text_w, text_h),
-                ));
-            }
-
-            // Reposition continue button
-            if let Some(btn) = &s.result_btn {
-                let btn_x = cap_w - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
-                let btn_y = (cap_h - RESULT_BTN_SIZE) / 2.0;
-                btn.setFrame(NSRect::new(
-                    NSPoint::new(btn_x, btn_y),
-                    NSSize::new(RESULT_BTN_SIZE, RESULT_BTN_SIZE),
-                ));
-            }
-        });
-    });
-
-    // Animate the capsule frame via spring physics (reuses morph token)
-    morph_capsule_to(app.clone(), cap_w, cap_h);
-}
-
-fn transition_to_idle(app: &AppHandle) {
-    // Cancel all mode animations
-    WAVE_ACTIVE.store(false, Ordering::Relaxed);
-    WAVE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    BORDER_ANIM_TOKEN.fetch_add(1, Ordering::Relaxed);
-    DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
-    RESULT_CLOSE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    RESULT_GLOW_TOKEN.fetch_add(1, Ordering::Relaxed);
-    CONTENT_FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
-
-    {
-        let mut sh = SHARED.lock().unwrap();
-        sh.mode = Some(CapsuleMode::Idle);
-        sh.current_speech.clear();
-        sh.result_accumulated.clear();
-        sh.conv_id = None;
-        sh.agent_listener = None;
-    }
-
-    let _ = app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let mut s = s.borrow_mut();
-            if s.panel.is_none() {
-                return;
-            }
-
-            clear_mode_views(&mut s);
-
-            let mtm = MainThreadMarker::new().expect("main thread");
-            let vfx = s.vfx_view.clone();
-            if let Some(vfx) = &vfx {
-                build_idle_views(&mut s, vfx, mtm);
-            }
-
-            // Reset capsule shadow to neutral
-            let theme = Theme::current();
-            if let Some(capsule) = &s.capsule_view {
-                if let Some(layer) = capsule.layer() {
-                    let (r, g, b, a) = theme.capsule_shadow();
-                    layer.setShadowColor(Some(&srgb(r, g, b, a).CGColor()));
-                    layer.setShadowRadius(30.0);
-                    layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
-                    layer.setShadowOffset(NSSize::new(0.0, -10.0));
-                    layer.setBorderWidth(0.0);
-                }
-            }
-            // Reset vfx border
-            if let Some(vfx) = &s.vfx_view {
-                if let Some(layer) = vfx.layer() {
-                    let (r, g, b, a) = theme.vfx_border();
-                    layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
-                    layer.setBorderWidth(0.5);
-                }
-            }
-        });
-    });
-
-    morph_capsule_to(app.clone(), CAP_IDLE_W, CAP_H);
-
-    // Restart idle wave animation
-    let token = IDLE_WAVE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    start_idle_wave_anim(app.clone(), token);
-}
-
-fn clear_mode_views(s: &mut CapsuleViews) {
-    // Remove all sub-views from vfx
-    if let Some(vfx) = &s.vfx_view {
-        let subviews = vfx.subviews();
-        let views: Vec<_> = subviews.iter().collect();
-        for sv in views.iter().rev() {
-            sv.removeFromSuperview();
+        CapsuleMode::Result => {
+            let x = RESULT_PAD_X;
+            let y = RESULT_PAD_Y;
+            let w = width - RESULT_PAD_X * 2.0;
+            let h = height - RESULT_PAD_Y * 2.0;
+            label.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)));
+            label.setPreferredMaxLayoutWidth(w);
         }
-        // Re-add the persistent dark overlay
-        if let Some(bg) = &s.bg_overlay {
-            vfx.addSubview(bg);
+        CapsuleMode::Listening => {
+            // Leave room on the left for the listening indicator (dot + 10px gap)
+            let indicator_slot = 22.0;
+            let x = PAD_X + indicator_slot;
+            let w = width - (PAD_X + indicator_slot) - PAD_X;
+            let fit: NSSize = unsafe { msg_send![label, intrinsicContentSize] };
+            let target_h = fit.height.max(22.0).min(height - PAD_Y * 2.0);
+            let y = (height - target_h) / 2.0 - 1.0;
+            label.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, target_h)));
+            label.setPreferredMaxLayoutWidth(w);
+        }
+        CapsuleMode::Notice => {
+            let fit: NSSize = unsafe { msg_send![label, intrinsicContentSize] };
+            let target_h = fit.height.max(20.0).min(height - PAD_Y * 2.0);
+            let y = (height - target_h) / 2.0 - 1.0;
+            label.setFrame(NSRect::new(
+                NSPoint::new(PAD_X, y),
+                NSSize::new(width - PAD_X * 2.0, target_h),
+            ));
+            label.setPreferredMaxLayoutWidth(width - PAD_X * 2.0);
         }
     }
-    s.idle_logo_halo = None;
-    s.idle_logo = None;
-    s.idle_mic_capsule = None;
-    s.idle_separator = None;
-    s.idle_wave_bars.clear();
-    s.listen_text = None;
-    s.listen_done_btn = None;
-    s.listen_done_icon = None;
-    s.proc_dots.clear();
-    s.result_text = None;
-    s.result_btn = None;
-    s.result_btn_icon = None;
 }
 
-// ── Morph Animation (Spring Physics) ─────────────────────────────────────────
+fn layout_processing_dots(ui: &CapsuleViews, mode: CapsuleMode) {
+    let Some(panel) = &ui.panel else {
+        return;
+    };
+    let width = panel.frame().size.width;
+    let height = panel.frame().size.height;
+    let total_w = PROCESS_DOT_SIZE * 3.0 + PROCESS_DOT_GAP * 2.0;
+    let start_x = (width - total_w) / 2.0;
+    let y = (height - PROCESS_DOT_SIZE) / 2.0 - 1.0;
 
-fn morph_capsule_to(app: AppHandle, target_w: f64, target_h: f64) {
+    for (idx, dot) in ui.processing_dots.iter().enumerate() {
+        let x = start_x + idx as f64 * (PROCESS_DOT_SIZE + PROCESS_DOT_GAP);
+        dot.setFrame(NSRect::new(
+            NSPoint::new(x, y),
+            NSSize::new(PROCESS_DOT_SIZE, PROCESS_DOT_SIZE),
+        ));
+        if let Some(layer) = dot.layer() {
+            if mode != CapsuleMode::Processing {
+                layer.setOpacity(0.0);
+                layer.setShadowOpacity(0.0);
+            }
+        }
+    }
+}
+
+fn layout_listen_indicator(ui: &CapsuleViews, mode: CapsuleMode) {
+    let Some(panel) = &ui.panel else {
+        return;
+    };
+    let Some(view) = &ui.listen_indicator else {
+        return;
+    };
+    let height = panel.frame().size.height;
+    let x = PAD_X - 2.0;
+    let y = (height - 8.0) / 2.0;
+    view.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(8.0, 8.0)));
+    if let Some(layer) = view.layer() {
+        if mode != CapsuleMode::Listening {
+            layer.setOpacity(0.0);
+        }
+    }
+}
+
+fn animate_to(app: AppHandle, target_w: f64, target_h: f64) {
     let token = MORPH_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     tauri::async_runtime::spawn(async move {
-        // Capture current frame ON THE MAIN THREAD
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(f64, f64, f64, f64)>(1);
-        let tw = target_w;
-        let th = target_h;
-        let _ = app.run_on_main_thread(move || {
-            let result = UI.with(|s| {
-                let s = s.borrow();
-                if let Some(panel) = &s.panel {
-                    let f = panel.frame();
-                    let right = f.origin.x + f.size.width;
-                    (f.size.width, f.size.height, right, f.origin.y)
-                } else {
-                    (tw, th, 0.0, 0.0)
-                }
+        let (start_w, start_h, cx, top_y) = {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = app.run_on_main_thread(move || {
+                UI.with(|ui| {
+                    let ui = ui.borrow();
+                    let (w, h) = ui
+                        .panel
+                        .as_ref()
+                        .map(|p| (p.frame().size.width, p.frame().size.height))
+                        .unwrap_or((target_w, target_h));
+                    let _ = tx.send((w, h, ui.screen_center_x, ui.screen_top_y));
+                });
             });
-            let _ = tx.send(result);
-        });
-        let (start_w, start_h, right_edge, bottom_y) =
-            rx.recv().unwrap_or((target_w, target_h, 0.0, 0.0));
+            rx.recv().unwrap_or((target_w, target_h, 0.0, 0.0))
+        };
 
         let mut sw = Spring::new(start_w);
-        let mut sh = Spring::new(start_h);
         sw.set_target(target_w);
+        let mut sh = Spring::new(start_h);
         sh.set_target(target_h);
 
-        // Inject a small initial velocity kick for that "punchy" feel
-        let dw = target_w - start_w;
-        let dh = target_h - start_h;
-        sw.vel = dw * 2.5; // velocity boost in direction of travel
-        sh.vel = dh * 2.5;
-
-        let max_frames = 90u64; // safety cap ~1.5s
-        for _ in 0..max_frames {
+        loop {
             if MORPH_TOKEN.load(Ordering::Relaxed) != token {
-                return;
-            }
-            let w_moving = sw.tick();
-            let h_moving = sh.tick();
-            if !w_moving && !h_moving {
                 break;
             }
+            let moving_w = sw.tick();
+            let moving_h = sh.tick();
             let w = sw.pos;
             let h = sh.pos;
-            let new_x = right_edge - w;
+            let _ = app.run_on_main_thread(move || apply_frame(w, h, cx, top_y));
+            if !moving_w && !moving_h {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
+        }
 
+        if MORPH_TOKEN.load(Ordering::Relaxed) == token {
+            let _ = app.run_on_main_thread(move || apply_frame(target_w, target_h, cx, top_y));
+        }
+    });
+}
+
+fn apply_frame(width: f64, height: f64, center_x: f64, top_y: f64) {
+    UI.with(|ui| {
+        let ui = ui.borrow();
+        let x = center_x - width / 2.0;
+        let y = top_y - height;
+        let origin = NSPoint::new(0.0, 0.0);
+        let size = NSSize::new(width, height);
+        let radius = CORNER_RADIUS.min(height / 2.0);
+
+        if let Some(panel) = &ui.panel {
+            panel.setFrame_display(NSRect::new(NSPoint::new(x, y), size), true);
+        }
+        if let Some(root) = &ui.root_view {
+            root.setFrame(NSRect::new(origin, size));
+        }
+        if let Some(capsule) = &ui.capsule_view {
+            capsule.setFrame(NSRect::new(origin, size));
+            if let Some(layer) = capsule.layer() {
+                layer.setCornerRadius(radius);
+            }
+        }
+        if let Some(vfx) = &ui.vfx_view {
+            vfx.setFrame(NSRect::new(origin, size));
+            if let Some(layer) = vfx.layer() {
+                layer.setCornerRadius(radius);
+            }
+        }
+        if let Some(bg) = &ui.bg_overlay {
+            bg.setFrame(NSRect::new(origin, size));
+            if let Some(layer) = bg.layer() {
+                layer.setCornerRadius(radius);
+            }
+        }
+        if let (Some(gradient), Some(mask)) = (&ui.gradient_border, &ui.gradient_mask) {
+            gradient.setFrame(NSRect::new(origin, size));
+            mask.setFrame(NSRect::new(origin, size));
+            mask.setPath(Some(&rounded_rect_path(
+                width,
+                height,
+                radius,
+                BORDER_GRADIENT_W,
+            )));
+        }
+        let mode = SHARED
+            .lock()
+            .unwrap()
+            .mode
+            .unwrap_or(CapsuleMode::Listening);
+        if ui.text_label.is_some() {
+            layout_label(&ui, mode);
+        }
+        layout_processing_dots(&ui, mode);
+        layout_listen_indicator(&ui, mode);
+    });
+}
+
+fn fade_to(app: AppHandle, target_alpha: f64, token: u64) {
+    tauri::async_runtime::spawn(async move {
+        let start_alpha = {
+            let (tx, rx) = std::sync::mpsc::channel();
             let _ = app.run_on_main_thread(move || {
-                apply_capsule_frame(w, h, new_x, bottom_y);
+                UI.with(|ui| {
+                    let alpha = ui
+                        .borrow()
+                        .panel
+                        .as_ref()
+                        .map(|p| p.alphaValue())
+                        .unwrap_or(0.0);
+                    let _ = tx.send(alpha);
+                });
+            });
+            rx.recv().unwrap_or(0.0)
+        };
+
+        for frame in 0..FADE_FRAMES {
+            if FADE_TOKEN.load(Ordering::Relaxed) != token {
+                return;
+            }
+            let t = (frame + 1) as f64 / FADE_FRAMES as f64;
+            let alpha = start_alpha + (target_alpha - start_alpha) * ease_out_quart(t);
+            let _ = app.run_on_main_thread(move || {
+                UI.with(|ui| {
+                    if let Some(panel) = &ui.borrow().panel {
+                        panel.setAlphaValue(alpha);
+                    }
+                });
             });
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
         }
-        // Snap to exact target on final frame
-        let final_x = right_edge - target_w;
+
         let _ = app.run_on_main_thread(move || {
-            apply_capsule_frame(target_w, target_h, final_x, bottom_y);
+            UI.with(|ui| {
+                if let Some(panel) = &ui.borrow().panel {
+                    panel.setAlphaValue(target_alpha);
+                }
+            });
         });
     });
 }
 
-/// Shared helper: set panel + all internal layers to (w, h) at screen position (x, y).
-fn apply_capsule_frame(w: f64, h: f64, x: f64, y: f64) {
-    UI.with(|s| {
-        let s = s.borrow();
-        if let Some(panel) = &s.panel {
-            panel.setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)), true);
-        }
-        let r = cap_radius(h);
-        let origin = NSPoint::new(0.0, 0.0);
-        let sz = NSSize::new(w, h);
-        if let Some(root) = &s.root_view {
-            root.setFrame(NSRect::new(origin, sz));
-        }
-        if let Some(capsule) = &s.capsule_view {
-            capsule.setFrame(NSRect::new(origin, sz));
-            if let Some(layer) = capsule.layer() {
-                layer.setCornerRadius(r);
-            }
-        }
-        if let Some(vfx) = &s.vfx_view {
-            vfx.setFrame(NSRect::new(origin, sz));
-            if let Some(layer) = vfx.layer() {
-                layer.setCornerRadius(r);
-            }
-        }
-        if let Some(bg) = &s.bg_overlay {
-            bg.setFrame(NSRect::new(origin, sz));
-            if let Some(layer) = bg.layer() {
-                layer.setCornerRadius(r);
-            }
-        }
-    });
-}
+fn close_panel(app: &AppHandle, immediate: bool) {
+    cancel_auto_close();
+    BORDER_TOKEN.fetch_add(1, Ordering::Relaxed);
+    DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
+    LISTEN_PULSE_TOKEN.fetch_add(1, Ordering::Relaxed);
+    MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
 
-// ── Click Handling ──────────────────────────────────────────────────────────
-
-fn install_event_monitor(s: &mut CapsuleViews, app: AppHandle) {
-    if s.event_monitor.is_some() {
+    if immediate {
+        let _ = app.run_on_main_thread(remove_panel);
+        reset_shared_state();
         return;
     }
 
-    let monitor = unsafe {
-        NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-            NSEventMask::LeftMouseUp,
-            &RcBlock::new(move |event: NonNull<NSEvent>| {
-                let window_number = event.as_ref().windowNumber();
-                let click_point = event.as_ref().locationInWindow();
-
-                let action = UI.with(|s| {
-                    let s = s.borrow();
-                    let Some(panel) = &s.panel else {
-                        return ClickAction::None;
-                    };
-                    if panel.windowNumber() != window_number {
-                        return ClickAction::None;
-                    }
-
-                    let x = click_point.x;
-                    let y = click_point.y;
-                    let mode = SHARED.lock().unwrap().mode.unwrap_or(CapsuleMode::Idle);
-                    let panel_w = panel.frame().size.width;
-
-                    match mode {
-                        CapsuleMode::Idle => {
-                            // Logo area — compute same layout as build_idle_views
-                            let gap = 6.0_f64;
-                            let sep_w = 0.5_f64;
-                            let content_w = LOGO_SIZE + gap + sep_w + gap + MIC_CAPSULE_W;
-                            let logo_x = (panel_w - content_w) / 2.0;
-                            let cy = CAP_H / 2.0;
-                            let in_logo = x >= logo_x
-                                && x <= logo_x + LOGO_SIZE
-                                && y >= cy - LOGO_SIZE / 2.0
-                                && y <= cy + LOGO_SIZE / 2.0;
-                            if in_logo {
-                                return ClickAction::OpenMainWindow;
-                            }
-                            // Mic area — anywhere else in the capsule
-                            ClickAction::StartListening
-                        }
-                        CapsuleMode::Listening => {
-                            // Done button area (right side)
-                            let btn_x = panel_w - LISTEN_DONE_SIZE - LISTEN_DONE_RIGHT;
-                            if x >= btn_x && x <= btn_x + LISTEN_DONE_SIZE {
-                                return ClickAction::FinishListening;
-                            }
-                            ClickAction::None
-                        }
-                        CapsuleMode::Processing => ClickAction::None,
-                        CapsuleMode::Result => {
-                            // Continue button — vertically centered on right
-                            let panel_h = panel.frame().size.height;
-                            let btn_x = panel_w - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
-                            let btn_y = (panel_h - RESULT_BTN_SIZE) / 2.0;
-                            if x >= btn_x
-                                && x <= btn_x + RESULT_BTN_SIZE
-                                && y >= btn_y
-                                && y <= btn_y + RESULT_BTN_SIZE
-                            {
-                                return ClickAction::ContinueAsking;
-                            }
-                            // Click anywhere else on result opens main window
-                            ClickAction::OpenMainWindow
-                        }
-                    }
-                });
-
-                match action {
-                    ClickAction::OpenMainWindow => {
-                        let _ = tray::show_main_agent_window(app.clone());
-                    }
-                    ClickAction::StartListening => {
-                        handle_mic_click(app.clone());
-                    }
-                    ClickAction::FinishListening => {
-                        handle_done_click(app.clone());
-                    }
-                    ClickAction::ContinueAsking => {
-                        transition_to_idle(&app);
-                    }
-                    ClickAction::None => {}
-                }
-
-                event.as_ptr()
-            }),
-        )
-    };
-
-    s.event_monitor = monitor;
-}
-
-#[derive(Clone, Copy)]
-enum ClickAction {
-    None,
-    OpenMainWindow,
-    StartListening,
-    FinishListening,
-    ContinueAsking,
-}
-
-fn handle_mic_click(app: AppHandle) {
-    if stt::stt_is_running() {
-        // Already running — stop and submit
-        handle_done_click(app);
-    } else {
-        {
-            let mut sh = SHARED.lock().unwrap();
-            sh.stop_requested = false;
-            sh.last_final_text.clear();
-            sh.current_speech.clear();
+    let app = app.clone();
+    let token = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    tauri::async_runtime::spawn(async move {
+        fade_to(app.clone(), 0.0, token);
+        tokio::time::sleep(Duration::from_millis(ANIM_MS * (FADE_FRAMES + 1))).await;
+        if FADE_TOKEN.load(Ordering::Relaxed) == token {
+            let _ = app.run_on_main_thread(remove_panel);
+            reset_shared_state();
         }
-        let _ = stt::stt_start_stream(app.clone(), "agent".to_string(), Some(true));
-    }
-}
-
-fn handle_done_click(_app: AppHandle) {
-    SHARED.lock().unwrap().stop_requested = true;
-    let _ = stt::stt_stop_stream();
-}
-
-// ── Speech Updates ──────────────────────────────────────────────────────────
-
-fn update_listening_text(app: &AppHandle, text: &str) {
-    // Update shared state (accessible from any thread)
-    SHARED.lock().unwrap().current_speech = text.to_string();
-
-    // Update UI label (must be on main thread)
-    let text = text.to_string();
-    let _ = app.run_on_main_thread(move || {
-        UI.with(|s| {
-            let s = s.borrow();
-            if let Some(label) = &s.listen_text {
-                label.setStringValue(&NSString::from_str(&text));
-                // Re-center vertically: measure actual content height,
-                // then reposition the label so its text sits at capsule midpoint.
-                let fit: NSSize = unsafe { msg_send![label, intrinsicContentSize] };
-                let text_h = fit.height.max(18.0).min(CAP_H - 4.0);
-                let y = (CAP_H - text_h) / 2.0;
-                let cur = label.frame();
-                label.setFrame(NSRect::new(
-                    NSPoint::new(cur.origin.x, y),
-                    NSSize::new(cur.size.width, text_h),
-                ));
-            }
-        });
     });
 }
 
-// ── Agent Submission ────────────────────────────────────────────────────────
+fn remove_panel() {
+    UI.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        if let Some(monitor) = ui.event_monitor.take() {
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+        if let Some(panel) = ui.panel.take() {
+            panel.setAlphaValue(0.0);
+            panel.orderOut(None);
+            panel.close();
+        }
+        ui.root_view = None;
+        ui.capsule_view = None;
+        ui.vfx_view = None;
+        ui.bg_overlay = None;
+        ui.text_label = None;
+        ui.listen_indicator = None;
+        ui.processing_dots.clear();
+        ui.gradient_border = None;
+        ui.gradient_mask = None;
+    });
+    PANEL_OPEN.store(false, Ordering::Relaxed);
+}
 
+fn reset_shared_state() {
+    let mut sh = SHARED.lock().unwrap();
+    sh.mode = None;
+    sh.stop_requested = false;
+    sh.last_final_text.clear();
+    sh.current_speech.clear();
+    sh.result_accumulated.clear();
+    sh.agent_listener = None;
+}
+
+// ─ Agent submission ──────────────────────────────────────────────────────────
 fn submit_to_agent(app: AppHandle, text: String) {
-    // Transition to processing
+    if text.trim().is_empty() {
+        close_panel(&app, false);
+        return;
+    }
+
     transition_to_processing(&app);
 
     let db = app.state::<Database>();
     let conv_id = uuid_v4();
-    let _ = db.agent_create_conversation(&conv_id, "Float Agent");
+    let _ = db.agent_create_conversation(&conv_id, "Voice Shortcut");
 
-    // Register stream listener
     let cid = conv_id.clone();
     let app_for_listener = app.clone();
-    let listener_id = app.listen(format!("agent_stream:{}", conv_id), move |event| {
+    let listener_id = app.listen(format!("agent_stream:{conv_id}"), move |event| {
         handle_agent_stream(&app_for_listener, &cid, event.payload());
     });
 
     {
         let mut sh = SHARED.lock().unwrap();
-        sh.conv_id = Some(conv_id.clone());
         sh.agent_listener = Some(listener_id);
         sh.result_accumulated.clear();
     }
@@ -1461,95 +1265,298 @@ fn handle_agent_stream(app: &AppHandle, _conv_id: &str, payload: &str) {
     let event_type = parsed
         .get("type")
         .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
 
-    match event_type.as_str() {
+    match event_type {
         "token" => {
-            let text = parsed
+            let chunk = parsed
                 .get("text")
                 .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-
-            let (full_text, should_transition) = {
-                let mut sh = SHARED.lock().unwrap();
-                sh.result_accumulated.push_str(&text);
-                let full = sh.result_accumulated.clone();
-                let transition = sh.mode == Some(CapsuleMode::Processing);
-                (full, transition)
-            };
-
-            if should_transition {
-                transition_to_result(app);
-            } else {
-                // Already in result mode — update text and resize capsule to fit
-                let new_h = compute_result_height(&full_text);
-                update_result_live(app, full_text, CAP_RESULT_W, new_h);
+                .unwrap_or_default();
+            if chunk.is_empty() {
+                return;
             }
+            let mut sh = SHARED.lock().unwrap();
+            sh.result_accumulated.push_str(chunk);
         }
         "error" => {
             let msg = parsed
                 .get("message")
                 .and_then(|v| v.as_str())
-                .unwrap_or("エラーが発生しました")
-                .to_string();
-            SHARED.lock().unwrap().result_accumulated = msg;
-            transition_to_result(app);
+                .unwrap_or("エラーが発生しました");
+            clear_agent_listener(app);
+            {
+                let mut sh = SHARED.lock().unwrap();
+                sh.result_accumulated = msg.to_string();
+            }
+            transition_to_notice(app, msg);
         }
         "done" => {
-            // Unlisten
-            let lid = SHARED.lock().unwrap().agent_listener.take();
-            if let Some(id) = lid {
-                app.unlisten(id);
+            let final_text = {
+                let sh = SHARED.lock().unwrap();
+                sh.result_accumulated.trim().to_string()
+            };
+            clear_agent_listener(app);
+            if final_text.is_empty() {
+                transition_to_notice(app, "応答を取得できませんでした");
+            } else {
+                transition_to_result(app, &final_text);
             }
         }
         _ => {}
     }
 }
 
-// ── Listening Border Animation ──────────────────────────────────────────────
+fn clear_agent_listener(app: &AppHandle) {
+    let listener_id = SHARED.lock().unwrap().agent_listener.take();
+    if let Some(id) = listener_id {
+        app.unlisten(id);
+    }
+}
 
-fn start_listening_border_anim(app: AppHandle, token: u64) {
+// ─ Result height measurement ─────────────────────────────────────────────────
+fn compute_result_height(text: &str) -> f64 {
+    let text_w = RESULT_W - RESULT_PAD_X * 2.0;
+    // Rough measurement — each character counted as ~font*0.56 (cjk ~font*0.98).
+    let mut total_lines = 0.0_f64;
+    for raw in text.split('\n') {
+        let trimmed = raw.trim_end();
+        if trimmed.is_empty() {
+            total_lines += 0.5;
+            continue;
+        }
+        let (font_size, indent) = heading_metrics(trimmed);
+        let content = strip_markdown_syntax(trimmed);
+        if content.is_empty() {
+            total_lines += 0.5;
+            continue;
+        }
+        let glyph_w = font_size * 0.56;
+        let cjk_w = font_size * 0.98;
+        let eff: f64 = content
+            .chars()
+            .map(|c| if c.is_ascii() { glyph_w } else { cjk_w })
+            .sum();
+        let effective_w = (text_w - indent).max(1.0);
+        let lines = (eff / effective_w).ceil().max(1.0);
+        total_lines += lines;
+    }
+    let visible = total_lines.min(RESULT_MAX_VISIBLE_LINES as f64).max(2.0);
+    let line_px = RESULT_BODY_FONT * RESULT_LINE_HEIGHT_MUL;
+    let text_h = visible * line_px + RESULT_PAD_Y * 2.0 + 6.0;
+    text_h.clamp(RESULT_MIN_H, RESULT_MAX_H)
+}
+
+fn heading_metrics(line: &str) -> (f64, f64) {
+    if let Some(rest) = line.strip_prefix("### ") {
+        let _ = rest;
+        (RESULT_H3_FONT, 0.0)
+    } else if let Some(rest) = line.strip_prefix("## ") {
+        let _ = rest;
+        (RESULT_H2_FONT, 0.0)
+    } else if let Some(rest) = line.strip_prefix("# ") {
+        let _ = rest;
+        (RESULT_H1_FONT, 0.0)
+    } else if line.trim_start().starts_with("- ")
+        || line.trim_start().starts_with("* ")
+        || line.trim_start().starts_with("• ")
+    {
+        (RESULT_BODY_FONT, 14.0)
+    } else {
+        (RESULT_BODY_FONT, 0.0)
+    }
+}
+
+fn strip_markdown_syntax(line: &str) -> String {
+    let trimmed = line
+        .trim_start_matches("### ")
+        .trim_start_matches("## ")
+        .trim_start_matches("# ")
+        .trim_start();
+    let without_bullet = if let Some(rest) = trimmed.strip_prefix("- ") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("* ") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("• ") {
+        rest
+    } else {
+        trimmed
+    };
+    let mut out = String::with_capacity(without_bullet.len());
+    let mut skip = false;
+    for c in without_bullet.chars() {
+        if c == '*' || c == '_' || c == '`' {
+            skip = !skip;
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn schedule_close(app: AppHandle, delay: Duration) {
+    let token = AUTO_CLOSE_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
     tauri::async_runtime::spawn(async move {
-        let mut frame: u64 = 0;
+        tokio::time::sleep(delay).await;
+        if AUTO_CLOSE_TOKEN.load(Ordering::Relaxed) == token {
+            close_panel(&app, false);
+        }
+    });
+}
+
+fn cancel_auto_close() {
+    AUTO_CLOSE_TOKEN.fetch_add(1, Ordering::Relaxed);
+}
+
+// ─ Border styling & gradient animation ───────────────────────────────────────
+fn update_border(app: AppHandle, mode: CapsuleMode) {
+    let token = BORDER_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+
+    if mode != CapsuleMode::Processing {
+        let _ = app.run_on_main_thread(move || {
+            UI.with(|ui| {
+                let ui = ui.borrow();
+                let theme = Theme::current();
+                if let Some(vfx) = &ui.vfx_view {
+                    if let Some(layer) = vfx.layer() {
+                        let (r, g, b, a) = match mode {
+                            CapsuleMode::Result => theme.border_result(),
+                            CapsuleMode::Notice => theme.border_notice(),
+                            _ => theme.border_idle(),
+                        };
+                        layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
+                        layer.setBorderWidth(BORDER_IDLE_W);
+                    }
+                }
+                if let Some(gradient) = &ui.gradient_border {
+                    gradient.setHidden(true);
+                }
+            });
+        });
+        return;
+    }
+
+    // Processing: hide solid border, show + rotate gradient border.
+    let _ = app.run_on_main_thread(move || {
+        UI.with(|ui| {
+            let ui = ui.borrow();
+            let theme = Theme::current();
+            if let Some(vfx) = &ui.vfx_view {
+                if let Some(layer) = vfx.layer() {
+                    layer.setBorderColor(Some(&NSColor::clearColor().CGColor()));
+                    layer.setBorderWidth(0.0);
+                }
+            }
+            if let Some(gradient) = &ui.gradient_border {
+                set_gradient_colors(gradient, &theme);
+                gradient.setHidden(false);
+            }
+        });
+    });
+
+    // Rotating animation loop
+    tauri::async_runtime::spawn(async move {
+        let mut frame = 0_u64;
         loop {
-            if BORDER_ANIM_TOKEN.load(Ordering::Relaxed) != token {
+            if BORDER_TOKEN.load(Ordering::Relaxed) != token {
                 break;
             }
-            let t = frame as f64 * 0.06;
+            let t = frame as f64 * (ANIM_MS as f64 / 1000.0);
+            let angle = (t / GRADIENT_ROTATION_PERIOD_SEC) * std::f64::consts::TAU;
+            let ex = 0.5 + 0.5 * angle.cos();
+            let ey = 0.5 + 0.5 * angle.sin();
             let _ = app.run_on_main_thread(move || {
-                UI.with(|s| {
-                    let s = s.borrow();
-                    if let Some(capsule) = &s.capsule_view {
-                        if let Some(layer) = capsule.layer() {
-                            // Multi-harmonic breathing glow
-                            let w1 = ((t * 0.7).sin() + 1.0) * 0.5;
-                            let w2 = ((t * 1.1 + 0.5).sin() + 1.0) * 0.5;
-                            let w3 = ((t * 0.3).sin() + 1.0) * 0.5;
-                            let combined = w1 * 0.5 + w2 * 0.3 + w3 * 0.2;
+                UI.with(|ui| {
+                    let ui = ui.borrow();
+                    if let Some(gradient) = &ui.gradient_border {
+                        gradient.setStartPoint(NSPoint::new(0.5, 0.5));
+                        gradient.setEndPoint(NSPoint::new(ex, ey));
+                    }
+                });
+            });
+            frame = frame.wrapping_add(1);
+            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
+        }
+    });
+}
 
-                            // Blue-cyan gradient shift
-                            let r = (60.0 + combined * 30.0) as u8;
-                            let g = (140.0 + combined * 40.0) as u8;
-                            let a = 0.50 + combined * 0.35;
+fn set_gradient_colors(gradient: &CAGradientLayer, theme: &Theme) {
+    let stops = theme.gradient_stops();
+    let cg_colors: Vec<Retained<objc2_core_graphics::CGColor>> =
+        stops.iter().map(|c| c.CGColor()).collect();
+    let refs: Vec<&AnyObject> = cg_colors
+        .iter()
+        .map(|c| unsafe { &*(&**c as *const objc2_core_graphics::CGColor as *const AnyObject) })
+        .collect();
+    let array: Retained<NSArray<AnyObject>> = NSArray::from_slice(&refs);
+    unsafe { gradient.setColors(Some(&array)) };
+}
 
-                            let glow_color = srgb(r, g, 255, a);
-                            layer.setShadowColor(Some(&glow_color.CGColor()));
-                            layer.setShadowRadius(20.0 + combined * 18.0);
-                            layer.setShadowOpacity((0.35 + combined * 0.25) as f32);
-                            layer.setShadowOffset(NSSize::new(0.0, -4.0 - combined * 4.0));
+fn set_gradient_locations(gradient: &CAGradientLayer) {
+    let locations = [0.0f64, 0.25, 0.5, 0.75, 1.0];
+    let numbers: Vec<Retained<NSNumber>> = locations
+        .iter()
+        .map(|v| NSNumber::new_f64(*v))
+        .collect();
+    let refs: Vec<&NSNumber> = numbers.iter().map(|n| &**n).collect();
+    let array: Retained<NSArray<NSNumber>> = NSArray::from_slice(&refs);
+    gradient.setLocations(Some(&array));
+}
 
-                            // Animated border glow
-                            let border_a = 0.30 + combined * 0.45;
-                            let border_color = srgb(
-                                (80.0 + combined * 40.0) as u8,
-                                (160.0 + combined * 30.0) as u8,
-                                255,
-                                border_a,
-                            );
-                            layer.setBorderColor(Some(&border_color.CGColor()));
-                            layer.setBorderWidth(1.2 + combined * 0.8);
+fn rounded_rect_path(
+    width: f64,
+    height: f64,
+    radius: f64,
+    line_width: f64,
+) -> CFRetained<CGPath> {
+    // Inset by half the stroke so the ring sits inside the bounds.
+    let inset = line_width / 2.0;
+    let rect = NSRect::new(
+        NSPoint::new(inset, inset),
+        NSSize::new((width - inset * 2.0).max(0.0), (height - inset * 2.0).max(0.0)),
+    );
+    let r = radius.min(rect.size.width / 2.0).min(rect.size.height / 2.0);
+    unsafe { CGPath::with_rounded_rect(rect, r, r, std::ptr::null()) }
+}
+
+// ─ Listening indicator & processing dots animations ──────────────────────────
+fn start_listen_pulse_animation(app: AppHandle, mode: CapsuleMode) {
+    let token = LISTEN_PULSE_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    if mode != CapsuleMode::Listening {
+        let _ = app.run_on_main_thread(move || {
+            UI.with(|ui| {
+                let ui = ui.borrow();
+                if let Some(view) = &ui.listen_indicator {
+                    if let Some(layer) = view.layer() {
+                        layer.setOpacity(0.0);
+                    }
+                }
+            });
+        });
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let mut frame = 0_u64;
+        loop {
+            if LISTEN_PULSE_TOKEN.load(Ordering::Relaxed) != token {
+                break;
+            }
+            let t = frame as f64 * 0.075;
+            let pulse = (t.sin() * 0.5 + 0.5).powf(1.1);
+            let opacity = (0.52 + pulse * 0.42).clamp(0.0, 0.98) as f32;
+            let shadow_opacity = (0.32 + pulse * 0.46).clamp(0.0, 0.92) as f32;
+            let _ = app.run_on_main_thread(move || {
+                UI.with(|ui| {
+                    let ui = ui.borrow();
+                    if let Some(view) = &ui.listen_indicator {
+                        if let Some(layer) = view.layer() {
+                            layer.setOpacity(opacity);
+                            layer.setShadowOpacity(shadow_opacity);
+                            layer.setShadowRadius(8.0 + pulse * 3.5);
                         }
                     }
                 });
@@ -1560,59 +1567,56 @@ fn start_listening_border_anim(app: AppHandle, token: u64) {
     });
 }
 
-// ── Processing Dots Animation ───────────────────────────────────────────────
+fn start_processing_dots_animation(app: AppHandle, mode: CapsuleMode) {
+    let token = DOTS_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    if mode != CapsuleMode::Processing {
+        let _ = app.run_on_main_thread(move || {
+            UI.with(|ui| {
+                let ui = ui.borrow();
+                for dot in &ui.processing_dots {
+                    if let Some(layer) = dot.layer() {
+                        layer.setOpacity(0.0);
+                        layer.setShadowOpacity(0.0);
+                    }
+                }
+            });
+        });
+        return;
+    }
 
-fn start_dots_animation(app: AppHandle, token: u64) {
     tauri::async_runtime::spawn(async move {
-        let mut frame: u64 = 0;
+        let mut frame = 0_u64;
         loop {
             if DOTS_TOKEN.load(Ordering::Relaxed) != token {
                 break;
             }
-            let t = frame as f64 * 0.08;
+            let t = frame as f64 * 0.115;
             let _ = app.run_on_main_thread(move || {
-                UI.with(|s| {
-                    let s = s.borrow();
-                    let cy = CAP_H / 2.0;
-                    let total_w = DOT_SIZE * 3.0 + DOT_GAP * 2.0;
-                    let start_x = (CAP_PROCESSING_W - total_w) / 2.0;
-
-                    for (i, dot) in s.proc_dots.iter().enumerate() {
-                        let phase = i as f64 * 0.9;
-                        // Elastic bounce
-                        let raw = (t + phase).sin();
-                        let bounce = raw.max(0.0).powf(0.7) * 8.0;
-                        // Size pulse
-                        let pulse = 0.85 + (raw + 1.0) * 0.15;
-                        let size = DOT_SIZE * pulse;
-                        // Opacity wave
-                        let alpha = 0.55 + (raw + 1.0) * 0.225;
-
-                        let base_x = start_x + (i as f64) * (DOT_SIZE + DOT_GAP);
+                let theme = Theme::current();
+                UI.with(|ui| {
+                    let ui = ui.borrow();
+                    let Some(panel) = &ui.panel else { return };
+                    let panel_w = panel.frame().size.width;
+                    let panel_h = panel.frame().size.height;
+                    let total_w = PROCESS_DOT_SIZE * 3.0 + PROCESS_DOT_GAP * 2.0;
+                    let start_x = (panel_w - total_w) / 2.0;
+                    let base_y = (panel_h - PROCESS_DOT_SIZE) / 2.0 - 1.0;
+                    for (idx, dot) in ui.processing_dots.iter().enumerate() {
+                        let phase = t - idx as f64 * 0.48;
+                        let wave = (phase.sin() * 0.5 + 0.5).powf(1.25);
+                        let rise = wave * 2.6;
+                        let x = start_x + idx as f64 * (PROCESS_DOT_SIZE + PROCESS_DOT_GAP);
+                        let y = base_y - rise;
                         dot.setFrame(NSRect::new(
-                            NSPoint::new(
-                                base_x + (DOT_SIZE - size) / 2.0,
-                                cy - size / 2.0 + bounce,
-                            ),
-                            NSSize::new(size, size),
+                            NSPoint::new(x, y),
+                            NSSize::new(PROCESS_DOT_SIZE, PROCESS_DOT_SIZE),
                         ));
                         if let Some(layer) = dot.layer() {
-                            layer.setOpacity(alpha as f32);
-                            layer.setCornerRadius(size / 2.0);
-                            // Dynamic glow intensity
-                            let glow = raw.max(0.0);
-                            layer.setShadowOpacity((0.20 + glow * 0.35) as f32);
-                            layer.setShadowRadius(4.0 + glow * 8.0);
-                        }
-                    }
-
-                    // Capsule border shimmer sweep
-                    if let Some(capsule) = &s.capsule_view {
-                        if let Some(layer) = capsule.layer() {
-                            let sweep = ((t * 0.4).sin() + 1.0) * 0.5;
-                            let border_a = 0.06 + sweep * 0.10;
-                            layer.setBorderColor(Some(&srgb(74, 158, 255, border_a).CGColor()));
-                            layer.setBorderWidth(0.5 + sweep * 0.5);
+                            layer.setBackgroundColor(Some(&theme.accent().CGColor()));
+                            layer.setShadowColor(Some(&theme.accent().CGColor()));
+                            layer.setOpacity((0.45 + wave * 0.5) as f32);
+                            layer.setShadowRadius(5.0 + wave * 3.0);
+                            layer.setShadowOpacity((0.22 + wave * 0.32) as f32);
                         }
                     }
                 });
@@ -1623,276 +1627,695 @@ fn start_dots_animation(app: AppHandle, token: u64) {
     });
 }
 
-// ── Content Fade Helpers ────────────────────────────────────────────────────
+// ─ Click monitor to open main window from Result state ───────────────────────
+fn install_click_monitor(ui: &mut CapsuleViews, app: AppHandle) {
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseUp,
+            &RcBlock::new(move |event: NonNull<NSEvent>| {
+                let win_num = event.as_ref().windowNumber();
+                let should_open = UI.with(|ui| {
+                    let ui = ui.borrow();
+                    let is_our_panel = ui
+                        .panel
+                        .as_ref()
+                        .map(|p| p.windowNumber() == win_num)
+                        .unwrap_or(false);
+                    let mode = SHARED.lock().unwrap().mode;
+                    is_our_panel && mode == Some(CapsuleMode::Result)
+                });
 
-/// Set layer opacity on all mode-specific content subviews (not the bg_overlay).
-fn set_content_opacity(s: &CapsuleViews, opacity: f64) {
-    let op = opacity as f32;
-    let set = |v: &Retained<NSView>| {
-        if let Some(l) = v.layer() {
-            l.setOpacity(op);
-        }
+                if should_open {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.unminimize();
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    let _ = app.emit("tray-open-tab", "agent");
+                }
+
+                event.as_ptr()
+            }),
+        )
     };
-    let set_tf = |v: &Retained<NSTextField>| {
-        if let Some(l) = v.layer() {
-            l.setOpacity(op);
-        } else {
-            // NSTextField may not be layer-backed yet — ensure it is
-            v.setWantsLayer(true);
-            if let Some(l) = v.layer() {
-                l.setOpacity(op);
-            }
-        }
-    };
-    for bar in &s.idle_wave_bars {
-        set(bar);
-    }
-    if let Some(v) = &s.idle_logo {
-        set(v);
-    }
-    if let Some(v) = &s.idle_logo_halo {
-        set(v);
-    }
-    if let Some(v) = &s.idle_mic_capsule {
-        set(v);
-    }
-    if let Some(v) = &s.listen_text {
-        set_tf(v);
-    }
-    if let Some(v) = &s.listen_done_btn {
-        set(v);
-    }
-    for dot in &s.proc_dots {
-        set(dot);
-    }
-    if let Some(v) = &s.result_text {
-        set_tf(v);
-    }
-    if let Some(v) = &s.result_btn {
-        set(v);
+
+    ui.event_monitor = monitor;
+}
+
+fn normalize_shortcut(shortcut: &str) -> String {
+    let value = shortcut.trim().to_ascii_lowercase();
+    if value.is_empty() || value == "alt+space" || value == "option+space" {
+        DEFAULT_SHORTCUT.into()
+    } else {
+        value
     }
 }
 
-/// Fade all mode-specific content from 0→1 over ~18 frames (~300ms).
-fn fade_content_in(app: AppHandle) {
-    let token = CONTENT_FADE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    tauri::async_runtime::spawn(async move {
-        for i in 1..=FADE_IN_FRAMES {
-            if CONTENT_FADE_TOKEN.load(Ordering::Relaxed) != token {
+fn register_appearance_observer(app: AppHandle) {
+    let app_ptr = Box::into_raw(Box::new(app)) as usize;
+
+    unsafe {
+        let dnc_cls = AnyClass::get(c"NSDistributedNotificationCenter").unwrap();
+        let dnc: *mut AnyObject = msg_send![dnc_cls, defaultCenter];
+        let notif_name = NSString::from_str("AppleInterfaceThemeChangedNotification");
+
+        let block = RcBlock::new(move |_notif: *mut AnyObject| {
+            let app_ref = &*(app_ptr as *const AppHandle);
+            // Only track macOS appearance when the user's app theme is "system".
+            if app_theme_mode(app_ref) != "system" {
                 return;
             }
-            let alpha = ease_out_quart(i as f64 / FADE_IN_FRAMES as f64);
-            let _ = app.run_on_main_thread(move || {
-                UI.with(|s| {
-                    set_content_opacity(&s.borrow(), alpha);
-                });
+            let app_clone = app_ref.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                SYSTEM_IS_DARK.store(is_dark_mode(), Ordering::Relaxed);
+                apply_theme(&Theme::current());
             });
-            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
-        }
-    });
-}
+        });
 
-// ── Result Glow Animation ───────────────────────────────────────────────────
-
-fn start_result_glow_anim(app: AppHandle, token: u64) {
-    tauri::async_runtime::spawn(async move {
-        let mut frame: u64 = 0;
-        loop {
-            if RESULT_GLOW_TOKEN.load(Ordering::Relaxed) != token {
-                break;
-            }
-            let t = frame as f64 * 0.04;
-            let _ = app.run_on_main_thread(move || {
-                UI.with(|s| {
-                    let s = s.borrow();
-                    // Gentle breathing shadow
-                    if let Some(capsule) = &s.capsule_view {
-                        if let Some(layer) = capsule.layer() {
-                            let w1 = ((t * 0.5).sin() + 1.0) * 0.5;
-                            let w2 = ((t * 0.8 + 1.0).sin() + 1.0) * 0.5;
-                            let combined = w1 * 0.6 + w2 * 0.4;
-
-                            let r = (40.0 + combined * 25.0) as u8;
-                            let g = (120.0 + combined * 50.0) as u8;
-                            let a = 0.15 + combined * 0.20;
-                            layer.setShadowColor(Some(&srgb(r, g, 255, a).CGColor()));
-                            layer.setShadowRadius(18.0 + combined * 14.0);
-                            layer.setShadowOpacity((0.18 + combined * 0.15) as f32);
-                            layer.setShadowOffset(NSSize::new(0.0, -3.0 - combined * 3.0));
-                        }
-                    }
-                    // Subtle border shimmer
-                    if let Some(vfx) = &s.vfx_view {
-                        if let Some(layer) = vfx.layer() {
-                            let shimmer = ((t * 0.6).sin() + 1.0) * 0.5;
-                            let border_a = 0.06 + shimmer * 0.08;
-                            layer.setBorderColor(Some(&srgb(74, 158, 255, border_a).CGColor()));
-                            layer.setBorderWidth(0.5 + shimmer * 0.3);
-                        }
-                    }
-                });
-            });
-            frame = frame.wrapping_add(1);
-            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
-        }
-    });
-}
-
-// ── Idle Wave Animation (with hover detection) ─────────────────────────────
-
-fn start_idle_wave_anim(app: AppHandle, token: u64) {
-    tauri::async_runtime::spawn(async move {
-        let mut frame: u64 = 0;
-        loop {
-            if IDLE_WAVE_TOKEN.load(Ordering::Relaxed) != token {
-                break;
-            }
-            if SHARED.lock().unwrap().mode != Some(CapsuleMode::Idle) {
-                break;
-            }
-            let f = frame;
-            let _ = app.run_on_main_thread(move || {
-                UI.with(|s| {
-                    let s = s.borrow();
-                    if s.panel.is_none() {
-                        return;
-                    }
-
-                    // Detect hover via mouse position
-                    let hovering = if let Some(panel) = &s.panel {
-                        let mouse: NSPoint = unsafe {
-                            let cls = AnyClass::get(c"NSEvent").unwrap();
-                            msg_send![cls, mouseLocation]
-                        };
-                        let pf = panel.frame();
-                        mouse.x >= pf.origin.x
-                            && mouse.x <= pf.origin.x + pf.size.width
-                            && mouse.y >= pf.origin.y
-                            && mouse.y <= pf.origin.y + pf.size.height
-                    } else {
-                        false
-                    };
-
-                    let speed = if hovering { 0.12 } else { 0.05 };
-                    let t = f as f64 * speed;
-                    let cy = CAP_H / 2.0;
-
-                    // Animate wave bars
-                    for (i, bar) in s.idle_wave_bars.iter().enumerate() {
-                        let phase = i as f64 * 1.2;
-                        let breathe = ((t + phase).sin() + 1.0) * 0.5;
-                        let base_h = BAR_IDLE[i.min(BAR_IDLE.len() - 1)];
-                        let extra = if hovering { 7.0 } else { 4.0 };
-                        let h = base_h + breathe * extra;
-                        let alpha = if hovering {
-                            0.65 + breathe * 0.35
-                        } else {
-                            0.45 + breathe * 0.35
-                        };
-                        bar.setFrame(NSRect::new(
-                            NSPoint::new(bar.frame().origin.x, cy - h / 2.0),
-                            NSSize::new(BAR_W, h),
-                        ));
-                        if let Some(layer) = bar.layer() {
-                            layer.setOpacity(alpha as f32);
-                        }
-                    }
-
-                    let theme = Theme::current();
-                    // Hover: expand shadow, brighten border
-                    if let Some(capsule) = &s.capsule_view {
-                        if let Some(layer) = capsule.layer() {
-                            if hovering {
-                                layer.setShadowColor(Some(&srgb(74, 158, 255, 0.18).CGColor()));
-                                layer.setShadowRadius(38.0);
-                                layer.setShadowOpacity(0.35);
-                            } else {
-                                let r = 28.0 + ((t * 0.3).sin() + 1.0) * 1.5;
-                                let (sr, sg, sb, sa) = theme.capsule_shadow();
-                                layer.setShadowColor(Some(&srgb(sr, sg, sb, sa).CGColor()));
-                                layer.setShadowRadius(r);
-                                layer.setShadowOpacity(theme.capsule_shadow_opacity() as f32);
-                            }
-                        }
-                    }
-
-                    // Hover: brighten inner border
-                    if let Some(vfx) = &s.vfx_view {
-                        if let Some(layer) = vfx.layer() {
-                            let (r, g, b, a) = if hovering {
-                                theme.vfx_border_hover()
-                            } else {
-                                theme.vfx_border()
-                            };
-                            layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
-                        }
-                    }
-
-                    // Hover: logo halo glow
-                    if let Some(halo) = &s.idle_logo_halo {
-                        if let Some(layer) = halo.layer() {
-                            let (r, g, b, a) = if hovering {
-                                theme.halo_hover()
-                            } else {
-                                theme.halo_idle()
-                            };
-                            layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
-                        }
-                    }
-                });
-            });
-            frame = frame.wrapping_add(1);
-            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
-        }
-    });
-}
-
-// ── Result Height Computation ───────────────────────────────────────────────
-
-fn compute_result_height(text: &str) -> f64 {
-    let text_w = CAP_RESULT_W - RESULT_PAD_X * 2.0 - RESULT_BTN_SIZE - RESULT_BTN_RIGHT;
-    let chars_per_line = (text_w / (RESULT_FONT * 0.74)).max(8.0);
-
-    // Count lines: each explicit newline is at least one line,
-    // each visual line within a paragraph wraps by char count.
-    let mut total_lines = 0.0_f64;
-    for paragraph in text.split('\n') {
-        let eff = paragraph
-            .chars()
-            .map(|c| if c.is_ascii() { 1.0 } else { 1.7 })
-            .sum::<f64>();
-        total_lines += (eff / chars_per_line).ceil().max(1.0);
+        let _: () = msg_send![
+            dnc,
+            addObserverForName: &*notif_name,
+            object: std::ptr::null::<AnyObject>(),
+            queue: std::ptr::null::<AnyObject>(),
+            usingBlock: &*block
+        ];
     }
-    let lines = total_lines.max(1.0).min(RESULT_MAX_LINES as f64);
-    let text_h = lines * RESULT_LINE_H + RESULT_PAD_Y * 2.0;
-    text_h.clamp(CAP_H, CAP_RESULT_MAX_H)
 }
 
-// ── Panel / View Construction ───────────────────────────────────────────────
+fn apply_theme(theme: &Theme) {
+    UI.with(|ui| {
+        let ui = ui.borrow();
+        let mode = SHARED.lock().unwrap().mode;
+        if let Some(bg) = &ui.bg_overlay {
+            let (r, g, b, a) = theme.background();
+            if let Some(layer) = bg.layer() {
+                layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
+            }
+        }
+        if let Some(capsule) = &ui.capsule_view {
+            if let Some(layer) = capsule.layer() {
+                let (sr, sg, sb) = if theme.is_dark { (6, 4, 12) } else { (60, 40, 120) };
+                layer.setShadowColor(Some(&srgb(sr, sg, sb, 0.62).CGColor()));
+                layer.setShadowOpacity(if theme.is_dark { 0.30 } else { 0.14 });
+            }
+        }
+        if let Some(vfx) = &ui.vfx_view {
+            if let Some(layer) = vfx.layer() {
+                let (r, g, b, a) = match mode {
+                    Some(CapsuleMode::Result) => theme.border_result(),
+                    Some(CapsuleMode::Notice) => theme.border_notice(),
+                    Some(CapsuleMode::Processing) => {
+                        // Gradient border takes over in processing; clear the solid one.
+                        layer.setBorderColor(Some(&NSColor::clearColor().CGColor()));
+                        layer.setBorderWidth(0.0);
+                        theme.border_idle()
+                    }
+                    _ => theme.border_idle(),
+                };
+                if mode != Some(CapsuleMode::Processing) {
+                    layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
+                    layer.setBorderWidth(BORDER_IDLE_W);
+                }
+            }
+        }
+        if let Some(view) = &ui.listen_indicator {
+            if let Some(layer) = view.layer() {
+                layer.setBackgroundColor(Some(&theme.listen_indicator().CGColor()));
+                layer.setShadowColor(Some(&theme.listen_indicator().CGColor()));
+            }
+        }
+        for dot in &ui.processing_dots {
+            if let Some(layer) = dot.layer() {
+                layer.setBackgroundColor(Some(&theme.accent().CGColor()));
+                layer.setShadowColor(Some(&theme.accent().CGColor()));
+            }
+        }
+        if let Some(gradient) = &ui.gradient_border {
+            set_gradient_colors(gradient, theme);
+        }
+        // Re-skin the active label so live theme flips reach currently-visible text.
+        if let Some(label) = &ui.text_label {
+            match mode {
+                Some(CapsuleMode::Result) => {
+                    let source = SHARED.lock().unwrap().result_accumulated.clone();
+                    let trimmed = source.trim();
+                    if !trimmed.is_empty() {
+                        let attr = build_markdown_attributed(trimmed, *theme);
+                        label.setAttributedStringValue(&attr);
+                    }
+                }
+                Some(CapsuleMode::Listening) => {
+                    let current = SHARED.lock().unwrap().current_speech.clone();
+                    let color = if current.trim().is_empty() {
+                        theme.muted_label()
+                    } else {
+                        theme.label_color()
+                    };
+                    label.setTextColor(Some(&color));
+                }
+                Some(CapsuleMode::Notice) => {
+                    label.setTextColor(Some(&theme.label_color()));
+                }
+                _ => {}
+            }
+        }
+    });
+}
 
-fn base_panel(mtm: MainThreadMarker, rect: NSRect, shadow: bool) -> Retained<NSPanel> {
-    let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
-        NSPanel::alloc(mtm),
-        rect,
-        NSWindowStyleMask::NonactivatingPanel,
-        NSBackingStoreType::Buffered,
-        false,
-    );
-    panel.setFloatingPanel(true);
-    panel.setBecomesKeyOnlyIfNeeded(true);
-    panel.setWorksWhenModal(true);
-    panel.setOpaque(false);
-    panel.setHasShadow(shadow);
-    panel.setHidesOnDeactivate(false);
-    panel.setLevel(NSFloatingWindowLevel);
-    panel.setBackgroundColor(Some(&NSColor::clearColor()));
-    panel.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary
-            | NSWindowCollectionBehavior::Transient,
-    );
-    unsafe { panel.setReleasedWhenClosed(false) };
-    panel
+fn is_dark_mode() -> bool {
+    unsafe {
+        let cls = AnyClass::get(c"NSAppearance").unwrap();
+        let current: *mut AnyObject = msg_send![cls, currentDrawingAppearance];
+        if current.is_null() {
+            return true;
+        }
+        let name: *const AnyObject = msg_send![current, name];
+        if name.is_null() {
+            return true;
+        }
+        let cstr: *const std::os::raw::c_char = msg_send![name, UTF8String];
+        if cstr.is_null() {
+            return true;
+        }
+        std::ffi::CStr::from_ptr(cstr)
+            .to_string_lossy()
+            .contains("Dark")
+    }
+}
+
+fn app_theme_mode(app: &AppHandle) -> String {
+    let state = app.state::<crate::ThemeState>();
+    let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    guard.clone()
+}
+
+fn effective_is_dark(app: &AppHandle) -> bool {
+    match app_theme_mode(app).as_str() {
+        "light" => false,
+        "dark" => true,
+        _ => is_dark_mode(),
+    }
+}
+
+// ─ Markdown → NSAttributedString ─────────────────────────────────────────────
+enum MdBlock {
+    Paragraph(Vec<MdInline>),
+    Heading(u8, Vec<MdInline>),
+    Bullet(Vec<MdInline>),
+    Ordered(u32, Vec<MdInline>),
+    HRule,
+    Blank,
+}
+
+#[derive(Clone)]
+enum MdInline {
+    Text(String),
+    Bold(String),
+    Italic(String),
+    BoldItalic(String),
+    Code(String),
+}
+
+fn parse_markdown(text: &str) -> Vec<MdBlock> {
+    let mut blocks = Vec::new();
+    for raw in text.split('\n') {
+        let trimmed = raw.trim_end_matches('\r');
+        if trimmed.trim().is_empty() {
+            blocks.push(MdBlock::Blank);
+            continue;
+        }
+        if trimmed.trim() == "---" || trimmed.trim() == "***" || trimmed.trim() == "___" {
+            blocks.push(MdBlock::HRule);
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            blocks.push(MdBlock::Heading(3, parse_inlines(rest)));
+        } else if let Some(rest) = trimmed.strip_prefix("## ") {
+            blocks.push(MdBlock::Heading(2, parse_inlines(rest)));
+        } else if let Some(rest) = trimmed.strip_prefix("# ") {
+            blocks.push(MdBlock::Heading(1, parse_inlines(rest)));
+        } else if let Some(rest) = trimmed
+            .trim_start()
+            .strip_prefix("- ")
+            .or_else(|| trimmed.trim_start().strip_prefix("* "))
+            .or_else(|| trimmed.trim_start().strip_prefix("• "))
+        {
+            blocks.push(MdBlock::Bullet(parse_inlines(rest)));
+        } else if let Some((num, rest)) = parse_ordered_prefix(trimmed.trim_start()) {
+            blocks.push(MdBlock::Ordered(num, parse_inlines(rest)));
+        } else {
+            blocks.push(MdBlock::Paragraph(parse_inlines(trimmed)));
+        }
+    }
+    blocks
+}
+
+fn parse_ordered_prefix(line: &str) -> Option<(u32, &str)> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 || i >= bytes.len() {
+        return None;
+    }
+    if bytes[i] != b'.' && bytes[i] != b')' {
+        return None;
+    }
+    if i + 1 >= bytes.len() || bytes[i + 1] != b' ' {
+        return None;
+    }
+    let n: u32 = line[..i].parse().ok()?;
+    Some((n, &line[i + 2..]))
+}
+
+fn parse_inlines(line: &str) -> Vec<MdInline> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out: Vec<MdInline> = Vec::new();
+    let mut buf = String::new();
+    let mut i = 0;
+    let n = chars.len();
+
+    let flush_buf = |buf: &mut String, out: &mut Vec<MdInline>| {
+        if !buf.is_empty() {
+            out.push(MdInline::Text(std::mem::take(buf)));
+        }
+    };
+
+    while i < n {
+        let c = chars[i];
+        if c == '`' {
+            let mut j = i + 1;
+            while j < n && chars[j] != '`' {
+                j += 1;
+            }
+            if j < n {
+                flush_buf(&mut buf, &mut out);
+                out.push(MdInline::Code(chars[i + 1..j].iter().collect()));
+                i = j + 1;
+                continue;
+            }
+        }
+        if c == '*' && i + 2 < n && chars[i + 1] == '*' && chars[i + 2] == '*' {
+            let start = i + 3;
+            let mut j = start;
+            while j + 2 < n && !(chars[j] == '*' && chars[j + 1] == '*' && chars[j + 2] == '*') {
+                j += 1;
+            }
+            if j + 2 < n && chars[j] == '*' && chars[j + 1] == '*' && chars[j + 2] == '*' {
+                flush_buf(&mut buf, &mut out);
+                out.push(MdInline::BoldItalic(chars[start..j].iter().collect()));
+                i = j + 3;
+                continue;
+            }
+        }
+        if c == '*' && i + 1 < n && chars[i + 1] == '*' {
+            let start = i + 2;
+            let mut j = start;
+            while j + 1 < n && !(chars[j] == '*' && chars[j + 1] == '*') {
+                j += 1;
+            }
+            if j + 1 < n && chars[j] == '*' && chars[j + 1] == '*' {
+                flush_buf(&mut buf, &mut out);
+                out.push(MdInline::Bold(chars[start..j].iter().collect()));
+                i = j + 2;
+                continue;
+            }
+        }
+        if c == '*' && i + 1 < n {
+            let start = i + 1;
+            let mut j = start;
+            while j < n && chars[j] != '*' {
+                j += 1;
+            }
+            if j < n && chars[j] == '*' {
+                flush_buf(&mut buf, &mut out);
+                out.push(MdInline::Italic(chars[start..j].iter().collect()));
+                i = j + 1;
+                continue;
+            }
+        }
+        buf.push(c);
+        i += 1;
+    }
+    flush_buf(&mut buf, &mut out);
+    out
+}
+
+fn build_markdown_attributed(text: &str, theme: Theme) -> Retained<NSMutableAttributedString> {
+    let blocks = parse_markdown(text);
+    let out = NSMutableAttributedString::new();
+
+    let body_color = theme.label_color();
+    let muted_color = theme.muted_label();
+    let accent_color = theme.accent();
+    let code_fg = theme.code_fg();
+    let code_bg = theme.code_bg();
+
+    let mut first_block = true;
+    let mut prev_blank = false;
+    for block in &blocks {
+        match block {
+            MdBlock::Blank => {
+                prev_blank = true;
+                continue;
+            }
+            _ => {}
+        }
+
+        if !first_block {
+            append_plain(&out, "\n", &body_color, RESULT_BODY_FONT, None, 0.0);
+        }
+        first_block = false;
+
+        match block {
+            MdBlock::Heading(level, inlines) => {
+                let (font_size, spacing_before) = match level {
+                    1 => (RESULT_H1_FONT, 10.0),
+                    2 => (RESULT_H2_FONT, 8.0),
+                    _ => (RESULT_H3_FONT, 6.0),
+                };
+                let color = if *level == 1 { body_color.clone() } else { accent_color.clone() };
+                let style = make_paragraph_style(
+                    RESULT_LINE_HEIGHT_MUL,
+                    RESULT_PARAGRAPH_SPACING,
+                    if first_block { 0.0 } else { spacing_before },
+                    0.0,
+                    0.0,
+                    NSTextAlignment::Left,
+                );
+                append_inlines(
+                    &out,
+                    inlines,
+                    &BlockCtx {
+                        base_font_size: font_size,
+                        bold: true,
+                        color: &color,
+                        accent: &accent_color,
+                        code_fg: &code_fg,
+                        code_bg: &code_bg,
+                        paragraph: &style,
+                    },
+                );
+            }
+            MdBlock::Paragraph(inlines) => {
+                let style = make_paragraph_style(
+                    RESULT_LINE_HEIGHT_MUL,
+                    if prev_blank { RESULT_PARAGRAPH_SPACING } else { 2.0 },
+                    0.0,
+                    0.0,
+                    0.0,
+                    NSTextAlignment::Left,
+                );
+                append_inlines(
+                    &out,
+                    inlines,
+                    &BlockCtx {
+                        base_font_size: RESULT_BODY_FONT,
+                        bold: false,
+                        color: &body_color,
+                        accent: &accent_color,
+                        code_fg: &code_fg,
+                        code_bg: &code_bg,
+                        paragraph: &style,
+                    },
+                );
+            }
+            MdBlock::Bullet(inlines) => {
+                let style = make_paragraph_style(
+                    RESULT_LINE_HEIGHT_MUL,
+                    2.0,
+                    0.0,
+                    14.0,
+                    14.0,
+                    NSTextAlignment::Left,
+                );
+                append_plain(&out, "•  ", &accent_color, RESULT_BODY_FONT, Some(&style), 0.0);
+                append_inlines(
+                    &out,
+                    inlines,
+                    &BlockCtx {
+                        base_font_size: RESULT_BODY_FONT,
+                        bold: false,
+                        color: &body_color,
+                        accent: &accent_color,
+                        code_fg: &code_fg,
+                        code_bg: &code_bg,
+                        paragraph: &style,
+                    },
+                );
+            }
+            MdBlock::Ordered(n, inlines) => {
+                let style = make_paragraph_style(
+                    RESULT_LINE_HEIGHT_MUL,
+                    2.0,
+                    0.0,
+                    18.0,
+                    18.0,
+                    NSTextAlignment::Left,
+                );
+                let marker = format!("{n}.  ");
+                append_plain(&out, &marker, &accent_color, RESULT_BODY_FONT, Some(&style), 0.0);
+                append_inlines(
+                    &out,
+                    inlines,
+                    &BlockCtx {
+                        base_font_size: RESULT_BODY_FONT,
+                        bold: false,
+                        color: &body_color,
+                        accent: &accent_color,
+                        code_fg: &code_fg,
+                        code_bg: &code_bg,
+                        paragraph: &style,
+                    },
+                );
+            }
+            MdBlock::HRule => {
+                let style = make_paragraph_style(
+                    0.9,
+                    6.0,
+                    6.0,
+                    0.0,
+                    0.0,
+                    NSTextAlignment::Left,
+                );
+                let rule: String = "─".repeat(48);
+                append_plain(&out, &rule, &muted_color, RESULT_BODY_FONT * 0.7, Some(&style), 0.0);
+            }
+            MdBlock::Blank => {}
+        }
+        prev_blank = false;
+    }
+    out
+}
+
+struct BlockCtx<'a> {
+    base_font_size: f64,
+    bold: bool,
+    color: &'a NSColor,
+    accent: &'a NSColor,
+    code_fg: &'a NSColor,
+    code_bg: &'a NSColor,
+    paragraph: &'a NSMutableParagraphStyle,
+}
+
+fn append_inlines(out: &NSMutableAttributedString, inlines: &[MdInline], ctx: &BlockCtx) {
+    for inline in inlines {
+        match inline {
+            MdInline::Text(s) => {
+                let font = if ctx.bold {
+                    NSFont::boldSystemFontOfSize(ctx.base_font_size)
+                } else {
+                    NSFont::systemFontOfSize(ctx.base_font_size)
+                };
+                append_attr(
+                    out,
+                    s,
+                    Some(&font),
+                    Some(ctx.color),
+                    None,
+                    Some(ctx.paragraph),
+                );
+            }
+            MdInline::Bold(s) => {
+                let font = NSFont::boldSystemFontOfSize(ctx.base_font_size);
+                append_attr(
+                    out,
+                    s,
+                    Some(&font),
+                    Some(ctx.color),
+                    None,
+                    Some(ctx.paragraph),
+                );
+            }
+            MdInline::Italic(s) => {
+                let font = italic_system_font(ctx.base_font_size);
+                append_attr(
+                    out,
+                    s,
+                    Some(&font),
+                    Some(ctx.accent),
+                    None,
+                    Some(ctx.paragraph),
+                );
+            }
+            MdInline::BoldItalic(s) => {
+                let font = bold_italic_system_font(ctx.base_font_size);
+                append_attr(
+                    out,
+                    s,
+                    Some(&font),
+                    Some(ctx.accent),
+                    None,
+                    Some(ctx.paragraph),
+                );
+            }
+            MdInline::Code(s) => {
+                let font = NSFont::monospacedSystemFontOfSize_weight(
+                    RESULT_CODE_FONT,
+                    unsafe { objc2_app_kit::NSFontWeightMedium },
+                );
+                // Subtle padding around inline code using hair-space around the text.
+                let padded = format!("\u{2009}{s}\u{2009}");
+                append_attr(
+                    out,
+                    &padded,
+                    Some(&font),
+                    Some(ctx.code_fg),
+                    Some(ctx.code_bg),
+                    Some(ctx.paragraph),
+                );
+            }
+        }
+    }
+}
+
+fn append_plain(
+    out: &NSMutableAttributedString,
+    text: &str,
+    color: &NSColor,
+    font_size: f64,
+    paragraph: Option<&NSMutableParagraphStyle>,
+    _kern: f64,
+) {
+    let font = NSFont::systemFontOfSize(font_size);
+    append_attr(out, text, Some(&font), Some(color), None, paragraph);
+}
+
+fn append_attr(
+    out: &NSMutableAttributedString,
+    text: &str,
+    font: Option<&NSFont>,
+    fg: Option<&NSColor>,
+    bg: Option<&NSColor>,
+    paragraph: Option<&NSMutableParagraphStyle>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let ns = NSString::from_str(text);
+    let start = out.length();
+    let piece = NSAttributedString::initWithString(NSAttributedString::alloc(), &ns);
+    out.appendAttributedString(&piece);
+    let end = out.length();
+    if end <= start {
+        return;
+    }
+    let range = NSRange::new(start, end - start);
+
+    unsafe {
+        if let Some(font) = font {
+            out.addAttribute_value_range(NSFontAttributeName, font.as_ref(), range);
+        }
+        if let Some(fg) = fg {
+            out.addAttribute_value_range(NSForegroundColorAttributeName, fg.as_ref(), range);
+        }
+        if let Some(bg) = bg {
+            out.addAttribute_value_range(
+                objc2_app_kit::NSBackgroundColorAttributeName,
+                bg.as_ref(),
+                range,
+            );
+        }
+        if let Some(paragraph) = paragraph {
+            out.addAttribute_value_range(
+                NSParagraphStyleAttributeName,
+                paragraph.as_ref(),
+                range,
+            );
+        }
+    }
+}
+
+fn make_paragraph_style(
+    line_height_mul: f64,
+    paragraph_spacing: f64,
+    spacing_before: f64,
+    head_indent: f64,
+    first_head_indent: f64,
+    alignment: NSTextAlignment,
+) -> Retained<NSMutableParagraphStyle> {
+    let style = NSMutableParagraphStyle::new();
+    style.setLineHeightMultiple(line_height_mul);
+    style.setParagraphSpacing(paragraph_spacing);
+    style.setParagraphSpacingBefore(spacing_before);
+    style.setHeadIndent(head_indent);
+    style.setFirstLineHeadIndent(first_head_indent);
+    style.setAlignment(alignment);
+    style
+}
+
+fn italic_system_font(size: f64) -> Retained<NSFont> {
+    unsafe {
+        let cls = AnyClass::get(c"NSFontManager").unwrap();
+        let shared: *mut AnyObject = msg_send![cls, sharedFontManager];
+        let base = NSFont::systemFontOfSize(size);
+        let italic_traits: i64 = 1; // NSItalicFontMask
+        let result: *mut NSFont = msg_send![
+            shared,
+            convertFont: &*base,
+            toHaveTrait: italic_traits
+        ];
+        if result.is_null() {
+            base
+        } else {
+            Retained::retain(result).unwrap_or_else(|| NSFont::systemFontOfSize(size))
+        }
+    }
+}
+
+fn bold_italic_system_font(size: f64) -> Retained<NSFont> {
+    unsafe {
+        let cls = AnyClass::get(c"NSFontManager").unwrap();
+        let shared: *mut AnyObject = msg_send![cls, sharedFontManager];
+        let base = NSFont::boldSystemFontOfSize(size);
+        let italic_traits: i64 = 1; // NSItalicFontMask
+        let result: *mut NSFont = msg_send![
+            shared,
+            convertFont: &*base,
+            toHaveTrait: italic_traits
+        ];
+        if result.is_null() {
+            base
+        } else {
+            Retained::retain(result).unwrap_or_else(|| NSFont::boldSystemFontOfSize(size))
+        }
+    }
+}
+
+fn srgb(r: u8, g: u8, b: u8, a: f64) -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(
+        r as f64 / 255.0,
+        g as f64 / 255.0,
+        b as f64 / 255.0,
+        a,
+    )
+}
+
+fn ease_out_quart(t: f64) -> f64 {
+    1.0 - (1.0 - t).powi(4)
+}
+
+fn uuid_v4() -> String {
+    uuid::Uuid::new_v4().to_string()
 }

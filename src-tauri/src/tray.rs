@@ -107,25 +107,6 @@ pub fn show_main_agent_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_agent_float_window(app: AppHandle) -> Result<(), String> {
-    let native_cfg = crate::commands::load_native_agent_config();
-    if !native_cfg.floating_orb_enabled {
-        return Err("Native floating agent is disabled in settings".to_string());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        return crate::macos_native_agent::open_orb(&app);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        Err("Native floating agent is currently macOS-only".to_string())
-    }
-}
-
-#[tauri::command]
 pub fn quit_app(app: AppHandle) -> Result<(), String> {
     app.exit(0);
     Ok(())

@@ -8,6 +8,7 @@ mod agent_prompts;
 mod agent_provider;
 mod agent_tools;
 pub mod ai;
+mod app_updates;
 mod auth;
 mod background_refresh;
 mod client;
@@ -149,6 +150,9 @@ pub fn run() {
         .setup(|app| {
             app.handle().plugin(tauri_plugin_notification::init())?;
             app.handle().plugin(tauri_plugin_opener::init())?;
+            app.handle()
+                .plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
+            app_updates::init(app.handle())?;
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(if cfg!(debug_assertions) {
@@ -219,9 +223,7 @@ pub fn run() {
                 macos_native_agent::setup(app.handle());
                 macos_subtitle_overlay::setup(app.handle());
                 let native_agent_cfg = commands::load_native_agent_config();
-                if native_agent_cfg.floating_orb_enabled {
-                    let _ = macos_native_agent::open_orb(app.handle());
-                }
+                let _ = macos_native_agent::apply_config(app.handle(), &native_agent_cfg);
                 if native_agent_cfg.subtitle_overlay_enabled {
                     let _ = macos_subtitle_overlay::open_overlay(app.handle());
                 }
@@ -231,7 +233,9 @@ pub fn run() {
                 windows_subtitle_overlay::setup(app.handle());
                 let native_agent_cfg = commands::load_native_agent_config();
                 if native_agent_cfg.subtitle_overlay_enabled {
-                    let _ = windows_subtitle_overlay::open_overlay(app.handle());
+                    if let Err(err) = windows_subtitle_overlay::open_overlay(app.handle()) {
+                        log::error!("failed to restore Windows subtitle overlay: {err}");
+                    }
                 }
             }
 
@@ -398,7 +402,6 @@ pub fn run() {
             tray::set_tray_status_items,
             tray::show_main_window,
             tray::show_main_agent_window,
-            tray::open_agent_float_window,
             tray::quit_app,
             get_app_theme,
             set_app_theme,

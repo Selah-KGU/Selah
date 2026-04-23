@@ -47,6 +47,10 @@
     "notification:allow-request-permission",
     "notification:allow-notify",
     "notification:allow-show",
-    "opener:default"
+    "opener:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-download-and-install",
+    "updater:allow-install"
   ]
 }

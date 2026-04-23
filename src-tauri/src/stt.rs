@@ -184,9 +184,11 @@ fn stt_execution_backend_catalog() -> Vec<SttExecutionBackendInfo> {
             experimental: true,
             available,
             availability_note: if available {
-                Some("DirectML 対応の実験ビルドでのみ有効です。".into())
+                Some(
+                    "この Windows ビルドには DirectML ランタイムが同梱されています。初期化に失敗した場合は CPU にフォールバックします。".into(),
+                )
             } else {
-                Some("この Windows ビルドには DirectML 用の sherpa-onnx ランタイムが含まれていません。".into())
+                Some("この Windows ビルドには DirectML ランタイムが同梱されていません。".into())
             },
         });
     }
@@ -232,9 +234,9 @@ fn validate_stt_execution_backend(requested: &str) -> Result<String, String> {
             Ok(STT_BACKEND_DIRECTML.into())
         }
         STT_BACKEND_DIRECTML if cfg!(target_os = "windows") => {
-            Err("この Windows ビルドには DirectML 実験ランタイムが含まれていません".into())
+            Err("この Windows ビルドには DirectML ランタイムが含まれていません".into())
         }
-        STT_BACKEND_DIRECTML => Err("DirectML は Windows 実験ビルドでのみ利用できます".into()),
+        STT_BACKEND_DIRECTML => Err("DirectML は Windows ビルドでのみ利用できます".into()),
         _ => Err("不明な STT 実行バックエンドです".into()),
     }
 }

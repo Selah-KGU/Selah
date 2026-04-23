@@ -5,6 +5,7 @@
   import { emit } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { setAppTheme } from "./system";
+  import { appUpdateState } from "./updater";
   import Icon from "./Icon.svelte";
   import selahLogoUrl from "../assets/logo.png";
 
@@ -111,6 +112,25 @@
     if (!$agentReady && $activeTab !== 'agent') return;
     activeTab.update((t) => (t === "agent" ? "home" : "agent"));
   }
+
+  function openUpdaterPanel() {
+    void openSettingsWindow("about");
+  }
+
+  function updateBadgeText(): string {
+    if ($appUpdateState.phase === "downloading") {
+      return $appUpdateState.progressPercent != null
+        ? `更新 ${$appUpdateState.progressPercent}%`
+        : "更新取得中";
+    }
+    if ($appUpdateState.phase === "installing") {
+      return "更新適用中";
+    }
+    if ($appUpdateState.available) {
+      return `更新 ${$appUpdateState.version}`;
+    }
+    return "";
+  }
 </script>
 
 <div class="titlebar" data-tauri-drag-region>
@@ -177,6 +197,18 @@
         {#if $cacheStatus.lastUpdated}
           <span class="sync-time">{formatRelativeTime($cacheStatus.lastUpdated)}</span>
         {/if}
+      </button>
+    {/if}
+    {#if $appUpdateState.available || $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+      <button
+        class="update-badge"
+        class:available={$appUpdateState.available}
+        class:progress={$appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+        onclick={openUpdaterPanel}
+        title={$appUpdateState.status}
+      >
+        <Icon name="arrow.down.circle" size={13} />
+        <span class="update-badge-text">{updateBadgeText()}</span>
       </button>
     {/if}
     {#if $reloginInProgress}
@@ -675,9 +707,53 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .update-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-tertiary));
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    white-space: nowrap;
+  }
+
+  .update-badge.available {
+    animation: pulse-glow-blue 2.1s ease-in-out infinite;
+  }
+
+  .update-badge.progress {
+    color: #fff;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 80%, #fff 20%), var(--accent));
+    border-color: transparent;
+  }
+
+  .update-badge:hover {
+    transform: translateY(-0.5px);
+    background: color-mix(in srgb, var(--accent) 16%, var(--bg-tertiary));
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+
+  .update-badge.progress:hover {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 85%, #fff 15%), var(--accent));
+  }
+
+  .update-badge-text {
+    font-variant-numeric: tabular-nums;
+  }
+
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+  }
+
+  @keyframes pulse-glow-blue {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 20%, transparent); }
+    50% { box-shadow: 0 0 8px 2px color-mix(in srgb, var(--accent) 16%, transparent); }
   }
 
   /* Sync status popover */

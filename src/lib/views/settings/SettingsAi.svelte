@@ -147,10 +147,12 @@
   let sttTestBusy = $state(false);
   let sttTestMsg = $state("");
   let sttTestOk = $state<boolean | null>(null);
-  let floatingOrbEnabled = $state("false");
+  let voiceShortcutEnabled = $state("false");
+  let voiceShortcut = $state("fn");
   let subtitleOverlayEnabled = $state("false");
-  let nativeOrbLoaded = false;
-  let lastSavedFloatingOrbEnabled = "false";
+  let nativeAgentLoaded = false;
+  let lastSavedVoiceShortcutEnabled = "false";
+  let lastSavedVoiceShortcut = "fn";
   let lastSavedSubtitleOverlayEnabled = "false";
 
   let statusMsg = $state("");
@@ -191,6 +193,13 @@
 
   function currentSttSensitivityOption() {
     return STT_SENSITIVITY_OPTIONS.find((option) => option.id === selectedSttSensitivity) || STT_SENSITIVITY_OPTIONS[1];
+  }
+
+  function normalizeVoiceShortcut(value?: string | null) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized) return "fn";
+    if (normalized === "option+space") return "alt+space";
+    return normalized;
   }
 
   function getConfig(): AiConfig {
@@ -411,13 +420,18 @@
         selectedSttSensitivity = "normal";
       }
       const nativeAgent = isDemoActive()
-        ? readDemoState<{ floating_orb_enabled?: boolean; subtitle_overlay_enabled?: boolean }>(DEMO_NATIVE_AGENT_KEY, { floating_orb_enabled: false, subtitle_overlay_enabled: false })
-        : await invoke<{ floating_orb_enabled?: boolean; subtitle_overlay_enabled?: boolean }>("get_native_agent_config");
-      floatingOrbEnabled = nativeAgent?.floating_orb_enabled ? "true" : "false";
-      lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+        ? readDemoState<{ voice_shortcut_enabled?: boolean; voice_shortcut?: string; subtitle_overlay_enabled?: boolean }>(
+            DEMO_NATIVE_AGENT_KEY,
+            { voice_shortcut_enabled: false, voice_shortcut: "fn", subtitle_overlay_enabled: false }
+          )
+        : await invoke<{ voice_shortcut_enabled?: boolean; voice_shortcut?: string; subtitle_overlay_enabled?: boolean }>("get_native_agent_config");
+      voiceShortcutEnabled = nativeAgent?.voice_shortcut_enabled ? "true" : "false";
+      voiceShortcut = normalizeVoiceShortcut(nativeAgent?.voice_shortcut);
+      lastSavedVoiceShortcutEnabled = voiceShortcutEnabled;
+      lastSavedVoiceShortcut = voiceShortcut;
       subtitleOverlayEnabled = nativeAgent?.subtitle_overlay_enabled ? "true" : "false";
       lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
-      nativeOrbLoaded = true;
+      nativeAgentLoaded = true;
       await loadModelList();
       await loadSttModelList();
     } catch (e) {
@@ -438,7 +452,8 @@
           sensitivity: selectedSttSensitivity,
         });
         writeDemoState(DEMO_NATIVE_AGENT_KEY, {
-          floating_orb_enabled: floatingOrbEnabled === "true",
+          voice_shortcut_enabled: voiceShortcutEnabled === "true",
+          voice_shortcut: voiceShortcut,
           subtitle_overlay_enabled: subtitleOverlayEnabled === "true",
         });
       } else {
@@ -453,10 +468,11 @@
           },
         });
         await invoke("save_native_agent_config", {
-          config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
+          config: { voice_shortcut_enabled: voiceShortcutEnabled === "true", voice_shortcut: voiceShortcut, subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
         });
       }
-      lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+      lastSavedVoiceShortcutEnabled = voiceShortcutEnabled;
+      lastSavedVoiceShortcut = voiceShortcut;
       lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
       updateAiReadiness().catch(() => {});
     } catch (e) {
@@ -567,19 +583,21 @@
   // React to provider/value changes to apply defaults
   $effect(() => { onProviderSwitch(); void aiProvider; });
   $effect(() => {
-    if (!nativeOrbLoaded) return;
-    if (floatingOrbEnabled === lastSavedFloatingOrbEnabled && subtitleOverlayEnabled === lastSavedSubtitleOverlayEnabled) return;
-    lastSavedFloatingOrbEnabled = floatingOrbEnabled;
+    if (!nativeAgentLoaded) return;
+    if (voiceShortcutEnabled === lastSavedVoiceShortcutEnabled && voiceShortcut === lastSavedVoiceShortcut && subtitleOverlayEnabled === lastSavedSubtitleOverlayEnabled) return;
+    lastSavedVoiceShortcutEnabled = voiceShortcutEnabled;
+    lastSavedVoiceShortcut = voiceShortcut;
     lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
     if (isDemoActive()) {
       writeDemoState(DEMO_NATIVE_AGENT_KEY, {
-        floating_orb_enabled: floatingOrbEnabled === "true",
+        voice_shortcut_enabled: voiceShortcutEnabled === "true",
+        voice_shortcut: voiceShortcut,
         subtitle_overlay_enabled: subtitleOverlayEnabled === "true",
       });
       return;
     }
     invoke("save_native_agent_config", {
-      config: { floating_orb_enabled: floatingOrbEnabled === "true", subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
+      config: { voice_shortcut_enabled: voiceShortcutEnabled === "true", voice_shortcut: voiceShortcut, subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
     }).catch((e) => {
       console.error("Failed to save native agent config:", e);
     });
@@ -785,16 +803,27 @@
 
 {/if}
 
-<div class="card-label">Agent フローティング</div>
+<div class="card-label">Agent 音声ショートカット</div>
 <div class="card">
   <div class="row">
-    <span class="row-label">フローティング入口</span>
+    <span class="row-label">ショートカット</span>
     <div class="row-input">
-      <select bind:value={floatingOrbEnabled}>
+      <select bind:value={voiceShortcutEnabled}>
         <option value="false">無効</option>
         <option value="true">有効</option>
       </select>
-      <div class="hint">macOS ネイティブの Agent フローティング入口を使います。無効にすると、表示中の入口もすぐ閉じます。</div>
+      <div class="hint">押している間だけ画面上部中央に音声 AI カプセルを表示し、キーを離すとそのまま AI へ送信します。</div>
+    </div>
+  </div>
+  <div class="row">
+    <span class="row-label">トリガーキー</span>
+    <div class="row-input">
+      <select bind:value={voiceShortcut} disabled={voiceShortcutEnabled !== "true"}>
+        <option value="fn">Fn</option>
+        <option value="alt+space">Option + Space</option>
+      </select>
+      <div class="hint">既定は Fn です。Fn は片手で押しやすく、押して話して離して送る操作にいちばん自然です。</div>
+      <div class="hint">Option + Space も選べますが、Spotlight など他の入力系ショートカットと競合しないよう注意してください。</div>
     </div>
   </div>
   <div class="row">

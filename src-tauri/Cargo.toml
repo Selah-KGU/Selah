@@ -49,6 +49,8 @@ notify-rust = "4"
 time = { version = "0.3.41", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-opener = "2.5.3"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
 rfd = "0.15"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
@@ -62,12 +64,14 @@ block2 = "0.6.2"
 objc2-app-kit = { version = "0.3.2", features = [
   "NSApplication",
   "NSAppearance",
+  "NSAttributedString",
   "NSButton",
   "NSColor",
   "NSEvent",
   "NSGraphics",
   "NSImage",
   "NSPanel",
+  "NSParagraphStyle",
   "NSResponder",
   "NSScreen",
   "NSTextField",
@@ -75,8 +79,10 @@ objc2-app-kit = { version = "0.3.2", features = [
   "NSVisualEffectView",
   "NSWindow"
 ] }
-objc2-quartz-core = { version = "0.3.2", features = ["CALayer"] }
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSHTTPCookie", "NSArray", "NSString"] }
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAShapeLayer", "CAGradientLayer"] }
+objc2-core-graphics = { version = "0.3.2", features = ["CGPath", "CGBase"] }
+objc2-core-foundation = { version = "0.3.2", features = ["CFCGTypes"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSHTTPCookie", "NSArray", "NSString", "NSAttributedString", "NSDictionary", "NSValue"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebsiteDataStore", "WKHTTPCookieStore", "block2"] }
 llama-cpp-2 = { version = "0.1", features = ["metal"] }
 

@@ -4,8 +4,11 @@
   import { devModeActive } from "../../stores";
   import { logout, isDemoActive } from "../../api";
   import { openExternalUrl } from "../../system";
+  import { appUpdateState, checkForAppUpdate, downloadAndInstallAppUpdate } from "../../updater";
   import { get } from "svelte/store";
   import logoUrl from "../../../assets/logo.png";
+
+  const RELEASES_URL = "https://github.com/mirai-mamori/Selah/releases/latest";
 
   let version = $state("...");
   let deleteConfirmOpen = $state(false);
@@ -52,6 +55,28 @@
     }
   }
 
+  function formatBytes(bytes: number | null): string {
+    if (bytes == null || bytes <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+      value /= 1024;
+      index++;
+    }
+    return `${value >= 100 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+  }
+
+  function progressSummary(): string {
+    if ($appUpdateState.phase === "installing") {
+      return "ダウンロードは完了しました。更新を適用しています。";
+    }
+    if ($appUpdateState.totalBytes && $appUpdateState.totalBytes > 0) {
+      return `${formatBytes($appUpdateState.downloadedBytes)} / ${formatBytes($appUpdateState.totalBytes)}`;
+    }
+    return `${formatBytes($appUpdateState.downloadedBytes)} を受信しました`;
+  }
+
   function startDelete() {
     deleteErr = "";
     deleteConfirmOpen = true;
@@ -71,7 +96,9 @@
     }
   }
 
-  onMount(() => { void loadVersion(); });
+  onMount(() => {
+    void loadVersion();
+  });
 </script>
 
 <div class="card">
@@ -117,6 +144,79 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <span class="link" onclick={() => openUrl("https://selah.jp/privacy.html")}>プライバシーポリシー</span>
   </div>
+</div>
+
+<div class="card-label" style="margin-top:10px;">アプリ更新</div>
+<div class="card">
+  <div class="row">
+    <span class="row-label">現在</span>
+    <div class="row-input">
+      <div class="update-inline">
+        <div class="update-current">{version}</div>
+        <button
+          class="btn-test"
+          onclick={() => void checkForAppUpdate()}
+          disabled={$appUpdateState.checking || $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+        >
+          {$appUpdateState.checking ? "確認中..." : "更新を確認"}
+        </button>
+      </div>
+      <div class="hint update-status">{$appUpdateState.status}</div>
+    </div>
+  </div>
+
+  {#if $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+    <div class="row">
+      <span class="row-label">進行状況</span>
+      <div class="row-input">
+        <div class="update-progress-meta">
+          <span>{$appUpdateState.progressPercent != null ? `${$appUpdateState.progressPercent}%` : "取得中"}</span>
+          <span>{progressSummary()}</span>
+        </div>
+        <div class="update-progress-track">
+          <div
+            class="update-progress-fill"
+            class:indeterminate={$appUpdateState.progressPercent == null && $appUpdateState.phase === "downloading"}
+            style={`width: ${$appUpdateState.progressPercent != null ? $appUpdateState.progressPercent : 34}%`}
+          ></div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if $appUpdateState.available}
+    <div class="row">
+      <span class="row-label">新しい版</span>
+      <div class="row-input">
+        <div class="update-version">{$appUpdateState.version}</div>
+        {#if $appUpdateState.notes}
+          <pre class="update-notes">{$appUpdateState.notes}</pre>
+        {/if}
+        <div class="update-actions">
+          <button
+            class="btn-test"
+            onclick={() => void downloadAndInstallAppUpdate()}
+            disabled={$appUpdateState.checking || $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+          >ダウンロードして更新</button>
+          <button
+            class="btn-test"
+            onclick={() => openUrl(RELEASES_URL)}
+            disabled={$appUpdateState.checking || $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+          >Releases を開く</button>
+        </div>
+      </div>
+    </div>
+  {:else}
+    <div class="row">
+      <span class="row-label">手動更新</span>
+      <div class="row-input">
+        <div class="update-inline">
+          <div class="hint update-manual-hint">GitHub Releases から最新版を取得できます。</div>
+          <button class="btn-test" onclick={() => openUrl(RELEASES_URL)}>Releases を開く</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <div class="card" style="margin-top:10px;padding:0;">
@@ -239,6 +339,73 @@
     cursor: pointer;
     color: var(--accent);
   }
+  :global(.settings-main .update-inline) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  :global(.settings-main .update-current) {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.2;
+  }
+  :global(.settings-main .update-status) {
+    margin-top: 4px;
+    margin-bottom: 0;
+    line-height: 1.45;
+  }
+  :global(.settings-main .update-progress-meta) {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  :global(.settings-main .update-progress-track) {
+    margin-top: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+    overflow: hidden;
+  }
+  :global(.settings-main .update-progress-fill) {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 82%, #fff 18%), var(--accent));
+    transition: width 0.18s ease;
+  }
+  :global(.settings-main .update-progress-fill.indeterminate) {
+    animation: update-indeterminate 1.1s ease-in-out infinite;
+  }
+  :global(.settings-main .update-version) {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  :global(.settings-main .update-notes) {
+    margin: 8px 0 0;
+    padding: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+  }
+  :global(.settings-main .update-actions) {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  :global(.settings-main .update-manual-hint) {
+    margin: 0;
+  }
   :global(.settings-main .delete-warn) {
     padding: 0 12px 8px;
     font-size: 10px;
@@ -264,5 +431,9 @@
     0%, 100% { transform: translateX(0); }
     25% { transform: translateX(3px); }
     75% { transform: translateX(-3px); }
+  }
+  @keyframes update-indeterminate {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(320%); }
   }
 </style>
