@@ -612,6 +612,9 @@ impl MailClient {
                 if !dest.exists() {
                     break;
                 }
+                if i >= 999 {
+                    return Err("ファイル名の競合を解決できません".into());
+                }
                 i += 1;
             }
         }

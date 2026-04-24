@@ -1,10 +1,22 @@
 use crate::client;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::load_download_config;
 
 pub const OTHER_CATEGORY: &str = "その他";
+
+/// Monotonic per-process counter appended to timestamps so two records created
+/// within the same millisecond get distinct ids.
+static DOWNLOAD_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Maximum depth for `scan_download_dir` recursion. The expected layout is at
+/// most `base/<course>/<free_note_or_similar>/<file>` (3 levels); allow a bit
+/// more for user-organized subfolders while still bounding the traversal.
+const SCAN_MAX_DEPTH: usize = 6;
 
 /// Sanitize a string to be safe as a directory/file name component.
 fn sanitize_path_component(name: &str) -> String {
@@ -131,23 +143,19 @@ pub fn record_download(
         None if load_download_config().classify_by_course => OTHER_CATEGORY.to_string(),
         None => String::new(),
     };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let counter = DOWNLOAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     let record = DownloadRecord {
-        id: format!(
-            "{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ),
+        id: format!("{}_{}", now_ms, counter),
         filename: filename.to_string(),
         path: path.to_string(),
         course_name: course_label,
         source: source.to_string(),
         size_bytes,
-        downloaded_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64,
+        downloaded_at: now_ms,
         file_exists: true,
     };
     records.push(record);
@@ -182,34 +190,7 @@ pub fn scan_download_dir() -> Vec<DownloadRecord> {
         records.iter().map(|r| r.path.clone()).collect();
 
     let mut discovered: Vec<DownloadRecord> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&base) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(rec) = try_discover_file(&path, "", &known_paths) {
-                    discovered.push(rec);
-                }
-            } else if path.is_dir() {
-                let folder_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                    for sub in sub_entries.flatten() {
-                        let sub_path = sub.path();
-                        if sub_path.is_file() {
-                            if let Some(rec) =
-                                try_discover_file(&sub_path, &folder_name, &known_paths)
-                            {
-                                discovered.push(rec);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    scan_dir_recursive(&base, "", &known_paths, &mut discovered, 0);
 
     if !discovered.is_empty() {
         records.extend(discovered);
@@ -225,6 +206,40 @@ pub fn scan_download_dir() -> Vec<DownloadRecord> {
     }
     records.reverse();
     records
+}
+
+fn scan_dir_recursive(
+    dir: &std::path::Path,
+    course_folder: &str,
+    known: &std::collections::HashSet<String>,
+    discovered: &mut Vec<DownloadRecord>,
+    depth: usize,
+) {
+    if depth > SCAN_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(rec) = try_discover_file(&path, course_folder, known) {
+                discovered.push(rec);
+            }
+        } else if path.is_dir() {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            // Immediate parent folder becomes the course label. This matches
+            // how live.rs records free notes (course_name="自由ノート") even
+            // though they live under "その他/自由ノート/".
+            scan_dir_recursive(&path, name, known, discovered, depth + 1);
+        }
+    }
 }
 
 fn try_discover_file(
@@ -248,8 +263,12 @@ fn try_discover_file(
         .ok()?
         .as_millis() as i64;
 
+    let mut hasher = DefaultHasher::new();
+    path_str.hash(&mut hasher);
+    let path_hash = hasher.finish();
+
     Some(DownloadRecord {
-        id: format!("scan_{}", modified),
+        id: format!("scan_{:x}", path_hash),
         filename: filename.to_string(),
         path: path_str,
         course_name: course_folder.to_string(),
@@ -267,23 +286,31 @@ pub fn check_file_downloaded(
 ) -> Option<DownloadRecord> {
     let records = load_download_history();
     let target = filename.to_lowercase();
+    let query_course = course_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let mut found: Option<DownloadRecord> = None;
     for r in records.iter().rev() {
         let rname = r.filename.to_lowercase();
-        if rname == target {
-            if let Some(ref cn) = course_name {
-                if !cn.is_empty() && !r.course_name.is_empty() && r.course_name != *cn {
-                    continue;
-                }
+        if rname != target {
+            continue;
+        }
+        // When caller supplies a course name, require an exact match. Records
+        // with an empty course_name (legacy, or saved with classify disabled)
+        // are treated as non-matches to avoid false positives across courses.
+        if let Some(cn) = query_course {
+            if r.course_name != cn {
+                continue;
             }
-            let mut rec = r.clone();
-            rec.file_exists = std::path::Path::new(&rec.path).exists();
-            if rec.file_exists {
-                return Some(rec);
-            }
-            if found.is_none() {
-                found = Some(rec);
-            }
+        }
+        let mut rec = r.clone();
+        rec.file_exists = std::path::Path::new(&rec.path).exists();
+        if rec.file_exists {
+            return Some(rec);
+        }
+        if found.is_none() {
+            found = Some(rec);
         }
     }
     found
