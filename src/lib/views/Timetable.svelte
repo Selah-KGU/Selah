@@ -631,9 +631,78 @@
     });
   }
 
+  function roundedRectPath(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radius: number,
+  ) {
+    const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function waitForNextFrame(): Promise<void> {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  async function createOffscreenCaptureRoot(source: HTMLElement, width: number): Promise<{
+    node: HTMLElement;
+    cleanup: () => void;
+  }> {
+    const host = document.createElement("div");
+    host.setAttribute("aria-hidden", "true");
+    host.style.position = "fixed";
+    host.style.left = "-100000px";
+    host.style.top = "0";
+    host.style.pointerEvents = "none";
+    host.style.zIndex = "-1";
+    host.style.overflow = "hidden";
+
+    const style = document.createElement("style");
+    style.textContent = `
+      .capture-static, .capture-static * {
+        animation: none !important;
+        transition: none !important;
+      }
+    `;
+
+    const clone = source.cloneNode(true) as HTMLElement;
+    clone.classList.add("capture-static");
+    clone.style.width = `${width}px`;
+    clone.style.minWidth = `${width}px`;
+    clone.style.maxWidth = `${width}px`;
+
+    host.append(style, clone);
+    document.body.appendChild(host);
+
+    if (document.fonts?.ready) {
+      await document.fonts.ready.catch(() => {});
+    }
+    await waitForNextFrame();
+    await waitForNextFrame();
+
+    return {
+      node: clone,
+      cleanup: () => host.remove(),
+    };
+  }
+
   async function captureImage(): Promise<Blob> {
     const FIXED_WIDTH = 1760; // 880px * 2 (retina)
     const HEADER_H = 120;    // header area at the top
+    const RENDER_WIDTH = 880;
     const bg = getCaptureBackground();
     const isDark = bg === "#1c1c1e";
     const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', sans-serif";
@@ -643,27 +712,26 @@
     const studentName = auth.displayName || "";
     const studentFaculty = auth.faculty ? `${auth.faculty}${auth.department ? " / " + auth.department : ""}` : "";
 
-    // 1. Force fixed width on the DOM element for consistent capture
-    const RENDER_WIDTH = 880;
-    const origStyle = captureRef.getAttribute("style") || "";
-    captureRef.style.width = `${RENDER_WIDTH}px`;
-    captureRef.style.minWidth = `${RENDER_WIDTH}px`;
-    captureRef.style.maxWidth = `${RENDER_WIDTH}px`;
+    // 1. Render from an offscreen clone so the visible timetable never flashes
+    const { node: captureNode, cleanup } = await createOffscreenCaptureRoot(captureRef, RENDER_WIDTH);
+    const captureWidth = Math.max(RENDER_WIDTH, Math.round(captureNode.getBoundingClientRect().width) || RENDER_WIDTH);
+    const captureHeight = Math.max(
+      Math.round(captureNode.scrollHeight),
+      Math.round(captureNode.getBoundingClientRect().height),
+      1,
+    );
 
     let rawDataUrl: string;
     try {
-      rawDataUrl = await toPng(captureRef, {
+      rawDataUrl = await toPng(captureNode, {
+        width: captureWidth,
+        height: captureHeight,
         pixelRatio: 2,
         backgroundColor: bg,
         cacheBust: true,
       });
     } finally {
-      // Restore original style immediately
-      if (origStyle) {
-        captureRef.setAttribute("style", origStyle);
-      } else {
-        captureRef.removeAttribute("style");
-      }
+      cleanup();
     }
 
     // 2. Load raw capture + logo into Image elements
@@ -728,8 +796,13 @@
     ctx.lineTo(FIXED_WIDTH - padX, HEADER_H - 1);
     ctx.stroke();
 
-    // 5. Draw the scaled timetable below the header
+    // 5. Draw the timetable with a clean rounded clip to remove capture edge artifacts
+    const timetableRadius = 28;
+    ctx.save();
+    roundedRectPath(ctx, 0, HEADER_H, FIXED_WIDTH, scaledH, timetableRadius);
+    ctx.clip();
     ctx.drawImage(rawImg, 0, HEADER_H, FIXED_WIDTH, scaledH);
+    ctx.restore();
 
     // 6. Export as PNG blob
     return new Promise<Blob>((resolve, reject) => {

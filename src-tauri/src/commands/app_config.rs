@@ -2,6 +2,17 @@ use crate::client;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "macos")]
+use objc2::runtime::AnyObject;
+#[cfg(target_os = "macos")]
+use objc2::{AnyThread, MainThreadMarker};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSSharingServicePicker, NSView};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSArray, NSRectEdge, NSURL};
+#[cfg(target_os = "macos")]
+use tauri::Manager;
+
 fn load_json_config<T: Default + DeserializeOwned>(path: &std::path::Path) -> T {
     if path.exists() {
         if let Ok(data) = std::fs::read_to_string(path) {
@@ -392,12 +403,12 @@ pb's writeObjects:(current application's NSArray's arrayWithObject:theImage)"#,
 }
 
 /// Share PNG image data via the native OS share sheet.
-/// On macOS opens in Preview (native share button in toolbar).
+/// On macOS opens the native share picker.
 /// On Windows opens with default image viewer.
 /// Temp files are cleaned up after 60 seconds.
 #[tauri::command]
 pub async fn share_image_native(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     data: Vec<u8>,
     file_name: String,
 ) -> Result<(), String> {
@@ -411,21 +422,7 @@ pub async fn share_image_native(
 
     #[cfg(target_os = "macos")]
     {
-        use std::process::Command;
-        // Open in Preview.app — it has a native share button in the toolbar
-        let result = Command::new("open")
-            .arg("-a")
-            .arg("Preview")
-            .arg(&tmp_path)
-            .spawn();
-
-        if result.is_err() {
-            // Fallback: reveal in Finder
-            let _ = Command::new("open")
-                .arg("-R")
-                .arg(&tmp_path)
-                .spawn();
-        }
+        open_macos_share_picker(&app, &tmp_path)?;
     }
 
     #[cfg(target_os = "windows")]
@@ -463,3 +460,48 @@ pub async fn share_image_native(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn open_macos_share_picker(app: &tauri::AppHandle, path: &std::path::Path) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "共有元のウィンドウが見つかりません".to_string())?;
+    let window_for_main = window.clone();
+    let path_buf = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    window.run_on_main_thread(move || {
+        let result: Result<(), String> = (|| {
+            let mtm = MainThreadMarker::new()
+                .ok_or_else(|| "共有ピッカーを主スレッドで初期化できませんでした".to_string())?;
+            let ns_view_ptr = window_for_main
+                .ns_view()
+                .map_err(|e| format!("共有ビューの取得に失敗: {}", e))?;
+            if ns_view_ptr.is_null() {
+                return Err("共有ビューが無効です".into());
+            }
+
+            let view = unsafe { &*(ns_view_ptr as *mut NSView) };
+            let file_url = NSURL::from_file_path(&path_buf)
+                .ok_or_else(|| "共有用ファイル URL の作成に失敗しました".to_string())?;
+            let item = unsafe { &*(&*file_url as *const NSURL as *const AnyObject) };
+            let items = NSArray::from_slice(&[item]);
+            let picker = unsafe {
+                let _ = mtm;
+                NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &items)
+            };
+
+            picker.showRelativeToRect_ofView_preferredEdge(
+                view.bounds(),
+                view,
+                NSRectEdge::MinY,
+            );
+            Ok(())
+        })();
+        let _ = tx.send(result);
+    })
+    .map_err(|e| format!("共有ピッカーの起動に失敗: {}", e))?;
+
+    rx.recv()
+        .map_err(|_| "共有ピッカーの結果受信に失敗しました".to_string())??;
+    Ok(())
+}

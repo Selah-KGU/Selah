@@ -73,6 +73,7 @@ objc2-app-kit = { version = "0.3.2", features = [
   "NSPanel",
   "NSParagraphStyle",
   "NSResponder",
+  "NSSharingService",
   "NSScreen",
   "NSTextField",
   "NSView",
@@ -82,7 +83,7 @@ objc2-app-kit = { version = "0.3.2", features = [
 objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAShapeLayer", "CAGradientLayer"] }
 objc2-core-graphics = { version = "0.3.2", features = ["CGPath", "CGBase"] }
 objc2-core-foundation = { version = "0.3.2", features = ["CFCGTypes"] }
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSHTTPCookie", "NSArray", "NSString", "NSAttributedString", "NSDictionary", "NSValue"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSHTTPCookie", "NSArray", "NSString", "NSAttributedString", "NSDictionary", "NSValue", "NSURL"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebsiteDataStore", "WKHTTPCookieStore", "block2"] }
 llama-cpp-2 = { version = "0.1", features = ["metal"] }
 
