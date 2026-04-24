@@ -107,6 +107,8 @@ const SEEN_LUNA_OBJECTS_KEY: &str = "seen_notifs_luna_objects";
 const SEEN_INIT_PREFIX: &str = "seen_notifs_init_";
 const SEEN_BOOTSTRAP_STARTED_AT_KEY: &str = "seen_notifs_bootstrap_started_at";
 const SEEN_BOOTSTRAP_COMPLETE_KEY: &str = "seen_notifs_bootstrap_complete";
+const SEEN_FORMAT_VERSION_KEY: &str = "seen_notifs_format_version";
+pub const CURRENT_SEEN_NOTIF_FORMAT_VERSION: u32 = 1;
 const MAX_SEEN_IDS: usize = 2000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -199,4 +201,29 @@ pub fn mark_seen_notif_bootstrap_complete(db: &Database) {
     if let Ok(json) = serde_json::to_string(&true) {
         let _ = db.save_data_cache(SEEN_BOOTSTRAP_COMPLETE_KEY, &json);
     }
+}
+
+pub fn get_seen_notif_format_version(db: &Database) -> u32 {
+    match db.get_data_cache(SEEN_FORMAT_VERSION_KEY) {
+        Ok(Some((json, _))) => serde_json::from_str::<u32>(&json).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+pub fn mark_seen_notif_format_version(db: &Database, version: u32) {
+    if let Ok(json) = serde_json::to_string(&version) {
+        let _ = db.save_data_cache(SEEN_FORMAT_VERSION_KEY, &json);
+    }
+}
+
+/// Reset all seen-notification state across sources. Used for format migrations;
+/// after reset, each source goes back through the silent seed path on next sync.
+pub fn reset_all_seen_notif_state(db: &Database) {
+    for source in &["kgc", "luna", "kwic", "mail"] {
+        let _ = db.save_data_cache(&format!("{}{}", SEEN_CACHE_PREFIX, source), "[]");
+        let _ = db.save_data_cache(&format!("{}{}", SEEN_INIT_PREFIX, source), "false");
+    }
+    let _ = db.save_data_cache(SEEN_LUNA_OBJECTS_KEY, "[]");
+    let _ = db.save_data_cache(SEEN_BOOTSTRAP_STARTED_AT_KEY, "null");
+    let _ = db.save_data_cache(SEEN_BOOTSTRAP_COMPLETE_KEY, "false");
 }

@@ -126,6 +126,9 @@ fn save_data_cache(
     key: String,
     json: String,
 ) -> Result<(), String> {
+    if key.starts_with("seen_notifs_") {
+        return Err("reserved cache key".into());
+    }
     db.save_data_cache(&key, &json)
 }
 

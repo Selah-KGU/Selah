@@ -232,6 +232,7 @@ pub fn start_tray_cycle(app: &AppHandle, state: Arc<TrayStatusState>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(8));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await; // first tick fires immediately, skip it
         let mut last_text = String::new();
         loop {

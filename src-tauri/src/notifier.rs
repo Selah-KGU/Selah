@@ -143,6 +143,7 @@ pub fn start_notification_loop(app: &AppHandle) {
         }
 
         let mut interval = tokio::time::interval(POLL_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
         loop {
             interval.tick().await;
@@ -221,9 +222,15 @@ pub async fn sync_notifications_now(app: &AppHandle) -> Result<Vec<String>, Stri
         return Ok(Vec::new());
     }
 
-    let result = sync_notifications_inner(app).await;
-    state.running.store(false, Ordering::SeqCst);
-    result
+    struct RunningGuard<'a>(&'a AtomicBool);
+    impl Drop for RunningGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = RunningGuard(&state.running);
+
+    sync_notifications_inner(app).await
 }
 
 async fn sync_notifications_inner(app: &AppHandle) -> Result<Vec<String>, String> {
@@ -235,6 +242,21 @@ async fn sync_notifications_inner(app: &AppHandle) -> Result<Vec<String>, String
         is_mail_authenticated(app)
     );
     let db = app.state::<Database>();
+
+    let stored_version = crate::read_state::get_seen_notif_format_version(&db);
+    if stored_version != crate::read_state::CURRENT_SEEN_NOTIF_FORMAT_VERSION {
+        log::info!(
+            "notification sync: seen-state format upgraded ({} -> {}), resetting baseline",
+            stored_version,
+            crate::read_state::CURRENT_SEEN_NOTIF_FORMAT_VERSION
+        );
+        crate::read_state::reset_all_seen_notif_state(&db);
+        crate::read_state::mark_seen_notif_format_version(
+            &db,
+            crate::read_state::CURRENT_SEEN_NOTIF_FORMAT_VERSION,
+        );
+    }
+
     let authenticated_sources: Vec<&str> = [
         ("kgc", kgc_authenticated),
         ("luna", luna_authenticated),
@@ -498,6 +520,7 @@ fn sync_luna_notifications(
         let base_key = luna_base_key(item);
         let revision_key = luna_revision_key(item);
         if seen_set.contains(&revision_key) {
+            luna_upsert_revision(&mut object_entries, base_key, revision_key);
             continue;
         }
         let previous_revision = luna_previous_revision(&object_entries, &base_key);
@@ -997,7 +1020,12 @@ fn extend_seen_ids(
 }
 
 fn luna_revision_key(item: &crate::luna_parser::LunaNotification) -> String {
-    format!("{}|{}|{}", item.date, item.course_info, item.content)
+    format!(
+        "{}|{}|{}",
+        normalize_luna_key_part(&item.date),
+        normalize_luna_key_part(&item.course_info),
+        normalize_luna_key_part(&item.content)
+    )
 }
 
 fn luna_base_key(item: &crate::luna_parser::LunaNotification) -> String {

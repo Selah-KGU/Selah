@@ -96,6 +96,7 @@ pub fn start_background_refresh_loop(app: &AppHandle) {
         }
 
         let mut interval = tokio::time::interval(REFRESH_TICK);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
         loop {
             interval.tick().await;
@@ -166,9 +167,15 @@ async fn refresh_backend_data_with_request(
         return Ok(Vec::new());
     }
 
-    let result = refresh_backend_data_inner(app, request).await;
-    state.running.store(false, Ordering::SeqCst);
-    result
+    struct RunningGuard<'a>(&'a AtomicBool);
+    impl Drop for RunningGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = RunningGuard(&state.running);
+
+    refresh_backend_data_inner(app, request).await
 }
 
 pub fn emit_cache_updates(app: &AppHandle, keys: Vec<String>) {
@@ -543,10 +550,15 @@ async fn maybe_renew_sessions(app: &AppHandle) {
         return;
     }
 
-    let result = maybe_renew_sessions_inner(app).await;
-    state.session_sync_running.store(false, Ordering::SeqCst);
+    struct RunningGuard<'a>(&'a AtomicBool);
+    impl Drop for RunningGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = RunningGuard(&state.session_sync_running);
 
-    if let Err(e) = result {
+    if let Err(e) = maybe_renew_sessions_inner(app).await {
         log::warn!("background session renew failed: {}", e);
     }
 }
