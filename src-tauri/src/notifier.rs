@@ -402,10 +402,15 @@ fn sync_kgc_notifications(
         return;
     }
 
+    let mut batch_seen: HashSet<String> = HashSet::new();
     let new_entries: Vec<_> = data
         .entries
         .iter()
-        .filter(|item| !item.id.is_empty() && !seen_set.contains(&item.id))
+        .filter(|item| {
+            !item.id.is_empty()
+                && !seen_set.contains(&item.id)
+                && batch_seen.insert(item.id.clone())
+        })
         .collect();
 
     if suppress_push {
@@ -492,6 +497,9 @@ fn sync_luna_notifications(
     for item in &items {
         let base_key = luna_base_key(item);
         let revision_key = luna_revision_key(item);
+        if seen_set.contains(&revision_key) {
+            continue;
+        }
         let previous_revision = luna_previous_revision(&object_entries, &base_key);
         if previous_revision.as_deref() == Some(revision_key.as_str()) {
             continue;
@@ -580,9 +588,10 @@ fn sync_kwic_notifications(
 
     for section in &home.sections {
         for item in &section.items {
-            if item.id.is_empty() || seen_set.contains(&item.id) {
+            if item.id.is_empty() || !seen_set.insert(item.id.clone()) {
                 continue;
             }
+            seen_ids.push(item.id.clone());
             if suppress_push {
                 run.suppressed += 1;
                 record_event(
@@ -641,9 +650,13 @@ fn sync_mail_notifications(
     }
 
     for item in &items {
-        if item.id.is_empty() || seen_set.contains(&item.id) || item.is_read.unwrap_or(false) {
+        if item.id.is_empty() || item.is_read.unwrap_or(false) {
             continue;
         }
+        if !seen_set.insert(item.id.clone()) {
+            continue;
+        }
+        seen_ids.push(item.id.clone());
         if suppress_push {
             run.suppressed += 1;
             record_event(

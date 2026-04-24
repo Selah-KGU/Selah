@@ -218,6 +218,7 @@ pub fn run() {
             tray::start_tray_cycle(app.handle(), tray_status);
             background_refresh::start_background_refresh_loop(app.handle());
             notifier::start_notification_loop(app.handle());
+            commands::migrate_uncategorized_to_other();
             #[cfg(target_os = "macos")]
             {
                 macos_native_agent::setup(app.handle());

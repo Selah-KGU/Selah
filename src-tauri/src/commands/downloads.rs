@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::load_download_config;
 
+pub const OTHER_CATEGORY: &str = "その他";
+
 /// Sanitize a string to be safe as a directory/file name component.
 fn sanitize_path_component(name: &str) -> String {
     let s: String = name
@@ -66,13 +68,13 @@ pub fn resolve_download_dir(course_name: Option<&str>) -> std::path::PathBuf {
     };
 
     if config.classify_by_course {
-        if let Some(course) = course_name {
-            let simplified = simplify_course_name(course);
-            let safe_course = sanitize_path_component(&simplified);
-            let dir = base.join(&safe_course);
-            let _ = std::fs::create_dir_all(&dir);
-            return dir;
-        }
+        let folder = match course_name.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(course) => sanitize_path_component(&simplify_course_name(course)),
+            None => OTHER_CATEGORY.to_string(),
+        };
+        let dir = base.join(&folder);
+        let _ = std::fs::create_dir_all(&dir);
+        return dir;
     }
 
     base
@@ -124,6 +126,11 @@ pub fn record_download(
     size_bytes: u64,
 ) {
     let mut records = load_download_history();
+    let course_label = match course_name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(c) => c.to_string(),
+        None if load_download_config().classify_by_course => OTHER_CATEGORY.to_string(),
+        None => String::new(),
+    };
     let record = DownloadRecord {
         id: format!(
             "{}",
@@ -134,7 +141,7 @@ pub fn record_download(
         ),
         filename: filename.to_string(),
         path: path.to_string(),
-        course_name: course_name.unwrap_or("").to_string(),
+        course_name: course_label,
         source: source.to_string(),
         size_bytes,
         downloaded_at: std::time::SystemTime::now()
@@ -332,4 +339,105 @@ pub fn remove_download_record(id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn clear_download_history() -> Result<(), String> {
     save_download_history(&[])
+}
+
+/// Move files sitting at the root of the download base dir into `その他/`.
+/// Only runs when `classify_by_course` is enabled. Idempotent: a second run is a no-op.
+pub fn migrate_uncategorized_to_other() {
+    let config = load_download_config();
+    if !config.classify_by_course {
+        return;
+    }
+    let base = if config.download_dir.is_empty() {
+        default_download_dir()
+    } else {
+        std::path::PathBuf::from(&config.download_dir)
+    };
+    if !base.is_dir() {
+        return;
+    }
+    let target_dir = base.join(OTHER_CATEGORY);
+
+    let mut pending: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') || name == "desktop.ini" || name == "Thumbs.db" {
+                continue;
+            }
+            pending.push(path);
+        }
+    }
+    if pending.is_empty() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&target_dir) {
+        log::warn!("migrate: failed to create {:?}: {}", target_dir, e);
+        return;
+    }
+
+    let mut path_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for src in pending {
+        let Some(name) = src.file_name().map(|n| n.to_os_string()) else {
+            continue;
+        };
+        let mut dest = target_dir.join(&name);
+        if dest.exists() {
+            let stem = std::path::Path::new(&name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let ext = std::path::Path::new(&name)
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let mut i = 1u32;
+            loop {
+                let candidate = target_dir.join(format!("{} ({}){}", stem, i, ext));
+                if !candidate.exists() {
+                    dest = candidate;
+                    break;
+                }
+                i += 1;
+                if i > 999 {
+                    break;
+                }
+            }
+        }
+        match std::fs::rename(&src, &dest) {
+            Ok(()) => {
+                path_map.insert(
+                    src.to_string_lossy().to_string(),
+                    dest.to_string_lossy().to_string(),
+                );
+            }
+            Err(e) => log::warn!("migrate: failed to move {:?} -> {:?}: {}", src, dest, e),
+        }
+    }
+
+    if path_map.is_empty() {
+        return;
+    }
+
+    let mut records = load_download_history();
+    let mut changed = false;
+    for r in records.iter_mut() {
+        if let Some(new_path) = path_map.get(&r.path) {
+            r.path = new_path.clone();
+            if r.course_name.trim().is_empty() {
+                r.course_name = OTHER_CATEGORY.to_string();
+            }
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = save_download_history(&records);
+    }
 }

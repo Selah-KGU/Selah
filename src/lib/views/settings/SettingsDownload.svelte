@@ -141,7 +141,7 @@
         <option value="true">有効</option>
         <option value="false">無効</option>
       </select>
-      <div class="hint">有効にすると、ダウンロードされた教材をコース名のフォルダに自動分類します。</div>
+      <div class="hint">有効にすると、ダウンロードされた教材をコース名のフォルダに自動分類します。コース不明のファイルは <code>その他/</code> にまとめられます。</div>
     </div>
   </div>
 </div>
@@ -154,6 +154,8 @@
   <div style="padding-left:32px;">exercise05.pdf</div>
   <div style="padding-left:16px;">英語 IIA/</div>
   <div style="padding-left:32px;">handout.docx</div>
+  <div style="padding-left:16px;">その他/</div>
+  <div style="padding-left:32px;">attachment.pdf</div>
 </div>
 
 <div class="action-bar">

@@ -72,6 +72,10 @@ pub struct LunaMaterialFile {
     pub scan_status: String,  // virus scan status ("1" = clean)
     #[serde(default)]
     pub link_type: String, // "file", "zoom", "panopto", "video", "cloud", "google", "teams", "web"
+    /// Direct external URL for pure link-type materials (Zoom, YouTube, etc.).
+    /// When set, frontend should open this directly instead of using the tempfile flow.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub external_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -617,7 +621,7 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .unwrap_or_default();
 
-            let link_type = if file_type == "0" {
+            let mut link_type = if file_type == "0" {
                 classify_link(&file_name, &display_name)
             } else {
                 let cl = classify_link(&display_name, &file_name);
@@ -627,6 +631,56 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
                     cl
                 }
             };
+
+            // For pure external-link materials (file_type != "0" and no backing file),
+            // Luna embeds the URL directly somewhere in the row — scan for it so the
+            // frontend can open it without the tempfile flow.
+            let mut external_url = String::new();
+            if file_type != "0" && file_name.is_empty() {
+                for a in row.select(&SEL_A_HREF) {
+                    if let Some(href) = a.value().attr("href") {
+                        let h = href.trim();
+                        if h.starts_with("http") && !h.contains("luna.kwansei.ac.jp") {
+                            external_url = h.to_string();
+                            break;
+                        }
+                    }
+                }
+                if external_url.is_empty() {
+                    let row_html = row.html();
+                    if let Some(idx) = row_html.find("http") {
+                        let tail = &row_html[idx..];
+                        let end = tail
+                            .find(|c: char| c == '"' || c == '\'' || c == '<' || c == ' ')
+                            .unwrap_or(tail.len());
+                        let candidate = &tail[..end];
+                        if candidate.len() > 10 && !candidate.contains("luna.kwansei.ac.jp") {
+                            external_url = candidate.to_string();
+                        }
+                    }
+                }
+                if !external_url.is_empty() {
+                    let cl = classify_link(&external_url, &display_name);
+                    if cl != "file" {
+                        link_type = cl;
+                    } else if link_type == "file" {
+                        link_type = "web".to_string();
+                    }
+                    log::info!(
+                        "[material] extracted external URL: resource_id='{}', url='{}'",
+                        resource_id,
+                        crate::client::safe_truncate(&external_url, 200)
+                    );
+                } else {
+                    let row_html = row.html();
+                    log::warn!(
+                        "[material] link-type row has no fileName and no extractable URL: resource_id='{}', display='{}'. Raw HTML:\n{}",
+                        resource_id,
+                        display_name,
+                        crate::client::safe_truncate(&row_html, 3000)
+                    );
+                }
+            }
 
             files.push(LunaMaterialFile {
                 display_name,
@@ -638,6 +692,7 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
                 end_date,
                 scan_status,
                 link_type,
+                external_url,
             });
         }
 

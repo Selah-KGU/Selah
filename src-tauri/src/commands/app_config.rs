@@ -74,7 +74,12 @@ pub fn save_download_config(config: DownloadConfig) -> Result<(), String> {
         std::fs::create_dir_all(p)
             .map_err(|e| format!("ディレクトリの作成に失敗しました: {}", e))?;
     }
-    save_json_config(&download_config_path(), &config, "download config")
+    let classify = config.classify_by_course;
+    save_json_config(&download_config_path(), &config, "download config")?;
+    if classify {
+        super::downloads::migrate_uncategorized_to_other();
+    }
+    Ok(())
 }
 
 #[tauri::command]
