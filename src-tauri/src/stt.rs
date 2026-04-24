@@ -152,6 +152,10 @@ fn directml_build_enabled() -> bool {
     cfg!(target_os = "windows") && option_env!("SELAH_STT_DIRECTML_ENABLED") == Some("1")
 }
 
+fn coreml_build_enabled() -> bool {
+    cfg!(target_os = "macos") && cfg!(feature = "stt-shared")
+}
+
 fn stt_execution_backend_catalog() -> Vec<SttExecutionBackendInfo> {
     let mut backends = vec![SttExecutionBackendInfo {
         id: STT_BACKEND_CPU.into(),
@@ -163,15 +167,22 @@ fn stt_execution_backend_catalog() -> Vec<SttExecutionBackendInfo> {
     }];
 
     if cfg!(target_os = "macos") {
+        let available = coreml_build_enabled();
         backends.push(SttExecutionBackendInfo {
             id: STT_BACKEND_COREML.into(),
             label: "CoreML".into(),
             description: "Apple Neural Engine / GPU を使う実験的な高速化です。".into(),
             experimental: true,
-            available: true,
-            availability_note: Some(
-                "認識器のみ CoreML に切り替わり、VAD は引き続き CPU を使います。".into(),
-            ),
+            available,
+            availability_note: if available {
+                Some(
+                    "認識器のみ CoreML に切り替わり、VAD は引き続き CPU を使います。".into(),
+                )
+            } else {
+                Some(
+                    "この macOS ビルドでは shared STT ライブラリが必要なため、CoreML は利用できません。".into(),
+                )
+            },
         });
     }
 
@@ -216,7 +227,7 @@ fn normalize_stt_model_id(model_id: &str) -> String {
 
 fn normalize_stt_execution_backend(requested: &str) -> String {
     match requested.trim().to_ascii_lowercase().as_str() {
-        STT_BACKEND_COREML if cfg!(target_os = "macos") => STT_BACKEND_COREML.into(),
+        STT_BACKEND_COREML if coreml_build_enabled() => STT_BACKEND_COREML.into(),
         STT_BACKEND_DIRECTML if cfg!(target_os = "windows") && directml_build_enabled() => {
             STT_BACKEND_DIRECTML.into()
         }
@@ -228,8 +239,11 @@ fn validate_stt_execution_backend(requested: &str) -> Result<String, String> {
     let requested = requested.trim().to_ascii_lowercase();
     match requested.as_str() {
         "" | STT_BACKEND_CPU => Ok(STT_BACKEND_CPU.into()),
-        STT_BACKEND_COREML if cfg!(target_os = "macos") => Ok(STT_BACKEND_COREML.into()),
-        STT_BACKEND_COREML => Err("CoreML は macOS 実験ビルドでのみ利用できます".into()),
+        STT_BACKEND_COREML if coreml_build_enabled() => Ok(STT_BACKEND_COREML.into()),
+        STT_BACKEND_COREML if cfg!(target_os = "macos") => {
+            Err("CoreML は macOS の shared STT ビルドでのみ利用できます".into())
+        }
+        STT_BACKEND_COREML => Err("CoreML は macOS ビルドでのみ利用できます".into()),
         STT_BACKEND_DIRECTML if cfg!(target_os = "windows") && directml_build_enabled() => {
             Ok(STT_BACKEND_DIRECTML.into())
         }
@@ -596,6 +610,8 @@ struct SttRuntimeDebugState {
     fallback_from: Option<String>,
     state: String,
     active_caller: Option<String>,
+    last_info: Option<String>,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -606,6 +622,8 @@ pub struct SttRuntimeDebugInfo {
     pub runtime_backend: String,
     pub runtime_state: String,
     pub active_caller: String,
+    pub runtime_note: String,
+    pub runtime_error: String,
 }
 
 struct RecognizerInitResult {
@@ -627,6 +645,8 @@ static STT_RUNTIME_DEBUG: LazyLock<Mutex<SttRuntimeDebugState>> = LazyLock::new(
         fallback_from: None,
         state: "idle".into(),
         active_caller: None,
+        last_info: None,
+        last_error: None,
     })
 });
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -667,6 +687,21 @@ fn update_runtime_debug_state(
     }
 }
 
+fn update_runtime_debug_message(info: Option<String>, error: Option<String>) {
+    if let Ok(mut debug) = STT_RUNTIME_DEBUG.lock() {
+        if let Some(info) = info {
+            debug.last_info = Some(info);
+        }
+        if let Some(error) = error {
+            debug.last_error = Some(error);
+        }
+    }
+}
+
+fn emit_runtime_debug_changed(app: &tauri::AppHandle) {
+    let _ = app.emit("stt-runtime-debug-changed", ());
+}
+
 fn stt_runtime_backend_debug_label(
     execution_backend: Option<&str>,
     fallback_from: Option<&str>,
@@ -704,6 +739,8 @@ pub fn stt_runtime_debug_info() -> SttRuntimeDebugInfo {
             ),
             runtime_state: stt_runtime_state_label(&debug.state).to_string(),
             active_caller: debug.active_caller.clone().unwrap_or_else(|| "-".into()),
+            runtime_note: debug.last_info.clone().unwrap_or_default(),
+            runtime_error: debug.last_error.clone().unwrap_or_default(),
         };
     }
 
@@ -714,11 +751,14 @@ pub fn stt_runtime_debug_info() -> SttRuntimeDebugInfo {
         runtime_backend: "未取得".into(),
         runtime_state: "待機".into(),
         active_caller: "-".into(),
+        runtime_note: String::new(),
+        runtime_error: String::new(),
     }
 }
 
 fn emit_state(app: &tauri::AppHandle, state: &str, caller: &str) {
     update_runtime_debug_state(state, Some(caller), None, None);
+    emit_runtime_debug_changed(app);
     let _ = app.emit(
         "stt-state",
         SttStatePayload {
@@ -729,17 +769,23 @@ fn emit_state(app: &tauri::AppHandle, state: &str, caller: &str) {
 }
 
 fn emit_error(app: &tauri::AppHandle, message: impl Into<String>, caller: &str) {
+    let message = message.into();
+    update_runtime_debug_message(None, Some(message.clone()));
+    emit_runtime_debug_changed(app);
     let _ = app.emit(
         "stt-error",
-        serde_json::json!({ "message": message.into(), "caller": caller }),
+        serde_json::json!({ "message": message, "caller": caller }),
     );
 }
 
 fn emit_info(app: &tauri::AppHandle, message: impl Into<String>, caller: &str) {
+    let message = message.into();
+    update_runtime_debug_message(Some(message.clone()), None);
+    emit_runtime_debug_changed(app);
     let _ = app.emit(
         "stt-info",
         SttInfoPayload {
-            message: message.into(),
+            message,
             caller: caller.to_string(),
         },
     );
@@ -1425,7 +1471,7 @@ pub fn cancel_stt_model_download() {
 }
 
 #[tauri::command]
-pub fn stt_test_model() -> Result<String, String> {
+pub fn stt_test_model(app: tauri::AppHandle) -> Result<String, String> {
     let model = selected_model_from_config()?;
     if !is_stt_model_downloaded(&model) {
         return Err("STT モデルを先にダウンロードしてください".into());
@@ -1440,19 +1486,25 @@ pub fn stt_test_model() -> Result<String, String> {
     let _recognizer = recognizer_init.recognizer;
 
     if let Some(fallback_from) = recognizer_init.fallback_from {
-        return Ok(format!(
+        let message = format!(
             "OK: {} ({}) / {}",
             model.name,
             stt_execution_backend_label(&recognizer_init.execution_backend),
             stt_fallback_message(&fallback_from)
-        ));
+        );
+        update_runtime_debug_message(Some(message.clone()), None);
+        emit_runtime_debug_changed(&app);
+        return Ok(message);
     }
 
-    Ok(format!(
+    let message = format!(
         "OK: {} ({})",
         model.name,
         stt_execution_backend_label(&recognizer_init.execution_backend)
-    ))
+    );
+    update_runtime_debug_message(Some(message.clone()), None);
+    emit_runtime_debug_changed(&app);
+    Ok(message)
 }
 
 #[tauri::command]

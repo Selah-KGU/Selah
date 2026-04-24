@@ -427,6 +427,8 @@ pub struct DebugInfo {
     pub stt_runtime_backend: String,
     pub stt_runtime_state: String,
     pub stt_active_caller: String,
+    pub stt_runtime_note: String,
+    pub stt_runtime_error: String,
     pub notification_debug: notifier::NotificationDebugInfo,
 }
 
@@ -460,6 +462,8 @@ pub async fn debug_info(
         stt_runtime_backend: stt_debug.runtime_backend,
         stt_runtime_state: stt_debug.runtime_state,
         stt_active_caller: stt_debug.active_caller,
+        stt_runtime_note: stt_debug.runtime_note,
+        stt_runtime_error: stt_debug.runtime_error,
         notification_debug,
     })
 }

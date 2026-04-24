@@ -21,6 +21,8 @@
     stt_runtime_backend: string;
     stt_runtime_state: string;
     stt_active_caller: string;
+    stt_runtime_note: string;
+    stt_runtime_error: string;
     notification_debug: NotificationDebugInfo;
   }
 
@@ -103,6 +105,9 @@
   let notifSyncing = $state(false);
   let unlistenSttState: (() => void) | null = null;
   let unlistenSttConfigChanged: (() => void) | null = null;
+  let unlistenSttInfo: (() => void) | null = null;
+  let unlistenSttError: (() => void) | null = null;
+  let unlistenSttRuntimeDebugChanged: (() => void) | null = null;
 
   const targets = [
     { name: "KG Course", url: "https://kg-course.kwansei.ac.jp" },
@@ -157,6 +162,8 @@
           stt_runtime_backend: "demo",
           stt_runtime_state: "idle",
           stt_active_caller: "none",
+          stt_runtime_note: "",
+          stt_runtime_error: "",
           notification_debug: {
             poll_running: false,
             delivery_note: "demo",
@@ -321,6 +328,21 @@
     }).then((fn) => {
       unlistenSttConfigChanged = fn;
     });
+    void listen("stt-info", () => {
+      void fetchDebugInfo();
+    }).then((fn) => {
+      unlistenSttInfo = fn;
+    });
+    void listen("stt-error", () => {
+      void fetchDebugInfo();
+    }).then((fn) => {
+      unlistenSttError = fn;
+    });
+    void listen("stt-runtime-debug-changed", () => {
+      void fetchDebugInfo();
+    }).then((fn) => {
+      unlistenSttRuntimeDebugChanged = fn;
+    });
 
     const prebootLogs = (window as any).__SELAH_PREBOOT_LOGS__ as { type: string; message: string; time: string }[] | undefined;
     if (prebootLogs) {
@@ -338,6 +360,9 @@
     return () => {
       unlistenSttState?.();
       unlistenSttConfigChanged?.();
+      unlistenSttInfo?.();
+      unlistenSttError?.();
+      unlistenSttRuntimeDebugChanged?.();
       unsubTasks();
       clearInterval(taskTickTimer);
     };
@@ -411,6 +436,8 @@
           <div class="info-row"><span class="info-key">STT Runtime</span><span class="info-val">{debugInfo.stt_runtime_backend}</span></div>
           <div class="info-row"><span class="info-key">STT State</span><span class="info-val">{debugInfo.stt_runtime_state}</span></div>
           <div class="info-row"><span class="info-key">STT Caller</span><span class="info-val mono">{debugInfo.stt_active_caller}</span></div>
+          <div class="info-row"><span class="info-key">STT Note</span><span class="info-val">{debugInfo.stt_runtime_note || "-"}</span></div>
+          <div class="info-row"><span class="info-key">STT Error</span><span class="info-val">{debugInfo.stt_runtime_error || "-"}</span></div>
         </div>
       {/if}
 
