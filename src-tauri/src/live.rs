@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
@@ -54,9 +54,12 @@ pub struct LiveSessionSnapshot {
     pub active: bool,
     pub course: Option<LiveCourseInfo>,
     pub started_at: Option<String>,
-    pub transcript_lines: Vec<LiveTranscriptLine>,
-    pub pending_lines: Vec<LiveTranscriptLine>,
-    pub summaries: Vec<LiveSummaryChunk>,
+    // Wrapped in Arc so building a snapshot is a refcount bump rather than
+    // a deep clone of three potentially large Vec<...>. The wire format is
+    // unchanged because serde serializes Arc<T> transparently as T.
+    pub transcript_lines: Arc<Vec<LiveTranscriptLine>>,
+    pub pending_lines: Arc<Vec<LiveTranscriptLine>>,
+    pub summaries: Arc<Vec<LiveSummaryChunk>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,21 +75,22 @@ struct LiveSession {
     session_id: String,
     course: LiveCourseInfo,
     started_at: DateTime<Local>,
-    transcript_lines: Vec<LiveTranscriptLine>,
-    pending_lines: Vec<LiveTranscriptLine>,
-    summaries: Vec<LiveSummaryChunk>,
+    transcript_lines: Arc<Vec<LiveTranscriptLine>>,
+    pending_lines: Arc<Vec<LiveTranscriptLine>>,
+    summaries: Arc<Vec<LiveSummaryChunk>>,
     batch_started_at: DateTime<Local>,
 }
 
 impl LiveSession {
     fn snapshot(&self) -> LiveSessionSnapshot {
+        // All three Vec<...> are Arc-wrapped, so cloning is a refcount bump.
         LiveSessionSnapshot {
             active: true,
             course: Some(self.course.clone()),
             started_at: Some(format_datetime(self.started_at)),
-            transcript_lines: self.transcript_lines.clone(),
-            pending_lines: self.pending_lines.clone(),
-            summaries: self.summaries.clone(),
+            transcript_lines: Arc::clone(&self.transcript_lines),
+            pending_lines: Arc::clone(&self.pending_lines),
+            summaries: Arc::clone(&self.summaries),
         }
     }
 }
@@ -199,9 +203,9 @@ fn empty_snapshot() -> LiveSessionSnapshot {
         active: false,
         course: None,
         started_at: None,
-        transcript_lines: Vec::new(),
-        pending_lines: Vec::new(),
-        summaries: Vec::new(),
+        transcript_lines: Arc::new(Vec::new()),
+        pending_lines: Arc::new(Vec::new()),
+        summaries: Arc::new(Vec::new()),
     }
 }
 
@@ -487,8 +491,8 @@ async fn flush_session_summary(
         body,
         line_count: lines.len(),
     };
-    session.summaries.push(summary);
-    session.pending_lines.clear();
+    Arc::make_mut(&mut session.summaries).push(summary);
+    Arc::make_mut(&mut session.pending_lines).clear();
     session.batch_started_at = now;
     Ok(session.snapshot())
 }
@@ -568,9 +572,9 @@ pub fn live_peek_day_cache(course: LiveCourseInfo) -> LiveSessionSnapshot {
             active: false,
             course: Some(course),
             started_at: Some(cache.started_at),
-            transcript_lines: cache.transcript_lines,
-            pending_lines: Vec::new(),
-            summaries: cache.summaries,
+            transcript_lines: Arc::new(cache.transcript_lines),
+            pending_lines: Arc::new(Vec::new()),
+            summaries: Arc::new(cache.summaries),
         },
         None => empty_snapshot(),
     }
@@ -616,9 +620,9 @@ pub fn live_start_session(
         session_id: uuid::Uuid::new_v4().to_string(),
         course,
         started_at,
-        transcript_lines: prev_transcript,
-        pending_lines: Vec::new(),
-        summaries: prev_summaries,
+        transcript_lines: Arc::new(prev_transcript),
+        pending_lines: Arc::new(Vec::new()),
+        summaries: Arc::new(prev_summaries),
         batch_started_at: now,
     };
     let snapshot = session.snapshot();
@@ -654,8 +658,11 @@ pub fn live_append_transcript(
         let session = guard
             .as_mut()
             .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
-        session.transcript_lines.push(line.clone());
-        session.pending_lines.push(line.clone());
+        // make_mut is in-place when no other Arc holders exist; if a
+        // previously-emitted snapshot is still being serialized it copies once
+        // — bounded and rare. Either way, no per-append deep clone of the Vec.
+        Arc::make_mut(&mut session.transcript_lines).push(line.clone());
+        Arc::make_mut(&mut session.pending_lines).push(line.clone());
         session.snapshot()
     };
     auto_save_day_cache(&state, false);

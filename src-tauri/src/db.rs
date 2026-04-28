@@ -164,9 +164,16 @@ impl Database {
             .map_err(|e| format!("Failed to create data dir: {}", e))?;
         let db_path = data_dir.join("courses.db");
         let conn = Connection::open(&db_path).map_err(|e| format!("Failed to open DB: {}", e))?;
-        // WAL mode: allows concurrent reads while writing, reduces lock contention
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
-            .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
+        // WAL mode: allows concurrent reads while writing, reduces lock contention.
+        // mmap_size enables memory-mapped reads (32 MB) which avoids syscall overhead
+        // for hot pages; temp_store=MEMORY keeps temp tables off disk during queries.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;\
+             PRAGMA synchronous=NORMAL;\
+             PRAGMA temp_store=MEMORY;\
+             PRAGMA mmap_size=33554432;",
+        )
+        .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
         let db = Self {
             conn: Mutex::new(conn),
         };

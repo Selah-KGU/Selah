@@ -250,7 +250,7 @@
 
   // ============ Lifecycle ============
 
-  let clockInterval: ReturnType<typeof setInterval>;
+  let clockInterval: ReturnType<typeof setInterval> | undefined;
   let serverDataLoaded = false;
 
   function tickClock() {
@@ -261,11 +261,24 @@
     }
   }
 
+  function startClockTick() {
+    if (clockInterval) return;
+    clockInterval = setInterval(tickClock, 15_000);
+  }
+
+  function stopClockTick() {
+    if (clockInterval) {
+      clearInterval(clockInterval);
+      clockInterval = undefined;
+    }
+  }
+
   function handleHomeVisibility() {
     if (document.visibilityState !== "visible") {
       // Pause short-interval timers when hidden to save CPU/battery
       stopWeatherCycle();
       stopSuggestionCycle();
+      stopClockTick();
       return;
     }
     // Re-check AI config in case user just configured it in settings
@@ -275,6 +288,7 @@
     }
     // Immediately refresh clock so now/next updates on tab focus
     tickClock();
+    startClockTick();
     // Resume visual cycling
     startWeatherCycle();
     startSuggestionCycle();
@@ -287,7 +301,7 @@
   }
 
   onMount(async () => {
-    clockInterval = setInterval(tickClock, 15_000);
+    startClockTick();
     document.addEventListener("visibilitychange", handleHomeVisibility);
     // Restore cached data immediately so UI is never blank
     const cachedTT = getCached<ScheduleResponse>("schedule_data");
@@ -312,7 +326,7 @@
     }
   });
   onDestroy(() => {
-    clearInterval(clockInterval);
+    stopClockTick();
     document.removeEventListener("visibilitychange", handleHomeVisibility);
     stopSuggestionCycle();
     stopWeatherCycle();
@@ -1865,6 +1879,7 @@ suggestionsのルール：
     white-space: normal;
     display: -webkit-box;
     -webkit-line-clamp: 3;
+    line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
     line-height: 1.35;

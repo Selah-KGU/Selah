@@ -40,7 +40,6 @@ let { data, columns, rowKey, cellSnippet, onrowclick }: Props = $props();
     <tbody>
       {#each data as row, i (rowKey ? rowKey(row, i) : i)}
         <tr
-          style="animation: fade-in 0.25s ease {Math.min(i * 0.03, 0.3)}s both;"
           class:clickable={!!onrowclick}
           onclick={(e) => onrowclick?.(row, e)}
         >

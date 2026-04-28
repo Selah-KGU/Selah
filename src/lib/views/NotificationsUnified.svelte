@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { kwicOpenDetail } from "../api";
+  import { kwicOpenDetail, lunaInvoke } from "../api";
   import type { MailMessage } from "../api";
   import { cachedBackendFetch, getCached, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead } from "../stores";
   import type { NotificationsData } from "../stores";
@@ -231,6 +231,15 @@
     if (selectedTab !== "授業のお知らせ" || selectedCourse === "all") return currentItems;
     return currentItems.filter(n => (n.courseInfo || n.category || "") === selectedCourse);
   });
+  // Cap rendered DOM nodes — older entries reachable via "show more"
+  // pagination instead of mounting hundreds of buttons up front.
+  const NOTIF_PAGE_SIZE = 50;
+  let notifVisibleCount = $state(NOTIF_PAGE_SIZE);
+  $effect(() => {
+    selectedTab; selectedCourse;
+    notifVisibleCount = NOTIF_PAGE_SIZE;
+  });
+  let visibleNotifs = $derived(filteredItems.slice(0, notifVisibleCount));
 
   async function markAllRead() {
     const items = filteredItems.filter(n => n.source !== "mail" && !isNotifRead(n));
@@ -315,29 +324,33 @@
   {/if}
 
   <ViewLoader {loading} {error} empty={filteredItems.length === 0 && !loading} emptyMessage="お知らせはありません">
-      <div class="notif-list">
-        {#each filteredItems as n, i}
-          <button
-            class="notif-item"
-            class:clickable={n.source === "luna" || n.source === "kwic" || n.source === "mail"}
-            class:read={isNotifRead(n)}
-            style="animation: notif-enter 0.3s ease {Math.min(i * 0.04, 0.4)}s both;"
-            onclick={() => openNotif(n)}
-          >
-            <div class="notif-header">
-              {#if n.category}
-                <span class="notif-badge" class:badge-kwic={n.source === "kwic"} class:badge-luna={n.source === "luna"} class:badge-mail={n.source === "mail"}>{n.category}</span>
-              {/if}
-              <span class="notif-title">{n.title}</span>
-              <span class="notif-date">{n.date}</span>
-            </div>
-            {#if n.courseInfo}
-              <div class="notif-course">{n.courseInfo}</div>
+    <div class="notif-list">
+      {#each visibleNotifs as n}
+        <button
+          class="notif-item"
+          class:clickable={n.source === "luna" || n.source === "kwic" || n.source === "mail"}
+          class:read={isNotifRead(n)}
+          onclick={() => openNotif(n)}
+        >
+          <div class="notif-header">
+            {#if n.category}
+              <span class="notif-badge" class:badge-kwic={n.source === "kwic"} class:badge-luna={n.source === "luna"} class:badge-mail={n.source === "mail"}>{n.category}</span>
             {/if}
-          </button>
-        {/each}
-      </div>
-    </ViewLoader>
+            <span class="notif-title">{n.title}</span>
+            <span class="notif-date">{n.date}</span>
+          </div>
+          {#if n.courseInfo}
+            <div class="notif-course">{n.courseInfo}</div>
+          {/if}
+        </button>
+      {/each}
+      {#if filteredItems.length > notifVisibleCount}
+        <button class="notif-more" onclick={() => notifVisibleCount += NOTIF_PAGE_SIZE}>
+          もっと見る ({filteredItems.length - notifVisibleCount} 件)
+        </button>
+      {/if}
+    </div>
+  </ViewLoader>
 </div>
 
 <style>
@@ -415,6 +428,19 @@
     flex-direction: column;
     gap: 6px;
   }
+  .notif-more {
+    margin-top: 8px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 0.5px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s, color 0.15s;
+  }
+  .notif-more:hover { background: var(--bg-hover); color: var(--text-primary); }
   .notif-item {
     background: var(--bg-card);
     border: 0.5px solid var(--border);

@@ -71,9 +71,19 @@
 
   marked.setOptions({ breaks: true, gfm: true });
 
+  const renderCache = new Map<string, string>();
+  const RENDER_CACHE_MAX = 256;
   function render(md: string): string {
+    const cached = renderCache.get(md);
+    if (cached !== undefined) return cached;
     const raw = marked.parse(md) as string;
-    return DOMPurify.sanitize(raw);
+    const out = DOMPurify.sanitize(raw);
+    if (renderCache.size >= RENDER_CACHE_MAX) {
+      const firstKey = renderCache.keys().next().value;
+      if (firstKey !== undefined) renderCache.delete(firstKey);
+    }
+    renderCache.set(md, out);
+    return out;
   }
 
   async function refreshConfig() {
@@ -509,6 +519,7 @@
     unlistenSttFinal?.();
     unlistenSttState?.();
     unlistenSttError?.();
+    if (copiedIdTimer) { clearTimeout(copiedIdTimer); copiedIdTimer = null; }
     if (sttListening) invoke("stt_stop_stream").catch(() => {});
     if (activeConvId && sending) agentCancel(activeConvId).catch(() => {});
   });
@@ -573,6 +584,7 @@
   }
 
   let copiedId = $state<number | null>(null);
+  let copiedIdTimer: ReturnType<typeof setTimeout> | null = null;
   let quotedMessage = $state<UIMessage | null>(null);
 
   function stripHtml(html: string): string {
@@ -585,7 +597,11 @@
     const text = m.role === "assistant" ? stripHtml(render(m.content)) : m.content;
     await navigator.clipboard.writeText(text);
     copiedId = m.id;
-    setTimeout(() => { if (copiedId === m.id) copiedId = null; }, 1500);
+    if (copiedIdTimer) clearTimeout(copiedIdTimer);
+    copiedIdTimer = setTimeout(() => {
+      if (copiedId === m.id) copiedId = null;
+      copiedIdTimer = null;
+    }, 1500);
   }
 
   function quoteReply(m: UIMessage) {
@@ -1371,6 +1387,7 @@
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     word-break: break-word;
   }

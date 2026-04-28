@@ -714,10 +714,12 @@
 
     // 1. Render from an offscreen clone so the visible timetable never flashes
     const { node: captureNode, cleanup } = await createOffscreenCaptureRoot(captureRef, RENDER_WIDTH);
-    const captureWidth = Math.max(RENDER_WIDTH, Math.round(captureNode.getBoundingClientRect().width) || RENDER_WIDTH);
+    const captureRect = captureNode.getBoundingClientRect();
+    const captureScrollHeight = captureNode.scrollHeight;
+    const captureWidth = Math.max(RENDER_WIDTH, Math.round(captureRect.width) || RENDER_WIDTH);
     const captureHeight = Math.max(
-      Math.round(captureNode.scrollHeight),
-      Math.round(captureNode.getBoundingClientRect().height),
+      Math.round(captureScrollHeight),
+      Math.round(captureRect.height),
       1,
     );
 
@@ -1046,6 +1048,7 @@
             </button>
             {#if shareMenuOpen}
               <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
               <div class="share-dropdown" onclick={(e: MouseEvent) => e.stopPropagation()}>
                 <button class="share-option" onclick={handleCopyToClipboard}>
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -1635,6 +1638,7 @@
     letter-spacing: -0.01em;
     display: -webkit-box;
     -webkit-line-clamp: 3;
+    line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
     padding-right: 10px;
@@ -1733,6 +1737,7 @@
     line-height: 1.4;
     display: -webkit-box;
     -webkit-line-clamp: 4;
+    line-clamp: 4;
     -webkit-box-orient: vertical;
     overflow: hidden;
     margin-top: 2px;
@@ -1758,6 +1763,7 @@
     line-height: 1.35;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
@@ -1766,6 +1772,7 @@
     font-size: 11px;
     color: var(--text-secondary);
     -webkit-line-clamp: 3;
+    line-clamp: 3;
   }
   .screen-content-warn {
     font-size: 11px;
@@ -1773,6 +1780,7 @@
     color: var(--text-secondary);
     display: block;
     -webkit-line-clamp: unset;
+    line-clamp: unset;
     overflow: visible;
   }
   .screen-label-done {

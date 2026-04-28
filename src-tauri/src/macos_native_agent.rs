@@ -11,11 +11,11 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{msg_send, AnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_core_foundation::CFRetained;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSFloatingWindowLevel,
-    NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode,
-    NSMutableParagraphStyle, NSPanel, NSParagraphStyleAttributeName, NSScreen, NSTextAlignment,
-    NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSVisualEffectView, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSFloatingWindowLevel, NSFont,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
+    NSPanel, NSParagraphStyleAttributeName, NSScreen, NSTextAlignment, NSTextField, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_graphics::CGPath;
 use objc2_foundation::{
@@ -32,6 +32,26 @@ use crate::agent;
 use crate::commands::NativeAgentConfig;
 use crate::db::Database;
 use crate::stt;
+
+// Direct query of the Fn (kVK_Function) key state. We can't rely on
+// `NSEventModifierFlags::Function` alone because macOS sets that bit for
+// *any* function-class key — arrow keys, F1–F12, Home/End/Page Up/Down all
+// flip it on. Polling modifier flags would mis-detect a held arrow key as
+// the Fn shortcut. CGEventSourceKeyState reads the live HID state for a
+// specific keycode, so it returns true only when the actual Fn key is held.
+const KVK_FUNCTION: u16 = 0x3F; // kVK_Function (Fn / Globe key)
+const KCG_EVENT_SOURCE_STATE_COMBINED: i32 = 0; // kCGEventSourceStateCombinedSessionState
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
+}
+
+fn is_fn_key_down() -> bool {
+    // Safety: CGEventSourceKeyState is documented thread-safe and takes a
+    // primitive state id + keycode with no out-pointer or allocation.
+    unsafe { CGEventSourceKeyState(KCG_EVENT_SOURCE_STATE_COMBINED, KVK_FUNCTION) }
+}
 
 const DEFAULT_SHORTCUT: &str = "fn";
 
@@ -80,7 +100,11 @@ const SPRING_DT: f64 = 0.016;
 const SPRING_SETTLE: f64 = 0.25;
 const RESULT_AUTO_CLOSE_SECS: u64 = 14;
 const NOTICE_AUTO_CLOSE_MS: u64 = 1800;
-const FN_POLL_MS: u64 = 25;
+const FN_POLL_IDLE_MS: u64 = 100;
+// Held interval must stay well below SHORTCUT_HOLD_MS so a release polled
+// at the same instant the hold timer fires can race-update SHORTCUT_DOWN
+// before the timer reads it. 25ms preserves the original safety margin.
+const FN_POLL_HELD_MS: u64 = 25;
 const SHORTCUT_HOLD_MS: u64 = 140;
 
 // Border
@@ -542,8 +566,7 @@ fn handle_shortcut_event(app: AppHandle, _shortcut: String, state: ShortcutState
     }
 }
 
-fn handle_fn_flags_changed(app: AppHandle, flags: NSEventModifierFlags) {
-    let has_fn = flags.contains(NSEventModifierFlags::Function);
+fn handle_fn_state(app: AppHandle, has_fn: bool) {
     let was_pressed = FN_PRESSED.swap(has_fn, Ordering::Relaxed);
     if has_fn && !was_pressed {
         handle_shortcut_pressed(app);
@@ -562,18 +585,18 @@ fn start_fn_polling(app: AppHandle) {
                 break;
             }
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            let app_for_main = app.clone();
-            let _ = app_for_main.run_on_main_thread(move || {
-                let flags = NSEvent::modifierFlags_class();
-                let _ = tx.send(flags);
-            });
+            // CGEventSourceKeyState is thread-safe and answers the question
+            // we actually care about ("is the Fn key down right now?")
+            // without the Function-flag false-positives caused by arrow /
+            // F-keys. No main-thread round-trip needed.
+            handle_fn_state(app.clone(), is_fn_key_down());
 
-            if let Ok(flags) = rx.recv_timeout(Duration::from_millis(100)) {
-                handle_fn_flags_changed(app.clone(), flags);
-            }
-
-            tokio::time::sleep(Duration::from_millis(FN_POLL_MS)).await;
+            let next_ms = if FN_PRESSED.load(Ordering::Relaxed) {
+                FN_POLL_HELD_MS
+            } else {
+                FN_POLL_IDLE_MS
+            };
+            tokio::time::sleep(Duration::from_millis(next_ms)).await;
         }
     });
 }
@@ -1733,11 +1756,15 @@ fn install_click_monitor(ui: &mut CapsuleViews, app: AppHandle) {
 
 fn normalize_shortcut(shortcut: &str) -> String {
     let value = shortcut.trim().to_ascii_lowercase();
-    if value.is_empty() || value == "alt+space" || value == "option+space" {
-        DEFAULT_SHORTCUT.into()
-    } else {
-        value
+    if value.is_empty() {
+        return DEFAULT_SHORTCUT.into();
     }
+    // Accept the user-friendly "option+space" alias by mapping it onto the
+    // accelerator string the global-shortcut plugin actually parses.
+    if value == "option+space" {
+        return "alt+space".into();
+    }
+    value
 }
 
 fn register_appearance_observer(app: AppHandle) {

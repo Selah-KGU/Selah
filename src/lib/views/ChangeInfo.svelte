@@ -65,9 +65,9 @@
   onMount(async () => {
     try {
       const [c, m, r] = await Promise.all([
-        cachedBackendFetch("cancellations"),
-        cachedBackendFetch("makeup"),
-        cachedBackendFetch("rooms"),
+        cachedBackendFetch<CancellationsData>("cancellations"),
+        cachedBackendFetch<MakeupData>("makeup"),
+        cachedBackendFetch<RoomChangesData>("rooms"),
       ]);
       cancellations = c;
       makeup = m;

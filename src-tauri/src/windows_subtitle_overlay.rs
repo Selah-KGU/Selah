@@ -58,6 +58,8 @@ static FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static MORPH_TOKEN: AtomicU64 = AtomicU64::new(0);
 static OVERLAY_OPEN: AtomicBool = AtomicBool::new(false);
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+static LAST_PARTIAL_MS: AtomicU64 = AtomicU64::new(0);
+const PARTIAL_MIN_INTERVAL_MS: u64 = 120;
 
 #[derive(Default)]
 struct OverlayWindow {
@@ -669,6 +671,15 @@ pub fn setup(app: &AppHandle) {
         if text.trim().is_empty() {
             return;
         }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let last = LAST_PARTIAL_MS.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < PARTIAL_MIN_INTERVAL_MS {
+            return;
+        }
+        LAST_PARTIAL_MS.store(now_ms, Ordering::Relaxed);
         show_text(&app_partial, text, false);
     });
 

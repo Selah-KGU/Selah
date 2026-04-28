@@ -7,6 +7,7 @@
   import Icon from "./Icon.svelte";
   import type { IconName } from "./Icon.svelte";
   import Titlebar from "./Titlebar.svelte";
+  import HomePage from "./views/HomePage.svelte";
   import Timetable from "./views/Timetable.svelte";
   import GradesView from "./views/GradesView.svelte";
   import Registration from "./views/Registration.svelte";
@@ -14,7 +15,6 @@
   import LunaTodo from "./views/LunaTodo.svelte";
   import NotificationsUnified from "./views/NotificationsUnified.svelte";
   import ChangeInfo from "./views/ChangeInfo.svelte";
-  import HomePage from "./views/HomePage.svelte";
   import MailView from "./views/MailView.svelte";
   import IctTools from "./views/IctTools.svelte";
   import Live from "./views/Live.svelte";
@@ -172,64 +172,40 @@
         <HomePage />
       </div>
       {#if visited.has("mail")}
-        <div class="view-panel" class:active={$activeTab === "mail"}>
-          <MailView />
-        </div>
-      {/if}
-      {#if visited.has("timetable")}
-        <div class="view-panel" class:active={$activeTab === "timetable"}>
-          <Timetable />
-        </div>
-      {/if}
-      {#if visited.has("live")}
-        <div class="view-panel" class:active={$activeTab === "live"}>
-          <Live />
-        </div>
-      {/if}
-      {#if visited.has("todo")}
-        <div class="view-panel" class:active={$activeTab === "todo"}>
-          <LunaTodo />
-        </div>
-      {/if}
-      {#if visited.has("grades")}
-        <div class="view-panel" class:active={$activeTab === "grades"}>
-          <GradesView />
-        </div>
-      {/if}
-      {#if visited.has("registration")}
-        <div class="view-panel" class:active={$activeTab === "registration"}>
-          <Registration />
-        </div>
-      {/if}
-      {#if visited.has("syllabus")}
-        <div class="view-panel" class:active={$activeTab === "syllabus"}>
-          <Syllabus />
-        </div>
-      {/if}
-      {#if visited.has("notifications")}
-        <div class="view-panel" class:active={$activeTab === "notifications"}>
-          <NotificationsUnified />
-        </div>
-      {/if}
-      {#if visited.has("changes")}
-        <div class="view-panel" class:active={$activeTab === "changes"}>
-          <ChangeInfo />
-        </div>
+        <div class="view-panel" class:active={$activeTab === "mail"}><MailView /></div>
       {/if}
       {#if visited.has("ict-tools")}
-        <div class="view-panel" class:active={$activeTab === "ict-tools"}>
-          <IctTools />
-        </div>
+        <div class="view-panel" class:active={$activeTab === "ict-tools"}><IctTools /></div>
+      {/if}
+      {#if visited.has("timetable")}
+        <div class="view-panel" class:active={$activeTab === "timetable"}><Timetable /></div>
+      {/if}
+      {#if visited.has("live")}
+        <div class="view-panel" class:active={$activeTab === "live"}><Live /></div>
+      {/if}
+      {#if visited.has("todo")}
+        <div class="view-panel" class:active={$activeTab === "todo"}><LunaTodo /></div>
+      {/if}
+      {#if visited.has("grades")}
+        <div class="view-panel" class:active={$activeTab === "grades"}><GradesView /></div>
+      {/if}
+      {#if visited.has("registration")}
+        <div class="view-panel" class:active={$activeTab === "registration"}><Registration /></div>
+      {/if}
+      {#if visited.has("syllabus")}
+        <div class="view-panel" class:active={$activeTab === "syllabus"}><Syllabus /></div>
+      {/if}
+      {#if visited.has("notifications")}
+        <div class="view-panel" class:active={$activeTab === "notifications"}><NotificationsUnified /></div>
+      {/if}
+      {#if visited.has("changes")}
+        <div class="view-panel" class:active={$activeTab === "changes"}><ChangeInfo /></div>
       {/if}
       {#if visited.has("agent")}
-        <div class="view-panel" class:active={$activeTab === "agent"}>
-          <AgentChat />
-        </div>
+        <div class="view-panel" class:active={$activeTab === "agent"}><AgentChat /></div>
       {/if}
       {#if visited.has("settings")}
-        <div class="view-panel" class:active={$activeTab === "settings"}>
-          <Settings />
-        </div>
+        <div class="view-panel" class:active={$activeTab === "settings"}><Settings /></div>
       {/if}
     </div>
   </div>

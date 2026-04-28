@@ -86,6 +86,14 @@ impl BackendRefreshRequest {
     }
 }
 
+/// Returns true when the main window is visible. Used to gate background
+/// data refreshes so a hidden window doesn't keep the network/CPU spinning.
+fn is_main_window_visible(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
+}
+
 pub fn start_background_refresh_loop(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -98,8 +106,19 @@ pub fn start_background_refresh_loop(app: &AppHandle) {
         let mut interval = tokio::time::interval(REFRESH_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
+        // Tracks consecutive ticks the window was hidden — we skip refresh
+        // while hidden, but still run at most once per ~30min so caches do not
+        // grow stale forever.
+        let hidden_skip_max: u32 = 5; // 5 ticks = 25 min of skipping, then force one refresh
+        let mut hidden_streak: u32 = 0;
         loop {
             interval.tick().await;
+            let visible = is_main_window_visible(&app);
+            if !visible && hidden_streak < hidden_skip_max {
+                hidden_streak = hidden_streak.saturating_add(1);
+                continue;
+            }
+            hidden_streak = 0;
             if let Err(e) = refresh_backend_data_now(&app).await {
                 log::warn!("background refresh failed: {}", e);
             }

@@ -202,6 +202,106 @@
     return normalized;
   }
 
+  // ---- Voice shortcut recorder ----
+  // Lets the user record any modifier+key combination by clicking the
+  // pill and pressing a chord. The Fn key is exposed as a separate
+  // preset because browsers don't deliver a keydown for it on macOS.
+  let recordingShortcut = $state(false);
+  let recordError = $state("");
+  const MOD_KEY_NAMES = new Set([
+    "Meta", "Control", "Alt", "AltGraph", "Shift", "Fn", "FnLock",
+    "Hyper", "Super", "OS", "ContextMenu", "CapsLock",
+  ]);
+
+  function startShortcutRecording() {
+    if (voiceShortcutEnabled !== "true") return;
+    recordingShortcut = true;
+    recordError = "";
+    window.addEventListener("keydown", onShortcutKeyDown, { capture: true });
+    window.addEventListener("blur", stopShortcutRecording);
+    // Cancel if the user clicks anywhere outside the recorder pill so
+    // pressing a key on another control doesn't get intercepted by us.
+    document.addEventListener("mousedown", onShortcutOutsideMouse, { capture: true });
+  }
+
+  function stopShortcutRecording() {
+    recordingShortcut = false;
+    window.removeEventListener("keydown", onShortcutKeyDown, { capture: true });
+    window.removeEventListener("blur", stopShortcutRecording);
+    document.removeEventListener("mousedown", onShortcutOutsideMouse, { capture: true });
+  }
+
+  function onShortcutOutsideMouse(e: MouseEvent) {
+    if (!recordingShortcut) return;
+    const target = e.target as HTMLElement | null;
+    if (target && target.closest(".shortcut-row")) return;
+    stopShortcutRecording();
+  }
+
+  function setShortcutPreset(value: string) {
+    if (recordingShortcut) stopShortcutRecording();
+    voiceShortcut = value;
+    recordError = "";
+  }
+
+  function onShortcutKeyDown(e: KeyboardEvent) {
+    if (!recordingShortcut) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      stopShortcutRecording();
+      return;
+    }
+    // Wait for the user to add a non-modifier key.
+    if (MOD_KEY_NAMES.has(e.key)) return;
+
+    const mods: string[] = [];
+    if (e.metaKey) mods.push("Cmd");
+    if (e.ctrlKey) mods.push("Ctrl");
+    if (e.altKey) mods.push("Alt");
+    if (e.shiftKey) mods.push("Shift");
+
+    // e.code is layout-independent ("KeyA", "Digit1", "Space", "F1",
+    // "ArrowUp", "Period", ...). global-hotkey's parser accepts the
+    // same names case-insensitively, so we can pass it through.
+    const key = e.code || e.key;
+    if (!key) return;
+
+    const isStandaloneAllowed = /^F\d{1,2}$/i.test(key);
+    if (mods.length === 0 && !isStandaloneAllowed) {
+      recordError = "修飾キー（Cmd/Ctrl/Option/Shift）と組み合わせてください";
+      return;
+    }
+
+    voiceShortcut = [...mods, key].join("+").toLowerCase();
+    recordError = "";
+    stopShortcutRecording();
+  }
+
+  function formatShortcutLabel(value: string): string {
+    if (!value) return "未設定";
+    if (value.toLowerCase() === "fn") return "Fn";
+    return value
+      .split("+")
+      .map(token => {
+        const t = token.trim().toLowerCase();
+        if (t === "alt" || t === "option") return "Option";
+        if (t === "ctrl" || t === "control") return "Control";
+        if (t === "cmd" || t === "command" || t === "super" || t === "meta") return "⌘";
+        if (t === "shift") return "Shift";
+        if (t.startsWith("key") && t.length === 4) return t.charAt(3).toUpperCase();
+        if (t.startsWith("digit") && t.length === 6) return t.charAt(5);
+        if (t.startsWith("arrow")) {
+          const idx = ["up", "down", "left", "right"].indexOf(t.slice(5));
+          return idx >= 0 ? "↑↓←→".charAt(idx) : t;
+        }
+        if (t.length === 1) return t.toUpperCase();
+        return t.charAt(0).toUpperCase() + t.slice(1);
+      })
+      .filter(Boolean)
+      .join(" + ");
+  }
+
   function getConfig(): AiConfig {
     const p = aiProvider;
     return {
@@ -578,10 +678,20 @@
     );
   });
 
-  onDestroy(() => { unlistenDlProgress?.(); unlistenSttDlProgress?.(); });
+  onDestroy(() => {
+    unlistenDlProgress?.();
+    unlistenSttDlProgress?.();
+    if (recordingShortcut) stopShortcutRecording();
+  });
 
   // React to provider/value changes to apply defaults
   $effect(() => { onProviderSwitch(); void aiProvider; });
+  // Cancel an in-flight shortcut recording if the user disables the feature.
+  $effect(() => {
+    if (voiceShortcutEnabled !== "true" && recordingShortcut) {
+      stopShortcutRecording();
+    }
+  });
   $effect(() => {
     if (!nativeAgentLoaded) return;
     if (voiceShortcutEnabled === lastSavedVoiceShortcutEnabled && voiceShortcut === lastSavedVoiceShortcut && subtitleOverlayEnabled === lastSavedSubtitleOverlayEnabled) return;
@@ -598,9 +708,12 @@
     }
     invoke("save_native_agent_config", {
       config: { voice_shortcut_enabled: voiceShortcutEnabled === "true", voice_shortcut: voiceShortcut, subtitle_overlay_enabled: subtitleOverlayEnabled === "true" },
-    }).catch((e) => {
-      console.error("Failed to save native agent config:", e);
-    });
+    })
+      .then(() => { recordError = ""; })
+      .catch((e) => {
+        console.error("Failed to save native agent config:", e);
+        recordError = `登録できませんでした: ${e}`;
+      });
   });
 </script>
 
@@ -818,12 +931,36 @@
   <div class="row">
     <span class="row-label">トリガーキー</span>
     <div class="row-input">
-      <select bind:value={voiceShortcut} disabled={voiceShortcutEnabled !== "true"}>
-        <option value="fn">Fn</option>
-        <option value="alt+space">Option + Space</option>
-      </select>
-      <div class="hint">既定は Fn です。Fn は片手で押しやすく、押して話して離して送る操作にいちばん自然です。</div>
-      <div class="hint">Option + Space も選べますが、Spotlight など他の入力系ショートカットと競合しないよう注意してください。</div>
+      <div class="shortcut-row">
+        <button
+          type="button"
+          class="shortcut-pill"
+          class:recording={recordingShortcut}
+          class:invalid={!!recordError}
+          class:active={voiceShortcut.toLowerCase() !== "fn" && !recordingShortcut}
+          disabled={voiceShortcutEnabled !== "true"}
+          onclick={() => recordingShortcut ? stopShortcutRecording() : startShortcutRecording()}
+        >
+          {#if recordingShortcut}
+            キーを押してください…（Esc でキャンセル）
+          {:else}
+            {formatShortcutLabel(voiceShortcut)}
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="shortcut-preset"
+          class:active={voiceShortcut.toLowerCase() === "fn" && !recordingShortcut}
+          disabled={voiceShortcutEnabled !== "true"}
+          onclick={() => setShortcutPreset("fn")}
+        >Fn</button>
+      </div>
+      {#if recordError}
+        <div class="hint hint-error">{recordError}</div>
+      {/if}
+      <div class="hint">押している間だけ画面上部中央に音声 AI カプセルを表示し、キーを離すとそのまま AI へ送信します。</div>
+      <div class="hint">既定は Fn（片手で押しやすく、押して話して離して送る操作に自然）です。任意のキー組み合わせを記録するには左のボタンを押してから希望の組み合わせを入力してください。</div>
+      <div class="hint">他のシステム/アプリと競合しない組み合わせを選んでください（例: Spotlight の Cmd+Space は避ける）。</div>
     </div>
   </div>
   <div class="row">
@@ -1077,5 +1214,81 @@
     font-variant-numeric: tabular-nums;
     min-width: 28px;
     text-align: right;
+  }
+
+  /* Voice-shortcut recorder */
+  .shortcut-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .shortcut-pill {
+    flex: 1;
+    min-width: 220px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 0.5px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+  }
+  .shortcut-pill:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+  .shortcut-pill:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .shortcut-pill.active {
+    border-color: var(--accent);
+    background: var(--accent-light);
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .shortcut-pill.recording {
+    border-color: var(--accent);
+    background: var(--accent-light);
+    color: var(--accent);
+    animation: shortcut-pulse 1.4s ease-in-out infinite;
+  }
+  .shortcut-pill.invalid {
+    border-color: var(--red);
+    color: var(--red);
+  }
+  @keyframes shortcut-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent); }
+    50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent); }
+  }
+  .shortcut-preset {
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 0.5px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+  }
+  .shortcut-preset:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+  .shortcut-preset:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .shortcut-preset.active {
+    border-color: var(--accent);
+    background: var(--accent-light);
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .hint.hint-error {
+    color: var(--red);
   }
 </style>

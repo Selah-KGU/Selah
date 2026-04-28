@@ -315,9 +315,23 @@
   onMount(() => {
     tasks = getTaskSnapshot();
     const unsubTasks = onTaskChange(() => { tasks = getTaskSnapshot(); });
-    const taskTickTimer = setInterval(() => {
-      if (activeSection === "tasks") taskTick++;
-    }, 2000);
+    // Only tick when the tasks subsection is actually visible — otherwise
+    // we're firing a 2s timer for a value that nothing reads.
+    let taskTickTimer: ReturnType<typeof setInterval> | null = null;
+    function syncTaskTimer() {
+      if (activeSection === "tasks") {
+        if (!taskTickTimer) {
+          taskTickTimer = setInterval(() => { taskTick++; }, 2000);
+        }
+      } else if (taskTickTimer) {
+        clearInterval(taskTickTimer);
+        taskTickTimer = null;
+      }
+    }
+    syncTaskTimer();
+    const stopTaskTimerEffect = $effect.root(() => {
+      $effect(() => { activeSection; syncTaskTimer(); });
+    });
     void listen("stt-state", () => {
       void fetchDebugInfo();
     }).then((fn) => {
@@ -364,7 +378,8 @@
       unlistenSttError?.();
       unlistenSttRuntimeDebugChanged?.();
       unsubTasks();
-      clearInterval(taskTickTimer);
+      if (taskTickTimer) clearInterval(taskTickTimer);
+      stopTaskTimerEffect();
     };
   });
 </script>

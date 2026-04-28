@@ -142,13 +142,29 @@ pub fn start_notification_loop(app: &AppHandle) {
             log::warn!("notification sync failed: {}", e);
         }
 
-        let mut interval = tokio::time::interval(POLL_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        interval.tick().await;
+        // Adaptive backoff: on consecutive failures, sleep longer between
+        // attempts (5min → 10 → 20 → 40min, capped). Resets on first success.
+        let mut consecutive_failures: u32 = 0;
         loop {
-            interval.tick().await;
-            if let Err(e) = sync_notifications_now(&app).await {
-                log::warn!("notification sync failed: {}", e);
+            let delay = match consecutive_failures {
+                0 => POLL_INTERVAL,
+                1 => POLL_INTERVAL * 2,
+                2 => POLL_INTERVAL * 4,
+                _ => POLL_INTERVAL * 8,
+            };
+            tokio::time::sleep(delay).await;
+            match sync_notifications_now(&app).await {
+                Ok(_) => {
+                    consecutive_failures = 0;
+                }
+                Err(e) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    log::warn!(
+                        "notification sync failed (attempt {}): {}",
+                        consecutive_failures,
+                        e
+                    );
+                }
             }
         }
     });

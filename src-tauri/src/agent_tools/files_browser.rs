@@ -3,6 +3,16 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+static DOCX_PARA_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"</w:p>").unwrap());
+static DOCX_BREAK_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"<w:br\s*/?>").unwrap());
+static DOCX_TAB_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"<w:tab\s*/?>").unwrap());
+static DOCX_TAG_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"<[^>]+>").unwrap());
 
 fn truncate_chars(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
@@ -170,15 +180,10 @@ fn extract_docx_text(path: &Path) -> Result<String, String> {
         .read_to_string(&mut xml)
         .map_err(|e| format!("DOCX本文読み込み失敗: {}", e))?;
 
-    let para_re = regex::Regex::new(r"</w:p>").unwrap();
-    let break_re = regex::Regex::new(r"<w:br\s*/?>").unwrap();
-    let tab_re = regex::Regex::new(r"<w:tab\s*/?>").unwrap();
-    let tag_re = regex::Regex::new(r"<[^>]+>").unwrap();
-
-    let xml = para_re.replace_all(&xml, "\n");
-    let xml = break_re.replace_all(&xml, "\n");
-    let xml = tab_re.replace_all(&xml, "\t");
-    let text = tag_re.replace_all(&xml, " ");
+    let xml = DOCX_PARA_RE.replace_all(&xml, "\n");
+    let xml = DOCX_BREAK_RE.replace_all(&xml, "\n");
+    let xml = DOCX_TAB_RE.replace_all(&xml, "\t");
+    let text = DOCX_TAG_RE.replace_all(&xml, " ");
     let text = decode_xml_entities(&text);
     let text = normalize_extracted_text(&text);
     if text.is_empty() {

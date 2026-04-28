@@ -946,6 +946,11 @@ struct Resampler {
     channels: usize,
     taps: Vec<f32>,
     history: Vec<f32>,
+    /// Scratch buffers reused across calls to avoid per-frame allocations
+    /// in the audio hot path. Capacity grows once during warmup.
+    scratch_mono: Vec<f32>,
+    scratch_buf: Vec<f32>,
+    scratch_filtered: Vec<f32>,
 }
 
 impl Resampler {
@@ -967,6 +972,9 @@ impl Resampler {
             channels: channels.max(1),
             taps,
             history: vec![0.0; history_len],
+            scratch_mono: Vec::new(),
+            scratch_buf: Vec::new(),
+            scratch_filtered: Vec::new(),
         }
     }
 
@@ -974,41 +982,48 @@ impl Resampler {
         if interleaved.is_empty() {
             return Vec::new();
         }
-        // Downmix to mono first. For stereo mics this mitigates phase
-        // cancellation at the capture stage before any further processing.
-        let mono: Vec<f32> = if self.channels == 1 {
-            interleaved.to_vec()
+        // Downmix to mono into reused scratch buffer.
+        self.scratch_mono.clear();
+        if self.channels == 1 {
+            self.scratch_mono.extend_from_slice(interleaved);
         } else {
-            interleaved
-                .chunks(self.channels)
-                .map(|frame| frame.iter().copied().sum::<f32>() / self.channels as f32)
-                .collect()
-        };
+            let inv = 1.0 / self.channels as f32;
+            self.scratch_mono.reserve(interleaved.len() / self.channels);
+            for frame in interleaved.chunks(self.channels) {
+                let sum: f32 = frame.iter().copied().sum();
+                self.scratch_mono.push(sum * inv);
+            }
+        }
 
         if self.taps.is_empty() {
             // src == target rate: no filtering or resampling needed.
-            return mono;
+            // Return a fresh Vec so the caller can mutate independently of
+            // the next process() call.
+            return self.scratch_mono.clone();
         }
 
         // Apply stateful FIR: prepend history, convolve, emit samples that
         // had full filter context, carry the tail forward.
         let m = self.taps.len();
-        let mut buf = Vec::with_capacity(self.history.len() + mono.len());
-        buf.extend_from_slice(&self.history);
-        buf.extend_from_slice(&mono);
+        self.scratch_buf.clear();
+        self.scratch_buf
+            .reserve(self.history.len() + self.scratch_mono.len());
+        self.scratch_buf.extend_from_slice(&self.history);
+        self.scratch_buf.extend_from_slice(&self.scratch_mono);
 
-        let n_out = buf.len().saturating_sub(m - 1);
-        let mut filtered = Vec::with_capacity(n_out);
+        let n_out = self.scratch_buf.len().saturating_sub(m - 1);
+        self.scratch_filtered.clear();
+        self.scratch_filtered.reserve(n_out);
         for i in 0..n_out {
             let mut acc = 0.0f32;
             for k in 0..m {
-                acc += self.taps[k] * buf[i + k];
+                acc += self.taps[k] * self.scratch_buf[i + k];
             }
-            filtered.push(acc);
+            self.scratch_filtered.push(acc);
         }
         self.history.clear();
         self.history
-            .extend_from_slice(&buf[buf.len().saturating_sub(m - 1)..]);
+            .extend_from_slice(&self.scratch_buf[self.scratch_buf.len().saturating_sub(m - 1)..]);
 
         // Linear interpolation from src_rate → 16 kHz on the already
         // band-limited signal. For the common 48 kHz input the step is
@@ -1016,14 +1031,14 @@ impl Resampler {
         // rates (44.1 kHz) the sub-sample jitter at chunk edges is well
         // under 1 input sample — negligible for STT.
         let ratio = TARGET_SAMPLE_RATE as f64 / self.src_rate as f64;
-        let out_len = ((filtered.len() as f64) * ratio).round() as usize;
+        let out_len = ((self.scratch_filtered.len() as f64) * ratio).round() as usize;
         let mut out = Vec::with_capacity(out_len);
         for i in 0..out_len {
             let pos = i as f64 / ratio;
             let idx = pos.floor() as usize;
             let frac = (pos - idx as f64) as f32;
-            let s0 = *filtered.get(idx).unwrap_or(&0.0);
-            let s1 = *filtered.get(idx + 1).unwrap_or(&s0);
+            let s0 = *self.scratch_filtered.get(idx).unwrap_or(&0.0);
+            let s1 = *self.scratch_filtered.get(idx + 1).unwrap_or(&s0);
             out.push(s0 + (s1 - s0) * frac);
         }
         out

@@ -190,7 +190,11 @@ pub fn save_native_agent_config(
 
     #[cfg(target_os = "macos")]
     {
-        let _ = crate::macos_native_agent::apply_config(&_app, &config);
+        // Propagate shortcut registration failures so the UI can tell the
+        // user their chosen combination conflicts (e.g. with a system
+        // shortcut) rather than silently leaving them without a working
+        // hotkey.
+        crate::macos_native_agent::apply_config(&_app, &config)?;
         if config.subtitle_overlay_enabled {
             let _ = crate::macos_subtitle_overlay::open_overlay(&_app);
         } else {

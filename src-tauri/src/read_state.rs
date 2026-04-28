@@ -62,7 +62,14 @@ pub fn mark_read(db: &Database, source: &str, id: &str) {
         "kwic" => &mut data.kwic,
         _ => return,
     };
-    set.insert(id.to_string());
+    // Skip the JSON serialize + DB write when the id is already known —
+    // marking the same notification read twice is common (UI re-renders,
+    // duplicate clicks) and persisting unchanged data is wasted I/O.
+    let inserted = set.insert(id.to_string());
+    let needs_cap = set.len() > MAX_IDS_PER_SOURCE;
+    if !inserted && !needs_cap {
+        return;
+    }
     cap(set);
     persist(db, &data);
 }
@@ -75,10 +82,14 @@ pub fn mark_batch_read(db: &Database, source: &str, ids: Vec<String>) {
         "kwic" => &mut data.kwic,
         _ => return,
     };
+    let mut changed = false;
     for id in ids {
-        if !id.is_empty() && id.len() <= 512 {
-            set.insert(id);
+        if !id.is_empty() && id.len() <= 512 && set.insert(id) {
+            changed = true;
         }
+    }
+    if !changed && set.len() <= MAX_IDS_PER_SOURCE {
+        return;
     }
     cap(set);
     persist(db, &data);

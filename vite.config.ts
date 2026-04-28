@@ -23,7 +23,15 @@ export default defineConfig({
     sourcemap: !!process.env.TAURI_DEBUG,
     rollupOptions: {
       output: {
-        manualChunks: undefined,
+        // Split heavy vendor libs into their own chunk so the browser can
+        // parse them in parallel with the main app bundle on cold start.
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (id.includes("marked")) return "vendor-marked";
+            if (id.includes("dompurify")) return "vendor-dompurify";
+            if (id.includes("html-to-image")) return "vendor-html-to-image";
+          }
+        },
       },
     },
     modulePreload: false,

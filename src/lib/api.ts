@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openExternalUrl } from "./system";
-import { stopTrayStatus } from "./trayStatus";
+import { startTrayStatus, stopTrayStatus } from "./trayStatus";
 import type {
   GradesData,
   CancellationsData,
@@ -48,60 +48,67 @@ function writeDemoJson<T>(key: string, value: T): void {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
-// Global listeners — app-lifetime, no cleanup needed
-listen("luna-login-success", () => {
-  lunaAuthState.set({ authenticated: true });
-});
+// Global listeners — app-lifetime. Registration is idempotent so HMR
+// re-imports do not stack duplicate handlers on the Tauri event bus.
+const __SELAH_LISTENERS_KEY = Symbol.for("selah.api.globalListeners");
+const __selahGlobal = globalThis as unknown as Record<symbol, boolean>;
+if (!__selahGlobal[__SELAH_LISTENERS_KEY]) {
+  __selahGlobal[__SELAH_LISTENERS_KEY] = true;
 
-listen("kwic-login-success", () => {
-  kwicAuthState.set({ authenticated: true });
-});
-
-// Handle login phase 2/3 failures — undo premature auth state
-listen("luna-login-error", () => {
-  lunaAuthState.set({ authenticated: false });
-});
-
-listen("kwic-login-error", () => {
-  kwicAuthState.set({ authenticated: false });
-});
-
-listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
-  mailAuthState.set({
-    authenticated: true,
-    email: event.payload.email,
-    displayName: event.payload.displayName,
+  listen("luna-login-success", () => {
+    lunaAuthState.set({ authenticated: true });
   });
-});
 
-listen("gcal-login-success", () => {
-  gcalAuthState.update(s => ({ ...s, authenticated: true }));
-});
-
-listen("gcal-login-error", () => {
-  gcalAuthState.update(s => ({ ...s, authenticated: false }));
-});
-
-listen("mail-login-error", () => {
-  mailAuthState.set({ authenticated: false, email: "", displayName: "" });
-});
-
-// Refresh AI readiness whenever AI config/model state changes from any window.
-listen("ai-config-changed", () => {
-  updateAiReadiness().catch(() => {
-    resetAiReady();
-    aiReady.set(false);
-    agentReady.set(false);
+  listen("kwic-login-success", () => {
+    kwicAuthState.set({ authenticated: true });
   });
-});
 
-listen<{ keys?: string[] }>("backend-cache-updated", (event) => {
-  const keys = event.payload?.keys ?? [];
-  if (!keys.length) return;
-  syncBackendManagedKeys(keys).catch((err) => {
-    console.warn("[Selah] backend cache sync failed:", err);
+  // Handle login phase 2/3 failures — undo premature auth state
+  listen("luna-login-error", () => {
+    lunaAuthState.set({ authenticated: false });
   });
-});
+
+  listen("kwic-login-error", () => {
+    kwicAuthState.set({ authenticated: false });
+  });
+
+  listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
+    mailAuthState.set({
+      authenticated: true,
+      email: event.payload.email,
+      displayName: event.payload.displayName,
+    });
+  });
+
+  listen("gcal-login-success", () => {
+    gcalAuthState.update(s => ({ ...s, authenticated: true }));
+  });
+
+  listen("gcal-login-error", () => {
+    gcalAuthState.update(s => ({ ...s, authenticated: false }));
+  });
+
+  listen("mail-login-error", () => {
+    mailAuthState.set({ authenticated: false, email: "", displayName: "" });
+  });
+
+  // Refresh AI readiness whenever AI config/model state changes from any window.
+  listen("ai-config-changed", () => {
+    updateAiReadiness().catch(() => {
+      resetAiReady();
+      aiReady.set(false);
+      agentReady.set(false);
+    });
+  });
+
+  listen<{ keys?: string[] }>("backend-cache-updated", (event) => {
+    const keys = event.payload?.keys ?? [];
+    if (!keys.length) return;
+    syncBackendManagedKeys(keys).catch((err) => {
+      console.warn("[Selah] backend cache sync failed:", err);
+    });
+  });
+}
 
 function applyBackendSessionStatus(status: BackendSessionStatus) {
   lunaAuthState.set({ authenticated: status.luna_authenticated });
@@ -129,9 +136,13 @@ function applyBackendSessionStatus(status: BackendSessionStatus) {
   }
 }
 
-listen<BackendSessionStatus>("backend-session-status", (event) => {
-  applyBackendSessionStatus(event.payload);
-});
+const __SELAH_SESSION_STATUS_KEY = Symbol.for("selah.api.backendSessionStatus");
+if (!(__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATUS_KEY]) {
+  (__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATUS_KEY] = true;
+  listen<BackendSessionStatus>("backend-session-status", (event) => {
+    applyBackendSessionStatus(event.payload);
+  });
+}
 
 interface SessionStatus {
   valid: boolean;

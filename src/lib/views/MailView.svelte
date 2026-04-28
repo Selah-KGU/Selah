@@ -26,6 +26,28 @@
 
   let unlistenLogin: (() => void) | null = null;
 
+  // Cache sanitized HTML per message id so re-renders don't re-run DOMPurify
+  // on potentially large email bodies. Bound the cache so long sessions
+  // don't accumulate stale entries.
+  const sanitizedBodyCache = new Map<string, string>();
+  const SANITIZED_BODY_CACHE_MAX = 32;
+  function sanitizedBodyHtml(msg: MailDetail): string {
+    if (!msg.body || msg.body.contentType !== "html" || !msg.body.content) return "";
+    const cached = sanitizedBodyCache.get(msg.id);
+    if (cached !== undefined) return cached;
+    const html = DOMPurify.sanitize(msg.body.content, {
+      FORBID_TAGS: ["form", "input", "button", "textarea", "select", "script", "iframe", "object", "embed", "style"],
+      FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "formaction", "action", "style"],
+      ALLOW_DATA_ATTR: false,
+    });
+    if (sanitizedBodyCache.size >= SANITIZED_BODY_CACHE_MAX) {
+      const firstKey = sanitizedBodyCache.keys().next().value;
+      if (firstKey !== undefined) sanitizedBodyCache.delete(firstKey);
+    }
+    sanitizedBodyCache.set(msg.id, html);
+    return html;
+  }
+
   // SWR: pick up background poll refreshes
   const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (fresh) => {
     if (fresh && !selectedMessage && page === 0) {
@@ -162,33 +184,51 @@
     downloadErrors = {};
   }
 
+  // Cached per (iso, today-bucket) so the per-row template doesn't allocate
+  // a Date + run toDateString twice on every reactive re-render.
+  let dateCache = new Map<string, string>();
+  let dateCacheBucket = "";
   function formatDate(iso: string | null): string {
     if (!iso) return "";
-    const d = new Date(iso);
     const now = new Date();
-    const isToday = d.toDateString() === now.toDateString();
-    if (isToday) {
-      return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+    const bucket = now.toDateString();
+    if (bucket !== dateCacheBucket) {
+      dateCache = new Map();
+      dateCacheBucket = bucket;
     }
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === yesterday.toDateString()) {
-      return "昨日";
+    const cached = dateCache.get(iso);
+    if (cached !== undefined) return cached;
+    const d = new Date(iso);
+    const dStr = d.toDateString();
+    let out: string;
+    if (dStr === bucket) {
+      out = d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+    } else {
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      if (dStr === yesterday.toDateString()) {
+        out = "昨日";
+      } else if (d.getFullYear() === now.getFullYear()) {
+        out = `${d.getMonth() + 1}/${d.getDate()}`;
+      } else {
+        out = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+      }
     }
-    const isThisYear = d.getFullYear() === now.getFullYear();
-    if (isThisYear) {
-      return `${d.getMonth() + 1}/${d.getDate()}`;
-    }
-    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+    dateCache.set(iso, out);
+    return out;
   }
 
+  const fullDateCache = new Map<string, string>();
   function formatFullDate(iso: string | null): string {
     if (!iso) return "";
-    const d = new Date(iso);
-    return d.toLocaleDateString("ja-JP", {
+    const cached = fullDateCache.get(iso);
+    if (cached !== undefined) return cached;
+    const out = new Date(iso).toLocaleDateString("ja-JP", {
       year: "numeric", month: "long", day: "numeric",
       weekday: "short", hour: "2-digit", minute: "2-digit",
     });
+    fullDateCache.set(iso, out);
+    return out;
   }
 
   function senderName(msg: MailMessage): string {
@@ -203,13 +243,19 @@
     return name.charAt(0).toUpperCase();
   }
 
-  // Simple hash for avatar color
+  // Avatar colour is purely a function of the sender's address — cache so
+  // the per-row hash isn't recomputed on every reactive re-render of the list.
+  const avatarColorCache = new Map<string, string>();
   function avatarColor(msg: MailMessage): string {
     const addr = msg.from?.emailAddress?.address || senderName(msg);
+    const cached = avatarColorCache.get(addr);
+    if (cached !== undefined) return cached;
     let h = 0;
     for (let i = 0; i < addr.length; i++) h = ((h << 5) - h + addr.charCodeAt(i)) | 0;
     const hue = ((h % 360) + 360) % 360;
-    return `hsl(${hue}, 45%, 55%)`;
+    const out = `hsl(${hue}, 45%, 55%)`;
+    avatarColorCache.set(addr, out);
+    return out;
   }
 
   let lastFetchTs = $state<number | null>(null);
@@ -333,11 +379,7 @@
           <div class="detail-body" use:externalLinkDelegate>
             {#if selectedMessage.body?.content}
               {#if selectedMessage.body.contentType === "html"}
-                {@html DOMPurify.sanitize(selectedMessage.body.content, {
-                  FORBID_TAGS: ['form', 'input', 'button', 'textarea', 'select', 'script', 'iframe', 'object', 'embed', 'style'],
-                  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'formaction', 'action', 'style'],
-                  ALLOW_DATA_ATTR: false,
-                })}
+                {@html sanitizedBodyHtml(selectedMessage)}
               {:else}
                 <pre class="plain-text">{selectedMessage.body.content}</pre>
               {/if}
@@ -392,48 +434,47 @@
       </div>
     {:else}
       <!-- Message list -->
-      <div class="mail-list">
-        {#each messages as msg (msg.id)}
-          <button
-            class="mail-item"
-            class:unread={!msg.isRead}
-            onclick={() => openMessage(msg)}
-          >
-            <div class="avatar" style="background:{avatarColor(msg)}">
-              {senderInitial(msg)}
-            </div>
-            <div class="mail-content">
-              <div class="mail-top-row">
-                <span class="mail-sender">{senderName(msg)}</span>
-                <span class="mail-date">{formatDate(msg.receivedDateTime)}</span>
+      {#if messages.length === 0 && !loading}
+        <div class="center-state" style="height:300px">
+          <Icon name="envelope" size={32} />
+          <span style="margin-top:8px">受信メールはありません</span>
+        </div>
+      {:else}
+        <div class="mail-list">
+          {#each messages as msg (msg.id)}
+            <button
+              class="mail-item"
+              class:unread={!msg.isRead}
+              onclick={() => openMessage(msg)}
+            >
+              <div class="avatar" style="background:{avatarColor(msg)}">
+                {senderInitial(msg)}
               </div>
-              <div class="mail-subject">
-                {msg.subject || "(件名なし)"}
-                {#if msg.hasAttachments}
-                  <Icon name="paperclip" size={11} />
-                {/if}
+              <div class="mail-content">
+                <div class="mail-top-row">
+                  <span class="mail-sender">{senderName(msg)}</span>
+                  <span class="mail-date">{formatDate(msg.receivedDateTime)}</span>
+                </div>
+                <div class="mail-subject">
+                  {msg.subject || "(件名なし)"}
+                  {#if msg.hasAttachments}
+                    <Icon name="paperclip" size={11} />
+                  {/if}
+                </div>
+                <div class="mail-preview">{msg.bodyPreview || ""}</div>
               </div>
-              <div class="mail-preview">{msg.bodyPreview || ""}</div>
-            </div>
-            {#if !msg.isRead}
-              <div class="unread-dot"></div>
-            {/if}
-          </button>
-        {/each}
-
-        {#if messages.length >= (page + 1) * PAGE_SIZE}
-          <button class="load-more-btn" onclick={loadMore} disabled={loadingMore}>
-            {loadingMore ? "読み込み中..." : "さらに表示"}
-          </button>
-        {/if}
-
-        {#if messages.length === 0 && !loading}
-          <div class="center-state" style="height:300px">
-            <Icon name="envelope" size={32} />
-            <span style="margin-top:8px">受信メールはありません</span>
-          </div>
-        {/if}
-      </div>
+              {#if !msg.isRead}
+                <div class="unread-dot"></div>
+              {/if}
+            </button>
+          {/each}
+          {#if messages.length >= (page + 1) * PAGE_SIZE}
+            <button class="load-more-btn" onclick={loadMore} disabled={loadingMore}>
+              {loadingMore ? "読み込み中..." : "さらに表示"}
+            </button>
+          {/if}
+        </div>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -617,16 +658,15 @@
 
   /* ---- Mail list ---- */
   .mail-list {
-    flex: 1;
-    overflow-y: auto;
-    margin: 0 -24px;
-    padding: 0 24px;
+    display: flex;
+    flex-direction: column;
   }
 
   .mail-item {
     display: flex;
     align-items: flex-start;
     width: 100%;
+    min-height: 84px;
     padding: 14px 12px;
     background: transparent;
     border: none;
@@ -637,10 +677,7 @@
     gap: 12px;
     border-radius: 0;
     position: relative;
-  }
-
-  .mail-item:first-child {
-    border-top: 0.5px solid var(--glass-border);
+    box-sizing: border-box;
   }
 
   .mail-item:hover {
