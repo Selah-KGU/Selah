@@ -10,14 +10,22 @@
   let error = $state("");
   let todoItems = $state<LunaTodoItem[]>([]);
   let selectedCourse = $state("all");
-  let hideOverdue = $state(false);
+  let hideOverdue = $state(true);
 
   // AI state
   let aiResult = $state<AiTodoAnalysis | null>(null);
   let aiLoading = $state(false);
   let showAiPage = $state(false);
 
-  let pending = $derived(todoItems.filter(t => !t.status.includes("提出済")));
+  // Drop tasks that are more than 7 days overdue — at that point Luna almost
+  // always disallows submission, so they only clutter the list and counts.
+  const STALE_OVERDUE_MS = 7 * 86400_000;
+  let pending = $derived(todoItems.filter(t => {
+    if (t.status.includes("提出済")) return false;
+    if (!t.deadline) return true;
+    const overdueBy = Date.now() - parseDeadline(t.deadline);
+    return overdueBy < STALE_OVERDUE_MS;
+  }));
   let hasOverdue = $derived(pending.some(t => urgency(t.deadline) === "overdue"));
   let overdueCount = $derived(pending.filter(t => urgency(t.deadline) === "overdue").length);
   let displayCount = $derived(hideOverdue ? pending.length - overdueCount : pending.length);

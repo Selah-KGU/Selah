@@ -1318,6 +1318,84 @@ pub fn parse_course_detail(html: &str) -> CourseDetail {
     CourseDetail { fields: Vec::new() }
 }
 
+/// Locate the "履修基準年度 / Standard Year for Registration" field in a parsed
+/// CourseDetail. Returns the index into `fields`, if any.
+#[allow(dead_code)]
+pub fn standard_year_field_index(fields: &[(String, String)]) -> Option<usize> {
+    fields.iter().position(|(label, _)| {
+        let l = label.to_lowercase();
+        label.contains("履修基準年度")
+            || label.contains("履修基準")
+            || l.contains("standard year for registration")
+            || l.contains("standard year")
+    })
+}
+
+/// Convert full-width digits (０-９) to ASCII digits in-place. Other chars pass through.
+/// KGC pages render numerals as full-width, so any digit-aware parsing must
+/// normalize first or it sees zero digits.
+#[allow(dead_code)]
+pub fn normalize_fullwidth_digits(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if ('\u{FF10}'..='\u{FF19}').contains(&c) {
+                char::from_u32(c as u32 - 0xFF10 + b'0' as u32).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Parse the value of "履修基準年度" into an inclusive year range.
+/// Returns `(min, max)` where `max = 99` means "no upper bound".
+/// Returns `None` if no digits could be parsed.
+#[allow(dead_code)]
+pub fn parse_standard_year_range(value: &str) -> Option<(u32, u32)> {
+    // Normalize full-width digits first — KGC writes "１年" not "1年".
+    let v_owned = normalize_fullwidth_digits(value);
+    let v = v_owned.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if v.contains("全学年") || v.contains("不問") {
+        return Some((1, 99));
+    }
+    let mut years: Vec<u32> = Vec::new();
+    let mut digits = String::new();
+    for ch in v.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+        } else {
+            if !digits.is_empty() {
+                if let Ok(n) = digits.parse::<u32>() {
+                    if (1..=10).contains(&n) {
+                        years.push(n);
+                    }
+                }
+                digits.clear();
+            }
+        }
+    }
+    if !digits.is_empty() {
+        if let Ok(n) = digits.parse::<u32>() {
+            if (1..=10).contains(&n) {
+                years.push(n);
+            }
+        }
+    }
+    if years.is_empty() {
+        return None;
+    }
+    let min = *years.iter().min().unwrap();
+    let max = if v.contains("以上") {
+        99
+    } else {
+        *years.iter().max().unwrap()
+    };
+    Some((min, max))
+}
+
 /// Structured textbook/reference entry from syllabus detail page.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TextbookEntry {
@@ -1725,6 +1803,57 @@ pub fn detect_delivery_mode_from_detail(html: &str) -> String {
 
     // No dedicated field found — return empty so session-plan per-session modes are used
     String::new()
+}
+
+#[cfg(test)]
+mod standard_year_tests {
+    use super::*;
+
+    #[test]
+    fn parses_simple_year() {
+        assert_eq!(parse_standard_year_range("1年"), Some((1, 1)));
+        assert_eq!(parse_standard_year_range("3年生"), Some((3, 3)));
+    }
+
+    #[test]
+    fn parses_open_ended_above() {
+        assert_eq!(parse_standard_year_range("2年以上"), Some((2, 99)));
+        assert_eq!(parse_standard_year_range("1年生以上"), Some((1, 99)));
+    }
+
+    #[test]
+    fn parses_range_and_list() {
+        assert_eq!(parse_standard_year_range("1～4年"), Some((1, 4)));
+        assert_eq!(parse_standard_year_range("1・2・3・4年"), Some((1, 4)));
+        assert_eq!(parse_standard_year_range("2年〜3年"), Some((2, 3)));
+    }
+
+    #[test]
+    fn parses_unrestricted() {
+        assert_eq!(parse_standard_year_range("全学年"), Some((1, 99)));
+    }
+
+    #[test]
+    fn rejects_no_digits() {
+        assert_eq!(parse_standard_year_range(""), None);
+        assert_eq!(parse_standard_year_range("—"), None);
+    }
+
+    #[test]
+    fn parses_fullwidth_digits() {
+        assert_eq!(parse_standard_year_range("１年"), Some((1, 1)));
+        assert_eq!(parse_standard_year_range("２年以上"), Some((2, 99)));
+        assert_eq!(parse_standard_year_range("１〜４年"), Some((1, 4)));
+    }
+
+    #[test]
+    fn locates_field_by_label() {
+        let fields = vec![
+            ("授業科目".to_string(), "Demo".to_string()),
+            ("履修基準年度 Standard Year for Registration".to_string(), "１年".to_string()),
+        ];
+        assert_eq!(standard_year_field_index(&fields), Some(1));
+    }
 }
 
 #[cfg(test)]

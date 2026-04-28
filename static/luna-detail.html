@@ -386,6 +386,10 @@
   .meta-row:last-child { border-bottom:none; }
   .meta-key { width:120px; flex-shrink:0; color:var(--text-secondary); font-weight:500; }
   .meta-value { flex:1; color:var(--text-primary); word-break:break-word; }
+  .meta-row.std-year-row { background:color-mix(in srgb, var(--accent) 5%, transparent); }
+  .year-range-badge { display:inline-block; margin-left:8px; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; vertical-align:middle; white-space:nowrap; background:rgba(120,120,128,0.15); color:var(--text-secondary); }
+  .skel-bar { display:inline-block; height:11px; border-radius:6px; background:linear-gradient(90deg, rgba(120,120,128,0.13) 25%, rgba(120,120,128,0.22) 37%, rgba(120,120,128,0.13) 63%); background-size:400% 100%; animation: skel-shimmer 1.4s ease-in-out infinite; vertical-align:middle; }
+  @keyframes skel-shimmer { 0% { background-position:100% 50%; } 100% { background-position:0 50%; } }
   .section { margin:16px 0; }
   .section-header { display:flex; align-items:center; gap:6px; font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:8px; padding-bottom:6px; border-bottom:0.5px solid var(--border); }
   .textbook-block { margin-bottom:8px; padding:8px 10px; background:var(--card-bg); border:0.5px solid var(--card-border); border-radius:var(--inner-radius); font-size:12px; }
@@ -2988,19 +2992,78 @@
     }
 
     // KGC / Syllabus Detail (key-value fields)
+    function renderSyllabusLoading(courseName) {
+      var c = document.getElementById('content');
+      var h = '<div class="detail-wrap">';
+      h += '<div class="course-label">授業・時間割照会（詳細）</div>';
+      if (courseName) h += '<div class="page-title">' + escapeHtml(courseName) + '</div>';
+      h += '<div class="meta-table">';
+      for (var i = 0; i < 6; i++) {
+        var keyW = 60 + ((i * 13) % 40);
+        var valW = 50 + ((i * 17) % 45);
+        h += '<div class="meta-row"><span class="meta-key"><span class="skel-bar" style="width:' + keyW + '%"></span></span>';
+        h += '<span class="meta-value"><span class="skel-bar" style="width:' + valW + '%"></span></span></div>';
+      }
+      h += '</div></div>';
+      c.innerHTML = h;
+    }
+
+    function parseStandardYearRange(value) {
+      // Normalize full-width digits — KGC writes "１年" not "1年".
+      var v = (value || '').trim().replace(/[０-９]/g, function(d) {
+        return String.fromCharCode(d.charCodeAt(0) - 0xFEE0);
+      });
+      if (!v) return null;
+      if (v.indexOf('全学年') >= 0 || v.indexOf('不問') >= 0) return [1, 99];
+      var nums = (v.match(/\d+/g) || []).map(function(n) { return parseInt(n, 10); }).filter(function(n) { return n >= 1 && n <= 10; });
+      if (nums.length === 0) return null;
+      var min = Math.min.apply(null, nums);
+      var max = v.indexOf('以上') >= 0 ? 99 : Math.max.apply(null, nums);
+      return [min, max];
+    }
+
     function renderKgcDetail(data, courseName) {
       var c = document.getElementById('content');
       if (!data) { c.innerHTML = '<div class="error">データがありません</div>'; return; }
       if (data.error) { c.innerHTML = '<div class="error">' + escapeHtml(data.error) + '</div>'; return; }
-      var fields = data.fields || [];
+      var fields = (data.fields || []).slice();
       if (fields.length === 0) { c.innerHTML = '<div class="error">詳細情報を取得できませんでした。</div>'; return; }
+
+      // Promote "履修基準年度 / Standard Year for Registration" to the top so
+      // students see whether they can register before scrolling through everything.
+      var stdYearIdx = -1;
+      for (var k = 0; k < fields.length; k++) {
+        var lbl = fields[k][0] || '';
+        var lblLower = lbl.toLowerCase();
+        if (lbl.indexOf('履修基準年度') >= 0 || lbl.indexOf('履修基準') >= 0
+            || lblLower.indexOf('standard year for registration') >= 0
+            || lblLower.indexOf('standard year') >= 0) {
+          stdYearIdx = k;
+          break;
+        }
+      }
+      if (stdYearIdx > 0) {
+        var promoted = fields.splice(stdYearIdx, 1)[0];
+        fields.unshift(promoted);
+      }
+
       var h = '<div class="detail-wrap">';
       h += '<div class="course-label">授業・時間割照会（詳細）</div>';
       if (courseName) h += '<div class="page-title">' + escapeHtml(courseName) + '</div>';
       h += '<div class="meta-table">';
       for (var i = 0; i < fields.length; i++) {
         var label = fields[i][0] || '', value = fields[i][1] || '—';
-        h += '<div class="meta-row"><span class="meta-key">' + escapeHtml(label) + '</span><span class="meta-value">' + linkifyText(value) + '</span></div>';
+        var isStdYearRow = (stdYearIdx >= 0 && i === 0);
+        var rowClass = isStdYearRow ? 'meta-row std-year-row' : 'meta-row';
+        h += '<div class="' + rowClass + '"><span class="meta-key">' + escapeHtml(label) + '</span>';
+        h += '<span class="meta-value">' + linkifyText(value);
+        if (isStdYearRow) {
+          var range = parseStandardYearRange(value);
+          if (range) {
+            h += ' <span class="year-range-badge">' + range[0] + '年生以上</span>';
+          }
+        }
+        h += '</span></div>';
       }
       h += '</div></div>';
       c.innerHTML = h;
@@ -3330,7 +3393,46 @@
           var wlabel = params.get('wlabel') || '';
           var sylName = params.get('name') || '授業詳細';
           if (!wlabel) { renderDetail({ error: 'ラベルが指定されていません' }); return; }
-          renderKgcDetail(await invoke('get_syllabus_detail', { label: wlabel }), sylName);
+          // Show a skeleton immediately — the backend creates the window first
+          // and fetches KGC data in the background, emitting `syllabus-ready`
+          // (or `syllabus-error`) when it's done.
+          renderSyllabusLoading(sylName);
+          var event = window.__TAURI__?.event;
+          if (!event) {
+            renderDetail({ error: 'Tauri event API が利用できません' });
+            return;
+          }
+          var settled = false;
+          var unlistenReady = await event.listen('syllabus-ready', async function() {
+            if (settled) return;
+            settled = true;
+            try {
+              var detail = await invoke('get_syllabus_detail', { label: wlabel });
+              renderKgcDetail(detail, sylName);
+            } catch (e) {
+              renderDetail({ error: '詳細データの取得に失敗: ' + String(e) });
+            }
+            try { unlistenReady(); } catch {}
+            try { unlistenError(); } catch {}
+          });
+          var unlistenError = await event.listen('syllabus-error', function(ev) {
+            if (settled) return;
+            settled = true;
+            renderDetail({ error: String(ev?.payload || '取得に失敗しました') });
+            try { unlistenReady(); } catch {}
+            try { unlistenError(); } catch {}
+          });
+          // Race condition guard: backend might emit before we register the
+          // listener. After listening, optimistically poll the store once.
+          try {
+            var maybeDetail = await invoke('get_syllabus_detail', { label: wlabel });
+            if (maybeDetail && !settled) {
+              settled = true;
+              renderKgcDetail(maybeDetail, sylName);
+              try { unlistenReady(); } catch {}
+              try { unlistenError(); } catch {}
+            }
+          } catch (_) { /* not ready yet — wait for the event */ }
         } else {
           if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
           _currentPagePath = path;

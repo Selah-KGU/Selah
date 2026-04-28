@@ -2,7 +2,7 @@ use super::{kgc_get, kgc_http, kgc_post};
 use crate::KgcState;
 use regex::Regex;
 use std::sync::LazyLock;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[tauri::command]
 pub async fn search_syllabus(
@@ -329,17 +329,85 @@ pub async fn toggle_syllabus_bookmark(
     Ok(success)
 }
 
+/// Open the syllabus detail window *immediately* (showing a loading state)
+/// and run the slow KGC fetch in the background. The window listens for
+/// `syllabus-ready` / `syllabus-error` events emitted to its own label.
+///
+/// The previous implementation blocked window creation on 2-3 sequential KGC
+/// HTTP requests, which made click→window take 1-3 seconds with no feedback.
 #[tauri::command]
 pub async fn open_syllabus_detail(
     app: tauri::AppHandle,
-    kgc_state: State<'_, KgcState>,
     class_code: String,
     course_name: String,
 ) -> Result<(), String> {
-    let _kgc_gate = kgc_state.gate.lock().await;
-    let http = kgc_http(kgc_state.inner()).await?;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(1000);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let label = format!("syllabus-detail-{}", id);
 
-    let html = find_syllabus_results_by_class_code(&http, &class_code).await?;
+    // 1. Create the window first so the user gets instant visual feedback.
+    let encoded_name = urlencoding::encode(&course_name);
+    let encoded_label = urlencoding::encode(&label);
+    let url_str = format!(
+        "luna-detail.html?mode=syllabus&name={}&wlabel={}",
+        encoded_name, encoded_label
+    );
+
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_str.into()))
+        .title(&course_name)
+        .inner_size(480.0, 560.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
+
+    // 2. Spawn the actual KGC fetch in the background. When it finishes (or
+    //    errors out), emit an event to the window so it can swap loading →
+    //    rendered content.
+    let app_clone = app.clone();
+    let label_clone = label.clone();
+    tauri::async_runtime::spawn(async move {
+        let kgc_state = app_clone.state::<KgcState>();
+        let result = fetch_syllabus_detail(&kgc_state, &class_code).await;
+        match result {
+            Ok(detail) => {
+                let store = app_clone.state::<SyllabusDetailData>();
+                let stored = match store.0.lock() {
+                    Ok(mut map) => {
+                        if map.len() > 20 {
+                            map.clear();
+                        }
+                        map.insert(label_clone.clone(), detail);
+                        true
+                    }
+                    Err(_) => false,
+                };
+                drop(store);
+                if stored {
+                    let _ = app_clone.emit_to(&label_clone, "syllabus-ready", &label_clone);
+                } else {
+                    let _ = app_clone.emit_to(&label_clone, "syllabus-error", "internal: state lock poisoned");
+                }
+            }
+            Err(e) => {
+                log::error!("Syllabus detail fetch failed for '{}': {}", class_code, e);
+                let _ = app_clone.emit_to(&label_clone, "syllabus-error", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Inner KGC fetch, factored out so `open_syllabus_detail` can `spawn` it.
+async fn fetch_syllabus_detail(
+    kgc_state: &KgcState,
+    class_code: &str,
+) -> Result<crate::parser::CourseDetail, String> {
+    let _kgc_gate = kgc_state.gate.lock().await;
+    let http = kgc_http(kgc_state).await?;
+
+    let html = find_syllabus_results_by_class_code(&http, class_code).await?;
 
     let results = crate::syllabus::parse_search_results_public(&html)
         .map_err(|e| format!("検索結果の解析に失敗: {}", e))?;
@@ -401,36 +469,7 @@ pub async fn open_syllabus_detail(
         detail.fields.len(),
         detail_html.len()
     );
-
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static COUNTER: AtomicU32 = AtomicU32::new(1000);
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let label = format!("syllabus-detail-{}", id);
-
-    {
-        let state = app.state::<SyllabusDetailData>();
-        let mut map = state.0.lock().map_err(|e| e.to_string())?;
-        if map.len() > 20 {
-            map.clear();
-        }
-        map.insert(label.clone(), detail);
-    }
-
-    let encoded_name = urlencoding::encode(&course_name);
-    let encoded_label = urlencoding::encode(&label);
-    let url_str = format!(
-        "luna-detail.html?mode=syllabus&name={}&wlabel={}",
-        encoded_name, encoded_label
-    );
-
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_str.into()))
-        .title(&course_name)
-        .inner_size(480.0, 560.0)
-        .resizable(true)
-        .build()
-        .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
-
-    Ok(())
+    Ok(detail)
 }
 
 pub struct SyllabusDetailData(
