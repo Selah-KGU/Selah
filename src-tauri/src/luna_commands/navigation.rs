@@ -158,6 +158,9 @@ pub async fn luna_open_detail_window(
             if let Some(kp) = &kgc_path {
                 parts.push_str(&format!("&kgcPath={}", urlencoding::encode(kp)));
             }
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
             parts
         }
         Some("attendance") => {

@@ -52,4 +52,19 @@ mod tests {
         println!("--- Microsoft Mail Client ID ---");
         println!("{}", encode(ms_id));
     }
+
+    /// Pin the embedded byte arrays to the plaintext credentials so a typo or
+    /// truncation in the array (we shipped a `client_id` missing its leading
+    /// digit once) fails the build instead of OAuth at runtime.
+    #[test]
+    fn embedded_defaults_match_plaintext() {
+        assert_eq!(
+            crate::google_calendar::default_client_id_for_test(),
+            "73896007148-v58haqu83810imt0miarem0299g43uod.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            crate::google_calendar::default_client_secret_for_test(),
+            "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"
+        );
+    }
 }

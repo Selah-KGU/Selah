@@ -21,8 +21,11 @@ pub async fn gcal_save_config(
     config: GoogleCalConfig,
 ) -> Result<(), String> {
     let mut gcal = state.client.lock().await;
+    // Empty fields mean "use built-in default" — persist the user's choice
+    // (empty on disk) but keep the resolved defaults in memory so OAuth works
+    // immediately without a restart.
     crate::google_calendar::save_config(&config)?;
-    gcal.config = config;
+    gcal.config = crate::google_calendar::resolve_with_defaults(config);
     Ok(())
 }
 
@@ -131,13 +134,57 @@ pub async fn gcal_open_login(
         Err(_) => return Err("ローカルサーバー起動タイムアウト".into()),
     }
 
+    log::info!(
+        "OAuth listener ready on port {}, opening browser to: {}",
+        port,
+        crate::client::safe_truncate(&auth_url, 200)
+    );
+
     // Open system browser via sandbox-safe opener plugin after listener is ready
     use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(&auth_url, None::<&str>)
-        .map_err(|e| format!("ブラウザを開けませんでした: {}", e))?;
+    if let Err(e) = app.opener().open_url(&auth_url, None::<&str>) {
+        log::warn!("opener plugin failed to open URL: {} — trying OS fallback", e);
+        if let Err(fallback_err) = open_url_os_fallback(&auth_url) {
+            log::error!("OS fallback also failed: {}", fallback_err);
+            return Err(format!(
+                "ブラウザを開けませんでした: {} (fallback: {})",
+                e, fallback_err
+            ));
+        }
+    }
 
+    log::info!("Browser launch requested for Google Calendar OAuth");
     Ok(())
+}
+
+/// OS-level fallback for opening a URL when the Tauri opener plugin fails.
+fn open_url_os_fallback(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("`open` spawn failed: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|e| format!("`start` spawn failed: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("`xdg-open` spawn failed: {}", e))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("No OS-level fallback for this platform".into())
 }
 
 /// Parse the OAuth callback request, extract code, but don't send response yet.

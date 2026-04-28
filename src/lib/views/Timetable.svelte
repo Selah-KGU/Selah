@@ -169,7 +169,7 @@
       try {
         await invoke("luna_open_detail_window", {
           path: "", title: name, mode: "course", idnumber: c.luna.luna_id,
-          kgcPath: c.kgc?.detail_path || null,
+          kgcPath: c.kgc?.detail_path || null, courseName: name,
         });
       } catch (e: any) { console.error("Failed to open Luna course:", e); }
     } else if (c.kgc?.detail_path) {
@@ -183,7 +183,7 @@
     if (isDemoActive()) return;
     invoke("luna_open_detail_window", {
       path: "", title: name, mode: "course", idnumber,
-      kgcPath: null,
+      kgcPath: null, courseName: name,
     }).catch(console.error);
   }
 

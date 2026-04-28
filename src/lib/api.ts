@@ -1016,12 +1016,12 @@ export async function gcalSaveConfig(clientId: string, clientSecret: string): Pr
     writeDemoJson(DEMO_GCAL_CONFIG_KEY, { client_id: clientId, client_secret: clientSecret });
     return;
   }
-  return invoke("gcal_save_config", { clientId, clientSecret });
+  return invoke("gcal_save_config", { config: { client_id: clientId, client_secret: clientSecret } });
 }
 
 export async function gcalClearCalendar(): Promise<void> {
   if (_isDemo()) return;
-  return invoke("gcal_clear_calendar");
+  return invoke("gcal_clear_calendar", { deleteCalendar: false });
 }
 
 export async function getDataCache(key: string): Promise<string | null> {

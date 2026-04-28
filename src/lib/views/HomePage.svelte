@@ -813,7 +813,7 @@ suggestionsのルール：
       try {
         await invoke("luna_open_detail_window", {
           path: "", title: entry.name, mode: "course", idnumber: entry.luna_id,
-          kgcPath: entry.detail_path || null,
+          kgcPath: entry.detail_path || null, courseName: entry.name,
         });
         return;
       } catch (e) {
