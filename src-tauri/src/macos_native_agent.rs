@@ -1786,6 +1786,11 @@ fn register_appearance_observer(app: AppHandle) {
                 SYSTEM_IS_DARK.store(is_dark_mode(), Ordering::Relaxed);
                 apply_theme(&Theme::current());
             });
+            // Notify other modules (subtitle overlay etc.) that the
+            // effective dark/light state has changed even though the user
+            // didn't manually flip the toggle. The same event name is used
+            // for explicit user changes so listeners stay simple.
+            let _ = app_ref.emit("app-theme-changed", ());
         });
 
         let _: () = msg_send![

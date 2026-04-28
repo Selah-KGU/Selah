@@ -165,6 +165,88 @@ fn is_dark_mode() -> bool {
     }
 }
 
+fn app_theme_mode(app: &AppHandle) -> String {
+    let state = app.state::<crate::ThemeState>();
+    let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    guard.clone()
+}
+
+/// Resolves the effective dark/light mode for the overlay, honouring the
+/// user's main-window preference ("light" / "dark") and falling back to the
+/// real system appearance for "system" mode.
+fn effective_is_dark(app: &AppHandle) -> bool {
+    match app_theme_mode(app).as_str() {
+        "light" => false,
+        "dark" => true,
+        _ => is_dark_mode(),
+    }
+}
+
+/// Re-applies all theme-dependent layer/colour properties on the live panel.
+/// Safe to call any time after `build_overlay_panel`; no-op if the panel
+/// hasn't been constructed yet.
+fn apply_overlay_theme(dark: bool) {
+    SYSTEM_IS_DARK.store(dark, Ordering::Relaxed);
+    UI.with(|ui| {
+        let ui = ui.borrow();
+        if let Some(cap) = &ui.capsule_view {
+            if let Some(l) = cap.layer() {
+                if dark {
+                    l.setShadowColor(Some(&srgb(60, 140, 255, 0.55).CGColor()));
+                    l.setShadowRadius(32.0);
+                    l.setShadowOpacity(0.30);
+                } else {
+                    l.setShadowColor(Some(&srgb(0, 0, 0, 0.30).CGColor()));
+                    l.setShadowRadius(24.0);
+                    l.setShadowOpacity(0.18);
+                }
+            }
+        }
+        if let Some(vfx) = &ui.vfx_view {
+            // Pin the vibrancy view's appearance so the material renders in
+            // the chosen mode regardless of the system value (otherwise
+            // forcing light/dark from the main window wouldn't fully
+            // override the blur tint).
+            unsafe {
+                let cls = AnyClass::get(c"NSAppearance").unwrap();
+                let name = NSString::from_str(if dark {
+                    "NSAppearanceNameDarkAqua"
+                } else {
+                    "NSAppearanceNameAqua"
+                });
+                let appearance: *mut objc2::runtime::AnyObject =
+                    msg_send![cls, appearanceNamed: &*name];
+                if !appearance.is_null() {
+                    let _: () = msg_send![&**vfx, setAppearance: appearance];
+                }
+            }
+            if let Some(l) = vfx.layer() {
+                if dark {
+                    l.setBorderColor(Some(&srgb(120, 180, 255, 0.18).CGColor()));
+                } else {
+                    l.setBorderColor(Some(&srgb(80, 130, 220, 0.14).CGColor()));
+                }
+            }
+        }
+        if let Some(bg) = &ui.bg_overlay {
+            if let Some(l) = bg.layer() {
+                if dark {
+                    l.setBackgroundColor(Some(&srgb(10, 10, 13, 0.94).CGColor()));
+                } else {
+                    l.setBackgroundColor(Some(&srgb(245, 245, 250, 0.91).CGColor()));
+                }
+            }
+        }
+        if let Some(label) = &ui.text_label {
+            if dark {
+                label.setTextColor(Some(&NSColor::whiteColor()));
+            } else {
+                label.setTextColor(Some(&NSColor::labelColor()));
+            }
+        }
+    });
+}
+
 // ── Text width estimation ──────────────────────────────────────────────────────
 
 fn estimate_text_w(text: &str) -> f64 {
@@ -251,24 +333,40 @@ pub fn setup(app: &AppHandle) {
         show_text(&app_partial, text, false);
     });
 
-    SHARED.lock().unwrap().event_listeners = vec![lid_state, lid_line, lid_partial];
+    // Refresh overlay colours when the user changes the app theme from
+    // the main window, or when the system appearance flips while the app
+    // is in "system" mode. macos_native_agent installs the system-level
+    // observer and re-emits `app-theme-changed`, so a single subscription
+    // here covers both cases.
+    let app_theme = app.clone();
+    let lid_theme = app.listen("app-theme-changed", move |_event| {
+        let dark = effective_is_dark(&app_theme);
+        let app_main = app_theme.clone();
+        let _ = app_main.run_on_main_thread(move || apply_overlay_theme(dark));
+    });
+
+    SHARED.lock().unwrap().event_listeners = vec![lid_state, lid_line, lid_partial, lid_theme];
 }
 
 pub fn open_overlay(app: &AppHandle) -> Result<(), String> {
     if OVERLAY_OPEN.load(Ordering::Relaxed) {
-        let _ = app.run_on_main_thread(|| {
+        let app_refresh = app.clone();
+        let _ = app.run_on_main_thread(move || {
             UI.with(|ui| {
                 if let Some(p) = &ui.borrow().panel {
                     p.orderFrontRegardless();
                 }
             });
+            apply_overlay_theme(effective_is_dark(&app_refresh));
         });
         return Ok(());
     }
     OVERLAY_OPEN.store(true, Ordering::Relaxed);
     let app2 = app.clone();
-    app.run_on_main_thread(|| {
+    let app_theme = app.clone();
+    app.run_on_main_thread(move || {
         build_overlay_panel();
+        apply_overlay_theme(effective_is_dark(&app_theme));
         install_click_monitor(app2);
     })
     .map_err(|e| format!("subtitle overlay open failed: {e}"))
