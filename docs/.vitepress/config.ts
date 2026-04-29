@@ -65,7 +65,7 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/mirai-mamori/Selah' },
     ],
     footer: {
-      message: '<a href="/privacy">プライバシーポリシー</a> | <a href="/terms">利用規約</a> | MIT License',
+      message: '<a href="/privacy">プライバシーポリシー</a> | <a href="/terms">利用規約</a> | PolyForm Noncommercial License 1.0.0',
       copyright: 'Copyright 2025-2026 mirai-mamori',
     },
     search: {
