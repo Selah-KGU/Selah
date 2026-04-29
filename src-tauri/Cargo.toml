@@ -15,6 +15,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 default = ["stt-shared"]
 stt-static = ["sherpa-onnx/static"]
 stt-shared = ["sherpa-onnx/shared"]
+# Enable Vulkan GPU acceleration for llama.cpp on Windows (requires Vulkan SDK)
+llm-vulkan = ["llama-cpp-2/vulkan"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
@@ -97,11 +99,12 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_LibraryLoader",
   "Win32_System_Power",
   "Win32_System_Registry",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging"
 ] }
 tauri-plugin-single-instance = "2"
 sherpa-onnx = { version = "1.12.39", default-features = false }
-llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
+llama-cpp-2 = { version = "0.1" }
 
 [profile.release]
 opt-level = "s"

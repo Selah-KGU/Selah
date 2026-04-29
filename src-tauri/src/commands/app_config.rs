@@ -162,7 +162,7 @@ impl Default for NativeAgentConfig {
     fn default() -> Self {
         Self {
             voice_shortcut_enabled: false,
-            voice_shortcut: "fn".into(),
+            voice_shortcut: if cfg!(target_os = "windows") { "lalt".into() } else { "fn".into() },
             subtitle_overlay_enabled: false,
         }
     }
@@ -203,6 +203,7 @@ pub fn save_native_agent_config(
     }
     #[cfg(target_os = "windows")]
     {
+        crate::windows_native_agent::apply_config(&_app, &config)?;
         if config.subtitle_overlay_enabled {
             crate::windows_subtitle_overlay::open_overlay(&_app)?;
         } else {
@@ -415,7 +416,7 @@ pb's writeObjects:(current application's NSArray's arrayWithObject:theImage)"#,
 /// Temp files are cleaned up after 60 seconds.
 #[tauri::command]
 pub async fn share_image_native(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     data: Vec<u8>,
     file_name: String,
 ) -> Result<(), String> {

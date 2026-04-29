@@ -61,6 +61,8 @@
   };
   const DEFAULT_URLS: Record<string, string> = { openai: "https://api.openai.com/v1", gemini: "" };
   const DEFAULT_MODELS: Record<string, string> = { openai: "gpt-5.4-nano", gemini: "gemini-3-flash-preview" };
+  const isWindows = navigator.userAgent.includes('Windows');
+
   const DEFAULT_STT_BACKEND_OPTIONS: SttExecutionBackendOption[] = [
     {
       id: "cpu",
@@ -148,11 +150,11 @@
   let sttTestMsg = $state("");
   let sttTestOk = $state<boolean | null>(null);
   let voiceShortcutEnabled = $state("false");
-  let voiceShortcut = $state("fn");
+  let voiceShortcut = $state(isWindows ? "lalt" : "fn");
   let subtitleOverlayEnabled = $state("false");
   let nativeAgentLoaded = false;
   let lastSavedVoiceShortcutEnabled = "false";
-  let lastSavedVoiceShortcut = "fn";
+  let lastSavedVoiceShortcut = isWindows ? "lalt" : "fn";
   let lastSavedSubtitleOverlayEnabled = "false";
 
   let statusMsg = $state("");
@@ -187,6 +189,20 @@
     return sttExecutionBackendOptions.find((option) => option.id === selectedSttExecutionBackend) || null;
   }
 
+  function sttModelSupportsBackend(modelId: string, backendId: string) {
+    return backendId !== "directml" || modelId !== "sensevoice-ja-en";
+  }
+
+  $effect(() => {
+    // Keep model and backend in sync: high-precision is required for DirectML,
+    // standard is correct for everything else.
+    if (selectedSttExecutionBackend === "directml" && selectedSttModel !== "sensevoice-ja-en-fp32") {
+      selectedSttModel = "sensevoice-ja-en-fp32";
+    } else if (selectedSttExecutionBackend !== "directml" && selectedSttModel === "sensevoice-ja-en-fp32") {
+      selectedSttModel = "sensevoice-ja-en";
+    }
+  });
+
   function currentSttPartialModeOption() {
     return STT_PARTIAL_MODE_OPTIONS.find((option) => option.id === selectedSttPartialMode) || STT_PARTIAL_MODE_OPTIONS[0];
   }
@@ -197,7 +213,7 @@
 
   function normalizeVoiceShortcut(value?: string | null) {
     const normalized = String(value || "").trim().toLowerCase();
-    if (!normalized) return "fn";
+    if (!normalized || normalized === "fn") return isWindows ? "lalt" : "fn";
     if (normalized === "option+space") return "alt+space";
     return normalized;
   }
@@ -285,6 +301,12 @@
       .split("+")
       .map(token => {
         const t = token.trim().toLowerCase();
+        if (t === "lalt" || t === "altleft") return "Left Alt";
+        if (t === "ralt" || t === "altright") return "Right Alt";
+        if (t === "lctrl" || t === "controlleft") return "Left Ctrl";
+        if (t === "rctrl" || t === "controlright") return "Right Ctrl";
+        if (t === "lshift" || t === "shiftleft") return "Left Shift";
+        if (t === "rshift" || t === "shiftright") return "Right Shift";
         if (t === "alt" || t === "option") return "Option";
         if (t === "ctrl" || t === "control") return "Control";
         if (t === "cmd" || t === "command" || t === "super" || t === "meta") return "⌘";
@@ -937,7 +959,7 @@
           class="shortcut-pill"
           class:recording={recordingShortcut}
           class:invalid={!!recordError}
-          class:active={voiceShortcut.toLowerCase() !== "fn" && !recordingShortcut}
+          class:active={voiceShortcut.toLowerCase() !== (isWindows ? "lalt" : "fn") && !recordingShortcut}
           disabled={voiceShortcutEnabled !== "true"}
           onclick={() => recordingShortcut ? stopShortcutRecording() : startShortcutRecording()}
         >
@@ -950,17 +972,16 @@
         <button
           type="button"
           class="shortcut-preset"
-          class:active={voiceShortcut.toLowerCase() === "fn" && !recordingShortcut}
+          class:active={voiceShortcut.toLowerCase() === (isWindows ? "lalt" : "fn") && !recordingShortcut}
           disabled={voiceShortcutEnabled !== "true"}
-          onclick={() => setShortcutPreset("fn")}
-        >Fn</button>
+          onclick={() => setShortcutPreset(isWindows ? "lalt" : "fn")}
+        >{isWindows ? "Left Alt" : "Fn"}</button>
       </div>
       {#if recordError}
         <div class="hint hint-error">{recordError}</div>
       {/if}
-      <div class="hint">押している間だけ画面上部中央に音声 AI カプセルを表示し、キーを離すとそのまま AI へ送信します。</div>
-      <div class="hint">既定は Fn（片手で押しやすく、押して話して離して送る操作に自然）です。任意のキー組み合わせを記録するには左のボタンを押してから希望の組み合わせを入力してください。</div>
-      <div class="hint">他のシステム/アプリと競合しない組み合わせを選んでください（例: Spotlight の Cmd+Space は避ける）。</div>
+      <div class="hint">{isWindows ? "既定は Left Alt です。" : "既定は Fn です。"}任意のキー組み合わせを記録するには左のボタンを押してから希望の組み合わせを入力してください。</div>
+      <div class="hint">他のシステム/アプリと競合しない組み合わせを選んでください（例: {isWindows ? "Win+Space は避ける" : "Spotlight の Cmd+Space は避ける"}）。</div>
     </div>
   </div>
   <div class="row">
@@ -970,7 +991,7 @@
         <option value="false">無効</option>
         <option value="true">有効</option>
       </select>
-      <div class="hint">macOS / Windows ネイティブのリアルタイム字幕浮窗を表示します。Live 録課セッション中に最新の文字起こし内容を画面下部に表示します。</div>
+      <div class="hint">Live 録課セッション中に最新の文字起こし内容を画面下部に表示します。</div>
     </div>
   </div>
 </div>
@@ -978,7 +999,7 @@
 <div class="card-label">AI 音声文字起こし</div>
 <div class="card">
   <div class="row">
-    <span class="row-label">STT 実行バックエンド</span>
+    <span class="row-label">音声認識モード</span>
     <div class="row-input">
       <select bind:value={selectedSttExecutionBackend}>
         {#each sttExecutionBackendOptions as option}
@@ -987,7 +1008,7 @@
           </option>
         {/each}
       </select>
-      <div class="hint">{currentSttBackendOption()?.description || "現在の安定ルートは CPU です。"}</div>
+      <div class="hint">{currentSttBackendOption()?.description || "すべての環境で動作します。"}</div>
       {#if currentSttBackendOption()?.availability_note}
         <div class="hint">{currentSttBackendOption()?.availability_note}</div>
       {/if}
@@ -1033,10 +1054,20 @@
   </div>
   {#each sttModelList as m}
     <div class="model-row">
-      <input type="radio" class="model-radio" name="sttModel" value={m.id} bind:group={selectedSttModel} />
+      <input
+        type="radio"
+        class="model-radio"
+        name="sttModel"
+        value={m.id}
+        bind:group={selectedSttModel}
+        disabled={!sttModelSupportsBackend(m.id, selectedSttExecutionBackend)}
+      />
       <div class="model-info">
         <div class="model-name">{m.name}</div>
         <div class="model-meta">{m.size_label}</div>
+        {#if !sttModelSupportsBackend(m.id, selectedSttExecutionBackend)}
+          <div class="model-meta">GPU 高精度モードでは使用できません</div>
+        {/if}
       </div>
       <span class="model-badge" class:downloaded={m.downloaded}>
         {m.downloaded ? "DL済み" : m.file_size_mb + "MB"}

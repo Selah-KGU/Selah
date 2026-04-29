@@ -3,8 +3,21 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DIRECTML_RUNTIME_FILES: &[&str] =
-    &["sherpa-onnx-c-api.dll", "onnxruntime.dll", "DirectML.dll"];
+const DIRECTML_RUNTIME_FILES: &[&str] = &[
+    "sherpa-onnx-c-api.dll",
+    "onnxruntime.dll",
+    "onnxruntime_providers_shared.dll",
+    "DirectML.dll",
+];
+
+const DIRECTML_STAGED_DLLS: &[&str] = &[
+    "sherpa-onnx-c-api.dll",
+    "sherpa-onnx-cxx-api.dll",
+    "onnxruntime.dll",
+    "onnxruntime_providers_shared.dll",
+    "DirectML.dll",
+    "DirectML.Debug.dll",
+];
 
 fn main() {
     println!("cargo:rerun-if-env-changed=SELAH_ENABLE_STT_DIRECTML");
@@ -30,6 +43,11 @@ fn main() {
                     println!("cargo:rerun-if-changed={}", lib_dir.display());
                     match stage_directml_runtime(&lib_dir, &runtime_dir) {
                         Ok(()) => {
+                            if let Some(profile_dir) = cargo_profile_dir() {
+                                if let Err(err) = stage_directml_runtime(&lib_dir, &profile_dir) {
+                                    println!("cargo:warning={err}");
+                                }
+                            }
                             println!("cargo:rustc-env=SELAH_STT_DIRECTML_ENABLED=1");
                         }
                         Err(err) => {
@@ -109,16 +127,19 @@ fn stage_directml_runtime(lib_dir: &Path, runtime_dir: &Path) -> Result<(), Stri
 }
 
 fn clear_staged_runtime_dlls(runtime_dir: &Path) {
-    if let Ok(entries) = fs::read_dir(runtime_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension() == Some(OsStr::new("dll")) {
-                let _ = fs::remove_file(path);
-            }
-        }
+    for name in DIRECTML_STAGED_DLLS {
+        let _ = fs::remove_file(runtime_dir.join(name));
     }
 }
 
 fn canonical_or_original(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn cargo_profile_dir() -> Option<PathBuf> {
+    let mut dir = PathBuf::from(env::var_os("OUT_DIR")?);
+    dir.pop(); // out
+    dir.pop(); // <package>-<hash>
+    dir.pop(); // build
+    Some(dir)
 }

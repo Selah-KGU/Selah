@@ -7,3 +7,5 @@
 /docs/.vitepress
 /docs/.vitepress
 /server
+/.claude
+/.cache

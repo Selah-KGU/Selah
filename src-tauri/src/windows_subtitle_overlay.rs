@@ -15,23 +15,25 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject,
-    DrawTextW, EndPaint, GetDC, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect,
-    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, UpdateWindow, DEFAULT_CHARSET,
+    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW,
+    EndPaint, GetDC, GetStockObject, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect,
+    SelectObject, SetBkMode, SetDCPenColor, SetTextColor, SetWindowRgn, UpdateWindow, DEFAULT_CHARSET,
     DEFAULT_PITCH, DEFAULT_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
-    DT_VCENTER, FF_DONTCARE, FW_BOLD, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
-    TRANSPARENT,
+    DT_VCENTER, FF_DONTCARE, FW_BOLD, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
 };
+// Win32 stock-object identifier for the per-DC custom-color pen; no allocation needed.
+// Set the actual color via SetDCPenColor after selecting it into the DC.
+const DC_PEN_STOCK: i32 = 19;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetSystemMetrics, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
     SetLayeredWindowAttributes, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
-    CS_DBLCLKS, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, LWA_ALPHA, MA_NOACTIVATE, MSG,
-    SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
-    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, LWA_ALPHA, MA_NOACTIVATE, MSG,
+    SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    SW_HIDE, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 const SUB_H: i32 = 52;
@@ -56,10 +58,21 @@ type RawHwnd = isize;
 static HIDE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static MORPH_TOKEN: AtomicU64 = AtomicU64::new(0);
+static MORPH_DEBOUNCE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static OVERLAY_OPEN: AtomicBool = AtomicBool::new(false);
+// True once the overlay hwnd is live; cleared on destroy. Allows callers to skip
+// the CREATE_LOCK + WINDOW mutex when the common case (window exists) is true.
+static HWND_READY: AtomicBool = AtomicBool::new(false);
+// GDI font for the overlay — parameters never change so create once per process.
+// Stored as isize because HGDIOBJ (*mut c_void) is not Send/Sync.
+static CACHED_FONT_HANDLE: OnceLock<isize> = OnceLock::new();
+// Set to true while the overlay thread is being spawned (before hwnd is written).
+// Prevents double-spawning when ensure_overlay_window is called concurrently.
+static CREATING: AtomicBool = AtomicBool::new(false);
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static LAST_PARTIAL_MS: AtomicU64 = AtomicU64::new(0);
 const PARTIAL_MIN_INTERVAL_MS: u64 = 120;
+const MORPH_DEBOUNCE_MS: u64 = 150;
 
 #[derive(Default)]
 struct OverlayWindow {
@@ -81,6 +94,13 @@ static WINDOW: LazyLock<Mutex<OverlayWindow>> =
     LazyLock::new(|| Mutex::new(OverlayWindow::default()));
 static SHARED: LazyLock<Mutex<SharedState>> = LazyLock::new(|| Mutex::new(SharedState::default()));
 static CREATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+// Per-thread solid-brush cache for the overlay Win32 thread.
+// Keyed by COLORREF; invalidated (and old handle deleted) when bg color changes.
+// Cleaned up in WM_DESTROY on the same thread.
+thread_local! {
+    static TL_BG_BRUSH: std::cell::Cell<(u32, usize)> = const { std::cell::Cell::new((u32::MAX, 0)) };
+}
 
 #[derive(Clone, Copy)]
 struct Spring {
@@ -108,6 +128,29 @@ impl Spring {
         self.vel += accel * SPRING_DT;
         self.pos += self.vel * SPRING_DT;
         dx.abs() > SPRING_SETTLE || self.vel.abs() > SPRING_SETTLE
+    }
+}
+
+// Lightweight snapshot used by animation paths that don't need the text string.
+#[derive(Clone, Copy)]
+struct FrameSnapshot {
+    width: i32,
+    center_x: i32,
+    top_y: i32,
+    alpha: u8,
+}
+
+fn frame_snapshot() -> Option<FrameSnapshot> {
+    let state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+    if state.hwnd == 0 {
+        None
+    } else {
+        Some(FrameSnapshot {
+            width: state.width,
+            center_x: state.center_x,
+            top_y: state.top_y,
+            alpha: state.alpha,
+        })
     }
 }
 
@@ -145,12 +188,36 @@ fn create_overlay_font() -> HGDIOBJ {
     }
 }
 
+// Returns the process-lifetime cached font, creating it on first call.
+// Safe to call from any thread; GDI font handles are process-global.
+fn get_overlay_font() -> HGDIOBJ {
+    *CACHED_FONT_HANDLE.get_or_init(|| create_overlay_font() as isize) as HGDIOBJ
+}
+
+// Returns a cached solid brush for `color` on the calling thread.
+// Only valid on the overlay Win32 thread (where WM_PAINT runs).
+// The stale brush is deleted and recreated when the color changes (theme switch).
+unsafe fn get_bg_brush(color: u32) -> HGDIOBJ {
+    TL_BG_BRUSH.with(|cell| {
+        let (cached_color, cached_handle) = cell.get();
+        if cached_color == color && cached_handle != 0 {
+            return cached_handle as HGDIOBJ;
+        }
+        if cached_handle != 0 {
+            DeleteObject(cached_handle as HGDIOBJ);
+        }
+        let new_handle = CreateSolidBrush(color) as usize;
+        cell.set((color, new_handle));
+        new_handle as HGDIOBJ
+    })
+}
+
 fn estimate_text_w(text: &str) -> i32 {
     let text_wide = wide_null(text);
     unsafe {
         let hdc = GetDC(null_mut());
         if !hdc.is_null() {
-            let font = create_overlay_font();
+            let font = get_overlay_font();
             let old_font = SelectObject(hdc, font);
             let mut size = SIZE::default();
             let measured = GetTextExtentPoint32W(
@@ -160,7 +227,7 @@ fn estimate_text_w(text: &str) -> i32 {
                 &mut size,
             );
             SelectObject(hdc, old_font);
-            let _ = DeleteObject(font);
+            // Font is cached; do not DeleteObject.
             let _ = ReleaseDC(null_mut(), hdc);
             if measured != 0 {
                 return (size.cx + SUB_PAD_X * 2).clamp(SUB_MIN_W, SUB_MAX_W);
@@ -209,7 +276,7 @@ fn system_apps_use_dark_theme() -> bool {
             &mut hkey,
         )
     };
-    if open != ERROR_SUCCESS as i32 {
+    if open != ERROR_SUCCESS {
         return true;
     }
 
@@ -228,7 +295,7 @@ fn system_apps_use_dark_theme() -> bool {
         )
     };
     let _ = unsafe { RegCloseKey(hkey) };
-    if result != ERROR_SUCCESS as i32 || data_type != REG_DWORD {
+    if result != ERROR_SUCCESS || data_type != REG_DWORD {
         return true;
     }
     data == 0
@@ -295,30 +362,24 @@ fn set_theme_mode(dark: bool) {
 }
 
 fn set_alpha(alpha: u8) {
-    let hwnd = {
+    let (hwnd, was_hidden) = {
         let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
         if state.hwnd == 0 {
             return;
         }
+        let was_hidden = state.alpha == 0;
         state.alpha = alpha;
-        state.hwnd
+        (state.hwnd, was_hidden)
     };
     let hwnd = hwnd_from_raw(hwnd);
     unsafe {
         let _ = SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
         if alpha == 0 {
             ShowWindow(hwnd, SW_HIDE);
-        } else {
+        } else if was_hidden {
+            // Only call ShowWindow when transitioning from hidden; redundant on
+            // subsequent alpha-only changes during an in-progress fade.
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(
-                hwnd,
-                null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
         }
     }
 }
@@ -385,6 +446,15 @@ unsafe extern "system" fn overlay_wndproc(
             0
         }
         WM_DESTROY => {
+            // Release the cached brush that was allocated on this thread.
+            TL_BG_BRUSH.with(|cell| {
+                let (_, handle) = cell.get();
+                if handle != 0 {
+                    DeleteObject(handle as HGDIOBJ);
+                }
+                cell.set((u32::MAX, 0));
+            });
+            HWND_READY.store(false, Ordering::Release);
             let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
             if state.hwnd == hwnd as RawHwnd {
                 state.hwnd = 0;
@@ -423,28 +493,27 @@ unsafe fn paint_overlay(hwnd: HWND) {
     } else {
         rgb(245, 245, 250)
     };
-    let border = if state.dark {
-        rgb(120, 180, 255)
-    } else {
-        rgb(80, 130, 220)
-    };
-    let text = if state.dark {
+    let text_color = if state.dark {
         rgb(255, 255, 255)
     } else {
         rgb(24, 24, 28)
     };
 
-    let brush = CreateSolidBrush(bg);
-    let pen = CreatePen(PS_SOLID, 1, border);
-    let font = create_overlay_font();
+    // All three GDI objects are cached — no allocation per frame.
+    let brush = get_bg_brush(bg);           // thread-local; recreated only on theme change
+    let pen = GetStockObject(DC_PEN_STOCK); // stock object; color set below via SetDCPenColor
+    let font = get_overlay_font();          // process-lifetime OnceLock
 
-    let old_brush = SelectObject(hdc, brush as HGDIOBJ);
-    let old_pen = SelectObject(hdc, pen as HGDIOBJ);
-    let old_font = SelectObject(hdc, font as HGDIOBJ);
+    let old_brush = SelectObject(hdc, brush);
+    let old_pen = SelectObject(hdc, pen);
+    let old_font = SelectObject(hdc, font);
+    // Match pen color to background so RoundRect fills the 1px outer edge
+    // without showing a visible border. NULL_PEN would leave that edge unpainted.
+    SetDCPenColor(hdc, bg);
 
     RoundRect(hdc, 0, 0, state.width, SUB_H, SUB_H, SUB_H);
     SetBkMode(hdc, TRANSPARENT as i32);
-    SetTextColor(hdc, text);
+    SetTextColor(hdc, text_color);
 
     rect.left += SUB_PAD_X;
     rect.right -= SUB_PAD_X;
@@ -460,16 +529,16 @@ unsafe fn paint_overlay(hwnd: HWND) {
     SelectObject(hdc, old_font);
     SelectObject(hdc, old_pen);
     SelectObject(hdc, old_brush);
-    let _ = DeleteObject(font);
-    let _ = DeleteObject(pen as _);
-    let _ = DeleteObject(brush as _);
+    // Cached objects are not deleted here.
 
     EndPaint(hwnd, &ps);
 }
 
-fn spawn_overlay_thread(app: &AppHandle) -> Result<(), String> {
+// Spawns the Win32 overlay window on a dedicated thread and returns immediately.
+// CREATING is set to true before calling; the spawned thread clears it once the
+// hwnd is stored (or on failure) so that ensure_overlay_window can retry.
+fn spawn_overlay_thread(app: &AppHandle) {
     let dark = prefers_dark(app);
-    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
     std::thread::spawn(move || unsafe {
         let class_name = wide_null(CLASS_NAME);
@@ -478,7 +547,7 @@ fn spawn_overlay_thread(app: &AppHandle) -> Result<(), String> {
 
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS | CS_DROPSHADOW,
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc: Some(overlay_wndproc),
             cbClsExtra: 0,
             cbWndExtra: 0,
@@ -515,10 +584,11 @@ fn spawn_overlay_thread(app: &AppHandle) -> Result<(), String> {
         );
 
         if hwnd.is_null() {
-            let _ = tx.send(Err(format!(
-                "CreateWindowExW failed: {}",
+            log::error!(
+                "subtitle overlay: CreateWindowExW failed: {}",
                 std::io::Error::last_os_error()
-            )));
+            );
+            CREATING.store(false, Ordering::SeqCst);
             return;
         }
 
@@ -537,8 +607,9 @@ fn spawn_overlay_thread(app: &AppHandle) -> Result<(), String> {
             state.text.clear();
             state.dark = dark;
         }
-
-        let _ = tx.send(Ok(()));
+        // hwnd is now visible to other threads; publish HWND_READY before clearing CREATING.
+        HWND_READY.store(true, Ordering::Release);
+        CREATING.store(false, Ordering::SeqCst);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
@@ -546,21 +617,24 @@ fn spawn_overlay_thread(app: &AppHandle) -> Result<(), String> {
             DispatchMessageW(&msg);
         }
     });
-
-    rx.recv()
-        .unwrap_or_else(|_| Err("subtitle overlay UI thread failed to initialize".into()))
 }
 
-fn ensure_overlay_window(app: &AppHandle) -> Result<(), String> {
-    let _create_guard = CREATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if window_snapshot().is_some() {
-        return Ok(());
+fn ensure_overlay_window(app: &AppHandle) {
+    // Fast path: no locks needed when the window is already live.
+    if HWND_READY.load(Ordering::Acquire) {
+        return;
     }
-    spawn_overlay_thread(app)
+    let _create_guard = CREATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Re-check under the lock.
+    if HWND_READY.load(Ordering::Relaxed) || CREATING.load(Ordering::SeqCst) {
+        return;
+    }
+    CREATING.store(true, Ordering::SeqCst);
+    spawn_overlay_thread(app);
 }
 
 fn morph_to(target_w: i32) {
-    let Some(snapshot) = window_snapshot() else {
+    let Some(snapshot) = frame_snapshot() else {
         return;
     };
     let token = MORPH_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
@@ -583,6 +657,27 @@ fn morph_to(target_w: i32) {
     });
 }
 
+// For partial updates: debounce the morph so rapid STT partials don't restart the
+// spring animation on every word. Text is already displayed; only the width animation
+// is delayed until the text stabilizes.
+// For final/immediate: cancels any pending debounce and morphs right away.
+fn trigger_morph(target_w: i32, debounce: bool) {
+    let token = MORPH_DEBOUNCE_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    if debounce {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(MORPH_DEBOUNCE_MS)).await;
+            if MORPH_DEBOUNCE_TOKEN.load(Ordering::Relaxed) != token {
+                return;
+            }
+            morph_to(target_w);
+        });
+    } else {
+        morph_to(target_w);
+    }
+}
+
 fn show_text(app: &AppHandle, text: String, is_final: bool) {
     HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);
 
@@ -590,36 +685,32 @@ fn show_text(app: &AppHandle, text: String, is_final: bool) {
         return;
     }
 
-    if ensure_overlay_window(app).is_err() {
-        return;
-    }
+    ensure_overlay_window(app);
 
     let target_w = estimate_text_w(&text);
-    {
+    // Extract hwnd and update text while holding the lock, then release the lock
+    // before making cross-thread Win32 calls (SendMessage-based calls while holding
+    // a mutex shared with the overlay thread's WndProc would deadlock).
+    let hwnd = {
         let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
         if state.hwnd == 0 {
             return;
         }
         state.text = text;
-        let hwnd = hwnd_from_raw(state.hwnd);
-        unsafe {
-            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = InvalidateRect(hwnd, null(), 1);
-            let _ = SetWindowPos(
-                hwnd,
-                null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
-        }
+        state.hwnd
+    };
+    let hwnd = hwnd_from_raw(hwnd);
+    unsafe {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = InvalidateRect(hwnd, null(), 1);
     }
 
-    morph_to(target_w);
+    // Partials are debounced: the spring only fires after the text has been stable
+    // for MORPH_DEBOUNCE_MS, preventing jitter from rapid sequential STT updates.
+    // Final transcripts trigger immediately and also cancel any pending debounce.
+    trigger_morph(target_w, !is_final);
 
-    let start_alpha = window_snapshot().map(|s| s.alpha).unwrap_or(0);
+    let start_alpha = frame_snapshot().map(|s| s.alpha).unwrap_or(0);
     let fade_tok = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     tauri::async_runtime::spawn(async move {
         if start_alpha >= 250 {
@@ -648,11 +739,11 @@ fn schedule_fade_out(delay_secs: u64) {
         if HIDE_TOKEN.load(Ordering::Relaxed) != token {
             return;
         }
-        let Some(snapshot) = window_snapshot() else {
+        let Some(snapshot) = frame_snapshot() else {
             return;
         };
 
-        morph_to(SUB_MIN_W);
+        trigger_morph(SUB_MIN_W, false);
 
         let fade_tok = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         for i in (0..=FADE_FRAMES).rev() {
@@ -686,7 +777,7 @@ pub fn setup(app: &AppHandle) {
         if !active {
             schedule_fade_out(SUB_FADE_DELAY_SECS);
         } else {
-            let _ = ensure_overlay_window(&app_state);
+            ensure_overlay_window(&app_state);
         }
     });
 
@@ -750,16 +841,18 @@ pub fn setup(app: &AppHandle) {
 pub fn open_overlay(app: &AppHandle) -> Result<(), String> {
     OVERLAY_OPEN.store(true, Ordering::Relaxed);
     set_theme_mode(prefers_dark(app));
-    ensure_overlay_window(app)?;
-    set_alpha(window_snapshot().map(|s| s.alpha).unwrap_or(0));
+    ensure_overlay_window(app);
+    set_alpha(frame_snapshot().map(|s| s.alpha).unwrap_or(0));
     Ok(())
 }
 
 pub fn close_overlay(_app: &AppHandle) -> Result<(), String> {
     OVERLAY_OPEN.store(false, Ordering::Relaxed);
+    HWND_READY.store(false, Ordering::Relaxed);
     HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);
     FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
     MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
+    MORPH_DEBOUNCE_TOKEN.fetch_add(1, Ordering::Relaxed);
 
     let closing_hwnd = {
         let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
@@ -786,5 +879,5 @@ pub fn close_overlay(_app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn is_open() -> bool {
-    OVERLAY_OPEN.load(Ordering::Relaxed) && window_snapshot().is_some()
+    OVERLAY_OPEN.load(Ordering::Relaxed) && HWND_READY.load(Ordering::Relaxed)
 }

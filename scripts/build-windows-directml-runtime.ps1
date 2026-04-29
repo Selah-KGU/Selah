@@ -1,5 +1,7 @@
 param(
     [string]$SherpaVersion = "v1.12.39",
+    [string]$OnnxRuntimeDirectMLVersion = "1.24.4",
+    [string]$DirectMLVersion = "1.15.4",
     [string]$WorkRoot = "",
     [string]$LibStageDir = "",
     [string]$RuntimeStageDir = ""
@@ -58,6 +60,60 @@ function Assert-FilesExist {
     }
 }
 
+function Convert-ToCMakePath {
+    param([string]$PathValue)
+
+    return $PathValue.Replace("\", "/")
+}
+
+function Save-NuGetPackage {
+    param(
+        [string]$PackageId,
+        [string]$Version,
+        [string]$DestinationDir
+    )
+
+    New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+    $lowerId = $PackageId.ToLowerInvariant()
+    # NuGet packages are zip archives. Keep a .zip extension for local
+    # FetchContent URLs because CMake does not infer .nupkg extraction.
+    $destination = Join-Path $DestinationDir "$lowerId.$Version.zip"
+    $url = "https://globalcdn.nuget.org/packages/$lowerId.$Version.nupkg"
+    Write-Host "Downloading $PackageId $Version"
+    Invoke-WebRequest -Uri $url -OutFile $destination
+    $hash = (Get-FileHash -Algorithm SHA256 -Path $destination).Hash.ToLowerInvariant()
+    return [pscustomobject]@{
+        Path = (Resolve-AbsolutePath $destination)
+        Hash = $hash
+    }
+}
+
+function Update-DirectMLCMakePackageVersions {
+    param(
+        [string]$SourceDir,
+        [string]$OnnxRuntimePackagePath,
+        [string]$OnnxRuntimePackageHash,
+        [string]$DirectMLPackagePath,
+        [string]$DirectMLPackageHash
+    )
+
+    $cmakePath = Join-Path $SourceDir "cmake\onnxruntime-win-x64-directml.cmake"
+    $content = Get-Content -LiteralPath $cmakePath -Raw
+    $onnxRuntimePath = Convert-ToCMakePath $OnnxRuntimePackagePath
+    $directMLPath = Convert-ToCMakePath $DirectMLPackagePath
+
+    $content = $content -replace 'set\(onnxruntime_URL\s+"[^"]+"\)', "set(onnxruntime_URL  `"$onnxRuntimePath`")"
+    $content = $content -replace 'set\(onnxruntime_URL2\s+"[^"]+"\)', 'set(onnxruntime_URL2 "")'
+    $content = $content -replace 'set\(onnxruntime_HASH\s+"SHA256=[0-9a-fA-F]+"\)', "set(onnxruntime_HASH `"SHA256=$OnnxRuntimePackageHash`")"
+    $content = $content -replace 'microsoft\.ml\.onnxruntime\.directml\.[0-9.]+\.nupkg', ([System.IO.Path]::GetFileName($OnnxRuntimePackagePath))
+
+    $content = $content -replace 'set\(directml_URL\s+"[^"]+"\)', "set(directml_URL `"$directMLPath`")"
+    $content = $content -replace 'set\(directml_HASH\s+"SHA256=[0-9a-fA-F]+"\)', "set(directml_HASH `"SHA256=$DirectMLPackageHash`")"
+    $content = $content -replace 'Microsoft\.AI\.DirectML\.[0-9.]+\.nupkg', ([System.IO.Path]::GetFileName($DirectMLPackagePath))
+
+    Set-Content -LiteralPath $cmakePath -Value $content -NoNewline
+}
+
 $repoRoot = Resolve-AbsolutePath (Join-Path $PSScriptRoot "..")
 
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
@@ -79,6 +135,8 @@ $installDir = Join-Path $WorkRoot "install"
 
 Write-Host "Preparing sherpa-onnx DirectML runtime"
 Write-Host "  version: $SherpaVersion"
+Write-Host "  onnxruntime directml: $OnnxRuntimeDirectMLVersion"
+Write-Host "  directml: $DirectMLVersion"
 Write-Host "  work root: $WorkRoot"
 Write-Host "  lib stage: $LibStageDir"
 if (-not [string]::IsNullOrWhiteSpace($RuntimeStageDir)) {
@@ -91,7 +149,24 @@ if (-not [string]::IsNullOrWhiteSpace($RuntimeStageDir)) {
     New-Item -ItemType Directory -Path $RuntimeStageDir -Force | Out-Null
 }
 
+$downloadDir = Join-Path $WorkRoot "downloads"
+$onnxRuntimePackage = Save-NuGetPackage `
+    -PackageId "Microsoft.ML.OnnxRuntime.DirectML" `
+    -Version $OnnxRuntimeDirectMLVersion `
+    -DestinationDir $downloadDir
+$directMLPackage = Save-NuGetPackage `
+    -PackageId "Microsoft.AI.DirectML" `
+    -Version $DirectMLVersion `
+    -DestinationDir $downloadDir
+
 git clone --depth 1 --branch $SherpaVersion https://github.com/k2-fsa/sherpa-onnx.git $sourceDir
+
+Update-DirectMLCMakePackageVersions `
+    -SourceDir $sourceDir `
+    -OnnxRuntimePackagePath $onnxRuntimePackage.Path `
+    -OnnxRuntimePackageHash $onnxRuntimePackage.Hash `
+    -DirectMLPackagePath $directMLPackage.Path `
+    -DirectMLPackageHash $directMLPackage.Hash
 
 $cmakeConfigureArgs = @(
     "-S", $sourceDir,
@@ -119,11 +194,13 @@ $cmakeConfigureArgs = @(
 Reset-Directory $LibStageDir
 if (-not [string]::IsNullOrWhiteSpace($RuntimeStageDir)) {
     Reset-Directory $RuntimeStageDir
+    Set-Content -LiteralPath (Join-Path $RuntimeStageDir ".gitkeep") -Value ""
 }
 
 Copy-IfExists (Join-Path $installDir "lib\*.lib") $LibStageDir
 Copy-IfExists (Join-Path $installDir "lib\*.dll") $LibStageDir
 Copy-IfExists (Join-Path $installDir "bin\*.dll") $LibStageDir
+Copy-IfExists (Join-Path $buildDir "_deps\onnxruntime-src\runtimes\win-x64\native\*.dll") $LibStageDir
 if (-not [string]::IsNullOrWhiteSpace($RuntimeStageDir)) {
     Copy-IfExists (Join-Path $LibStageDir "*.dll") $RuntimeStageDir
 }
@@ -133,6 +210,7 @@ Assert-FilesExist $LibStageDir @(
     "sherpa-onnx-c-api.dll",
     "onnxruntime.lib",
     "onnxruntime.dll",
+    "onnxruntime_providers_shared.dll",
     "DirectML.lib",
     "DirectML.dll"
 )
@@ -141,6 +219,7 @@ if (-not [string]::IsNullOrWhiteSpace($RuntimeStageDir)) {
     Assert-FilesExist $RuntimeStageDir @(
         "sherpa-onnx-c-api.dll",
         "onnxruntime.dll",
+        "onnxruntime_providers_shared.dll",
         "DirectML.dll"
     )
 }

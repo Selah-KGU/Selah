@@ -398,7 +398,7 @@ pub fn setup(app: &AppHandle) {
     let app_final = app.clone();
     app.listen("stt-final", move |event| {
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("agent") {
+        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
             return;
         }
         let text = payload
@@ -434,7 +434,7 @@ pub fn setup(app: &AppHandle) {
     let app_partial = app.clone();
     app.listen("stt-partial", move |event| {
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("agent") {
+        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
             return;
         }
         let text = payload
@@ -458,7 +458,7 @@ pub fn setup(app: &AppHandle) {
     let app_state = app.clone();
     app.listen("stt-state", move |event| {
         let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("agent") {
+        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
             return;
         }
         let state_name = payload
@@ -474,7 +474,10 @@ pub fn setup(app: &AppHandle) {
 
         let pending = {
             let mut sh = SHARED.lock().unwrap();
-            if sh.mode == Some(CapsuleMode::Processing) || sh.mode == Some(CapsuleMode::Result) {
+            if sh.mode == Some(CapsuleMode::Processing)
+                || sh.mode == Some(CapsuleMode::Result)
+                || sh.mode == Some(CapsuleMode::Notice)
+            {
                 sh.finals_accumulated.clear();
                 sh.current_speech.clear();
                 None
@@ -494,7 +497,11 @@ pub fn setup(app: &AppHandle) {
     });
 
     let app_err = app.clone();
-    app.listen("stt-error", move |_event| {
+    app.listen("stt-error", move |event| {
+        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
+        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
+            return;
+        }
         {
             let mut sh = SHARED.lock().unwrap();
             sh.stop_requested = false;
@@ -550,7 +557,7 @@ pub fn apply_config(app: &AppHandle, config: &NativeAgentConfig) -> Result<(), S
         SHORTCUT_DOWN.store(false, Ordering::Relaxed);
         SHORTCUT_ARM_TOKEN.fetch_add(1, Ordering::Relaxed);
         FN_PRESSED.store(false, Ordering::Relaxed);
-        if stt::stt_get_active_caller().as_deref() == Some("agent") {
+        if stt::stt_get_active_caller().as_deref() == Some("native_agent") {
             let _ = stt::stt_stop_stream();
         }
         close_panel(app, true);
@@ -624,7 +631,7 @@ fn handle_shortcut_pressed(app: AppHandle) {
 fn handle_shortcut_released() {
     SHORTCUT_DOWN.store(false, Ordering::Relaxed);
     SHORTCUT_ARM_TOKEN.fetch_add(1, Ordering::Relaxed);
-    if stt::stt_get_active_caller().as_deref() != Some("agent") {
+    if stt::stt_get_active_caller().as_deref() != Some("native_agent") {
         return;
     }
     SHARED.lock().unwrap().stop_requested = true;
@@ -637,7 +644,7 @@ fn start_agent_capture(app: AppHandle) {
 
     if stt::stt_is_running() {
         match stt::stt_get_active_caller().as_deref() {
-            Some("agent") => return,
+            Some("native_agent") => return,
             Some(_) => {
                 transition_to_notice(&app, "ほかの音声入力が動作中です");
                 return;
@@ -657,7 +664,7 @@ fn start_agent_capture(app: AppHandle) {
 
     transition_to_listening(&app, Some("話してください"));
 
-    if let Err(err) = stt::stt_start_stream(app.clone(), "agent".to_string(), Some(false)) {
+    if let Err(err) = stt::stt_start_stream(app.clone(), "native_agent".to_string(), Some(false)) {
         transition_to_notice(&app, &err);
     }
 }

@@ -43,10 +43,16 @@ mod timetable;
 mod tray;
 mod webview_toolbar;
 #[cfg(target_os = "windows")]
+mod windows_native_agent;
+#[cfg(target_os = "windows")]
 mod windows_subtitle_overlay;
 
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
+
+pub fn run_stt_decode_helper_from_args() -> Option<i32> {
+    stt::run_decode_helper_from_args()
+}
 
 // ── Decoupled per-service states (independent locking, zero cross-service contention) ──
 
@@ -243,8 +249,14 @@ pub fn run() {
             }
             #[cfg(target_os = "windows")]
             {
+                windows_native_agent::setup(app.handle());
                 windows_subtitle_overlay::setup(app.handle());
                 let native_agent_cfg = commands::load_native_agent_config();
+                if let Err(err) =
+                    windows_native_agent::apply_config(app.handle(), &native_agent_cfg)
+                {
+                    log::error!("failed to restore Windows agent shortcut: {err}");
+                }
                 if native_agent_cfg.subtitle_overlay_enabled {
                     if let Err(err) = windows_subtitle_overlay::open_overlay(app.handle()) {
                         log::error!("failed to restore Windows subtitle overlay: {err}");
