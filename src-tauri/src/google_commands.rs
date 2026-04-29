@@ -143,7 +143,10 @@ pub async fn gcal_open_login(
     // Open system browser via sandbox-safe opener plugin after listener is ready
     use tauri_plugin_opener::OpenerExt;
     if let Err(e) = app.opener().open_url(&auth_url, None::<&str>) {
-        log::warn!("opener plugin failed to open URL: {} — trying OS fallback", e);
+        log::warn!(
+            "opener plugin failed to open URL: {} — trying OS fallback",
+            e
+        );
         if let Err(fallback_err) = open_url_os_fallback(&auth_url) {
             log::error!("OS fallback also failed: {}", fallback_err);
             return Err(format!(

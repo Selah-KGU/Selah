@@ -103,6 +103,7 @@ sel!(SEL_POST_DATE, ".postDate");
 sel!(SEL_POST_USER, ".postUser");
 sel!(SEL_POST_ID, ".postId");
 sel!(SEL_MSG_BLOCK, ".discussion-message-block");
+sel!(SEL_DISCUSS_MESS_FILE, ".discuss_mess_file");
 
 // ── Detail page selectors ──
 sel!(SEL_REPORT_FORM, "#reportDownloadForm");
@@ -717,6 +718,69 @@ mod tests {
             .meta
             .iter()
             .any(|(k, v)| k == "提出期限" && v == "2026/05/01 23:59"));
+    }
+
+    #[test]
+    fn test_parse_thread_detail_extracts_discussion_file_attachments() {
+        let html = r#"
+            <form id="forumsPostFile" action="/lms/course/forums/thread_postfile">
+              <input type="hidden" name="idnumber" value="202647210001">
+              <input type="hidden" name="forumId" value="4721">
+              <input type="hidden" name="threadId" value="222700">
+              <input type="hidden" name="fileId" value="">
+              <input type="hidden" name="fileName" value="">
+            </form>
+            <div class="contents-title-txt">生成AIと政治情報</div>
+            <div id="threadPostListArea">
+              <div class="clearfix">
+                <div class="discussion-message-block">
+                  <div class="postUser">氏名:山田太郎</div>
+                  <div class="postDate">2026/04/29 10:12</div>
+                  <div class="postContentsText">資料を添付します。</div>
+                  <div class="postId contents-hidden">222720</div>
+                  <div class="discuss_mess_file">
+                    <span class="link-txt downloadFile">政治情報課題における生成AIの影響に関する一考察.pdf</span>
+                    <div class="contents-hidden fileName">政治情報課題における生成AIの影響に関する一考察.pdf</div>
+                    <div class="contents-hidden objectName">2026/47/21/b3/4721b302-3519-4bff-acdc-e5736fe8b6c2</div>
+                    <div class="contents-hidden postId">222720</div>
+                    <div class="contents-hidden scanStatus">1</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+        "#;
+
+        let result = parse_luna_thread_detail(html);
+        assert_eq!(result.posts.len(), 1);
+        let post = &result.posts[0];
+        assert_eq!(post.thread_id, "222720");
+        assert_eq!(post.attachments.len(), 1);
+        let att = &post.attachments[0];
+        assert_eq!(
+            att.name,
+            "政治情報課題における生成AIの影響に関する一考察.pdf"
+        );
+        assert_eq!(
+            att.object_name,
+            "2026/47/21/b3/4721b302-3519-4bff-acdc-e5736fe8b6c2"
+        );
+        assert_eq!(att.download_action, "/lms/course/forums/thread_postfile");
+        assert!(att
+            .download_params
+            .iter()
+            .any(|(k, v)| k == "fileId" && v == &att.object_name));
+        assert!(att
+            .download_params
+            .iter()
+            .any(|(k, v)| k == "fileName" && v == &att.name));
+        assert!(att
+            .download_params
+            .iter()
+            .any(|(k, v)| k == "postId" && v == "222720"));
+        assert!(att
+            .download_params
+            .iter()
+            .any(|(k, v)| k == "scanStatus" && v == "1"));
     }
 
     #[test]

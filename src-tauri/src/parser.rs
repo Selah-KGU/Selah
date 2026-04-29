@@ -1850,7 +1850,10 @@ mod standard_year_tests {
     fn locates_field_by_label() {
         let fields = vec![
             ("授業科目".to_string(), "Demo".to_string()),
-            ("履修基準年度 Standard Year for Registration".to_string(), "１年".to_string()),
+            (
+                "履修基準年度 Standard Year for Registration".to_string(),
+                "１年".to_string(),
+            ),
         ];
         assert_eq!(standard_year_field_index(&fields), Some(1));
     }

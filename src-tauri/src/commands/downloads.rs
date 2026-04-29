@@ -409,8 +409,7 @@ pub fn migrate_uncategorized_to_other() {
         return;
     }
 
-    let mut path_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut path_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for src in pending {
         let Some(name) = src.file_name().map(|n| n.to_os_string()) else {
             continue;

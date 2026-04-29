@@ -177,11 +177,7 @@ fn estimate_text_w(text: &str) -> i32 {
 
 fn prefers_dark(app: &AppHandle) -> bool {
     let theme = app.state::<crate::ThemeState>();
-    let mode = theme
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+    let mode = theme.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     match mode.as_str() {
         "light" => false,
         "dark" => true,

@@ -251,7 +251,7 @@ async fn prepare_material_tempfile(
     }
     if file_id.contains('<') {
         return Err(
-            "Luna がエラーページを返しました。再ログインのうえ、もう一度お試しください。".into()
+            "Luna がエラーページを返しました。再ログインのうえ、もう一度お試しください。".into(),
         );
     }
 

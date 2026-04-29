@@ -268,6 +268,8 @@ pub struct LunaDiscussionPost {
     pub content: String,
     pub status: String,
     pub thread_id: String,
+    #[serde(default)]
+    pub attachments: Vec<LunaAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +279,88 @@ pub struct LunaDiscussionThread {
     pub description: String,
     pub meta: Vec<(String, String)>,
     pub posts: Vec<LunaDiscussionPost>,
+}
+
+fn forum_download_form_info(doc: &Html) -> Option<(String, Vec<(String, String)>)> {
+    let form = doc.select(&SEL_FORUMS_FORM).next()?;
+    let action = form.value().attr("action").unwrap_or_default().to_string();
+    if action.is_empty() {
+        return None;
+    }
+
+    let mut params = Vec::new();
+    for input in form.select(&SEL_HIDDEN_INPUT) {
+        let name = input.value().attr("name").unwrap_or_default();
+        let value = input.value().attr("value").unwrap_or_default();
+        if !value.is_empty() && name != "fileId" && name != "fileName" {
+            params.push((name.to_string(), value.to_string()));
+        }
+    }
+
+    Some((action, params))
+}
+
+fn hidden_text(container: &scraper::ElementRef<'_>, selector: &Selector) -> String {
+    container
+        .select(selector)
+        .next()
+        .map(|e| e.text().collect::<String>().trim().to_string())
+        .unwrap_or_default()
+}
+
+fn parse_discussion_file_attachments(
+    block: &scraper::ElementRef<'_>,
+    form_info: Option<&(String, Vec<(String, String)>)>,
+    fallback_post_id: &str,
+) -> Vec<LunaAttachment> {
+    let Some((action, fixed_params)) = form_info else {
+        return Vec::new();
+    };
+
+    let mut attachments = Vec::new();
+    for file_el in block.select(&SEL_DISCUSS_MESS_FILE) {
+        let name = hidden_text(&file_el, &SEL_DOWNLOAD_FILE);
+        let file_name = if name.is_empty() {
+            hidden_text(&file_el, &SEL_FILENAME)
+        } else {
+            name
+        };
+        let object_name = hidden_text(&file_el, &SEL_OBJECT_NAME);
+        if file_name.is_empty() || object_name.is_empty() {
+            continue;
+        }
+
+        let post_id = {
+            let value = hidden_text(&file_el, &SEL_POST_ID);
+            if value.is_empty() {
+                fallback_post_id.to_string()
+            } else {
+                value
+            }
+        };
+        let scan_status = hidden_text(&file_el, &SEL_SCAN_STATUS);
+
+        let mut params = fixed_params.clone();
+        params.push(("fileId".to_string(), object_name.clone()));
+        params.push(("fileName".to_string(), file_name.clone()));
+        if !post_id.is_empty() {
+            params.push(("postId".to_string(), post_id));
+        }
+        if !scan_status.is_empty() {
+            params.push(("scanStatus".to_string(), scan_status));
+        }
+
+        attachments.push(LunaAttachment {
+            name: file_name,
+            url: String::new(),
+            link_type: "file".to_string(),
+            object_name,
+            download_action: action.clone(),
+            download_params: params,
+        });
+    }
+
+    attachments
 }
 
 /// Parse a Luna discussion themetop page (/lms/course/forums/themetop)
@@ -392,6 +476,7 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
                     content,
                     status,
                     thread_id,
+                    attachments: Vec::new(),
                 });
             }
         }
@@ -411,6 +496,7 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
                     content: header_content,
                     status: String::new(),
                     thread_id: String::new(),
+                    attachments: Vec::new(),
                 });
             }
         }
@@ -476,6 +562,7 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
 
     // Parse posts from #threadPostList (embedded in the page)
     let mut posts = Vec::new();
+    let download_form_info = forum_download_form_info(&doc);
     for block in doc.select(&SEL_THREAD_POST_BLOCK) {
         let content = block
             .select(&SEL_POST_CONTENTS_TEXT)
@@ -504,6 +591,8 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
             .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
+        let attachments =
+            parse_discussion_file_attachments(&block, download_form_info.as_ref(), &post_id);
         // Check if teacher post (has board-discussion-teacher-color-left)
         let is_teacher = block
             .select(&SEL_MSG_BLOCK)
@@ -526,7 +615,7 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
             status.push_str("self");
         }
 
-        if !content.is_empty() || !author.is_empty() {
+        if !content.is_empty() || !author.is_empty() || !attachments.is_empty() {
             posts.push(LunaDiscussionPost {
                 title: String::new(),
                 author,
@@ -534,6 +623,7 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
                 content,
                 status,
                 thread_id: post_id,
+                attachments,
             });
         }
     }

@@ -21,10 +21,29 @@ function renderThreadPosts(container, threadData, threadUrl) {
     if (threadUrl && p.thread_id) h += '<button class="post-reply-btn" data-post-id="' + escapeHtml(p.thread_id) + '">\u8fd4\u4fe1</button>';
     h += '</div>';
     h += '<div class="post-body">' + renderRichText(p.content || '') + '</div>';
+    if (p.attachments && p.attachments.length) {
+      h += '<div class="attachments post-attachments"><h4>\u6dfb\u4ed8\u30d5\u30a1\u30a4\u30eb</h4>';
+      for (var ai = 0; ai < p.attachments.length; ai++) {
+        var a = p.attachments[ai];
+        h += '<button class="attachment post-attachment" data-post-idx="' + i + '" data-att-idx="' + ai + '" data-type="file">';
+        h += '<span>' + ICONS.clip + ' ' + escapeHtml(a.name || '') + '</span><span style="flex:none;opacity:0.5">' + ICONS.download + '</span></button>';
+      }
+      h += '</div>';
+    }
     h += '</div>';
   }
   h += '</div>';
   container.innerHTML = h;
+  container.querySelectorAll('.post-attachment').forEach(function(btn) {
+    var pidx = parseInt(btn.dataset.postIdx);
+    var aidx = parseInt(btn.dataset.attIdx);
+    var att = ((posts[pidx] || {}).attachments || [])[aidx] || {};
+    btn.addEventListener('click', function(e) {
+      if (e.target && e.target.classList && e.target.classList.contains('att-redownload')) return;
+      downloadAttachment(att, btn);
+    });
+    checkAndMarkDownloaded(att, btn);
+  });
   if (threadUrl) {
     container.querySelectorAll('.post-reply-btn').forEach(function(btn) {
       btn.addEventListener('click', function(e) {

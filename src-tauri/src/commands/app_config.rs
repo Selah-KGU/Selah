@@ -326,8 +326,7 @@ pub async fn save_image_file(data: Vec<u8>, default_name: String) -> Result<Stri
     match result {
         Some(handle) => {
             let path = handle.path().to_path_buf();
-            std::fs::write(&path, &data)
-                .map_err(|e| format!("保存に失敗しました: {}", e))?;
+            std::fs::write(&path, &data).map_err(|e| format!("保存に失敗しました: {}", e))?;
             Ok(path.to_string_lossy().to_string())
         }
         None => Err("cancelled".into()),
@@ -342,8 +341,7 @@ pub async fn copy_image_to_clipboard(data: Vec<u8>) -> Result<(), String> {
     std::fs::create_dir_all(&tmp_dir)
         .map_err(|e| format!("一時ディレクトリの作成に失敗: {}", e))?;
     let tmp_path = tmp_dir.join("clipboard_tmp.png");
-    std::fs::write(&tmp_path, &data)
-        .map_err(|e| format!("一時ファイルの書き込みに失敗: {}", e))?;
+    std::fs::write(&tmp_path, &data).map_err(|e| format!("一時ファイルの書き込みに失敗: {}", e))?;
 
     let result = {
         #[cfg(target_os = "macos")]
@@ -426,8 +424,7 @@ pub async fn share_image_native(
     std::fs::create_dir_all(&tmp_dir)
         .map_err(|e| format!("一時ディレクトリの作成に失敗: {}", e))?;
     let tmp_path = tmp_dir.join(&file_name);
-    std::fs::write(&tmp_path, &data)
-        .map_err(|e| format!("一時ファイルの書き込みに失敗: {}", e))?;
+    std::fs::write(&tmp_path, &data).map_err(|e| format!("一時ファイルの書き込みに失敗: {}", e))?;
 
     #[cfg(target_os = "macos")]
     {
@@ -478,37 +475,39 @@ fn open_macos_share_picker(app: &tauri::AppHandle, path: &std::path::Path) -> Re
     let path_buf = path.to_path_buf();
     let (tx, rx) = std::sync::mpsc::channel();
 
-    window.run_on_main_thread(move || {
-        let result: Result<(), String> = (|| {
-            let mtm = MainThreadMarker::new()
-                .ok_or_else(|| "共有ピッカーを主スレッドで初期化できませんでした".to_string())?;
-            let ns_view_ptr = window_for_main
-                .ns_view()
-                .map_err(|e| format!("共有ビューの取得に失敗: {}", e))?;
-            if ns_view_ptr.is_null() {
-                return Err("共有ビューが無効です".into());
-            }
+    window
+        .run_on_main_thread(move || {
+            let result: Result<(), String> = (|| {
+                let mtm = MainThreadMarker::new().ok_or_else(|| {
+                    "共有ピッカーを主スレッドで初期化できませんでした".to_string()
+                })?;
+                let ns_view_ptr = window_for_main
+                    .ns_view()
+                    .map_err(|e| format!("共有ビューの取得に失敗: {}", e))?;
+                if ns_view_ptr.is_null() {
+                    return Err("共有ビューが無効です".into());
+                }
 
-            let view = unsafe { &*(ns_view_ptr as *mut NSView) };
-            let file_url = NSURL::from_file_path(&path_buf)
-                .ok_or_else(|| "共有用ファイル URL の作成に失敗しました".to_string())?;
-            let item = unsafe { &*(&*file_url as *const NSURL as *const AnyObject) };
-            let items = NSArray::from_slice(&[item]);
-            let picker = unsafe {
-                let _ = mtm;
-                NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &items)
-            };
+                let view = unsafe { &*(ns_view_ptr as *mut NSView) };
+                let file_url = NSURL::from_file_path(&path_buf)
+                    .ok_or_else(|| "共有用ファイル URL の作成に失敗しました".to_string())?;
+                let item = unsafe { &*(&*file_url as *const NSURL as *const AnyObject) };
+                let items = NSArray::from_slice(&[item]);
+                let picker = unsafe {
+                    let _ = mtm;
+                    NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &items)
+                };
 
-            picker.showRelativeToRect_ofView_preferredEdge(
-                view.bounds(),
-                view,
-                NSRectEdge::MinY,
-            );
-            Ok(())
-        })();
-        let _ = tx.send(result);
-    })
-    .map_err(|e| format!("共有ピッカーの起動に失敗: {}", e))?;
+                picker.showRelativeToRect_ofView_preferredEdge(
+                    view.bounds(),
+                    view,
+                    NSRectEdge::MinY,
+                );
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("共有ピッカーの起動に失敗: {}", e))?;
 
     rx.recv()
         .map_err(|_| "共有ピッカーの結果受信に失敗しました".to_string())??;

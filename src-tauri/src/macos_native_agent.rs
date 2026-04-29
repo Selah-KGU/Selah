@@ -9,7 +9,6 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{msg_send, AnyThread, MainThreadMarker, MainThreadOnly};
-use objc2_core_foundation::CFRetained;
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSEvent, NSEventMask, NSFloatingWindowLevel, NSFont,
     NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
@@ -17,6 +16,7 @@ use objc2_app_kit::{
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
+use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGPath;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect,
@@ -763,7 +763,8 @@ fn update_text(app: &AppHandle, mode: CapsuleMode, text: &str) {
                         NSFont::systemFontOfSize(NOTICE_FONT)
                     };
                     label.setFont(Some(&font));
-                    let color = if mode == CapsuleMode::Listening && text == "話してください" {
+                    let color = if mode == CapsuleMode::Listening && text == "話してください"
+                    {
                         theme.muted_label()
                     } else {
                         theme.label_color()
@@ -859,7 +860,11 @@ fn build_panel(ui: &mut CapsuleViews) {
         layer.setCornerRadius(CORNER_RADIUS);
         layer.setBackgroundColor(Some(&NSColor::clearColor().CGColor()));
         // Subtle drop shadow for depth.
-        let (sr, sg, sb) = if theme.is_dark { (6, 4, 12) } else { (60, 40, 120) };
+        let (sr, sg, sb) = if theme.is_dark {
+            (6, 4, 12)
+        } else {
+            (60, 40, 120)
+        };
         layer.setShadowColor(Some(&srgb(sr, sg, sb, 0.62).CGColor()));
         layer.setShadowOffset(NSSize::new(0.0, -6.0));
         layer.setShadowRadius(22.0);
@@ -958,7 +963,10 @@ fn build_panel(ui: &mut CapsuleViews) {
 
     // Animated gradient border — hidden at rest, only shown during Processing.
     let gradient = CAGradientLayer::new();
-    gradient.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H)));
+    gradient.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(LISTEN_W, LISTEN_H),
+    ));
     gradient.setType(unsafe { kCAGradientLayerConic });
     gradient.setStartPoint(NSPoint::new(0.5, 0.5));
     gradient.setEndPoint(NSPoint::new(1.0, 0.5));
@@ -967,7 +975,10 @@ fn build_panel(ui: &mut CapsuleViews) {
     gradient.setHidden(true);
 
     let mask_shape = CAShapeLayer::new();
-    mask_shape.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(LISTEN_W, LISTEN_H)));
+    mask_shape.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(LISTEN_W, LISTEN_H),
+    ));
     mask_shape.setFillColor(Some(&NSColor::clearColor().CGColor()));
     mask_shape.setStrokeColor(Some(&NSColor::blackColor().CGColor()));
     mask_shape.setLineWidth(BORDER_GRADIENT_W);
@@ -1018,10 +1029,7 @@ fn layout_label(ui: &CapsuleViews, mode: CapsuleMode) {
 
     match mode {
         CapsuleMode::Processing => {
-            label.setFrame(NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(0.0, 0.0),
-            ));
+            label.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
         }
         CapsuleMode::Result => {
             let x = RESULT_PAD_X;
@@ -1582,28 +1590,26 @@ fn set_gradient_colors(gradient: &CAGradientLayer, theme: &Theme) {
 
 fn set_gradient_locations(gradient: &CAGradientLayer) {
     let locations = [0.0f64, 0.25, 0.5, 0.75, 1.0];
-    let numbers: Vec<Retained<NSNumber>> = locations
-        .iter()
-        .map(|v| NSNumber::new_f64(*v))
-        .collect();
+    let numbers: Vec<Retained<NSNumber>> =
+        locations.iter().map(|v| NSNumber::new_f64(*v)).collect();
     let refs: Vec<&NSNumber> = numbers.iter().map(|n| &**n).collect();
     let array: Retained<NSArray<NSNumber>> = NSArray::from_slice(&refs);
     gradient.setLocations(Some(&array));
 }
 
-fn rounded_rect_path(
-    width: f64,
-    height: f64,
-    radius: f64,
-    line_width: f64,
-) -> CFRetained<CGPath> {
+fn rounded_rect_path(width: f64, height: f64, radius: f64, line_width: f64) -> CFRetained<CGPath> {
     // Inset by half the stroke so the ring sits inside the bounds.
     let inset = line_width / 2.0;
     let rect = NSRect::new(
         NSPoint::new(inset, inset),
-        NSSize::new((width - inset * 2.0).max(0.0), (height - inset * 2.0).max(0.0)),
+        NSSize::new(
+            (width - inset * 2.0).max(0.0),
+            (height - inset * 2.0).max(0.0),
+        ),
     );
-    let r = radius.min(rect.size.width / 2.0).min(rect.size.height / 2.0);
+    let r = radius
+        .min(rect.size.width / 2.0)
+        .min(rect.size.height / 2.0);
     unsafe { CGPath::with_rounded_rect(rect, r, r, std::ptr::null()) }
 }
 
@@ -1815,7 +1821,11 @@ fn apply_theme(theme: &Theme) {
         }
         if let Some(capsule) = &ui.capsule_view {
             if let Some(layer) = capsule.layer() {
-                let (sr, sg, sb) = if theme.is_dark { (6, 4, 12) } else { (60, 40, 120) };
+                let (sr, sg, sb) = if theme.is_dark {
+                    (6, 4, 12)
+                } else {
+                    (60, 40, 120)
+                };
                 layer.setShadowColor(Some(&srgb(sr, sg, sb, 0.62).CGColor()));
                 layer.setShadowOpacity(if theme.is_dark { 0.30 } else { 0.14 });
             }
@@ -2109,7 +2119,11 @@ fn build_markdown_attributed(text: &str, theme: Theme) -> Retained<NSMutableAttr
                     2 => (RESULT_H2_FONT, 8.0),
                     _ => (RESULT_H3_FONT, 6.0),
                 };
-                let color = if *level == 1 { body_color.clone() } else { accent_color.clone() };
+                let color = if *level == 1 {
+                    body_color.clone()
+                } else {
+                    accent_color.clone()
+                };
                 let style = make_paragraph_style(
                     RESULT_LINE_HEIGHT_MUL,
                     RESULT_PARAGRAPH_SPACING,
@@ -2135,7 +2149,11 @@ fn build_markdown_attributed(text: &str, theme: Theme) -> Retained<NSMutableAttr
             MdBlock::Paragraph(inlines) => {
                 let style = make_paragraph_style(
                     RESULT_LINE_HEIGHT_MUL,
-                    if prev_blank { RESULT_PARAGRAPH_SPACING } else { 2.0 },
+                    if prev_blank {
+                        RESULT_PARAGRAPH_SPACING
+                    } else {
+                        2.0
+                    },
                     0.0,
                     0.0,
                     0.0,
@@ -2164,7 +2182,14 @@ fn build_markdown_attributed(text: &str, theme: Theme) -> Retained<NSMutableAttr
                     14.0,
                     NSTextAlignment::Left,
                 );
-                append_plain(&out, "•  ", &accent_color, RESULT_BODY_FONT, Some(&style), 0.0);
+                append_plain(
+                    &out,
+                    "•  ",
+                    &accent_color,
+                    RESULT_BODY_FONT,
+                    Some(&style),
+                    0.0,
+                );
                 append_inlines(
                     &out,
                     inlines,
@@ -2189,7 +2214,14 @@ fn build_markdown_attributed(text: &str, theme: Theme) -> Retained<NSMutableAttr
                     NSTextAlignment::Left,
                 );
                 let marker = format!("{n}.  ");
-                append_plain(&out, &marker, &accent_color, RESULT_BODY_FONT, Some(&style), 0.0);
+                append_plain(
+                    &out,
+                    &marker,
+                    &accent_color,
+                    RESULT_BODY_FONT,
+                    Some(&style),
+                    0.0,
+                );
                 append_inlines(
                     &out,
                     inlines,
@@ -2205,16 +2237,16 @@ fn build_markdown_attributed(text: &str, theme: Theme) -> Retained<NSMutableAttr
                 );
             }
             MdBlock::HRule => {
-                let style = make_paragraph_style(
-                    0.9,
-                    6.0,
-                    6.0,
-                    0.0,
-                    0.0,
-                    NSTextAlignment::Left,
-                );
+                let style = make_paragraph_style(0.9, 6.0, 6.0, 0.0, 0.0, NSTextAlignment::Left);
                 let rule: String = "─".repeat(48);
-                append_plain(&out, &rule, &muted_color, RESULT_BODY_FONT * 0.7, Some(&style), 0.0);
+                append_plain(
+                    &out,
+                    &rule,
+                    &muted_color,
+                    RESULT_BODY_FONT * 0.7,
+                    Some(&style),
+                    0.0,
+                );
             }
             MdBlock::Blank => {}
         }
@@ -2285,10 +2317,9 @@ fn append_inlines(out: &NSMutableAttributedString, inlines: &[MdInline], ctx: &B
                 );
             }
             MdInline::Code(s) => {
-                let font = NSFont::monospacedSystemFontOfSize_weight(
-                    RESULT_CODE_FONT,
-                    unsafe { objc2_app_kit::NSFontWeightMedium },
-                );
+                let font = NSFont::monospacedSystemFontOfSize_weight(RESULT_CODE_FONT, unsafe {
+                    objc2_app_kit::NSFontWeightMedium
+                });
                 // Subtle padding around inline code using hair-space around the text.
                 let padded = format!("\u{2009}{s}\u{2009}");
                 append_attr(
@@ -2352,11 +2383,7 @@ fn append_attr(
             );
         }
         if let Some(paragraph) = paragraph {
-            out.addAttribute_value_range(
-                NSParagraphStyleAttributeName,
-                paragraph.as_ref(),
-                range,
-            );
+            out.addAttribute_value_range(NSParagraphStyleAttributeName, paragraph.as_ref(), range);
         }
     }
 }
