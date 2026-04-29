@@ -2,6 +2,7 @@
  * Tray status cycling: collects data from cache and sends cycling items to the backend tray.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { onCacheUpdate, getCached, registerTask, updateTask } from "./stores";
 import type { LunaTodoItem, ScheduleResponse, KgcCourseRow } from "./types";
 import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "./types";
@@ -10,9 +11,16 @@ import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "./types";
 
 let timetableData: ScheduleResponse | null = null;
 let todoItems: LunaTodoItem[] = [];
+let liveTrayStatus: { active: boolean; listening: boolean; startedAtMs: number | null } | null = null;
 
 let unsubscribers: (() => void)[] = [];
 let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+let trayStatusStarted = false;
+
+interface LiveSessionSnapshot {
+  active: boolean;
+  started_at: string | null;
+}
 
 // ============ Core Logic ============
 
@@ -36,9 +44,80 @@ function truncate(s: string, maxLen: number): string {
   return s.length > maxLen ? s.slice(0, maxLen - 1) + "..." : s;
 }
 
+function normalizeText(s: string | null | undefined): string {
+  return (s ?? "").replace(/\s+/g, " ").trim();
+}
+
+function parseDeadlineTime(deadline: string): number {
+  const normalized = normalizeText(deadline)
+    .replace(/\//g, "-")
+    .replace(/年|月/g, "-")
+    .replace(/日/g, "");
+  const ts = new Date(normalized).getTime();
+  return Number.isFinite(ts) ? ts : Infinity;
+}
+
+function parseLiveStartedAt(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ts = new Date(value.replace(" ", "T")).getTime();
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function formatElapsedMinutes(startedAtMs: number | null, nowMs: number): string {
+  if (!startedAtMs) return "";
+  const minutes = Math.max(0, Math.floor((nowMs - startedAtMs) / 60_000));
+  if (minutes < 60) return `${minutes}分`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `${hours}時間${String(rest).padStart(2, "0")}分`;
+}
+
+function buildLiveStatusItem(nowMs: number): string | null {
+  if (!liveTrayStatus?.active) return null;
+  const elapsed = formatElapsedMinutes(liveTrayStatus.startedAtMs, nowMs);
+  const suffix = elapsed ? ` ${elapsed}` : "";
+  return liveTrayStatus.listening ? `Live記録中${suffix}` : `Live一時停止${suffix}`;
+}
+
+const GENERIC_TODO_TITLES = new Set([
+  "課題",
+  "レポート",
+  "テスト",
+  "小テスト",
+  "掲示板",
+  "アンケート",
+  "出席",
+  "その他",
+  "未設定",
+]);
+
+function hasSpecificTodoTitle(title: string): boolean {
+  const normalized = normalizeText(title);
+  if (normalized.length < 2) return false;
+  if (GENERIC_TODO_TITLES.has(normalized)) return false;
+  if (/^(本日|今日|明日)?\s*[〆締]切$/.test(normalized)) return false;
+  return /[\p{L}\p{N}]/u.test(normalized);
+}
+
+function buildTodoDisplayTitle(todo: LunaTodoItem): string {
+  const contentName = normalizeText(todo.content_name);
+  if (hasSpecificTodoTitle(contentName)) return contentName;
+
+  const courseName = normalizeText(todo.course_name);
+  const contentType = normalizeText(todo.content_type);
+  if (hasSpecificTodoTitle(courseName) && contentType) {
+    return `${courseName} ${contentType}`;
+  }
+  if (hasSpecificTodoTitle(courseName)) return courseName;
+  return "";
+}
+
 function buildStatusItems(): string[] {
   const items: string[] = [];
   const now = new Date();
+  const liveItem = buildLiveStatusItem(now.getTime());
+  if (liveItem) items.push(liveItem);
+
   const todayDay = jsToUnifiedDay(now.getDay());
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
@@ -108,22 +187,25 @@ function buildStatusItems(): string[] {
     const pending = todoItems
       .filter(t => !t.status.includes("提出済"))
       .sort((a, b) => {
-        const da = a.deadline ? new Date(a.deadline.replace(/\//g, "-")).getTime() : Infinity;
-        const db = b.deadline ? new Date(b.deadline.replace(/\//g, "-")).getTime() : Infinity;
+        const da = a.deadline ? parseDeadlineTime(a.deadline) : Infinity;
+        const db = b.deadline ? parseDeadlineTime(b.deadline) : Infinity;
         return da - db;
       });
 
     if (pending.length > 0) {
-      const first = pending[0];
-      if (first.deadline) {
-        const dl = new Date(first.deadline.replace(/\//g, "-"));
-        const diffMs = dl.getTime() - now.getTime();
+      const firstReadableDeadline = pending.find(t => {
+        const title = buildTodoDisplayTitle(t);
+        return title && Number.isFinite(parseDeadlineTime(t.deadline));
+      });
+      if (firstReadableDeadline) {
+        const dlTime = parseDeadlineTime(firstReadableDeadline.deadline);
+        const diffMs = dlTime - now.getTime();
         const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-        const dlLabel = diffDays <= 0 ? "今日〆切" : diffDays === 1 ? "明日〆切" : `あと${diffDays}日`;
-        items.push(`${truncate(first.content_name, 14)} ${dlLabel}`);
+        const dlLabel = diffDays <= 0 ? "本日締切" : diffDays === 1 ? "明日締切" : `あと${diffDays}日`;
+        items.push(`${truncate(buildTodoDisplayTitle(firstReadableDeadline), 14)} ${dlLabel}`);
       }
 
-      if (pending.length > 1) {
+      if (pending.length > 1 || !firstReadableDeadline) {
         items.push(`未提出課題 ${pending.length}件`);
       }
     }
@@ -141,10 +223,32 @@ function buildStatusItems(): string[] {
   return items;
 }
 
+async function refreshLiveTrayStatus() {
+  try {
+    const [snapshot, running, caller] = await Promise.all([
+      invoke<LiveSessionSnapshot>("live_get_session"),
+      invoke<boolean>("stt_is_running"),
+      invoke<string | null>("stt_get_active_caller"),
+    ]);
+    liveTrayStatus = snapshot.active
+      ? {
+          active: true,
+          listening: running && caller === "live",
+          startedAtMs: parseLiveStartedAt(snapshot.started_at),
+        }
+      : null;
+  } catch {
+    liveTrayStatus = null;
+  }
+}
+
 function scheduleRebuild() {
   if (rebuildTimer) clearTimeout(rebuildTimer);
-  rebuildTimer = setTimeout(() => {
+  rebuildTimer = setTimeout(async () => {
+    if (!trayStatusStarted) return;
     updateTask("tray_status", { running: true });
+    await refreshLiveTrayStatus();
+    if (!trayStatusStarted) return;
     const items = buildStatusItems();
     invoke("set_tray_status_items", { items }).then(
       () => updateTask("tray_status", { running: false, lastRunTs: Date.now(), lastOk: true }),
@@ -153,9 +257,23 @@ function scheduleRebuild() {
   }, 300);
 }
 
+function addEventListener<T>(event: string, handler: (payload: T) => void) {
+  listen<T>(event, (ev) => handler(ev.payload))
+    .then((unlisten: UnlistenFn) => {
+      if (trayStatusStarted) {
+        unsubscribers.push(unlisten);
+      } else {
+        unlisten();
+      }
+    })
+    .catch(() => {});
+}
+
 // ============ Public API ============
 
 export function startTrayStatus() {
+  if (trayStatusStarted) return;
+  trayStatusStarted = true;
   registerTask("tray_status", "トレイ表示更新", "system", 90_000);
   // Bootstrap from existing cache (disk or memory)
   timetableData = getCached<ScheduleResponse>("schedule_data");
@@ -166,6 +284,12 @@ export function startTrayStatus() {
     onCacheUpdate<LunaTodoItem[]>("luna_todo", (data) => { todoItems = data ?? []; scheduleRebuild(); }),
   );
 
+  addEventListener<LiveSessionSnapshot>("live-session-updated", () => scheduleRebuild());
+  addEventListener<{ state: string; caller: string }>("stt-state", (payload) => {
+    if (payload.caller === "live") scheduleRebuild();
+  });
+  addEventListener("live-session-saved", () => scheduleRebuild());
+
   // Rebuild periodically (every 90s) to update time-sensitive items like "current class"
   const interval = setInterval(() => scheduleRebuild(), 90_000);
   unsubscribers.push(() => clearInterval(interval));
@@ -175,6 +299,8 @@ export function startTrayStatus() {
 }
 
 export function stopTrayStatus() {
+  trayStatusStarted = false;
+  liveTrayStatus = null;
   for (const unsub of unsubscribers) unsub();
   unsubscribers = [];
   if (rebuildTimer) {
