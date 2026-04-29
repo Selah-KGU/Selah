@@ -310,7 +310,7 @@ pub async fn open_detail_window(
     let encoded_path = urlencoding::encode(&path);
     let encoded_name = urlencoding::encode(&course_name);
     let url_str = format!(
-        "luna-detail.html?mode=kgc&path={}&name={}",
+        "university-detail.html?mode=kgc&path={}&name={}",
         encoded_path, encoded_name
     );
 

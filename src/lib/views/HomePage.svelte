@@ -811,7 +811,7 @@ suggestionsのルール：
     // Prefer Luna if authenticated and course has luna_id
     if ($lunaAuthState.authenticated && entry.luna_id) {
       try {
-        await invoke("luna_open_detail_window", {
+        await invoke("university_open_detail_window", {
           path: "", title: entry.name, mode: "course", idnumber: entry.luna_id,
           kgcPath: entry.detail_path || null, courseName: entry.name,
         });
@@ -837,7 +837,7 @@ suggestionsのルール：
       return;
     }
     try {
-      await invoke("luna_open_detail_window", { path, title });
+      await invoke("university_open_detail_window", { path, title });
     } catch (e) {
       console.error("Failed to open Luna detail:", e);
     }

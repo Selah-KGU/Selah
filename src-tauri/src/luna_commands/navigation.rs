@@ -1,4 +1,4 @@
-use super::{luna_http, LUNA_DETAIL_COUNTER};
+use super::{luna_http, UNIVERSITY_DETAIL_COUNTER};
 use crate::{config, luna_client, LunaState};
 use std::sync::atomic::Ordering;
 use tauri::{Manager, State};
@@ -48,10 +48,10 @@ fn infer_luna_window_target(
     (None, inferred_idnumber)
 }
 
-/// Open a Luna detail page in a separate native window
+/// Open the shared university detail shell in a separate native window.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub async fn luna_open_detail_window(
+pub async fn university_open_detail_window(
     app: tauri::AppHandle,
     path: String,
     title: String,
@@ -66,19 +66,19 @@ pub async fn luna_open_detail_window(
     let existing = app
         .webview_windows()
         .keys()
-        .filter(|k| k.starts_with("luna-detail-"))
+        .filter(|k| k.starts_with("university-detail-"))
         .count();
     if existing >= 10 {
         return Err(config::TOO_MANY_WINDOWS_MSG.into());
     }
-    let id = LUNA_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let label = format!("luna-detail-{}", id);
+    let id = UNIVERSITY_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let label = format!("university-detail-{}", id);
     let (mode, idnumber) = infer_luna_window_target(&path, mode.as_deref(), idnumber.as_deref());
 
     let url_str = match mode.as_deref() {
         Some("material") => {
             let mut parts = format!(
-                "luna-detail.html?mode=material&title={}",
+                "university-detail.html?mode=material&title={}",
                 urlencoding::encode(&title)
             );
             if let Some(p) = &period {
@@ -97,7 +97,7 @@ pub async fn luna_open_detail_window(
         }
         Some("announcement") => {
             let mut parts = format!(
-                "luna-detail.html?mode=announcement&title={}&idnumber={}&infoId={}",
+                "university-detail.html?mode=announcement&title={}&idnumber={}&infoId={}",
                 urlencoding::encode(&title),
                 urlencoding::encode(idnumber.as_deref().unwrap_or("")),
                 urlencoding::encode(info_id.as_deref().unwrap_or(""))
@@ -109,14 +109,14 @@ pub async fn luna_open_detail_window(
         }
         Some("discussion") => {
             format!(
-                "luna-detail.html?mode=discussion&path={}&title={}",
+                "university-detail.html?mode=discussion&path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
             )
         }
         Some("report") => {
             let mut parts = format!(
-                "luna-detail.html?mode=report&path={}&title={}",
+                "university-detail.html?mode=report&path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
             );
@@ -133,7 +133,7 @@ pub async fn luna_open_detail_window(
         }
         Some("survey") | Some("questionnaire") => {
             let mut parts = format!(
-                "luna-detail.html?mode=survey&path={}&title={}",
+                "university-detail.html?mode=survey&path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
             );
@@ -144,14 +144,14 @@ pub async fn luna_open_detail_window(
         }
         Some("thread") => {
             format!(
-                "luna-detail.html?mode=thread&path={}&title={}",
+                "university-detail.html?mode=thread&path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
             )
         }
         Some("course") => {
             let mut parts = format!(
-                "luna-detail.html?mode=course&idnumber={}&title={}",
+                "university-detail.html?mode=course&idnumber={}&title={}",
                 urlencoding::encode(idnumber.as_deref().unwrap_or("")),
                 urlencoding::encode(&title)
             );
@@ -165,14 +165,14 @@ pub async fn luna_open_detail_window(
         }
         Some("attendance") => {
             format!(
-                "luna-detail.html?mode=attendance&idnumber={}&title={}",
+                "university-detail.html?mode=attendance&idnumber={}&title={}",
                 urlencoding::encode(idnumber.as_deref().unwrap_or("")),
                 urlencoding::encode(&title)
             )
         }
         _ => {
             let mut parts = format!(
-                "luna-detail.html?path={}&title={}",
+                "university-detail.html?path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
             );
@@ -200,6 +200,36 @@ pub async fn luna_open_detail_window(
         .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
 
     Ok(())
+}
+
+/// Compatibility alias for older frontend/demo code and external callers.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn luna_open_detail_window(
+    app: tauri::AppHandle,
+    path: String,
+    title: String,
+    mode: Option<String>,
+    period: Option<String>,
+    status: Option<String>,
+    idnumber: Option<String>,
+    info_id: Option<String>,
+    kgc_path: Option<String>,
+    course_name: Option<String>,
+) -> Result<(), String> {
+    university_open_detail_window(
+        app,
+        path,
+        title,
+        mode,
+        period,
+        status,
+        idnumber,
+        info_id,
+        kgc_path,
+        course_name,
+    )
+    .await
 }
 
 /// Launch an LTI tool (Zoom, Panopto, etc.) and open the final URL in app webview

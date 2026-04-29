@@ -15,7 +15,7 @@ mod navigation;
 pub use downloads::*;
 pub use navigation::*;
 
-static LUNA_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
+static UNIVERSITY_DETAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
 const LUNA_DETAIL_CACHE_VERSION: &str = "v2";
 const LUNA_REPORT_DETAIL_CACHE_VERSION: &str = "v1";
 const LUNA_ANNOUNCEMENT_CACHE_VERSION: &str = "v2";

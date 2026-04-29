@@ -350,7 +350,7 @@ pub async fn open_syllabus_detail(
     let encoded_name = urlencoding::encode(&course_name);
     let encoded_label = urlencoding::encode(&label);
     let url_str = format!(
-        "luna-detail.html?mode=syllabus&name={}&wlabel={}",
+        "university-detail.html?mode=syllabus&name={}&wlabel={}",
         encoded_name, encoded_label
     );
 
@@ -386,7 +386,11 @@ pub async fn open_syllabus_detail(
                 if stored {
                     let _ = app_clone.emit_to(&label_clone, "syllabus-ready", &label_clone);
                 } else {
-                    let _ = app_clone.emit_to(&label_clone, "syllabus-error", "internal: state lock poisoned");
+                    let _ = app_clone.emit_to(
+                        &label_clone,
+                        "syllabus-error",
+                        "internal: state lock poisoned",
+                    );
                 }
             }
             Err(e) => {

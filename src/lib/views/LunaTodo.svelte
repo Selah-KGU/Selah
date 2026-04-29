@@ -120,7 +120,7 @@
         params.mode = 'survey';
       }
 
-      await lunaInvoke("luna_open_detail_window", params);
+      await lunaInvoke("university_open_detail_window", params);
     } catch (e: any) {
       console.error("Failed to open detail window:", e);
     }

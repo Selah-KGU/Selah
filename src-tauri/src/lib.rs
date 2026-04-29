@@ -303,6 +303,7 @@ pub fn run() {
             commands::sync_session,
             commands::get_session_states,
             commands::get_session_expiry,
+            luna_commands::university_open_detail_window,
             luna_commands::luna_open_detail_window,
             luna_commands::luna_fetch_page,
             luna_commands::luna_check_session,

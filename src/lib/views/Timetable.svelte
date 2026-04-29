@@ -167,7 +167,7 @@
     if (isDemoActive()) return;
     if (c.luna && $lunaAuthState.authenticated) {
       try {
-        await invoke("luna_open_detail_window", {
+        await invoke("university_open_detail_window", {
           path: "", title: name, mode: "course", idnumber: c.luna.luna_id,
           kgcPath: c.kgc?.detail_path || null, courseName: name,
         });
@@ -181,7 +181,7 @@
 
   function openLunaCourse(idnumber: string, name: string) {
     if (isDemoActive()) return;
-    invoke("luna_open_detail_window", {
+    invoke("university_open_detail_window", {
       path: "", title: name, mode: "course", idnumber,
       kgcPath: null, courseName: name,
     }).catch(console.error);

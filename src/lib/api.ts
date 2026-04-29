@@ -717,6 +717,7 @@ export async function lunaInvoke<T>(
         return demo.demoLunaDetail(String(args?.path ?? "")) as T;
       case "luna_fetch_page":
         return demo.demoLunaPage(String(args?.path ?? "/")) as T;
+      case "university_open_detail_window":
       case "luna_open_detail_window":
         return undefined as T;
       default:
