@@ -3,6 +3,7 @@ use crate::config;
 use crate::luna_client;
 use crate::luna_parser;
 use crate::LunaState;
+use serde::Deserialize;
 use std::sync::atomic::AtomicU32;
 use std::sync::LazyLock;
 use tauri::State;
@@ -20,6 +21,14 @@ const LUNA_DETAIL_CACHE_VERSION: &str = "v2";
 const LUNA_REPORT_DETAIL_CACHE_VERSION: &str = "v1";
 const LUNA_ANNOUNCEMENT_CACHE_VERSION: &str = "v2";
 const LUNA_DETAIL_RETRY_ATTEMPTS: usize = 3;
+const LUNA_FORUM_FILE_MAX_BYTES: usize = 100 * 1024 * 1024;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LunaDiscussionUploadFile {
+    pub file_name: String,
+    pub file_base64: String,
+}
 
 // ── Cached selectors (compiled once, reused across all calls) ──
 macro_rules! sel {
@@ -342,6 +351,166 @@ async fn luna_post_multipart_with_cid(
         luna_client::is_luna_session_expired,
     )
     .await
+}
+
+async fn luna_post_multipart_with_optional_cid(
+    http: &reqwest::Client,
+    path: &str,
+    cid: Option<&str>,
+    form: reqwest::multipart::Form,
+) -> Result<String, String> {
+    if let Some(cid) = cid.filter(|s| !s.is_empty()) {
+        luna_post_multipart_with_cid(http, path, cid, form).await
+    } else {
+        luna_post_multipart(http, path, form).await
+    }
+}
+
+fn add_text_fields(
+    mut form: reqwest::multipart::Form,
+    fields: &[(String, String)],
+) -> reqwest::multipart::Form {
+    for (key, value) in fields {
+        form = form.text(key.clone(), value.clone());
+    }
+    form
+}
+
+fn has_forum_file_upload_support(html: &str) -> bool {
+    html.contains("/lms/course/forum/thread_file")
+        || html.contains("name=\"uploadFiles\"")
+        || html.contains("class=\"fileSelectInput")
+        || html.contains("files[__index__].fileId")
+}
+
+fn validate_forum_file_name(name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("ファイル名が空です".into());
+    }
+    if trimmed.chars().count() > 60 {
+        return Err("ファイル名は60文字以下にしてください".into());
+    }
+    if trimmed.chars().any(|c| {
+        matches!(
+            c,
+            '\\' | '/' | ':' | '*' | '?' | '<' | '>' | '|' | '"' | '%' | '~' | ';'
+        )
+    }) {
+        return Err("ファイル名に使用できない文字が含まれています".into());
+    }
+    Ok(())
+}
+
+fn decode_forum_upload_files(
+    attachments: Option<Vec<LunaDiscussionUploadFile>>,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    use base64::Engine;
+
+    let Some(attachments) = attachments else {
+        return Ok(Vec::new());
+    };
+    if attachments.len() > 10 {
+        return Err("添付ファイルは10個以下にしてください".into());
+    }
+
+    let mut files = Vec::new();
+    for attachment in attachments {
+        let file_name = attachment.file_name.trim().to_string();
+        validate_forum_file_name(&file_name)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&attachment.file_base64)
+            .map_err(|e| format!("Base64デコード失敗: {}", e))?;
+        if bytes.is_empty() {
+            return Err("ファイルサイズが0バイトです".into());
+        }
+        if bytes.len() > LUNA_FORUM_FILE_MAX_BYTES {
+            return Err(format!(
+                "「{}」は最大サイズ（100MB）を超えています。",
+                file_name
+            ));
+        }
+        files.push((file_name, bytes));
+    }
+
+    Ok(files)
+}
+
+async fn upload_forum_files(
+    http: &reqwest::Client,
+    cid: Option<&str>,
+    base_fields: &[(String, String)],
+    files: &[(String, Vec<u8>)],
+) -> Result<Vec<String>, String> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut form = add_text_fields(reqwest::multipart::Form::new(), base_fields);
+    for (idx, (file_name, bytes)) in files.iter().enumerate() {
+        form = form
+            .text(format!("files[{}].fileId", idx), "0".to_string())
+            .text(format!("files[{}].deleteFlag", idx), "0".to_string())
+            .text(format!("files[{}].objectName", idx), String::new())
+            .text(format!("files[{}].fileName", idx), file_name.clone())
+            .part(
+                "uploadFiles",
+                reqwest::multipart::Part::bytes(bytes.clone())
+                    .file_name(file_name.clone())
+                    .mime_str("application/octet-stream")
+                    .map_err(|e| format!("MIME error: {}", e))?,
+            );
+    }
+
+    let upload_resp =
+        luna_post_multipart_with_optional_cid(http, "/lms/course/forum/thread_file", cid, form)
+            .await?;
+    let upload_json: serde_json::Value = serde_json::from_str(&upload_resp).map_err(|e| {
+        format!(
+            "添付ファイルアップロード応答の解析失敗: {} — body: {}",
+            e,
+            crate::client::safe_truncate(&upload_resp, 200)
+        )
+    })?;
+
+    let ids = upload_json
+        .as_array()
+        .ok_or_else(|| {
+            format!(
+                "添付ファイルアップロード応答が不正です: {}",
+                crate::client::safe_truncate(&upload_resp, 200)
+            )
+        })?
+        .iter()
+        .filter_map(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        })
+        .collect::<Vec<_>>();
+
+    if ids.len() != files.len() {
+        return Err(format!(
+            "添付ファイルアップロード数が一致しません (送信={}, 応答={})",
+            files.len(),
+            ids.len()
+        ));
+    }
+
+    Ok(ids)
+}
+
+fn append_forum_file_fields(
+    fields: &mut Vec<(String, String)>,
+    files: &[(String, Vec<u8>)],
+    file_ids: &[String],
+) {
+    for (idx, (file_name, _)) in files.iter().enumerate() {
+        fields.push((format!("files[{}].fileId", idx), file_ids[idx].clone()));
+        fields.push((format!("files[{}].deleteFlag", idx), "0".to_string()));
+        fields.push((format!("files[{}].objectName", idx), String::new()));
+        fields.push((format!("files[{}].fileName", idx), file_name.clone()));
+    }
 }
 
 /// Fetch a Luna page, parse it, and cache with fallback.
@@ -1903,6 +2072,7 @@ pub async fn luna_post_discussion(
     url: String,
     title: String,
     content: String,
+    attachments: Option<Vec<LunaDiscussionUploadFile>>,
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
 
@@ -1922,8 +2092,13 @@ pub async fn luna_post_discussion(
     let html = luna_get_with_referer(&http, &setthread_url, &themetop_path).await?;
 
     log::info!("Setthread HTML fetched ({} bytes)", html.len());
+    let upload_files = decode_forum_upload_files(attachments)?;
+    if !upload_files.is_empty() && !has_forum_file_upload_support(&html) {
+        return Err("この掲示板は添付ファイル投稿に対応していません".into());
+    }
 
     // setthread page only has _csrf (no _cid), plus _method=put
+    let cid = extract_input_value(&html, "_cid");
     let csrf = extract_input_value(&html, "_csrf").ok_or_else(|| {
         let has_form = html.contains("<form");
         let has_login = html.contains("linkCommonLogin") && html.contains("login-body");
@@ -1950,23 +2125,36 @@ pub async fn luna_post_discussion(
 
     // Step 2: POST with _method=put (Luna emulates PUT via POST)
     // Field names match the actual form: threadContentsText, threadContentsHtml, threadContents
-    let post_params = vec![
-        ("_csrf".to_string(), csrf),
+    let mut post_params = Vec::new();
+    if let Some(cid) = cid.clone() {
+        post_params.push(("_cid".to_string(), cid));
+    }
+    post_params.extend([
+        ("_csrf".to_string(), csrf.clone()),
         ("_method".to_string(), "put".to_string()),
-        ("idnumber".to_string(), idnumber),
-        ("forumId".to_string(), forum_id),
+        ("idnumber".to_string(), idnumber.clone()),
+        ("forumId".to_string(), forum_id.clone()),
         ("threadId".to_string(), String::new()),
         ("groupId".to_string(), String::new()),
-        ("threadTitle".to_string(), title),
+        ("threadTitle".to_string(), title.clone()),
         ("threadContentsText".to_string(), content_json),
         (
             "threadContentsHtml".to_string(),
             format!("<p>{}</p>", html_escape(&content)),
         ),
         ("threadContents".to_string(), content.clone()),
-    ];
+    ]);
 
-    let resp = luna_post(&http, "/lms/course/forums/setthread", &post_params).await?;
+    let uploaded_file_ids =
+        upload_forum_files(&http, cid.as_deref(), &post_params, &upload_files).await?;
+    append_forum_file_fields(&mut post_params, &upload_files, &uploaded_file_ids);
+
+    let resp = if upload_files.is_empty() {
+        luna_post(&http, "/lms/course/forums/setthread", &post_params).await?
+    } else {
+        let form = add_text_fields(reqwest::multipart::Form::new(), &post_params);
+        luna_post_multipart(&http, "/lms/course/forums/setthread", form).await?
+    };
 
     if resp.contains("\"success\":false") {
         return Err(format!(
@@ -1988,6 +2176,7 @@ pub async fn luna_reply_discussion(
     url: String,
     content: String,
     parent_post_id: Option<String>,
+    attachments: Option<Vec<LunaDiscussionUploadFile>>,
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
 
@@ -2003,6 +2192,10 @@ pub async fn luna_reply_discussion(
     let html = luna_get_with_referer(&http, &url, &referer_path).await?;
 
     log::info!("Reply HTML fetched ({} bytes)", html.len());
+    let upload_files = decode_forum_upload_files(attachments)?;
+    if !upload_files.is_empty() && !has_forum_file_upload_support(&html) {
+        return Err("この掲示板は添付ファイル投稿に対応していません".into());
+    }
 
     let cid = extract_input_value(&html, "_cid").ok_or_else(|| {
         let has_form = html.contains("<form");
@@ -2046,27 +2239,37 @@ pub async fn luna_reply_discussion(
     .to_string();
 
     // Build multipart form matching the actual thread page form (enctype="multipart/form-data")
-    let form = reqwest::multipart::Form::new()
-        .text("_cid", cid)
-        .text("_csrf", csrf)
-        .text("idnumber", idnumber)
-        .text("forumId", forum_id)
-        .text("threadId", thread_id)
-        .text("forum.addressType", address_type)
-        .text("forum.groupId", group_id)
-        .text("forum.timeStart", time_start)
-        .text("currentThread", current_thread)
-        .text("postContentsText", content_json)
-        .text(
-            "postContentsHtml",
+    let mut post_params = vec![
+        ("_cid".to_string(), cid.clone()),
+        ("_csrf".to_string(), csrf.clone()),
+        ("idnumber".to_string(), idnumber),
+        ("forumId".to_string(), forum_id),
+        ("threadId".to_string(), thread_id),
+        ("forum.addressType".to_string(), address_type),
+        ("forum.groupId".to_string(), group_id),
+        ("forum.timeStart".to_string(), time_start),
+        ("currentThread".to_string(), current_thread),
+        ("postContentsText".to_string(), content_json),
+        (
+            "postContentsHtml".to_string(),
             format!("<p>{}</p>", html_escape(&content)),
-        )
-        .text("postContents", content.clone())
-        .text("postSendFlag", "false")
-        .text("postId", "")
-        .text("parentPostId", parent_post_id.unwrap_or_default())
-        .text("editFlag", "1")
-        .text("editAuthority", "");
+        ),
+        ("postContents".to_string(), content.clone()),
+        ("postSendFlag".to_string(), "false".to_string()),
+        ("postId".to_string(), String::new()),
+        (
+            "parentPostId".to_string(),
+            parent_post_id.unwrap_or_default(),
+        ),
+        ("editFlag".to_string(), "1".to_string()),
+        ("editAuthority".to_string(), String::new()),
+    ];
+
+    let uploaded_file_ids =
+        upload_forum_files(&http, Some(&cid), &post_params, &upload_files).await?;
+    append_forum_file_fields(&mut post_params, &upload_files, &uploaded_file_ids);
+
+    let form = add_text_fields(reqwest::multipart::Form::new(), &post_params);
 
     let resp = luna_post_multipart(&http, "/lms/course/forums/thread", form).await?;
 

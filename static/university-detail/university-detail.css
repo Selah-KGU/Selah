@@ -473,6 +473,20 @@
   .thread-meta .author { font-weight:600; color:var(--text-secondary); }
   .reply-section { margin-top:20px; padding-top:16px; border-top:0.5px solid var(--border); }
   .reply-section h3 { font-size:14px; font-weight:600; color:var(--text-secondary); margin-bottom:10px; }
+  .discussion-upload { margin-top:10px; }
+  .discussion-upload-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .discussion-file-pick { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; font-size:12px; border-radius:8px; }
+  .discussion-file-pick svg { width:13px; height:13px; }
+  .discussion-upload-hint { font-size:11px; color:var(--text-tertiary); }
+  .discussion-file-list { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+  .discussion-file-chip { display:flex; align-items:center; gap:8px; min-width:0; padding:7px 9px; border:0.5px solid var(--border); border-radius:8px; background:var(--bg-tertiary); color:var(--text-primary); font-size:12px; }
+  .discussion-file-chip span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .discussion-file-chip svg { width:13px; height:13px; opacity:0.65; vertical-align:-2px; }
+  .discussion-file-chip small { flex:none; color:var(--text-tertiary); font-size:11px; }
+  .discussion-file-remove { flex:none; width:22px; height:22px; border:none; border-radius:6px; background:transparent; color:var(--text-secondary); cursor:pointer; font-size:17px; line-height:1; }
+  .discussion-file-remove:hover:not(:disabled) { color:var(--red, #e53935); background:color-mix(in srgb, var(--red, #e53935) 10%, transparent); }
+  .discussion-file-remove:disabled { opacity:0.35; cursor:default; }
+  .discussion-file-error { min-height:16px; margin-top:4px; color:var(--red, #e53935); font-size:11px; }
   .reply-actions { display:flex; justify-content:flex-end; margin-top:8px; }
   .back-btn { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border:0.5px solid var(--border); border-radius:8px; background:var(--bg-tertiary); color:var(--accent); font-size:13px; font-weight:500; cursor:pointer; margin-bottom:12px; transition:background .15s; }
   .back-btn:hover { background:var(--accent-bg); border-color:var(--accent); }

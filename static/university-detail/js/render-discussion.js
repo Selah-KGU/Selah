@@ -37,6 +37,7 @@ function renderDiscussion(data) {
   h += '<div class="reply-section"><h3>新しいスレッド</h3>';
   h += '<input id="newThreadTitle" class="text-input" type="text" placeholder="タイトル..." style="margin-bottom:8px">';
   h += '<textarea id="newThreadContent" class="text-input" rows="4" placeholder="内容を入力..."></textarea>';
+  h += discussionAttachmentControlHtml('newThreadAttachments');
   h += '<div class="reply-actions"><button id="newThreadBtn" class="btn primary">投稿</button></div></div>';
 
   h += '</div>';
@@ -68,6 +69,7 @@ function showThreadInline(c, discData, post, idnumber, forumId, discussionPath) 
   if (tid && idnumber && forumId) {
     h += '<div class="reply-section"><h3>\u8fd4\u4fe1</h3>';
     h += '<textarea id="replyContent" class="text-input" rows="4" placeholder="\u8fd4\u4fe1\u5185\u5bb9\u3092\u5165\u529b..."></textarea>';
+    h += discussionAttachmentControlHtml('threadReplyAttachments');
     h += '<div class="reply-actions"><button id="replyBtn" class="btn primary">\u9001\u4fe1</button></div></div>';
   }
   h += '</div>';
@@ -90,6 +92,7 @@ function showThreadInline(c, discData, post, idnumber, forumId, discussionPath) 
       }
     })();
     var replyBtn = document.getElementById('replyBtn'), replyArea = document.getElementById('replyContent');
+    var attachmentPicker = wireDiscussionAttachmentControl(c, 'threadReplyAttachments');
     var replyDraftKey = lunaDraftKey(['discussion-reply', tUrl, 'root']);
     bindDraftField(replyArea, replyDraftKey);
     if (replyBtn) {
@@ -97,14 +100,18 @@ function showThreadInline(c, discData, post, idnumber, forumId, discussionPath) 
         var inv = window.__TAURI__?.core?.invoke;
         if (!inv || !replyArea.value.trim()) return;
         replyBtn.disabled = true; replyBtn.textContent = '\u9001\u4fe1\u4e2d...';
+        if (attachmentPicker) attachmentPicker.setDisabled(true);
         try {
-          var result = await inv('luna_reply_discussion', { url: tUrl, content: replyArea.value.trim(), parentPostId: null });
+          var attachments = await readDiscussionAttachmentPayload(attachmentPicker);
+          var result = await inv('luna_reply_discussion', { url: tUrl, content: replyArea.value.trim(), parentPostId: null, attachments: attachments });
           replyArea.value = '';
+          if (attachmentPicker) attachmentPicker.clear();
           clearDraftValue(replyDraftKey);
           replyBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
           // Refresh posts after reply
           setTimeout(async function() {
             replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
+            if (attachmentPicker) attachmentPicker.setDisabled(false);
             try {
               var threadData = await inv('luna_fetch_thread_posts', { url: tUrl });
               renderThreadPosts(document.getElementById('threadPostsArea'), threadData, tUrl);
@@ -113,6 +120,7 @@ function showThreadInline(c, discData, post, idnumber, forumId, discussionPath) 
         } catch(e) {
           alert('\u8fd4\u4fe1\u30a8\u30e9\u30fc: ' + String(e));
           replyBtn.textContent = '\u9001\u4fe1'; replyBtn.disabled = false;
+          if (attachmentPicker) attachmentPicker.setDisabled(false);
         }
       });
     }
@@ -126,6 +134,7 @@ function wireNewThreadForm(c, discussionPath) {
   var newBtn = document.getElementById('newThreadBtn');
   var newTitle = document.getElementById('newThreadTitle');
   var newContent = document.getElementById('newThreadContent');
+  var attachmentPicker = wireDiscussionAttachmentControl(c, 'newThreadAttachments');
   var titleDraftKey = lunaDraftKey(['discussion-new-thread', discussionPath || _currentPagePath || window.location.search, 'title']);
   var contentDraftKey = lunaDraftKey(['discussion-new-thread', discussionPath || _currentPagePath || window.location.search, 'content']);
   bindDraftField(newTitle, titleDraftKey);
@@ -135,16 +144,20 @@ function wireNewThreadForm(c, discussionPath) {
       var inv = window.__TAURI__?.core?.invoke;
       if (!inv || !newTitle.value.trim() || !newContent.value.trim()) return;
       newBtn.disabled = true; newBtn.textContent = '\u6295\u7a3f\u4e2d...';
+      if (attachmentPicker) attachmentPicker.setDisabled(true);
       try {
-        var result = await inv('luna_post_discussion', { url: discussionPath, title: newTitle.value.trim(), content: newContent.value.trim() });
+        var attachments = await readDiscussionAttachmentPayload(attachmentPicker);
+        var result = await inv('luna_post_discussion', { url: discussionPath, title: newTitle.value.trim(), content: newContent.value.trim(), attachments: attachments });
         newTitle.value = ''; newContent.value = '';
+        if (attachmentPicker) attachmentPicker.clear();
         clearDraftValues([titleDraftKey, contentDraftKey]);
         newBtn.innerHTML = ICONS.done + ' ' + escapeHtml(result);
-        setTimeout(function() { newBtn.textContent = '\u6295\u7a3f'; newBtn.disabled = false; }, 2000);
+        setTimeout(function() { newBtn.textContent = '\u6295\u7a3f'; newBtn.disabled = false; if (attachmentPicker) attachmentPicker.setDisabled(false); }, 2000);
       } catch(e) {
         var st = c.querySelector('.post-status') || Object.assign(document.createElement('div'), { className: 'post-status' });
         st.textContent = '\u6295\u7a3f\u30a8\u30e9\u30fc: ' + String(e); st.style.color = 'var(--red)'; c.appendChild(st);
         newBtn.textContent = '\u6295\u7a3f'; newBtn.disabled = false;
+        if (attachmentPicker) attachmentPicker.setDisabled(false);
       }
     });
   }
