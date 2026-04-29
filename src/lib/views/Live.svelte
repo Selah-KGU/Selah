@@ -72,8 +72,15 @@
   let scrollEl: HTMLElement | null = null;
   const FREE_NOTE_NAME = "自由ノート";
   const MIN_AI_SUMMARIZATION_MS = 2 * 60 * 1000;
+  const NO_EFFECTIVE_SPEECH_AUTO_PAUSE_MS = 10 * 60 * 1000;
+  const PAUSED_AUTO_FINISH_MS = 20 * 60 * 1000;
+  const LIVE_AUTO_GUARD_INTERVAL_MS = 30 * 1000;
   let pendingActivationMode: "start" | "resume" | null = null;
   let cancelSessionOnStartFailure = false;
+  let lastEffectiveSpeechAtMs: number | null = null;
+  let pausedSinceMs: number | null = null;
+  let liveAutoGuardTimer: ReturnType<typeof setInterval> | null = null;
+  let autoLifecycleBusy = false;
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -253,9 +260,20 @@
         now = new Date();
         timeTimer = setInterval(() => { now = new Date(); }, 5000);
       }
-    } else if (timeTimer) {
-      clearInterval(timeTimer);
-      timeTimer = null;
+      if (!liveAutoGuardTimer) {
+        liveAutoGuardTimer = setInterval(() => {
+          checkLiveAutoLifecycle().catch((e: any) => {
+            console.warn("[Live] auto lifecycle check failed:", e);
+          });
+        }, LIVE_AUTO_GUARD_INTERVAL_MS);
+      }
+    } else {
+      if (timeTimer) {
+        clearInterval(timeTimer);
+        timeTimer = null;
+      }
+      stopLiveAutoGuardTimer();
+      clearLiveAutoLifecycle();
     }
   });
 
@@ -564,6 +582,67 @@
     }
   }
 
+  function markLiveListeningStarted() {
+    lastEffectiveSpeechAtMs = Date.now();
+    pausedSinceMs = null;
+  }
+
+  function markEffectiveSpeech() {
+    lastEffectiveSpeechAtMs = Date.now();
+    pausedSinceMs = null;
+  }
+
+  function markLivePaused() {
+    if (!snapshot.active) return;
+    if (!pausedSinceMs) pausedSinceMs = Date.now();
+    lastEffectiveSpeechAtMs = null;
+  }
+
+  function clearLiveAutoLifecycle() {
+    lastEffectiveSpeechAtMs = null;
+    pausedSinceMs = null;
+    autoLifecycleBusy = false;
+  }
+
+  function stopLiveAutoGuardTimer() {
+    if (liveAutoGuardTimer) {
+      clearInterval(liveAutoGuardTimer);
+      liveAutoGuardTimer = null;
+    }
+  }
+
+  async function checkLiveAutoLifecycle() {
+    if (!snapshot.active || busy || autoLifecycleBusy) return;
+    const nowMs = Date.now();
+    if (sttListening && !sttBooting) {
+      const lastEffectiveAt = lastEffectiveSpeechAtMs ?? nowMs;
+      lastEffectiveSpeechAtMs = lastEffectiveAt;
+      pausedSinceMs = null;
+      if (nowMs - lastEffectiveAt >= NO_EFFECTIVE_SPEECH_AUTO_PAUSE_MS) {
+        autoLifecycleBusy = true;
+        try {
+          await pauseLiveInternal(true);
+        } finally {
+          autoLifecycleBusy = false;
+        }
+      }
+      return;
+    }
+
+    if (!sttBooting) {
+      const pausedAt = pausedSinceMs ?? nowMs;
+      pausedSinceMs = pausedAt;
+      if (nowMs - pausedAt >= PAUSED_AUTO_FINISH_MS) {
+        autoLifecycleBusy = true;
+        try {
+          await stopLiveInternal(true);
+        } finally {
+          autoLifecycleBusy = false;
+        }
+      }
+    }
+  }
+
   async function startSession(course: LiveCourseInfo) {
     busy = true;
     clearNotice();
@@ -582,6 +661,7 @@
       if (isDemoActive()) {
         sttListening = true;
         sttPhase = "listening";
+        markLiveListeningStarted();
         clearSttNotice();
       } else {
         await invoke("stt_start_stream", { caller: "live" });
@@ -599,6 +679,7 @@
         snapshot = await liveGetSession();
       } catch {}
       stopFlushTimer();
+      clearLiveAutoLifecycle();
     } finally {
       busy = false;
     }
@@ -613,7 +694,7 @@
     await startSession(createFreeNoteCourse());
   }
 
-  async function pauseLive() {
+  async function pauseLiveInternal(automated = false) {
     busy = true;
     clearNotice();
     clearSttNotice();
@@ -629,12 +710,21 @@
       sttPhase = "idle";
       partialText = "";
       stopFlushTimer();
-      setMessage("success", `LIVEを一時停止: ${snapshot.course?.course_name ?? "録音"}`);
+      markLivePaused();
+      if (automated) {
+        setNotice("warning", "10分間有効な音声が認識されなかったため、LIVEを一時停止しました。");
+      } else {
+        setMessage("success", `LIVEを一時停止: ${snapshot.course?.course_name ?? "録音"}`);
+      }
     } catch (e: any) {
       setMessage("error", e?.message || String(e));
     } finally {
       busy = false;
     }
+  }
+
+  async function pauseLive() {
+    await pauseLiveInternal(false);
   }
 
   async function resumeLive() {
@@ -653,6 +743,7 @@
       if (isDemoActive()) {
         sttListening = true;
         sttPhase = "listening";
+        markLiveListeningStarted();
         clearSttNotice();
       } else {
         await invoke("stt_start_stream", { caller: "live" });
@@ -663,6 +754,7 @@
       pendingActivationMode = null;
       cancelSessionOnStartFailure = false;
       sttPhase = "idle";
+      markLivePaused();
       clearSttNotice();
       setMessage("error", e?.message || String(e));
       stopFlushTimer();
@@ -671,14 +763,14 @@
     }
   }
 
-  async function stopLive() {
+  async function stopLiveInternal(automated = false) {
     busy = true;
     clearNotice();
     clearSttNotice();
     pendingActivationMode = null;
     cancelSessionOnStartFailure = false;
     sttPhase = "idle";
-    saveProgress = "録音を停止中…";
+    saveProgress = automated ? "自動終了の準備中…" : "録音を停止中…";
     try {
       if (!isDemoActive()) {
         try {
@@ -693,9 +785,10 @@
         lastSaved = ended.saved ? ended : null;
         snapshot = await liveGetSession();
         stopFlushTimer();
+        clearLiveAutoLifecycle();
         saveProgress = "";
         if (!ended.saved) {
-          setMessage("success", "LIVEを終了しました");
+          setMessage("success", automated ? "20分間再開されなかったため、LIVEを自動終了しました" : "LIVEを終了しました");
         }
         return;
       }
@@ -710,12 +803,16 @@
       lastSaved = saved.saved ? saved : null;
       snapshot = await liveGetSession();
       stopFlushTimer();
+      clearLiveAutoLifecycle();
       saveProgress = "";
       if (saved.saved) {
         showSaveNotif = true;
         setTimeout(() => { showSaveNotif = false; }, 6000);
+        if (automated) {
+          setMessage("success", "20分間再開されなかったため、LIVEを自動保存しました");
+        }
       } else {
-        setMessage("success", "LIVEを終了しました");
+        setMessage("success", automated ? "20分間再開されなかったため、LIVEを自動終了しました" : "LIVEを終了しました");
       }
     } catch (e: any) {
       saveProgress = "";
@@ -723,6 +820,10 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function stopLive() {
+    await stopLiveInternal(false);
   }
 
   async function cancelLive() {
@@ -742,6 +843,7 @@
       partialText = "";
       sttListening = false;
       stopFlushTimer();
+      clearLiveAutoLifecycle();
       setMessage("success", "LIVEセッションを破棄しました");
     } catch (e: any) {
       setMessage("error", e?.message || String(e));
@@ -807,9 +909,15 @@
       ]);
       sttListening = running && caller === "live";
       sttPhase = sttListening ? "listening" : "idle";
+      if (sttListening) {
+        markLiveListeningStarted();
+      } else if (snapshot.active) {
+        markLivePaused();
+      }
     } catch {
       sttListening = false;
       sttPhase = "idle";
+      if (snapshot.active) markLivePaused();
     }
   }
 
@@ -834,6 +942,7 @@
           // the line-length fingerprint check below.
           snapshot = await liveAppendTranscript(event.payload.text || "");
           lastAppliedLen = snapshot.transcript_lines.length;
+          markEffectiveSpeech();
         } catch (e: any) {
           setMessage("error", e?.message || String(e));
         }
@@ -855,10 +964,12 @@
             setMessage("success", `${verb}: ${snapshot.course?.course_name ?? selectedCourse?.name ?? "録音"}`);
           }
           pendingActivationMode = null;
+          if (!wasListening) markLiveListeningStarted();
         } else {
           sttPhase = "idle";
           clearSttNotice();
           stopFlushTimer();
+          if (snapshot.active) markLivePaused();
         }
         if (sttListening && !wasListening) autoFollow = true;
       });
@@ -870,6 +981,7 @@
         pendingActivationMode = null;
         clearSttNotice();
         stopFlushTimer();
+        if (snapshot.active) markLivePaused();
         setMessage("error", event.payload.message);
         if (wasStarting && cancelSessionOnStartFailure) {
           cancelSessionOnStartFailure = false;
@@ -931,6 +1043,7 @@
 
   onDestroy(() => {
     stopFlushTimer();
+    stopLiveAutoGuardTimer();
     if (timeTimer) clearInterval(timeTimer);
     clearNoticeTimer();
     unlistenPartial?.();

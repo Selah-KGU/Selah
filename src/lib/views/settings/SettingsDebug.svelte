@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import { getTaskSnapshot, onTaskChange } from "../../stores";
   import type { TaskInfo } from "../../stores";
-  import { fetchPage, isDemoActive } from "../../api";
+  import { fetchPage, isDemoActive, refreshBackendTaskStatuses } from "../../api";
 
   interface DebugInfo {
     app_version: string;
@@ -280,6 +280,21 @@
     return new Date(epoch * 1000).toLocaleTimeString("ja-JP");
   }
 
+  function formatInterval(ms: number): string {
+    if (!ms) return "-";
+    const min = Math.round(ms / 60_000);
+    if (min < 60) return `${min}min`;
+    const hours = ms / 3_600_000;
+    return `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)}h`;
+  }
+
+  async function refreshTaskSnapshot() {
+    await refreshBackendTaskStatuses().catch((err) => {
+      addLog("warn", `タスク状態更新失敗: ${err}`);
+    });
+    tasks = getTaskSnapshot();
+  }
+
   async function runConsoleCommand() {
     if (!consoleInput.trim()) return;
     const cmd = consoleInput.trim();
@@ -400,7 +415,7 @@
   <button class:active={activeSection === "info"} onclick={() => { activeSection = "info"; void fetchDebugInfo(); }}>
     情報
   </button>
-  <button class:active={activeSection === "tasks"} onclick={() => { activeSection = "tasks"; tasks = getTaskSnapshot(); }}>
+  <button class:active={activeSection === "tasks"} onclick={() => { activeSection = "tasks"; void refreshTaskSnapshot(); }}>
     タスク <span class="tab-count">({tasks.length})</span>
   </button>
   <button class:active={activeSection === "network"} onclick={() => activeSection = "network"}>
@@ -459,8 +474,8 @@
       <div class="section-header">
         <h4>通知</h4>
         <div class="header-actions">
-          <button class="sm-btn" onclick={() => void fetchDebugInfo()}>更新</button>
-          <button class="sm-btn" onclick={syncNotificationsNow} disabled={notifSyncing}>
+          <button class="tool-btn" onclick={() => void fetchDebugInfo()}>更新</button>
+          <button class="tool-btn primary-soft" onclick={syncNotificationsNow} disabled={notifSyncing}>
             {notifSyncing ? "同期中..." : "今すぐ同期"}
           </button>
         </div>
@@ -529,41 +544,39 @@
     <div class="section">
       <div class="section-header">
         <h4>定期タスク</h4>
-        <button class="sm-btn" onclick={() => { tasks = getTaskSnapshot(); }}>更新</button>
+        <button class="tool-btn" onclick={() => { void refreshTaskSnapshot(); }}>更新</button>
       </div>
       {#each ["volatile", "stable", "system"] as tier}
         {@const tierTasks = tasks.filter(t => t.tier === tier)}
         {#if tierTasks.length > 0}
           <div class="task-tier-label">
-            {tier === "volatile" ? "高頻度 (5min)" : tier === "stable" ? "低頻度 (12h)" : "システム"}
+            {tier === "volatile" ? "高頻度" : tier === "stable" ? "低頻度" : "システム"}
           </div>
-          <div class="info-grid" style="margin-bottom:8px;">
+          <div class="info-grid task-grid">
             {#each tierTasks as t}
-              <div class="info-row" title={t.key}>
-                <span class="info-key" style="width:140px">{t.label}</span>
-                <span class="info-val" style="flex:1; justify-content:space-between;">
-                  <span style="display:flex;align-items:center;gap:4px;">
-                    {#if t.running}
-                      <span class="dot-status running"></span>
-                      <span class="task-running">実行中</span>
-                    {:else if t.lastOk === true}
-                      <span class="dot-status ok"></span>
-                      <span>成功</span>
-                    {:else if t.lastOk === false}
-                      <span class="dot-status ng"></span>
-                      <span>失敗</span>
-                    {:else}
-                      <span class="dot-status"></span>
-                      <span class="muted">未実行</span>
-                    {/if}
-                  </span>
-                  <span class="mono" style="color:var(--text-tertiary);font-size:10px;">
-                    {#if t.lastRunTs}
-                      {void taskTick, Math.round((Date.now() - t.lastRunTs) / 1000)}s ago
-                    {:else}
-                      --
-                    {/if}
-                  </span>
+              <div class="info-row task-row" title={t.key}>
+                <span class="info-key task-name">{t.label}</span>
+                <span class="info-val task-status">
+                  {#if t.running}
+                    <span class="dot-status running"></span>
+                    <span class="task-running">実行中</span>
+                  {:else if t.lastOk === true}
+                    <span class="dot-status ok"></span>
+                    <span>成功</span>
+                  {:else if t.lastOk === false}
+                    <span class="dot-status ng"></span>
+                    <span>失敗</span>
+                  {:else}
+                    <span class="dot-status"></span>
+                    <span class="muted inline-muted">未実行</span>
+                  {/if}
+                </span>
+                <span class="task-meta mono">
+                  {#if t.lastRunTs}
+                    {formatInterval(t.intervalMs)} · {void taskTick, Math.round((Date.now() - t.lastRunTs) / 1000)}s ago
+                  {:else}
+                    {formatInterval(t.intervalMs)} · --
+                  {/if}
                 </span>
               </div>
             {/each}
@@ -582,7 +595,7 @@
         {isPinging ? "診断中..." : "接続テスト実行"}
       </button>
       {#if pingResults.length > 0}
-        <div class="info-grid" style="margin-top:10px;">
+        <div class="info-grid result-grid">
           {#each pingResults as p}
             <div class="info-row">
               <span class="info-key truncate">{p.target}</span>
@@ -599,7 +612,7 @@
       <div class="info-grid">
         <div class="info-row">
           <span class="info-key">メッセージ</span>
-          <span class="info-val" style="flex:1;gap:6px;">
+          <span class="info-val notif-control">
             <input
               type="text"
               class="notif-input"
@@ -607,7 +620,7 @@
               placeholder="テスト通知メッセージ"
               onkeydown={(e) => e.key === "Enter" && sendTestNotification()}
             />
-            <button class="sm-btn" onclick={sendTestNotification}>送信</button>
+            <button class="tool-btn input-action" onclick={sendTestNotification}>送信</button>
           </span>
         </div>
       </div>
@@ -621,7 +634,7 @@
           placeholder="/path"
           onkeydown={(e) => e.key === "Enter" && browserNavigate()}
         />
-        <button class="action-btn" style="margin-top:0;" onclick={browserNavigate} disabled={browserLoading}>
+        <button class="tool-btn primary browser-go-btn" onclick={browserNavigate} disabled={browserLoading}>
           {browserLoading ? "..." : "Go"}
         </button>
       </div>
@@ -629,7 +642,7 @@
         <div class="browser-error">{browserError}</div>
       {/if}
       {#if browserHtml}
-        <div class="log-scroll" style="max-height:300px;">
+        <div class="log-scroll browser-html-scroll">
           <pre class="browser-pre">{browserHtml}</pre>
         </div>
       {:else if !browserLoading}
@@ -641,7 +654,7 @@
     <div class="section">
       <div class="section-header">
         <h4>ログ <span class="count">({logEntries.length})</span></h4>
-        <button class="sm-btn" onclick={() => logEntries = []}>クリア</button>
+        <button class="tool-btn danger-soft" onclick={() => logEntries = []}>クリア</button>
       </div>
       <div class="log-scroll">
         {#each logEntries as entry}
@@ -668,31 +681,40 @@
 <style>
   .tab-bar {
     display: flex;
+    gap: 4px;
     background: var(--bg-secondary);
-    border-radius: 8px 8px 0 0;
+    border-radius: 10px;
     border: 0.5px solid var(--border);
-    border-bottom: none;
-    padding: 0 8px;
+    padding: 4px;
+    margin-bottom: 10px;
+    overflow-x: auto;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent);
   }
   .tab-bar button {
-    padding: 6px 12px;
+    min-height: 30px;
+    padding: 0 12px;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 600;
     font-family: inherit;
     color: var(--text-tertiary);
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
+    border-radius: 7px;
     cursor: pointer;
-    transition: color 0.15s;
+    white-space: nowrap;
+    transition: color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.15s;
   }
   .tab-bar button:hover {
     color: var(--text-primary);
+    background: color-mix(in srgb, var(--text-primary) 6%, transparent);
   }
   .tab-bar button.active {
     color: var(--accent);
-    border-bottom-color: var(--accent);
+    background: var(--bg-primary);
+    box-shadow: var(--shadow-sm);
+  }
+  .tab-bar button.active:hover {
+    transform: translateY(-1px);
   }
   .tab-count {
     font-weight: 400;
@@ -701,12 +723,11 @@
   }
 
   .debug-body {
-    border: 0.5px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 8px 8px;
+    border-radius: 10px;
     background: var(--bg-primary);
-    padding: 12px;
+    padding: 6px;
     font-size: 12px;
+    min-width: 0;
   }
 
   .section h4 {
@@ -728,17 +749,30 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    margin-bottom: 7px;
+  }
+  .section-header:first-child {
+    margin-top: 0;
+  }
+  .section-header h4 {
+    margin: 0;
   }
   .header-actions {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .info-grid {
     background: var(--bg-secondary);
     border-radius: 8px;
+    border: 0.5px solid var(--border);
     overflow: hidden;
+    min-width: 0;
   }
   .compact-grid {
     margin-top: 8px;
@@ -746,9 +780,11 @@
   .info-row {
     display: flex;
     align-items: center;
-    padding: 5px 10px;
+    min-height: 34px;
+    padding: 7px 10px;
     border-bottom: 0.5px solid var(--border);
     gap: 8px;
+    min-width: 0;
   }
   .info-row:last-child {
     border-bottom: none;
@@ -756,8 +792,9 @@
   .info-key {
     color: var(--text-secondary);
     font-size: 11px;
-    width: 100px;
+    width: 118px;
     flex-shrink: 0;
+    line-height: 1.35;
   }
   .source-key {
     text-transform: uppercase;
@@ -768,6 +805,9 @@
     display: flex;
     align-items: center;
     gap: 4px;
+    min-width: 0;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
   .source-flags {
     flex-wrap: wrap;
@@ -806,13 +846,42 @@
     color: var(--orange, #ff9500);
     font-size: 11px;
   }
+  .task-grid {
+    margin-bottom: 10px;
+  }
+  .task-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) minmax(86px, auto) minmax(96px, auto);
+    align-items: center;
+    column-gap: 12px;
+  }
+  .task-name {
+    width: auto;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .task-status {
+    justify-content: flex-start;
+    white-space: nowrap;
+  }
+  .task-meta {
+    justify-self: end;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    white-space: nowrap;
+  }
   .task-tier-label {
     font-size: 10px;
     font-weight: 600;
     color: var(--text-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    margin: 8px 0 3px;
+    margin: 12px 0 5px;
     padding-left: 2px;
   }
   .task-tier-label:first-child {
@@ -824,6 +893,9 @@
     font-size: 11px;
     margin: 2px 0 6px;
   }
+  .inline-muted {
+    margin: 0;
+  }
 
   .action-bar {
     display: flex;
@@ -832,47 +904,102 @@
     align-items: center;
   }
   .action-btn {
-    padding: 5px 14px;
-    font-size: 11px;
-    font-weight: 500;
+    min-height: 27px;
+    padding: 0 10px;
+    font-size: 10.5px;
+    font-weight: 600;
     font-family: inherit;
     color: #fff;
     background: var(--accent);
     border: none;
-    border-radius: 6px;
+    border-radius: 7px;
     cursor: pointer;
-    margin-top: 4px;
-    transition: opacity 0.15s;
+    margin: 4px 0 10px;
+    box-shadow: var(--shadow-sm);
+    transition: background 0.15s, box-shadow 0.15s, opacity 0.15s, transform 0.15s;
   }
   .action-btn:hover {
-    opacity: 0.85;
+    opacity: 0.9;
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
   }
   .action-btn:disabled {
     opacity: 0.5;
     cursor: default;
+    box-shadow: none;
+    transform: none;
   }
-  .sm-btn {
-    padding: 2px 8px;
+  .tool-btn {
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 8px;
     font-size: 10px;
+    font-weight: 600;
     font-family: inherit;
     color: var(--text-secondary);
-    background: transparent;
+    background: var(--bg-primary);
     border: 0.5px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 1px 0 color-mix(in srgb, #fff 36%, transparent);
+    transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s, transform 0.15s, opacity 0.15s;
   }
-  .sm-btn:hover {
+  .tool-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-1px);
+  }
+  .tool-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+    box-shadow: none;
+    transform: none;
+  }
+  .tool-btn.primary,
+  .tool-btn.primary-soft {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+    background: color-mix(in srgb, var(--accent) 9%, var(--bg-primary));
+  }
+  .tool-btn.primary:hover,
+  .tool-btn.primary-soft:hover {
+    background: color-mix(in srgb, var(--accent) 14%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  }
+  .tool-btn.primary {
+    min-width: 40px;
+  }
+  .tool-btn.danger-soft {
+    color: var(--red);
+    border-color: color-mix(in srgb, var(--red) 24%, var(--border));
+    background: color-mix(in srgb, var(--red) 7%, var(--bg-primary));
+  }
+  .tool-btn.danger-soft:hover {
+    background: color-mix(in srgb, var(--red) 12%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--red) 38%, var(--border));
+  }
+  .tool-btn.input-action {
+    align-self: stretch;
+    min-height: 24px;
   }
 
   .log-scroll {
     max-height: 280px;
     overflow: auto;
     background: var(--bg-secondary);
+    border: 0.5px solid var(--border);
     border-radius: 8px;
     padding: 4px;
     margin-top: 6px;
+  }
+  .browser-html-scroll {
+    max-height: 300px;
   }
   .log-line {
     padding: 2px 6px;
@@ -959,6 +1086,7 @@
     padding: 6px 8px;
     margin-bottom: 8px;
     transition: border-color 0.2s, box-shadow 0.2s;
+    min-width: 0;
   }
   .browser-url-bar:focus-within {
     border-color: var(--blue);
@@ -971,6 +1099,7 @@
   }
   .browser-url-bar input {
     flex: 1;
+    min-width: 0;
     border: none;
     background: transparent;
     font-family: "SF Mono", "Menlo", monospace;
@@ -981,6 +1110,10 @@
   }
   .browser-url-bar input::placeholder {
     color: var(--text-tertiary);
+  }
+  .browser-go-btn {
+    min-height: 24px;
+    flex-shrink: 0;
   }
   .browser-error {
     padding: 6px 10px;
@@ -1005,10 +1138,11 @@
 
   .notif-input {
     flex: 1;
+    min-width: 0;
     border: 0.5px solid var(--border);
     background: var(--bg-primary);
-    border-radius: 4px;
-    padding: 3px 6px;
+    border-radius: 6px;
+    padding: 2px 6px;
     font-size: 11px;
     font-family: inherit;
     color: var(--text-primary);
@@ -1018,9 +1152,73 @@
   .notif-input:focus {
     border-color: var(--blue);
   }
+  .notif-control {
+    flex: 1;
+    gap: 5px;
+  }
+  .result-grid {
+    margin-top: 0;
+  }
 
   @keyframes task-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
+  }
+
+  @media (max-width: 720px) {
+    .section-header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .header-actions {
+      justify-content: flex-start;
+    }
+    .info-row {
+      align-items: flex-start;
+    }
+    .info-key {
+      width: 106px;
+    }
+    .task-row {
+      grid-template-columns: 1fr auto;
+      row-gap: 4px;
+    }
+    .task-name {
+      grid-column: 1 / -1;
+      white-space: normal;
+    }
+    .task-meta {
+      justify-self: end;
+    }
+    .browser-url-bar {
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+    .browser-url-bar input {
+      min-width: 180px;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .debug-body {
+      padding: 10px;
+    }
+    .info-row {
+      flex-direction: column;
+      gap: 3px;
+    }
+    .info-key {
+      width: auto;
+    }
+    .info-val {
+      width: 100%;
+    }
+    .task-row {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+    .task-meta {
+      justify-self: start;
+    }
   }
 </style>

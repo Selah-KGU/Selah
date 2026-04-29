@@ -2,7 +2,6 @@
  * Demo mode — provides realistic test data for all major views.
  * Activated by tapping the logo on the login page 7 times in quick succession.
  */
-import { writable, get } from "svelte/store";
 import {
   authState,
   lunaAuthState,
@@ -35,16 +34,12 @@ import type {
   MailMessage,
   MailAttachment,
 } from "./api";
+export { demoMode, isDemoMode } from "./demoStore";
+import { demoMode } from "./demoStore";
 
 // ---- Store ----
 
-export const demoMode = writable(false);
-
 const DEMO_KEY = "selah-demo-mode";
-
-export function isDemoMode(): boolean {
-  return get(demoMode);
-}
 
 export function activateDemo() {
   demoMode.set(true);

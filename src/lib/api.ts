@@ -104,6 +104,7 @@ if (!__selahGlobal[__SELAH_LISTENERS_KEY]) {
   listen<{ keys?: string[] }>("backend-cache-updated", (event) => {
     const keys = event.payload?.keys ?? [];
     if (!keys.length) return;
+    markBackendTasksUpdated(keys, true);
     syncBackendManagedKeys(keys).catch((err) => {
       console.warn("[Selah] backend cache sync failed:", err);
     });
@@ -141,6 +142,7 @@ if (!(__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATU
   (__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATUS_KEY] = true;
   listen<BackendSessionStatus>("backend-session-status", (event) => {
     applyBackendSessionStatus(event.payload);
+    markBackendTasksUpdated(["preemptive_renewal"], !event.payload.session_expired);
   });
 }
 
@@ -1038,6 +1040,11 @@ export async function getDataCache(key: string): Promise<string | null> {
   return invoke<string | null>("get_data_cache", { key });
 }
 
+export async function getDataCacheUpdatedAt(key: string): Promise<number | null> {
+  if (_isDemo()) return null;
+  return invoke<number | null>("get_data_cache_updated_at", { key });
+}
+
 export async function saveDataCache(key: string, json: string): Promise<void> {
   if (_isDemo()) return;
   return invoke("save_data_cache", { key, json });
@@ -1701,6 +1708,7 @@ export async function showMainAgentWindow(): Promise<void> {
 //   3. AI-only scheduling that still depends on frontend stores/views
 
 const TASK_LABELS: Record<string, string> = {
+  schedule_data: "時間割同期",
   notifications: "KGC お知らせ取得",
   luna_todo: "Luna 課題一覧",
   luna_updates: "Luna 更新情報",
@@ -1719,6 +1727,65 @@ const TASK_LABELS: Record<string, string> = {
   ai_scheduler: "AI 定期更新",
 };
 
+const BACKEND_TASKS: Array<{ key: string; tier: "volatile" | "stable" | "system"; intervalMs: number }> = [
+  { key: "notifications", tier: "volatile", intervalMs: 5 * 60 * 1000 },
+  { key: "luna_todo", tier: "volatile", intervalMs: 5 * 60 * 1000 },
+  { key: "luna_updates", tier: "volatile", intervalMs: 5 * 60 * 1000 },
+  { key: "mail_inbox", tier: "volatile", intervalMs: 5 * 60 * 1000 },
+  { key: "cancellations", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "makeup", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "rooms", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "weather", tier: "stable", intervalMs: 60 * 60 * 1000 },
+  { key: "schedule_data", tier: "stable", intervalMs: 6 * 60 * 60 * 1000 },
+  { key: "student_profile", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "grades", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "exams", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "registration", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "mail_profile", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "kwic_home", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
+  { key: "preemptive_renewal", tier: "system", intervalMs: 5 * 60 * 1000 },
+];
+
+function registerBackendRefreshTasks() {
+  for (const task of BACKEND_TASKS) {
+    registerTask(task.key, TASK_LABELS[task.key] ?? task.key, task.tier, task.intervalMs);
+  }
+}
+
+async function readBackendTaskSyncedAt(key: string): Promise<number | null> {
+  try {
+    if (key === "schedule_data") {
+      const snapshot = await getScheduleSnapshot();
+      return snapshot.snapshot_updated_at > 0 ? snapshot.snapshot_updated_at * 1000 : null;
+    }
+    if (key === "preemptive_renewal") return null;
+    const dbKey = BACKEND_CACHE_DB_KEY[key] ?? key;
+    const updatedAt = await getDataCacheUpdatedAt(dbKey);
+    return updatedAt && updatedAt > 0 ? updatedAt * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function refreshBackendTaskStatuses() {
+  await Promise.all(BACKEND_TASKS.map(async (task) => {
+    if (task.key === "preemptive_renewal") return;
+    const syncedAt = await readBackendTaskSyncedAt(task.key);
+    updateTask(task.key, {
+      running: false,
+      lastRunTs: syncedAt,
+      lastOk: syncedAt != null,
+    });
+  }));
+}
+
+function markBackendTasksUpdated(keys: string[], ok: boolean) {
+  const ts = Date.now();
+  for (const key of [...new Set(keys.filter(Boolean))]) {
+    updateTask(key, { running: false, lastRunTs: ts, lastOk: ok });
+  }
+}
+
 export function startBackgroundPolling() {
   // Demo mode: no real polling
   if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") return;
@@ -1727,6 +1794,10 @@ export function startBackgroundPolling() {
   document.addEventListener("visibilitychange", handlePollVisibility);
   // Routine cache/session refresh is backend-owned now. Frontend only keeps
   // AI scheduling plus a foreground catch-up in case cache-update events were missed.
+  registerBackendRefreshTasks();
+  refreshBackendTaskStatuses().catch((err) => {
+    console.warn("[Selah] backend task status hydration failed:", err);
+  });
   registerTask("ai_scheduler", TASK_LABELS["ai_scheduler"], "stable", 0);
   refreshVisibleBackendCaches();
   syncBackendSessionStatusNow().catch((err) => {
@@ -1917,10 +1988,13 @@ export async function refreshAllData(): Promise<void> {
     }
     // Schedule sync
     setItemStatus("schedule_sync", "running");
+    updateTask("schedule_data", { running: true });
     try {
       await refreshBackendManagedCache("schedule_data");
+      updateTask("schedule_data", { running: false, lastRunTs: Date.now(), lastOk: true });
       setItemStatus("schedule_sync", "done");
     } catch {
+      updateTask("schedule_data", { running: false, lastRunTs: Date.now(), lastOk: false });
       setItemStatus("schedule_sync", "error");
     }
     // AI refresh (after all data is fresh)

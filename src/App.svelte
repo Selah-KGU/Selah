@@ -2,7 +2,7 @@
   import "./styles.css";
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
-  import { demoMode } from "./lib/demo";
+  import { demoMode } from "./lib/demoStore";
   import { authState, sessionExpired, invalidateCache } from "./lib/stores";
   import { restoreAllSessions, startBackgroundPolling, stopBackgroundPolling, serviceRegistry } from "./lib/api";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";

@@ -36,6 +36,13 @@
       systemBrowser: true,
     },
     {
+      id: "baitonet",
+      title: "バイトネット",
+      url: "https://baitonet.jp/kwansei/",
+      host: "baitonet.jp",
+      systemBrowser: true,
+    },
+    {
       id: "onedrive",
       title: "OneDrive",
       url: "https://kwanseio365-my.sharepoint.com/",
@@ -105,6 +112,9 @@
           {:else if tool.id === "slack"}
             <!-- Slack hash / channels -->
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
+          {:else if tool.id === "baitonet"}
+            <!-- Part-time job / wages -->
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="12" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M3 12h18"/><circle cx="17" cy="15" r="3"/><path d="M15.9 13.9 17 15.2l1.1-1.3"/><path d="M17 15.2v1.8"/><path d="M15.8 15.5h2.4"/><path d="M15.8 16.4h2.4"/></svg>
           {:else if tool.id === "onedrive"}
             <!-- OneDrive cloud -->
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>

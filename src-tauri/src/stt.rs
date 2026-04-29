@@ -1312,6 +1312,13 @@ fn run_stt_session(
             .play()
             .map_err(|e| format!("マイク入力開始失敗: {}", e))?;
         emit_state(&app, "listening", caller);
+        if caller == "live" {
+            if let Err(err) =
+                crate::power::prevent_sleep_start(Some("KWIC live transcription".into()))
+            {
+                log::warn!("[stt] failed to prevent system sleep during Live: {}", err);
+            }
+        }
 
         let mut current_utterance = Vec::<f32>::new();
         let mut last_partial = String::new();
@@ -1397,6 +1404,11 @@ fn run_stt_session(
 
     if let Err(err) = result {
         emit_error(&app, err, caller);
+    }
+    if caller == "live" {
+        if let Err(err) = crate::power::prevent_sleep_stop() {
+            log::warn!("[stt] failed to release Live sleep prevention: {}", err);
+        }
     }
     emit_state(&app, "idle", caller);
     clear_session_if_matches(session_id);

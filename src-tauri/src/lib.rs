@@ -35,6 +35,7 @@ mod mail;
 mod mail_commands;
 mod notifier;
 mod parser;
+mod power;
 mod read_state;
 mod stt;
 mod syllabus;
@@ -118,6 +119,14 @@ fn get_read_notifications(db: tauri::State<'_, db::Database>) -> read_state::Rea
 #[tauri::command]
 fn get_data_cache(db: tauri::State<'_, db::Database>, key: String) -> Option<String> {
     db.get_data_cache(&key).ok().flatten().map(|(json, _)| json)
+}
+
+#[tauri::command]
+fn get_data_cache_updated_at(db: tauri::State<'_, db::Database>, key: String) -> Option<i64> {
+    db.get_data_cache(&key)
+        .ok()
+        .flatten()
+        .map(|(_, updated_at)| updated_at)
 }
 
 #[tauri::command]
@@ -376,6 +385,8 @@ pub fn run() {
             stt::stt_stop_stream,
             stt::stt_is_running,
             stt::stt_get_active_caller,
+            power::prevent_sleep_start,
+            power::prevent_sleep_stop,
             live::live_get_session,
             live::live_peek_day_cache,
             live::live_start_session,
@@ -417,6 +428,7 @@ pub fn run() {
             mark_batch_notification_read,
             get_read_notifications,
             get_data_cache,
+            get_data_cache_updated_at,
             save_data_cache,
             webview_toolbar::browser_go_back,
             webview_toolbar::browser_go_forward,
