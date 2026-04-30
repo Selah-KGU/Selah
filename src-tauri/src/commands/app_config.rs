@@ -10,8 +10,29 @@ use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSSharingServicePicker, NSView};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{NSArray, NSRectEdge, NSURL};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use windows::core::HSTRING;
+#[cfg(target_os = "windows")]
+use windows::ApplicationModel::DataTransfer::{
+    DataPackageOperation, DataRequestedEventArgs, DataTransferManager,
+};
+#[cfg(target_os = "windows")]
+use windows::Foundation::TypedEventHandler;
+#[cfg(target_os = "windows")]
+use windows::Storage::StorageFile;
+#[cfg(target_os = "windows")]
+use windows::Storage::Streams::RandomAccessStreamReference;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::WinRT::{RoGetActivationFactory, RoInitialize, RO_INIT_MULTITHREADED};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Shell::IDataTransferManagerInterop;
+
+#[cfg(target_os = "windows")]
+static WINDOWS_SHARE_HANDLER: std::sync::LazyLock<
+    std::sync::Mutex<Option<(DataTransferManager, i64)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 fn load_json_config<T: Default + DeserializeOwned>(path: &std::path::Path) -> T {
     if path.exists() {
@@ -412,11 +433,10 @@ pb's writeObjects:(current application's NSArray's arrayWithObject:theImage)"#,
 
 /// Share PNG image data via the native OS share sheet.
 /// On macOS opens the native share picker.
-/// On Windows opens with default image viewer.
-/// Temp files are cleaned up after 60 seconds.
+/// Temp files are cleaned up after the share UI has had time to consume them.
 #[tauri::command]
 pub async fn share_image_native(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     data: Vec<u8>,
     file_name: String,
 ) -> Result<(), String> {
@@ -434,25 +454,13 @@ pub async fn share_image_native(
 
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        // Open with the default image viewer (Photos app has share functionality)
-        let path_str = tmp_path.to_string_lossy().to_string();
-        let result = Command::new("cmd")
-            .args(["/c", "start", "", &path_str])
-            .spawn();
-
-        if result.is_err() {
-            // Fallback: open Explorer and select the file
-            let _ = Command::new("explorer")
-                .arg(format!("/select,{}", path_str))
-                .spawn();
-        }
+        open_windows_share_picker(&app, &tmp_path, &file_name)?;
     }
 
-    // Schedule cleanup of the temp file after 60 seconds
+    // Keep the file around long enough for slower share targets to read it.
     let cleanup_path = tmp_path.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_secs(600));
         let _ = std::fs::remove_file(&cleanup_path);
         // Try to remove the directory if empty
         let _ = std::fs::remove_dir(cleanup_path.parent().unwrap_or(std::path::Path::new("")));
@@ -464,6 +472,87 @@ pub async fn share_image_native(
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_share_picker(
+    app: &tauri::AppHandle,
+    path: &std::path::Path,
+    file_name: &str,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "共有元のウィンドウが見つかりません".to_string())?;
+    let hwnd = window
+        .hwnd()
+        .map_err(|e| format!("Windows 共有ウィンドウの取得に失敗しました: {}", e))?;
+    let path_str = path.to_string_lossy().to_string();
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(file_name)
+        .to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    window
+        .run_on_main_thread(move || {
+            let result: Result<(), String> = (|| {
+                let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+                let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_str.as_str()))
+                    .map_err(|e| format!("共有用ファイルの取得に失敗しました: {}", e))?
+                    .get()
+                    .map_err(|e| format!("共有用ファイルの読み込みに失敗しました: {}", e))?;
+                let bitmap = RandomAccessStreamReference::CreateFromFile(&file)
+                    .map_err(|e| format!("共有画像の準備に失敗しました: {}", e))?;
+                let title_for_handler = title.clone();
+                let bitmap_for_handler = bitmap.clone();
+                let handler = TypedEventHandler::<DataTransferManager, DataRequestedEventArgs>::new(
+                    move |_, args| {
+                        if let Some(args) = args.as_ref() {
+                            let request = args.Request()?;
+                            let data = request.Data()?;
+                            let properties = data.Properties()?;
+                            properties.SetTitle(&HSTRING::from(title_for_handler.as_str()))?;
+                            properties.SetDescription(&HSTRING::from("Selah timetable image"))?;
+                            data.SetBitmap(&bitmap_for_handler)?;
+                            data.SetRequestedOperation(DataPackageOperation::Copy)?;
+                        }
+                        Ok(())
+                    },
+                );
+
+                let interop: IDataTransferManagerInterop = unsafe {
+                    RoGetActivationFactory(&HSTRING::from(
+                        "Windows.ApplicationModel.DataTransfer.DataTransferManager",
+                    ))
+                }
+                .map_err(|e| format!("Windows 共有機能の初期化に失敗しました: {}", e))?;
+                let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd) }
+                    .map_err(|e| format!("Windows 共有マネージャーの取得に失敗しました: {}", e))?;
+                let token = manager
+                    .DataRequested(&handler)
+                    .map_err(|e| format!("共有データの登録に失敗しました: {}", e))?;
+
+                if let Ok(mut previous) = WINDOWS_SHARE_HANDLER.lock() {
+                    if let Some((old_manager, old_token)) = previous.take() {
+                        let _ = old_manager.RemoveDataRequested(old_token);
+                    }
+                    *previous = Some((manager.clone(), token));
+                }
+
+                unsafe { interop.ShowShareUIForWindow(hwnd) }
+                    .map_err(|e| format!("Windows 共有 UI の表示に失敗しました: {}", e))?;
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("Windows 共有 UI の起動に失敗しました: {}", e))?;
+
+    rx.recv()
+        .map_err(|_| "Windows 共有 UI の結果受信に失敗しました".to_string())??;
     Ok(())
 }
 
