@@ -416,7 +416,7 @@ pb's writeObjects:(current application's NSArray's arrayWithObject:theImage)"#,
 /// Temp files are cleaned up after 60 seconds.
 #[tauri::command]
 pub async fn share_image_native(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     data: Vec<u8>,
     file_name: String,
 ) -> Result<(), String> {
@@ -426,6 +426,8 @@ pub async fn share_image_native(
         .map_err(|e| format!("一時ディレクトリの作成に失敗: {}", e))?;
     let tmp_path = tmp_dir.join(&file_name);
     std::fs::write(&tmp_path, &data).map_err(|e| format!("一時ファイルの書き込みに失敗: {}", e))?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = &app;
 
     #[cfg(target_os = "macos")]
     {
