@@ -109,7 +109,6 @@
   }
 
   function toggleAgent() {
-    if (!$agentReady && $activeTab !== 'agent') return;
     activeTab.update((t) => (t === "agent" ? "home" : "agent"));
   }
 
@@ -140,8 +139,8 @@
         class="brand-btn"
         class:active={$activeTab === 'agent'}
         onclick={toggleAgent}
-        aria-label={$activeTab === 'agent' ? 'ホームに戻る' : !$agentReady ? 'Agent 利用不可（AI設定を確認してください）' : 'Selah Agent を開く'}
-        title={$activeTab === 'agent' ? 'ホームに戻る' : !$agentReady ? 'Agent 利用不可' : 'Selah Agent'}
+        aria-label={$activeTab === 'agent' ? 'ホームに戻る' : 'Selah Agent を開く'}
+        title={$activeTab === 'agent' ? 'ホームに戻る' : 'Selah Agent'}
       >
         <img class="brand-logo" src={selahLogoUrl} alt="" />
         <span class="brand">
