@@ -120,7 +120,7 @@ jobs:
           test -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app.tar.gz.sig"
           test -f "latest.json"
           node <<'NODE'
-          const fs = require("fs");
+          import fs from "node:fs";
           const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
           const required = ["darwin-aarch64", "darwin-x86_64", "darwin-aarch64-app", "darwin-x86_64-app"];
           for (const key of required) {
@@ -393,7 +393,7 @@ jobs:
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             "$api" -o release.json
           node <<'NODE'
-          const fs = require("fs");
+          import fs from "node:fs";
           const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
           const names = new Set((release.assets || []).map((asset) => asset.name));
           if (!names.has("latest.json")) throw new Error("Release asset latest.json is missing");
@@ -412,7 +412,7 @@ jobs:
             -L "$(cat latest_asset_url.txt)" \
             -o latest.json
           node <<'NODE'
-          const fs = require("fs");
+          import fs from "node:fs";
           const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
           const required = [
             "darwin-aarch64",

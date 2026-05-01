@@ -68,7 +68,7 @@ jobs:
             exit 1
           fi
           node <<'NODE' > release-meta.env
-          const fs = require("fs");
+          import fs from "node:fs";
           const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
           console.log(`id=${release.id}`);
           console.log(`draft=${release.draft ? "true" : "false"}`);
@@ -174,7 +174,7 @@ jobs:
           test -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app.tar.gz.sig"
           test -f "latest.json"
           node <<'NODE'
-          const fs = require("fs");
+          import fs from "node:fs";
           const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
           const required = ["darwin-aarch64", "darwin-x86_64", "darwin-aarch64-app", "darwin-x86_64-app"];
           for (const key of required) {
@@ -465,7 +465,7 @@ jobs:
           set -euo pipefail
           repo="${GITHUB_REPOSITORY}"
           node <<'NODE'
-          const fs = require("fs");
+          import fs from "node:fs";
           const repo = process.env.GITHUB_REPOSITORY;
           const token = process.env.GITHUB_TOKEN;
           const tag = process.env.TAG;
@@ -497,7 +497,7 @@ jobs:
           fs.writeFileSync("release.json", JSON.stringify(release));
           NODE
           node <<'NODE'
-          const fs = require("fs");
+          import fs from "node:fs";
           const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
           if (!release.draft) throw new Error("Release is not a draft");
           const names = new Set((release.assets || []).map((asset) => asset.name));
@@ -517,7 +517,7 @@ jobs:
             -L "$(cat latest_asset_url.txt)" \
             -o latest.json
           node <<'NODE'
-          const fs = require("fs");
+          import fs from "node:fs";
           const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
           const required = [
             "darwin-aarch64",

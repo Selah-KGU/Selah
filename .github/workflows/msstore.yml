@@ -205,7 +205,7 @@ jobs:
           MSSTORE_SIGNING_CERTIFICATE: ${{ secrets.MSSTORE_SIGNING_CERTIFICATE }}
           MSSTORE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MSSTORE_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
-          $version = node -p "require('./package.json').version"
+          $version = node -e 'import fs from "node:fs"; console.log(JSON.parse(fs.readFileSync("package.json", "utf8")).version)'
           $certPath = Join-Path $env:RUNNER_TEMP "msstore.pfx"
           [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:MSSTORE_SIGNING_CERTIFICATE))
           .\scripts\package-msix.ps1 `
