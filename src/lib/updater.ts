@@ -32,17 +32,18 @@ function normalizeDistributionChannel(value: unknown): DistributionChannel {
 }
 
 const RAW_DISTRIBUTION_CHANNEL = import.meta.env.VITE_SELAH_DISTRIBUTION_CHANNEL;
-const IS_APP_STORE_BUILD = RAW_DISTRIBUTION_CHANNEL === "appstore";
+const IS_STORE_MANAGED_BUILD =
+  RAW_DISTRIBUTION_CHANNEL === "appstore" || RAW_DISTRIBUTION_CHANNEL === "msstore";
 
 export const distributionChannel = normalizeDistributionChannel(RAW_DISTRIBUTION_CHANNEL);
-export const updaterManagedByStore = IS_APP_STORE_BUILD;
+export const updaterManagedByStore = IS_STORE_MANAGED_BUILD;
 
 function defaultStatus(): string {
   if (distributionChannel === "appstore") {
     return "このビルドの更新は Mac App Store から配信されます。";
   }
   if (distributionChannel === "msstore") {
-    return "更新を確認すると、新しい版を取得できます。";
+    return "このビルドの更新は Microsoft Store から配信されます。";
   }
   return "更新を確認すると、GitHub Releases から新しい版を取得します。";
 }
@@ -151,7 +152,7 @@ function applyDownloadEvent(event: DownloadEvent) {
 }
 
 async function runCheck(options: { silent: boolean }): Promise<void> {
-  if (IS_APP_STORE_BUILD) {
+  if (IS_STORE_MANAGED_BUILD) {
     updateStore({
       phase: "unsupported",
       available: false,

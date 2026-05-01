@@ -1,0 +1,226 @@
+name: Microsoft Store MSIX
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-msix:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: s
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: s/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Apply build version
+        working-directory: s
+        shell: pwsh
+        run: |
+          $version = node scripts/apply-version.mjs
+          node scripts/apply-version.mjs $version
+
+      - name: Install Vulkan SDK
+        run: choco install vulkan-sdk -y
+        shell: pwsh
+
+      - name: Set VULKAN_SDK env
+        shell: pwsh
+        run: |
+          $candidates = @("C:\VulkanSDK", "C:\Program Files\VulkanSDK", "C:\Program Files (x86)\VulkanSDK")
+          $sdk = $null
+          foreach ($base in $candidates) {
+            if (Test-Path $base) {
+              $sub = Get-ChildItem $base -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+              if ($sub) { $sdk = $sub.FullName } else { $sdk = $base }
+              break
+            }
+          }
+          if (-not $sdk) { Write-Error "VulkanSDK not found"; exit 1 }
+          echo "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+          if (Test-Path "$sdk\Bin") { echo "$sdk\Bin" >> $env:GITHUB_PATH }
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: s
+
+      - name: Verify Microsoft Store signing secrets
+        shell: pwsh
+        env:
+          MSSTORE_PACKAGE_IDENTITY_NAME: ${{ secrets.MSSTORE_PACKAGE_IDENTITY_NAME }}
+          MSSTORE_PUBLISHER: ${{ secrets.MSSTORE_PUBLISHER }}
+          MSSTORE_PUBLISHER_DISPLAY_NAME: ${{ secrets.MSSTORE_PUBLISHER_DISPLAY_NAME }}
+          MSSTORE_SIGNING_CERTIFICATE: ${{ secrets.MSSTORE_SIGNING_CERTIFICATE }}
+        run: |
+          $required = @(
+            "MSSTORE_PACKAGE_IDENTITY_NAME",
+            "MSSTORE_PUBLISHER",
+            "MSSTORE_PUBLISHER_DISPLAY_NAME",
+            "MSSTORE_SIGNING_CERTIFICATE"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "$name is required to package the Microsoft Store MSIX."
+            }
+          }
+
+      - name: Shorten temp paths
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "D:\tmp" | Out-Null
+          echo "TMP=D:\tmp" >> $env:GITHUB_ENV
+          echo "TEMP=D:\tmp" >> $env:GITHUB_ENV
+
+      - name: Clean cached llama-cpp build artifacts
+        shell: pwsh
+        run: |
+          if (Test-Path "s/src-tauri/target") {
+            Get-ChildItem "s/src-tauri/target" -Recurse -Directory -Filter "llama-cpp-sys-2-*" -ErrorAction SilentlyContinue |
+              ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+          if (Test-Path "D:\t") {
+            Remove-Item "D:\t" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Fetch Cargo dependencies
+        working-directory: s/src-tauri
+        run: cargo fetch --target x86_64-pc-windows-msvc
+        shell: pwsh
+
+      - name: Patch llama.cpp to bypass vulkan-shaders-gen ExternalProject
+        shell: pwsh
+        run: |
+          $registryCacheRoot = "$env:USERPROFILE\.cargo\registry\cache"
+          $registrySrcRoot   = "$env:USERPROFILE\.cargo\registry\src"
+          $cacheIdx = Get-ChildItem $registryCacheRoot -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $cacheIdx) { Write-Error "No registry cache index directory found"; exit 1 }
+
+          $srcIdxPath = Join-Path $registrySrcRoot $cacheIdx.Name
+          New-Item -ItemType Directory -Path $srcIdxPath -Force | Out-Null
+          $crateDir = Get-ChildItem $srcIdxPath -Directory -Filter "llama-cpp-sys-2-*" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $crateDir) {
+            $crateFile = Get-ChildItem $cacheIdx.FullName -Filter "llama-cpp-sys-2-*.crate" | Select-Object -First 1
+            if (-not $crateFile) { Write-Error "llama-cpp-sys-2 crate not found in cache"; exit 1 }
+            tar -xzf $crateFile.FullName -C $srcIdxPath
+            $crateDir = Get-ChildItem $srcIdxPath -Directory -Filter "llama-cpp-sys-2-*" | Select-Object -First 1
+            if (-not $crateDir) { Write-Error "Unpack did not produce a crate directory"; exit 1 }
+            New-Item -ItemType File -Path (Join-Path $crateDir.FullName ".cargo-ok") -Force | Out-Null
+          }
+
+          $cmakeFile = Join-Path $crateDir.FullName "llama.cpp\ggml\src\ggml-vulkan\CMakeLists.txt"
+          if (-not (Test-Path $cmakeFile)) { Write-Error "CMakeLists.txt not found at $cmakeFile"; exit 1 }
+          $lines = [System.IO.File]::ReadAllLines($cmakeFile)
+          if (($lines -join "`n") -match 'CI patch: use add_subdirectory') { exit 0 }
+
+          $startIdx = -1; $addStart = -1; $endIdx = -1
+          for ($i = 0; $i -lt $lines.Length; $i++) {
+            if ($startIdx -lt 0 -and $lines[$i] -match '^\s*include\(ExternalProject\)\s*$') { $startIdx = $i; continue }
+            if ($startIdx -ge 0 -and $addStart -lt 0 -and $lines[$i] -match '^\s*ExternalProject_Add\(') { $addStart = $i; continue }
+            if ($addStart -ge 0 -and $lines[$i] -match '^\s*\)\s*$') { $endIdx = $i; break }
+          }
+          if ($startIdx -lt 0 -or $addStart -lt 0 -or $endIdx -lt 0) {
+            Write-Error "Could not locate ExternalProject block"
+            exit 1
+          }
+
+          $replacement = @(
+            '    # CI patch: use add_subdirectory instead of ExternalProject_Add to avoid',
+            '    # MSBuild parallel scheduling race on vulkan-shaders-gen step stamps.',
+            '    foreach(_arg IN LISTS VULKAN_SHADER_GEN_CMAKE_ARGS)',
+            '        if(_arg MATCHES "^-D([^=]+)=(.*)$")',
+            '            set(${CMAKE_MATCH_1} ${CMAKE_MATCH_2})',
+            '        endif()',
+            '    endforeach()',
+            '    add_subdirectory(vulkan-shaders vulkan-shaders-gen-build)',
+            '    set_target_properties(vulkan-shaders-gen PROPERTIES',
+            '        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")'
+          )
+          $newLines = @()
+          if ($startIdx -gt 0) { $newLines += $lines[0..($startIdx-1)] }
+          $newLines += $replacement
+          if ($endIdx + 1 -le $lines.Length - 1) { $newLines += $lines[($endIdx+1)..($lines.Length-1)] }
+          [System.IO.File]::WriteAllLines($cmakeFile, $newLines)
+
+          $checksumFile = Join-Path $crateDir.FullName ".cargo-checksum.json"
+          if (Test-Path $checksumFile) {
+            $json = Get-Content $checksumFile -Raw | ConvertFrom-Json -AsHashtable
+            $relPath = "llama.cpp/ggml/src/ggml-vulkan/CMakeLists.txt"
+            $json.files[$relPath] = (Get-FileHash -Algorithm SHA256 -Path $cmakeFile).Hash.ToLower()
+            ($json | ConvertTo-Json -Depth 100 -Compress) | Set-Content -Path $checksumFile -NoNewline
+          }
+
+      - name: Build sherpa-onnx DirectML runtime
+        shell: pwsh
+        working-directory: s
+        run: |
+          .\scripts\build-windows-directml-runtime.ps1 `
+            -WorkRoot "D:\directml-runtime" `
+            -LibStageDir "D:\directml-runtime\lib" `
+            -RuntimeStageDir "$PWD\src-tauri\windows-runtime"
+
+      - name: Build Tauri app (MS Store, no self-updater)
+        shell: pwsh
+        working-directory: s
+        env:
+          VITE_SELAH_DISTRIBUTION_CHANNEL: msstore
+          RUST_BACKTRACE: 1
+          CARGO_TARGET_DIR: D:/t
+          CARGO_INCREMENTAL: 0
+          CARGO_BUILD_JOBS: 1
+          CMAKE_BUILD_PARALLEL_LEVEL: 1
+          CMAKE_VS_GLOBALS: UseMultiToolTask=false;EnforceProcessCountAcrossBuilds=true;CL_MPCount=1
+          CMAKE_MSVC_DEBUG_INFORMATION_FORMAT: Embedded
+          GGML_CCACHE: OFF
+          LLAMA_STATIC_CRT: 1
+          CL: /FS
+          _CL_: /FS
+          CFLAGS: /FS
+          CXXFLAGS: /FS
+          SELAH_ENABLE_STT_DIRECTML: 1
+          SHERPA_ONNX_LIB_DIR: D:/directml-runtime/lib
+        run: |
+          npm run tauri build -- --target x86_64-pc-windows-msvc --no-bundle --no-default-features --features stt-shared,store-build --config tauri.msstore.conf.json
+
+      - name: Package MSIX
+        shell: pwsh
+        working-directory: s
+        env:
+          MSSTORE_PACKAGE_IDENTITY_NAME: ${{ secrets.MSSTORE_PACKAGE_IDENTITY_NAME }}
+          MSSTORE_PUBLISHER: ${{ secrets.MSSTORE_PUBLISHER }}
+          MSSTORE_PUBLISHER_DISPLAY_NAME: ${{ secrets.MSSTORE_PUBLISHER_DISPLAY_NAME }}
+          MSSTORE_SIGNING_CERTIFICATE: ${{ secrets.MSSTORE_SIGNING_CERTIFICATE }}
+          MSSTORE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MSSTORE_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          $certPath = Join-Path $env:RUNNER_TEMP "msstore.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:MSSTORE_SIGNING_CERTIFICATE))
+          .\scripts\package-msix.ps1 `
+            -Version $version `
+            -InputExe "D:\t\x86_64-pc-windows-msvc\release\selah-app.exe" `
+            -OutputDir "$PWD\dist-msstore" `
+            -IdentityName $env:MSSTORE_PACKAGE_IDENTITY_NAME `
+            -Publisher $env:MSSTORE_PUBLISHER `
+            -PublisherDisplayName $env:MSSTORE_PUBLISHER_DISPLAY_NAME `
+            -CertificatePath $certPath `
+            -CertificatePassword $env:MSSTORE_SIGNING_CERTIFICATE_PASSWORD
+
+      - name: Upload MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: Selah-msstore-msix
+          if-no-files-found: error
+          path: s/dist-msstore/*.msix

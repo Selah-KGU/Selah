@@ -6,5 +6,10 @@
         "store-managed"
       ]
     }
+  },
+  "bundle": {
+    "resources": {
+      "windows-runtime/": ""
+    }
   }
 }

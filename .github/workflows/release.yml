@@ -1,10 +1,12 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      major_minor:
+        description: "主版本号.副版本号 (例 1.0)。留空则使用 package.json 当前的 major.minor。"
+        required: false
+        default: ""
 
 jobs:
   prepare:
@@ -18,30 +20,20 @@ jobs:
         with:
           node-version: 20
 
-      - name: Validate synced versions
+      - name: Compute release version
         id: versions
         shell: bash
+        env:
+          MAJOR_MINOR: ${{ inputs.major_minor }}
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          TAURI_VERSION=$(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")
-          CARGO_VERSION=$(sed -n 's/^version = \"\\([^\"]*\\)\"/\\1/p' src-tauri/Cargo.toml | head -n1)
-
-          if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "Version mismatch:"
-            echo "package.json: $PKG_VERSION"
-            echo "tauri.conf.json: $TAURI_VERSION"
-            echo "Cargo.toml: $CARGO_VERSION"
-            exit 1
+          if [ -n "${MAJOR_MINOR}" ]; then
+            VERSION=$(node scripts/apply-version.mjs --base "${MAJOR_MINOR}")
+          else
+            VERSION=$(node scripts/apply-version.mjs)
           fi
-
-          TAG="v$PKG_VERSION"
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF_NAME}" != "$TAG" ]; then
-            echo "Git tag ${GITHUB_REF_NAME} does not match app version ${TAG}"
-            exit 1
-          fi
-
-          echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Computed version: ${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
   release-macos:
     needs: prepare
@@ -69,6 +61,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+
+      - name: Apply release version
+        run: node scripts/apply-version.mjs ${{ needs.prepare.outputs.version }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -153,6 +148,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Apply release version
+        working-directory: s
+        run: node scripts/apply-version.mjs ${{ needs.prepare.outputs.version }}
 
       - name: Install Vulkan SDK
         run: choco install vulkan-sdk -y

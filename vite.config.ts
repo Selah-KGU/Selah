@@ -3,14 +3,16 @@ import { defineConfig } from "vite";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const isAppStoreBuild = process.env.VITE_SELAH_DISTRIBUTION_CHANNEL === "appstore";
+const isStoreManagedBuild =
+  process.env.VITE_SELAH_DISTRIBUTION_CHANNEL === "appstore" ||
+  process.env.VITE_SELAH_DISTRIBUTION_CHANNEL === "msstore";
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
   resolve: {
-    alias: isAppStoreBuild
+    alias: isStoreManagedBuild
       ? [
           {
             find: /^\.\/updaterRuntime$/,

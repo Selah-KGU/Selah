@@ -18,10 +18,14 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-      - name: Read version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Compute version
         id: version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node scripts/apply-version.mjs)
+          echo "Computed version: ${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -50,6 +54,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+
+      - name: Apply build version
+        run: node scripts/apply-version.mjs ${{ needs.prepare.outputs.version }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -108,6 +115,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Apply build version
+        working-directory: s
+        run: node scripts/apply-version.mjs ${{ needs.prepare.outputs.version }}
 
       - name: Install Vulkan SDK
         run: choco install vulkan-sdk -y
