@@ -464,11 +464,38 @@ jobs:
         run: |
           set -euo pipefail
           repo="${GITHUB_REPOSITORY}"
-          api="https://api.github.com/repos/${repo}/releases/tags/${TAG}"
-          curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "$api" -o release.json
+          node <<'NODE'
+          const fs = require("fs");
+          const repo = process.env.GITHUB_REPOSITORY;
+          const token = process.env.GITHUB_TOKEN;
+          const tag = process.env.TAG;
+          async function githubJson(url) {
+            const response = await fetch(url, {
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${token}`,
+                "X-GitHub-Api-Version": "2022-11-28",
+              },
+            });
+            if (!response.ok) {
+              throw new Error(`GitHub API ${response.status} for ${url}: ${await response.text()}`);
+            }
+            return response.json();
+          }
+          const releases = [];
+          for (let page = 1; page <= 5; page++) {
+            const batch = await githubJson(`https://api.github.com/repos/${repo}/releases?per_page=100&page=${page}`);
+            if (!Array.isArray(batch) || batch.length === 0) break;
+            releases.push(...batch);
+            if (batch.length < 100) break;
+          }
+          const release = releases.find((item) => item.tag_name === tag);
+          if (!release) {
+            const visible = releases.slice(0, 20).map((item) => `${item.tag_name}${item.draft ? " (draft)" : ""}`).join(", ");
+            throw new Error(`Draft release ${tag} was not found. Visible releases: ${visible || "(none)"}`);
+          }
+          fs.writeFileSync("release.json", JSON.stringify(release));
+          NODE
           node <<'NODE'
           const fs = require("fs");
           const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
