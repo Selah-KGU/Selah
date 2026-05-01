@@ -31,7 +31,7 @@ jobs:
         working-directory: s
         shell: pwsh
         run: |
-          $version = node scripts/apply-version.mjs
+          $version = node scripts/resolve-release-version.mjs
           node scripts/apply-version.mjs $version
 
       - name: Install Vulkan SDK

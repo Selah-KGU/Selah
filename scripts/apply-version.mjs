@@ -1,18 +1,16 @@
 #!/usr/bin/env node
 // Selah version helper.
 //
-// Format: MAJOR.MINOR.PATCH where PATCH = (UTC year - 2020) * 1000 + day_of_year (UTC).
-// Example: 2026-05-01 -> patch = 6 * 1000 + 121 = 6121, version = 1.0.6121.
+// Format: MAJOR.MINOR.PATCH where PATCH is resolved by resolve-release-version.mjs.
+// The patch segment is intentionally kept <= 999 for readable store packaging versions.
 //
 // Constraints behind the format:
 // - Strict semver (3 parts) so npm / Cargo / Tauri all accept it.
-// - Each segment <= 65535 so MSIX (Microsoft Store) accepts it. The patch
-//   formula stays under 65535 until 2086.
-// - Patch is monotonically increasing across years, so the Tauri updater's
-//   semver comparison keeps pointing at newer builds.
+// - Generated release versions use a slow month-period patch scheme.
+// - Patch is monotonically increasing within each MAJOR.MINOR line.
 //
 // Usage:
-//   node scripts/apply-version.mjs              # print computed version (no writes)
+//   node scripts/apply-version.mjs              # print date-floor version (no writes)
 //   node scripts/apply-version.mjs <version>    # write the given semver to all files
 //   node scripts/apply-version.mjs --base 1.1   # compute against an explicit major.minor
 
@@ -26,10 +24,10 @@ const CARGO_LOCK_PATH = "src-tauri/Cargo.lock";
 
 function computePatch() {
   const now = new Date();
-  const year = now.getUTCFullYear();
-  const start = Date.UTC(year, 0, 1);
-  const doy = Math.floor((now.getTime() - start) / 86400000) + 1;
-  return (year - 2020) * 1000 + doy;
+  const month = now.getUTCMonth();
+  const day = now.getUTCDate();
+  const monthPeriod = day <= 10 ? 0 : day <= 20 ? 1 : 2;
+  return (month * 3 + monthPeriod) * 5 + 1;
 }
 
 function readBase() {

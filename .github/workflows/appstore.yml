@@ -28,7 +28,7 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Apply build version
-        run: node scripts/apply-version.mjs $(node scripts/apply-version.mjs)
+        run: node scripts/apply-version.mjs $(node scripts/resolve-release-version.mjs)
 
       - name: Install frontend dependencies
         run: npm ci

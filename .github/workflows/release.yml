@@ -25,15 +25,20 @@ jobs:
         shell: bash
         env:
           MAJOR_MINOR: ${{ inputs.major_minor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${MAJOR_MINOR}" ]; then
-            VERSION=$(node scripts/apply-version.mjs --base "${MAJOR_MINOR}")
+            VERSION_JSON=$(node scripts/resolve-release-version.mjs --base "${MAJOR_MINOR}" --github --json)
           else
-            VERSION=$(node scripts/apply-version.mjs)
+            VERSION_JSON=$(node scripts/resolve-release-version.mjs --github --json)
           fi
-          echo "Computed version: ${VERSION}"
+          VERSION=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.version)' "$VERSION_JSON")
+          TAG=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.tag)' "$VERSION_JSON")
+          REASON=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.reason)' "$VERSION_JSON")
+          DATE_FLOOR=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.dateFloor)' "$VERSION_JSON")
+          echo "Computed version: ${VERSION} (${REASON}, date floor ${DATE_FLOOR})"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
   release-macos:
     needs: prepare

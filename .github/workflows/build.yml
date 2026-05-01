@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: build-draft-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ── Read version (shared) ─────────────────────────────────────────────────
@@ -23,11 +27,66 @@ jobs:
           node-version: 20
       - name: Compute version
         id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(node scripts/apply-version.mjs)
-          echo "Computed version: ${VERSION}"
+          VERSION_JSON=$(node scripts/resolve-release-version.mjs --github --json)
+          VERSION=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.version)' "$VERSION_JSON")
+          TAG=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.tag)' "$VERSION_JSON")
+          REASON=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.reason)' "$VERSION_JSON")
+          DATE_FLOOR=$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.dateFloor)' "$VERSION_JSON")
+          echo "Computed version: ${VERSION} (${REASON}, date floor ${DATE_FLOOR})"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Reset existing draft release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
+          status=$(curl -sS -o release.json -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$api")
+          if [ "$status" = "404" ]; then
+            tag_ref="https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"
+            curl -sS -o /tmp/delete-tag.out -w "%{http_code}" -X DELETE \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "$tag_ref" | grep -Eq '^(204|404|422)$'
+            echo "No existing release for ${TAG}"
+            exit 0
+          fi
+          if [ "$status" != "200" ]; then
+            cat release.json
+            echo "::error::Failed to inspect release ${TAG} (HTTP ${status})"
+            exit 1
+          fi
+          node <<'NODE' > release-meta.env
+          const fs = require("fs");
+          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          console.log(`id=${release.id}`);
+          console.log(`draft=${release.draft ? "true" : "false"}`);
+          console.log(`url=${release.html_url || ""}`);
+          NODE
+          source release-meta.env
+          if [ "$draft" != "true" ]; then
+            echo "Release ${TAG} is already published: ${url}. The resolver should have selected a newer patch, so leaving it untouched."
+            exit 0
+          fi
+          curl -fsSL -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${id}"
+          tag_ref="https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"
+          curl -sS -o /tmp/delete-tag.out -w "%{http_code}" -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$tag_ref" | grep -Eq '^(204|404|422)$'
+          echo "Deleted existing draft release for ${TAG}"
 
   # ── macOS (universal) ─────────────────────────────────────────────────────
   build-macos:
@@ -67,9 +126,22 @@ jobs:
             --lib-dir /tmp/sherpa-universal-lib \
             --framework-dir "$PWD/src-tauri/macos-runtime"
 
-      - name: Build Tauri app (universal, signed + notarized)
+      - name: Verify updater signing secret
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required to publish updater artifacts."
+            exit 1
+          fi
+
+      - name: Build and publish macOS draft
         uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Developer ID signing
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -81,9 +153,33 @@ jobs:
           # Temporary keychain password (any random string works)
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           SHERPA_ONNX_LIB_DIR: /tmp/sherpa-universal-lib
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --target universal-apple-darwin --features stt-shared,self-updater --config '{"bundle":{"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
+          releaseBody: "Draft build from ${{ github.sha }}. Test this draft, then publish it manually if it is ready."
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target universal-apple-darwin --features stt-shared,self-updater --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
+
+      - name: Verify macOS updater artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app.tar.gz"
+          test -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app.tar.gz.sig"
+          test -f "latest.json"
+          node <<'NODE'
+          const fs = require("fs");
+          const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
+          const required = ["darwin-aarch64", "darwin-x86_64", "darwin-aarch64-app", "darwin-x86_64-app"];
+          for (const key of required) {
+            const item = feed.platforms?.[key];
+            if (!item?.url || !item?.signature) {
+              throw new Error(`latest.json missing ${key} url/signature`);
+            }
+          }
+          NODE
 
       - name: Upload macOS CI artifacts
         uses: actions/upload-artifact@v4
@@ -96,7 +192,7 @@ jobs:
 
   # ── Windows (x64) ─────────────────────────────────────────────────────────
   build-windows:
-    needs: prepare
+    needs: [prepare, build-macos]
     runs-on: windows-latest
 
     steps:
@@ -269,9 +365,22 @@ jobs:
             -LibStageDir "D:\directml-runtime\lib" `
             -RuntimeStageDir "$PWD\src-tauri\windows-runtime"
 
-      - name: Build Tauri app (Windows x64, DirectML bundled)
+      - name: Verify updater signing secret
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            Write-Error "TAURI_SIGNING_PRIVATE_KEY is required to publish updater artifacts."
+            exit 1
+          }
+
+      - name: Build and publish Windows draft
         uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           RUST_BACKTRACE: 1
           CARGO_TARGET_DIR: D:/t
           CARGO_INCREMENTAL: 0
@@ -287,10 +396,16 @@ jobs:
           CXXFLAGS: /FS
           SELAH_ENABLE_STT_DIRECTML: 1
           SHERPA_ONNX_LIB_DIR: D:/directml-runtime/lib
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: s
-          args: --target x86_64-pc-windows-msvc --features stt-shared,self-updater -- --no-default-features
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
+          releaseBody: "Draft build from ${{ github.sha }}. Test this draft, then publish it manually if it is ready."
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --target x86_64-pc-windows-msvc --features stt-shared,self-updater --config '{"bundle":{"createUpdaterArtifacts":true}}' -- --no-default-features
 
       - name: Verify DirectML runtime staging
         shell: pwsh
@@ -304,6 +419,23 @@ jobs:
             }
           }
 
+      - name: Verify Windows updater artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = "D:\t\x86_64-pc-windows-msvc\release\bundle\nsis\Selah_${{ needs.prepare.outputs.version }}_x64-setup.exe"
+          $sig = "$setup.sig"
+          if (-not (Test-Path $setup)) { throw "Missing updater installer: $setup" }
+          if (-not (Test-Path $sig)) { throw "Missing updater signature: $sig" }
+          if (-not (Test-Path "latest.json")) { throw "Missing latest.json" }
+          $feed = Get-Content "latest.json" -Raw | ConvertFrom-Json
+          foreach ($key in @("darwin-aarch64", "darwin-x86_64", "windows-x86_64", "windows-x86_64-nsis")) {
+            $item = $feed.platforms.PSObject.Properties[$key].Value
+            if (-not $item -or [string]::IsNullOrWhiteSpace($item.url) -or [string]::IsNullOrWhiteSpace($item.signature)) {
+              throw "latest.json missing $key url/signature"
+            }
+          }
+
       - name: Upload Windows CI artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -311,3 +443,59 @@ jobs:
           if-no-files-found: error
           path: |
             D:/t/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+
+  verify-updater-draft:
+    needs: [prepare, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify draft updater feed
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          api="https://api.github.com/repos/${repo}/releases/tags/${TAG}"
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$api" -o release.json
+          node <<'NODE'
+          const fs = require("fs");
+          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          if (!release.draft) throw new Error("Release is not a draft");
+          const names = new Set((release.assets || []).map((asset) => asset.name));
+          if (!names.has("latest.json")) throw new Error("Release asset latest.json is missing");
+          if (![...names].some((name) => name.endsWith(".app.tar.gz.sig"))) {
+            throw new Error("macOS updater signature asset is missing");
+          }
+          if (![...names].some((name) => name.endsWith("-setup.exe.sig"))) {
+            throw new Error("Windows updater signature asset is missing");
+          }
+          const latest = (release.assets || []).find((asset) => asset.name === "latest.json");
+          fs.writeFileSync("latest_asset_url.txt", latest.url);
+          NODE
+          curl -fsSL \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -L "$(cat latest_asset_url.txt)" \
+            -o latest.json
+          node <<'NODE'
+          const fs = require("fs");
+          const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
+          const required = [
+            "darwin-aarch64",
+            "darwin-x86_64",
+            "darwin-aarch64-app",
+            "darwin-x86_64-app",
+            "windows-x86_64",
+            "windows-x86_64-nsis",
+          ];
+          for (const key of required) {
+            const item = feed.platforms?.[key];
+            if (!item?.url || !item?.signature) {
+              throw new Error(`latest.json missing ${key} url/signature`);
+            }
+          }
+          NODE
