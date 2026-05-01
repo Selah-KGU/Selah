@@ -5,6 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
+  import { onCacheUpdate } from "../stores";
   import {
     getScheduleSnapshot,
     getAiConfig,
@@ -66,6 +67,7 @@
   let summaryExpanded = $state(false);
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  let scheduleFocusTimer: ReturnType<typeof setInterval> | null = null;
   let liveSummaryIntervalMinutes = $state(5);
   let timeTimer: ReturnType<typeof setInterval> | null = null;
   let now = $state(new Date());
@@ -167,6 +169,7 @@
   let unlistenLive: (() => void) | null = null;
   let unlistenSaved: (() => void) | null = null;
   let unlistenAiConfig: (() => void) | null = null;
+  let unlistenScheduleCache: (() => void) | null = null;
   let unlistenWinFocus: (() => void) | null = null;
   let unlistenWinBlur: (() => void) | null = null;
 
@@ -522,11 +525,11 @@
     return "LIVEにはAIの準備が必要です。AI設定を確認してください。";
   }
 
-  async function refreshSchedule() {
-    scheduleData = await getScheduleSnapshot();
+  function applyScheduleSnapshot(data: ScheduleResponse, date: Date = new Date(), preserveSelection = true) {
+    scheduleData = data;
     const slots = buildCourseSlots(scheduleData).filter((course) => !course.is_cancelled);
     allCourseOptions = [...slots].sort((a, b) => a.day - b.day || a.period - b.period || a.name.localeCompare(b.name));
-    const focused = chooseFocusedCourseOptions(allCourseOptions, new Date());
+    const focused = chooseFocusedCourseOptions(allCourseOptions, date);
     const focusedDay = focused[0]?.day;
     courseOptions = focusedDay != null
       ? focused.filter((course) => course.day === focusedDay)
@@ -554,13 +557,27 @@
         return;
       }
     }
-    const nearest = defaultCourseForVisibleOptions(courseOptions, new Date());
+    if (preserveSelection && courseOptions.some((course) => courseKey(course) === selectedKey)) {
+      return;
+    }
+    const nearest = defaultCourseForVisibleOptions(courseOptions, date);
     if (nearest) {
       selectedKey = courseKey(nearest);
       return;
     }
-    const hero = getHeroCourses(courseOptions, new Date());
+    const hero = getHeroCourses(courseOptions, date);
     selectedKey = hero[0] ? courseKey(hero[0].entry) : (courseOptions[0] ? courseKey(courseOptions[0]) : "");
+  }
+
+  async function refreshSchedule(preserveSelection = true) {
+    applyScheduleSnapshot(await getScheduleSnapshot(), new Date(), preserveSelection);
+  }
+
+  function refreshFocusedCoursesFromClock() {
+    const current = new Date();
+    now = current;
+    if (!scheduleData || snapshot.active) return;
+    applyScheduleSnapshot(scheduleData, current, true);
   }
 
   async function refreshReadiness() {
@@ -924,9 +941,14 @@
   onMount(async () => {
     try {
       snapshot = await liveGetSession();
-      await Promise.all([refreshSchedule(), refreshReadiness()]);
+      await Promise.all([refreshSchedule(false), refreshReadiness()]);
       await refreshLiveSttState();
       if (snapshot.active && sttListening) startFlushTimer();
+
+      unlistenScheduleCache = onCacheUpdate<ScheduleResponse>("schedule_data", (fresh) => {
+        applyScheduleSnapshot(fresh, new Date(), true);
+      });
+      scheduleFocusTimer = setInterval(refreshFocusedCoursesFromClock, 60_000);
 
       unlistenPartial = await listen<{ text: string; caller: string }>("stt-partial", (event) => {
         if (event.payload.caller !== "live") return;
@@ -1037,6 +1059,7 @@
       openSubtitleOverlay().catch(() => {});
     });
     unlistenWinFocus = await win.listen("tauri://focus", () => {
+      refreshSchedule(true).catch(() => {});
       closeSubtitleOverlay().catch(() => {});
     });
   });
@@ -1054,8 +1077,10 @@
     unlistenLive?.();
     unlistenSaved?.();
     unlistenAiConfig?.();
+    unlistenScheduleCache?.();
     unlistenWinFocus?.();
     unlistenWinBlur?.();
+    if (scheduleFocusTimer) clearInterval(scheduleFocusTimer);
     // Live ページを離れたら浮窗を再表示
     openSubtitleOverlay().catch(() => {});
   });

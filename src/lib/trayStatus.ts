@@ -48,13 +48,40 @@ function normalizeText(s: string | null | undefined): string {
   return (s ?? "").replace(/\s+/g, " ").trim();
 }
 
-function parseDeadlineTime(deadline: string): number {
-  const normalized = normalizeText(deadline)
+type DeadlineInfo = {
+  dueMs: number;
+  dayStartMs: number;
+};
+
+function parseDeadlineInfo(deadline: string): DeadlineInfo | null {
+  const text = normalizeText(deadline);
+  if (!text) return null;
+
+  const dateMatch = text.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+  const timeMatch = text.match(/(\d{1,2}):(\d{2})/);
+  if (dateMatch) {
+    const year = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]) - 1;
+    const day = Number(dateMatch[3]);
+    const hasTime = !!timeMatch;
+    const hour = hasTime ? Number(timeMatch![1]) : 23;
+    const minute = hasTime ? Number(timeMatch![2]) : 59;
+    const due = new Date(year, month, day, hour, minute, hasTime ? 0 : 59, hasTime ? 0 : 999);
+    const dayStart = new Date(year, month, day);
+    if (Number.isFinite(due.getTime())) {
+      return { dueMs: due.getTime(), dayStartMs: dayStart.getTime() };
+    }
+  }
+
+  const normalized = text
     .replace(/\//g, "-")
     .replace(/年|月/g, "-")
     .replace(/日/g, "");
-  const ts = new Date(normalized).getTime();
-  return Number.isFinite(ts) ? ts : Infinity;
+  const parsed = new Date(normalized);
+  const dueMs = parsed.getTime();
+  if (!Number.isFinite(dueMs)) return null;
+  const dayStart = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()).getTime();
+  return { dueMs, dayStartMs: dayStart };
 }
 
 function parseLiveStartedAt(value: string | null | undefined): number | null {
@@ -91,6 +118,15 @@ const GENERIC_TODO_TITLES = new Set([
   "未設定",
 ]);
 
+const COMPLETED_TODO_STATUS = /提出済|提出済み|完了|採点済|受験済/;
+const DAY_MS = 86_400_000;
+
+type TrayTodoItem = {
+  todo: LunaTodoItem;
+  title: string;
+  deadline: DeadlineInfo;
+};
+
 function hasSpecificTodoTitle(title: string): boolean {
   const normalized = normalizeText(title);
   if (normalized.length < 2) return false;
@@ -101,15 +137,40 @@ function hasSpecificTodoTitle(title: string): boolean {
 
 function buildTodoDisplayTitle(todo: LunaTodoItem): string {
   const contentName = normalizeText(todo.content_name);
-  if (hasSpecificTodoTitle(contentName)) return contentName;
-
   const courseName = normalizeText(todo.course_name);
   const contentType = normalizeText(todo.content_type);
+
+  if (hasSpecificTodoTitle(contentName)) {
+    if (contentType && !contentName.includes(contentType)) {
+      return `${contentType}: ${contentName}`;
+    }
+    return contentName;
+  }
+
   if (hasSpecificTodoTitle(courseName) && contentType) {
     return `${courseName} ${contentType}`;
   }
   if (hasSpecificTodoTitle(courseName)) return courseName;
   return "";
+}
+
+function deadlineLabel(info: DeadlineInfo, now: Date): string {
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const days = Math.max(0, Math.round((info.dayStartMs - todayStart) / DAY_MS));
+  if (days === 0) return "本日締切";
+  if (days === 1) return "明日締切";
+  return `あと${days}日`;
+}
+
+function buildActiveUpcomingTodos(now: Date): TrayTodoItem[] {
+  return todoItems
+    .map((todo) => ({ todo, title: buildTodoDisplayTitle(todo), deadline: parseDeadlineInfo(todo.deadline) }))
+    .filter((item): item is TrayTodoItem => {
+      if (!item.deadline) return false;
+      if (COMPLETED_TODO_STATUS.test(item.todo.status)) return false;
+      return item.deadline.dueMs >= now.getTime();
+    })
+    .sort((a, b) => a.deadline.dueMs - b.deadline.dueMs);
 }
 
 function buildStatusItems(): string[] {
@@ -184,30 +245,15 @@ function buildStatusItems(): string[] {
 
   // 2. Pending TODOs
   if (todoItems.length > 0) {
-    const pending = todoItems
-      .filter(t => !t.status.includes("提出済"))
-      .sort((a, b) => {
-        const da = a.deadline ? parseDeadlineTime(a.deadline) : Infinity;
-        const db = b.deadline ? parseDeadlineTime(b.deadline) : Infinity;
-        return da - db;
-      });
+    const activeUpcomingTodos = buildActiveUpcomingTodos(now);
 
-    if (pending.length > 0) {
-      const firstReadableDeadline = pending.find(t => {
-        const title = buildTodoDisplayTitle(t);
-        return title && Number.isFinite(parseDeadlineTime(t.deadline));
-      });
-      if (firstReadableDeadline) {
-        const dlTime = parseDeadlineTime(firstReadableDeadline.deadline);
-        const diffMs = dlTime - now.getTime();
-        const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-        const dlLabel = diffDays <= 0 ? "本日締切" : diffDays === 1 ? "明日締切" : `あと${diffDays}日`;
-        items.push(`${truncate(buildTodoDisplayTitle(firstReadableDeadline), 14)} ${dlLabel}`);
-      }
+    const firstReadableDeadline = activeUpcomingTodos.find(({ title }) => !!title);
+    if (firstReadableDeadline) {
+      items.push(`${truncate(firstReadableDeadline.title, 22)} ${deadlineLabel(firstReadableDeadline.deadline, now)}`);
+    }
 
-      if (pending.length > 1 || !firstReadableDeadline) {
-        items.push(`未提出課題 ${pending.length}件`);
-      }
+    if (activeUpcomingTodos.length > 1 || (activeUpcomingTodos.length === 1 && !firstReadableDeadline)) {
+      items.push(`未提出課題 ${activeUpcomingTodos.length}件`);
     }
   }
 
