@@ -79,6 +79,16 @@ jobs:
             --lib-dir /tmp/sherpa-universal-lib \
             --framework-dir "$PWD/src-tauri/macos-runtime"
 
+      - name: Verify updater signing secret
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required to publish updater artifacts."
+            exit 1
+          fi
+
       - name: Build and publish macOS release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -97,12 +107,32 @@ jobs:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
           releaseBody: "See the assets to download and install this release."
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true
           args: --target universal-apple-darwin --features stt-shared --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
 
+      - name: Verify macOS updater artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app.tar.gz"
+          test -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/Selah.app.tar.gz.sig"
+          test -f "latest.json"
+          node <<'NODE'
+          const fs = require("fs");
+          const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
+          const required = ["darwin-aarch64", "darwin-x86_64", "darwin-aarch64-app", "darwin-x86_64-app"];
+          for (const key of required) {
+            const item = feed.platforms?.[key];
+            if (!item?.url || !item?.signature) {
+              throw new Error(`latest.json missing ${key} url/signature`);
+            }
+          }
+          NODE
+
   release-windows:
-    needs: prepare
+    needs: [prepare, release-macos]
     runs-on: windows-latest
     permissions:
       contents: write
@@ -280,6 +310,16 @@ jobs:
             -LibStageDir "D:\directml-runtime\lib" `
             -RuntimeStageDir "$PWD\src-tauri\windows-runtime"
 
+      - name: Verify updater signing secret
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            Write-Error "TAURI_SIGNING_PRIVATE_KEY is required to publish updater artifacts."
+            exit 1
+          }
+
       - name: Build and publish Windows release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -306,6 +346,82 @@ jobs:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
           releaseBody: "See the assets to download and install this release."
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
           args: --target x86_64-pc-windows-msvc --features stt-shared --config '{"bundle":{"createUpdaterArtifacts":true}}' -- --no-default-features
+
+      - name: Verify Windows updater artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = "D:\t\x86_64-pc-windows-msvc\release\bundle\nsis\Selah_${{ needs.prepare.outputs.version }}_x64-setup.exe"
+          $sig = "$setup.sig"
+          if (-not (Test-Path $setup)) { throw "Missing updater installer: $setup" }
+          if (-not (Test-Path $sig)) { throw "Missing updater signature: $sig" }
+          if (-not (Test-Path "latest.json")) { throw "Missing latest.json" }
+          $feed = Get-Content "latest.json" -Raw | ConvertFrom-Json
+          foreach ($key in @("darwin-aarch64", "darwin-x86_64", "windows-x86_64", "windows-x86_64-nsis")) {
+            $item = $feed.platforms.PSObject.Properties[$key].Value
+            if (-not $item -or [string]::IsNullOrWhiteSpace($item.url) -or [string]::IsNullOrWhiteSpace($item.signature)) {
+              throw "latest.json missing $key url/signature"
+            }
+          }
+
+  verify-updater-release:
+    needs: [prepare, release-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify draft updater feed
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          api="https://api.github.com/repos/${repo}/releases/tags/${TAG}"
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$api" -o release.json
+          node <<'NODE'
+          const fs = require("fs");
+          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          const names = new Set((release.assets || []).map((asset) => asset.name));
+          if (!names.has("latest.json")) throw new Error("Release asset latest.json is missing");
+          if (![...names].some((name) => name.endsWith(".app.tar.gz.sig"))) {
+            throw new Error("macOS updater signature asset is missing");
+          }
+          if (![...names].some((name) => name.endsWith("-setup.exe.sig"))) {
+            throw new Error("Windows updater signature asset is missing");
+          }
+          const latest = (release.assets || []).find((asset) => asset.name === "latest.json");
+          fs.writeFileSync("latest_asset_url.txt", latest.url);
+          NODE
+          curl -fsSL \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -L "$(cat latest_asset_url.txt)" \
+            -o latest.json
+          node <<'NODE'
+          const fs = require("fs");
+          const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
+          const required = [
+            "darwin-aarch64",
+            "darwin-x86_64",
+            "darwin-aarch64-app",
+            "darwin-x86_64-app",
+            "windows-x86_64",
+            "windows-x86_64-nsis",
+          ];
+          for (const key of required) {
+            const item = feed.platforms?.[key];
+            if (!item?.url || !item?.signature) {
+              throw new Error(`latest.json missing ${key} url/signature`);
+            }
+          }
+          NODE

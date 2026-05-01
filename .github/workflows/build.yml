@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ── Read version (shared) ─────────────────────────────────────────────────
@@ -77,11 +77,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target universal-apple-darwin --features stt-shared --config '{"bundle":{"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
-          tagName: ${{ needs.prepare.outputs.tag }}
-          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
-          releaseBody: "See the assets for installers."
-          releaseDraft: true
-          prerelease: false
+
+      - name: Upload macOS CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Selah-${{ needs.prepare.outputs.version }}-macos
+          if-no-files-found: error
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
 
   # ── Windows (x64) ─────────────────────────────────────────────────────────
   build-windows:
@@ -295,11 +299,6 @@ jobs:
         with:
           projectPath: s
           args: --target x86_64-pc-windows-msvc --features stt-shared -- --no-default-features
-          tagName: ${{ needs.prepare.outputs.tag }}
-          releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
-          releaseBody: "See the assets for installers."
-          releaseDraft: true
-          prerelease: false
 
       - name: Verify DirectML runtime staging
         shell: pwsh
@@ -312,3 +311,11 @@ jobs:
               throw "Missing staged DirectML runtime DLL: $path"
             }
           }
+
+      - name: Upload Windows CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Selah-${{ needs.prepare.outputs.version }}-windows-x64
+          if-no-files-found: error
+          path: |
+            D:/t/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe

@@ -5,6 +5,7 @@
   import { getTaskSnapshot, onTaskChange } from "../../stores";
   import type { TaskInfo } from "../../stores";
   import { fetchPage, isDemoActive, refreshBackendTaskStatuses } from "../../api";
+  import { appUpdateState } from "../../updater";
 
   interface DebugInfo {
     app_version: string;
@@ -276,6 +277,24 @@
     return new Date(epoch * 1000).toLocaleString("ja-JP");
   }
 
+  function formatBytes(bytes: number | null): string {
+    if (bytes == null || bytes <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+      value /= 1024;
+      index++;
+    }
+    return `${value >= 100 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+  }
+
+  function updaterProgressLabel(): string {
+    if ($appUpdateState.progressPercent != null) return `${$appUpdateState.progressPercent}%`;
+    if ($appUpdateState.downloadedBytes > 0) return formatBytes($appUpdateState.downloadedBytes);
+    return "-";
+  }
+
   function formatEventTime(epoch: number): string {
     return new Date(epoch * 1000).toLocaleTimeString("ja-JP");
   }
@@ -455,6 +474,17 @@
             {(typeof window !== "undefined") && (window as any).__TAURI_INTERNALS__ ? "接続済" : "未接続"}
           </span>
         </div>
+      </div>
+
+      <h4>自動更新</h4>
+      <div class="info-grid">
+        <div class="info-row"><span class="info-key">Phase</span><span class="info-val mono">{$appUpdateState.phase}</span></div>
+        <div class="info-row"><span class="info-key">Checking</span><span class="info-val">{boolLabel($appUpdateState.checking)}</span></div>
+        <div class="info-row"><span class="info-key">Available</span><span class="info-val">{boolLabel($appUpdateState.available)}</span></div>
+        <div class="info-row"><span class="info-key">Version</span><span class="info-val mono">{$appUpdateState.version || "-"}</span></div>
+        <div class="info-row"><span class="info-key">Progress</span><span class="info-val mono">{updaterProgressLabel()}</span></div>
+        <div class="info-row"><span class="info-key">Downloaded</span><span class="info-val mono">{formatBytes($appUpdateState.downloadedBytes)}{#if $appUpdateState.totalBytes} / {formatBytes($appUpdateState.totalBytes)}{/if}</span></div>
+        <div class="info-row span-2"><span class="info-key">Status</span><span class="info-val">{$appUpdateState.status}</span></div>
       </div>
 
       <h4>音声認識</h4>
