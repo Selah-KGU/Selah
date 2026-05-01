@@ -454,7 +454,7 @@ jobs:
     needs: [prepare, build-windows]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Verify draft updater feed
         shell: bash
