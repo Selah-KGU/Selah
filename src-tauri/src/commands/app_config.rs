@@ -503,6 +503,10 @@ fn open_windows_share_picker(
             .hwnd()
             .map_err(|e| format!("Windows 共有ウィンドウの取得に失敗しました: {}", e))?,
     );
+    // Drop the window so the non-Send WebviewWindow is not captured by the
+    // move closure below.
+    drop(window);
+
     let path_str = path.to_string_lossy().to_string();
     let title = path
         .file_stem()
@@ -512,8 +516,9 @@ fn open_windows_share_picker(
         .to_string();
     let (tx, rx) = std::sync::mpsc::channel();
 
-    window
-        .run_on_main_thread(move || {
+    // Use app.run_on_main_thread to avoid capturing `window` (which
+    // contains a non-Send HWND) in the move closure.
+    app.run_on_main_thread(move || {
             let result: Result<(), String> = (|| {
                 let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
 
