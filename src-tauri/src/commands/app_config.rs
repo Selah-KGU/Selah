@@ -490,21 +490,17 @@ fn open_windows_share_picker(
     path: &std::path::Path,
     file_name: &str,
 ) -> Result<(), String> {
-    // HWND is a pointer-sized opaque handle that is safe to send between
-    // threads; the windows crate simply doesn't mark it as Send.
-    struct SendHwnd(windows::Win32::Foundation::HWND);
-    unsafe impl Send for SendHwnd {}
+    use windows::Win32::Foundation::HWND;
 
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "共有元のウィンドウが見つかりません".to_string())?;
-    let hwnd = SendHwnd(
-        window
-            .hwnd()
-            .map_err(|e| format!("Windows 共有ウィンドウの取得に失敗しました: {}", e))?,
-    );
-    // Drop the window so the non-Send WebviewWindow is not captured by the
-    // move closure below.
+    // Extract the raw handle as isize so the non-Send HWND / WebviewWindow
+    // are not captured by the move closure below.  isize is trivially Send.
+    let hwnd_raw = window
+        .hwnd()
+        .map_err(|e| format!("Windows 共有ウィンドウの取得に失敗しました: {}", e))?
+        .0 as isize;
     drop(window);
 
     let path_str = path.to_string_lossy().to_string();
@@ -516,10 +512,9 @@ fn open_windows_share_picker(
         .to_string();
     let (tx, rx) = std::sync::mpsc::channel();
 
-    // Use app.run_on_main_thread to avoid capturing `window` (which
-    // contains a non-Send HWND) in the move closure.
     app.run_on_main_thread(move || {
             let result: Result<(), String> = (|| {
+                let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
                 let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
 
                 let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_str.as_str()))
@@ -551,7 +546,7 @@ fn open_windows_share_picker(
                     ))
                 }
                 .map_err(|e| format!("Windows 共有機能の初期化に失敗しました: {}", e))?;
-                let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd.0) }
+                let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd) }
                     .map_err(|e| format!("Windows 共有マネージャーの取得に失敗しました: {}", e))?;
                 let token = manager
                     .DataRequested(&handler)
@@ -564,7 +559,7 @@ fn open_windows_share_picker(
                     *previous = Some(SendSyncDtm(manager.clone(), token));
                 }
 
-                unsafe { interop.ShowShareUIForWindow(hwnd.0) }
+                unsafe { interop.ShowShareUIForWindow(hwnd) }
                     .map_err(|e| format!("Windows 共有 UI の表示に失敗しました: {}", e))?;
                 Ok(())
             })();
