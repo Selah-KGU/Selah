@@ -121,29 +121,10 @@ jobs:
         run: node scripts/apply-version.mjs ${{ needs.prepare.outputs.version }}
 
       - name: Install Vulkan SDK
-        run: choco install vulkan-sdk -y
-        shell: pwsh
-
-      - name: Set VULKAN_SDK env
-        run: |
-          $candidates = @("C:\VulkanSDK", "C:\Program Files\VulkanSDK", "C:\Program Files (x86)\VulkanSDK")
-          $sdk = $null
-          foreach ($base in $candidates) {
-            if (Test-Path $base) {
-              $sub = Get-ChildItem $base -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-              if ($sub) { $sdk = $sub.FullName } else { $sdk = $base }
-              break
-            }
-          }
-          if (-not $sdk) {
-            $found = Get-ChildItem "C:\", "C:\Program Files", "C:\Program Files (x86)" -Filter "VulkanSDK" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { $sdk = $found.FullName }
-          }
-          if (-not $sdk) { Write-Error "VulkanSDK not found"; exit 1 }
-          Write-Host "VULKAN_SDK=$sdk"
-          echo "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
-          if (Test-Path "$sdk\Bin") { echo "$sdk\Bin" >> $env:GITHUB_PATH }
-        shell: pwsh
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          stripdown: true
 
       - name: Install frontend dependencies
         run: npm ci
