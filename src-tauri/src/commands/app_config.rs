@@ -30,8 +30,15 @@ use windows::Win32::System::WinRT::{RoGetActivationFactory, RoInitialize, RO_INI
 use windows::Win32::UI::Shell::IDataTransferManagerInterop;
 
 #[cfg(target_os = "windows")]
+struct SendSyncDtm(DataTransferManager, i64);
+#[cfg(target_os = "windows")]
+unsafe impl Send for SendSyncDtm {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for SendSyncDtm {}
+
+#[cfg(target_os = "windows")]
 static WINDOWS_SHARE_HANDLER: std::sync::LazyLock<
-    std::sync::Mutex<Option<(DataTransferManager, i64)>>,
+    std::sync::Mutex<Option<SendSyncDtm>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 fn load_json_config<T: Default + DeserializeOwned>(path: &std::path::Path) -> T {
@@ -483,12 +490,19 @@ fn open_windows_share_picker(
     path: &std::path::Path,
     file_name: &str,
 ) -> Result<(), String> {
+    // HWND is a pointer-sized opaque handle that is safe to send between
+    // threads; the windows crate simply doesn't mark it as Send.
+    struct SendHwnd(windows::Win32::Foundation::HWND);
+    unsafe impl Send for SendHwnd {}
+
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "共有元のウィンドウが見つかりません".to_string())?;
-    let hwnd = window
-        .hwnd()
-        .map_err(|e| format!("Windows 共有ウィンドウの取得に失敗しました: {}", e))?;
+    let hwnd = SendHwnd(
+        window
+            .hwnd()
+            .map_err(|e| format!("Windows 共有ウィンドウの取得に失敗しました: {}", e))?,
+    );
     let path_str = path.to_string_lossy().to_string();
     let title = path
         .file_stem()
@@ -532,20 +546,20 @@ fn open_windows_share_picker(
                     ))
                 }
                 .map_err(|e| format!("Windows 共有機能の初期化に失敗しました: {}", e))?;
-                let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd) }
+                let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd.0) }
                     .map_err(|e| format!("Windows 共有マネージャーの取得に失敗しました: {}", e))?;
                 let token = manager
                     .DataRequested(&handler)
                     .map_err(|e| format!("共有データの登録に失敗しました: {}", e))?;
 
                 if let Ok(mut previous) = WINDOWS_SHARE_HANDLER.lock() {
-                    if let Some((old_manager, old_token)) = previous.take() {
+                    if let Some(SendSyncDtm(old_manager, old_token)) = previous.take() {
                         let _ = old_manager.RemoveDataRequested(old_token);
                     }
-                    *previous = Some((manager.clone(), token));
+                    *previous = Some(SendSyncDtm(manager.clone(), token));
                 }
 
-                unsafe { interop.ShowShareUIForWindow(hwnd) }
+                unsafe { interop.ShowShareUIForWindow(hwnd.0) }
                     .map_err(|e| format!("Windows 共有 UI の表示に失敗しました: {}", e))?;
                 Ok(())
             })();
