@@ -40,3 +40,8 @@ Selah のアプリ内更新は Tauri v2 updater と GitHub Releases の `latest.
 - `TAURI_SIGNING_PRIVATE_KEY` が空だと署名が作られず、Tauri Action は `latest.json` を skip することがあります。
 - macOS と Windows の Release job を並列にすると `latest.json` の更新が競合します。Windows job は macOS job の後に実行します。
 - draft の間は公開 `latest/download/latest.json` では確認できません。workflow は GitHub API 経由で draft asset を検証します。
+
+## Store 版との分離
+
+- Mac App Store 版は `VITE_SELAH_DISTRIBUTION_CHANNEL=appstore` と `--no-default-features --features stt-shared,store-build --config tauri.appstore.conf.json` でビルドします。この組み合わせでは updater plugin を登録せず、フロントエンドも store 用 stub に差し替え、UI は Mac App Store 管理の更新表示に切り替えます。
+- Microsoft Store に EXE/MSI として提出する場合は、Store は既存ユーザーへ自動更新を配りません。Microsoft の案内ではアプリ内更新も許容されるため、現状は直配布版と同じ updater を使えます。MSIX など Store 管理更新に切り替える場合は `VITE_SELAH_DISTRIBUTION_CHANNEL=msstore` を使って UI 文言を分けます。

@@ -79,8 +79,9 @@ jobs:
       - name: Build Tauri app (universal, App Store entitlements)
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_DISTRIBUTION_SIGNING_IDENTITY }}
+          VITE_SELAH_DISTRIBUTION_CHANNEL: appstore
         run: |
-          npm run tauri build -- --target universal-apple-darwin
+          npm run tauri build -- --target universal-apple-darwin --no-default-features --features stt-shared,store-build --config tauri.appstore.conf.json
 
       # ── Compute monotonically increasing build number (UTC timestamp) ────
       - name: Compute build number

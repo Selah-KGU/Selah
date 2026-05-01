@@ -110,7 +110,7 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          args: --target universal-apple-darwin --features stt-shared --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
+          args: --target universal-apple-darwin --features stt-shared,self-updater --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
 
       - name: Verify macOS updater artifacts
         shell: bash
@@ -350,7 +350,7 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
-          args: --target x86_64-pc-windows-msvc --features stt-shared --config '{"bundle":{"createUpdaterArtifacts":true}}' -- --no-default-features
+          args: --target x86_64-pc-windows-msvc --features stt-shared,self-updater --config '{"bundle":{"createUpdaterArtifacts":true}}' -- --no-default-features
 
       - name: Verify Windows updater artifacts
         shell: pwsh

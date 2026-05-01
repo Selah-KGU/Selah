@@ -76,7 +76,7 @@ jobs:
           SHERPA_ONNX_LIB_DIR: /tmp/sherpa-universal-lib
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --target universal-apple-darwin --features stt-shared --config '{"bundle":{"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
+          args: --target universal-apple-darwin --features stt-shared,self-updater --config '{"bundle":{"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
 
       - name: Upload macOS CI artifacts
         uses: actions/upload-artifact@v4
@@ -298,7 +298,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: s
-          args: --target x86_64-pc-windows-msvc --features stt-shared -- --no-default-features
+          args: --target x86_64-pc-windows-msvc --features stt-shared,self-updater -- --no-default-features
 
       - name: Verify DirectML runtime staging
         shell: pwsh

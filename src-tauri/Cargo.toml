@@ -12,9 +12,11 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["stt-shared"]
+default = ["stt-shared", "self-updater"]
 stt-static = ["sherpa-onnx/static"]
 stt-shared = ["sherpa-onnx/shared"]
+self-updater = ["tauri-plugin-updater"]
+store-build = ["tauri-plugin-updater"]
 # Enable Vulkan GPU acceleration for llama.cpp on Windows (requires Vulkan SDK)
 llm-vulkan = ["llama-cpp-2/vulkan"]
 
@@ -52,7 +54,7 @@ time = { version = "0.3.41", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri-plugin-opener = "2.5.3"
 tauri-plugin-global-shortcut = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", optional = true }
 rfd = "0.15"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 

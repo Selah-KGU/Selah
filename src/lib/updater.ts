@@ -1,5 +1,5 @@
 import { writable, get } from "svelte/store";
-import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import type { DownloadEvent, RuntimeUpdate } from "./updaterRuntime";
 
 export type AppUpdatePhase =
   | "idle"
@@ -23,7 +23,31 @@ export interface AppUpdateState {
   progressPercent: number | null;
 }
 
-const DEFAULT_STATUS = "更新を確認すると、GitHub Releases から新しい版を取得します。";
+export type DistributionChannel = "direct" | "appstore" | "msstore";
+
+function normalizeDistributionChannel(value: unknown): DistributionChannel {
+  if (value === "appstore") return "appstore";
+  if (value === "msstore") return "msstore";
+  return "direct";
+}
+
+const RAW_DISTRIBUTION_CHANNEL = import.meta.env.VITE_SELAH_DISTRIBUTION_CHANNEL;
+const IS_APP_STORE_BUILD = RAW_DISTRIBUTION_CHANNEL === "appstore";
+
+export const distributionChannel = normalizeDistributionChannel(RAW_DISTRIBUTION_CHANNEL);
+export const updaterManagedByStore = IS_APP_STORE_BUILD;
+
+function defaultStatus(): string {
+  if (distributionChannel === "appstore") {
+    return "このビルドの更新は Mac App Store から配信されます。";
+  }
+  if (distributionChannel === "msstore") {
+    return "更新を確認すると、新しい版を取得できます。";
+  }
+  return "更新を確認すると、GitHub Releases から新しい版を取得します。";
+}
+
+const DEFAULT_STATUS = defaultStatus();
 
 const initialState: AppUpdateState = {
   phase: "idle",
@@ -39,7 +63,7 @@ const initialState: AppUpdateState = {
 
 export const appUpdateState = writable<AppUpdateState>(initialState);
 
-let pendingUpdate: Update | null = null;
+let pendingUpdate: RuntimeUpdate | null = null;
 let silentCheckStarted = false;
 let activeCheckPromise: Promise<void> | null = null;
 
@@ -75,7 +99,7 @@ function normalizeUpdaterError(error: unknown): { message: string; unsupported: 
   };
 }
 
-async function replacePendingUpdate(next: Update | null) {
+async function replacePendingUpdate(next: RuntimeUpdate | null) {
   if (pendingUpdate && pendingUpdate !== next) {
     try {
       await pendingUpdate.close();
@@ -127,6 +151,19 @@ function applyDownloadEvent(event: DownloadEvent) {
 }
 
 async function runCheck(options: { silent: boolean }): Promise<void> {
+  if (IS_APP_STORE_BUILD) {
+    updateStore({
+      phase: "unsupported",
+      available: false,
+      checking: false,
+      status: DEFAULT_STATUS,
+      downloadedBytes: 0,
+      totalBytes: null,
+      progressPercent: null,
+    });
+    return;
+  }
+
   if (readDemoFlag()) {
     return;
   }
@@ -149,7 +186,8 @@ async function runCheck(options: { silent: boolean }): Promise<void> {
     });
 
     try {
-      const update = await check({ timeout: 30_000 });
+      const { checkForRuntimeUpdate } = await import("./updaterRuntime");
+      const update = await checkForRuntimeUpdate({ timeout: 30_000 });
       await replacePendingUpdate(update);
 
       if (!update) {

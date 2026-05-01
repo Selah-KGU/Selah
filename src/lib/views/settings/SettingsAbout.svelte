@@ -4,7 +4,13 @@
   import { devModeActive } from "../../stores";
   import { logout, isDemoActive } from "../../api";
   import { openExternalUrl } from "../../system";
-  import { appUpdateState, checkForAppUpdate, downloadAndInstallAppUpdate } from "../../updater";
+  import {
+    appUpdateState,
+    checkForAppUpdate,
+    distributionChannel,
+    downloadAndInstallAppUpdate,
+    updaterManagedByStore,
+  } from "../../updater";
   import { get } from "svelte/store";
   import logoUrl from "../../../assets/logo.png";
 
@@ -75,6 +81,12 @@
       return `${formatBytes($appUpdateState.downloadedBytes)} / ${formatBytes($appUpdateState.totalBytes)}`;
     }
     return `${formatBytes($appUpdateState.downloadedBytes)} を受信しました`;
+  }
+
+  function updateProviderLabel(): string {
+    if (distributionChannel === "appstore") return "Mac App Store";
+    if (distributionChannel === "msstore") return "Microsoft Store";
+    return "GitHub Releases";
   }
 
   function startDelete() {
@@ -159,19 +171,28 @@
     <div class="row-input">
       <div class="update-inline">
         <div class="update-current">{version}</div>
-        <button
-          class="btn-test"
-          onclick={() => void checkForAppUpdate()}
-          disabled={$appUpdateState.checking || $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
-        >
-          {$appUpdateState.checking ? "確認中..." : "更新を確認"}
-        </button>
+        {#if !updaterManagedByStore}
+          <button
+            class="btn-test"
+            onclick={() => void checkForAppUpdate()}
+            disabled={$appUpdateState.checking || $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+          >
+            {$appUpdateState.checking ? "確認中..." : "更新を確認"}
+          </button>
+        {/if}
       </div>
       <div class="hint update-status">{$appUpdateState.status}</div>
     </div>
   </div>
 
-  {#if $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
+  {#if updaterManagedByStore}
+    <div class="row">
+      <span class="row-label">配信元</span>
+      <div class="row-input">
+        <div class="hint update-manual-hint">{updateProviderLabel()} から更新されます。</div>
+      </div>
+    </div>
+  {:else if $appUpdateState.phase === "downloading" || $appUpdateState.phase === "installing"}
     <div class="row">
       <span class="row-label">進行状況</span>
       <div class="row-input">
@@ -217,7 +238,7 @@
       <span class="row-label">手動更新</span>
       <div class="row-input">
         <div class="update-inline">
-          <div class="hint update-manual-hint">GitHub Releases から最新版を取得できます。</div>
+          <div class="hint update-manual-hint">{updateProviderLabel()} から最新版を取得できます。</div>
           <button class="btn-test" onclick={() => openUrl(RELEASES_URL)}>Releases を開く</button>
         </div>
       </div>

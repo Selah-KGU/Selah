@@ -1,9 +1,24 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig } from "vite";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const isAppStoreBuild = process.env.VITE_SELAH_DISTRIBUTION_CHANNEL === "appstore";
+const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
+  resolve: {
+    alias: isAppStoreBuild
+      ? [
+          {
+            find: /^\.\/updaterRuntime$/,
+            replacement: resolve(projectRoot, "src/lib/updaterRuntime.store.ts"),
+          },
+        ]
+      : [],
+  },
   server: {
     port: 5173,
     strictPort: true,

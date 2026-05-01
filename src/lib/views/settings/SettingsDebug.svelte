@@ -5,7 +5,7 @@
   import { getTaskSnapshot, onTaskChange } from "../../stores";
   import type { TaskInfo } from "../../stores";
   import { fetchPage, isDemoActive, refreshBackendTaskStatuses } from "../../api";
-  import { appUpdateState } from "../../updater";
+  import { appUpdateState, distributionChannel, updaterManagedByStore } from "../../updater";
 
   interface DebugInfo {
     app_version: string;
@@ -479,6 +479,8 @@
       <h4>自動更新</h4>
       <div class="info-grid">
         <div class="info-row"><span class="info-key">Phase</span><span class="info-val mono">{$appUpdateState.phase}</span></div>
+        <div class="info-row"><span class="info-key">Channel</span><span class="info-val mono">{distributionChannel}</span></div>
+        <div class="info-row"><span class="info-key">Store Managed</span><span class="info-val">{boolLabel(updaterManagedByStore)}</span></div>
         <div class="info-row"><span class="info-key">Checking</span><span class="info-val">{boolLabel($appUpdateState.checking)}</span></div>
         <div class="info-row"><span class="info-key">Available</span><span class="info-val">{boolLabel($appUpdateState.available)}</span></div>
         <div class="info-row"><span class="info-key">Version</span><span class="info-val mono">{$appUpdateState.version || "-"}</span></div>
