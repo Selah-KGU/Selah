@@ -1,11 +1,11 @@
-/dist
-/node_modules
+/dist/
+/node_modules/
 .DS_Store
-/docs/.vitepress/dist
-/docs/.vitepress/dist
-/docs/.vitepress
-/docs/.vitepress
-/docs/.vitepress
-/server
-/.claude
-/.cache
+
+# VitePress build output and temp files. Keep docs/.vitepress source files tracked.
+/docs/.vitepress/dist/
+/docs/.vitepress/.temp/
+
+/server/
+/.claude/
+/.cache/
