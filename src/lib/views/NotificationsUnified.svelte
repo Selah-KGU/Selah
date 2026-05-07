@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { kwicOpenDetail, lunaInvoke } from "../api";
   import type { MailMessage } from "../api";
-  import { cachedBackendFetch, getCached, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead } from "../stores";
+  import { cachedBackendFetch, getCached, onCacheUpdate, lunaAuthState, kwicAuthState, mailAuthState, activeTab, readIdsStore, notifKey, markRead, markBatchRead, requestedMailMessageId } from "../stores";
   import type { NotificationsData } from "../stores";
   import type { KwicPortalHome } from "../api";
   import ViewLoader from "../ViewLoader.svelte";
@@ -267,6 +267,7 @@
 
     if (n.source === "mail") {
       activeTab.set("mail");
+      requestedMailMessageId.set(n.id);
     } else if (n.source === "luna" && n.url) {
       try {
         await lunaInvoke("university_open_detail_window", { path: n.url, title: n.title, courseName: n.courseInfo || null });

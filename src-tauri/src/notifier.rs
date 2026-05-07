@@ -1,10 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::background_refresh;
 use crate::commands::{self, NotificationConfig};
@@ -45,6 +45,22 @@ pub struct NotificationEventDebugInfo {
     pub title: String,
     pub body: String,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationClickTarget {
+    pub source: String,
+    pub id: String,
+    pub title: String,
+    pub date: String,
+    pub category: String,
+    pub tab: Option<String>,
+    pub url: Option<String>,
+    pub course_info: Option<String>,
+    pub information_type: Option<String>,
+    pub person_category_cd: Option<String>,
+    pub category_cd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -470,7 +486,22 @@ fn sync_kgc_notifications(
             } else {
                 format!("[{}] {}", item.category, item.title)
             };
-            dispatch_notification(app, run, source, title, item.date.clone());
+            dispatch_notification(
+                app,
+                run,
+                source,
+                title,
+                item.date.clone(),
+                Some(NotificationClickTarget {
+                    source: source.to_string(),
+                    id: item.id.clone(),
+                    title: item.title.clone(),
+                    date: item.date.clone(),
+                    category: item.category.clone(),
+                    tab: Some("授業のお知らせ".to_string()),
+                    ..Default::default()
+                }),
+            );
         }
     } else {
         run.muted += new_entries.len();
@@ -570,7 +601,24 @@ fn sync_luna_notifications(
                 base_title
             };
             let body = format!("{} — {}", item.course_info, item.date);
-            dispatch_notification(app, run, source, title, body);
+            dispatch_notification(
+                app,
+                run,
+                source,
+                title,
+                body,
+                Some(NotificationClickTarget {
+                    source: source.to_string(),
+                    id: revision_key.clone(),
+                    title: item.content.clone(),
+                    date: item.date.clone(),
+                    category: item.module.clone(),
+                    tab: Some("授業のお知らせ".to_string()),
+                    url: (!item.url.is_empty()).then(|| item.url.clone()),
+                    course_info: (!item.course_info.is_empty()).then(|| item.course_info.clone()),
+                    ..Default::default()
+                }),
+            );
         } else {
             run.muted += 1;
         }
@@ -647,7 +695,27 @@ fn sync_kwic_notifications(
                 } else {
                     format!("[{}] {}", item.category, item.title)
                 };
-                dispatch_notification(app, run, source, title, item.date.clone());
+                dispatch_notification(
+                    app,
+                    run,
+                    source,
+                    title,
+                    item.date.clone(),
+                    Some(NotificationClickTarget {
+                        source: source.to_string(),
+                        id: item.id.clone(),
+                        title: item.title.clone(),
+                        date: item.date.clone(),
+                        category: item.category.clone(),
+                        tab: Some(section.title.clone()),
+                        information_type: (!item.information_type.is_empty())
+                            .then(|| item.information_type.clone()),
+                        person_category_cd: (!item.person_category_cd.is_empty())
+                            .then(|| item.person_category_cd.clone()),
+                        category_cd: (!item.category_cd.is_empty()).then(|| item.category_cd.clone()),
+                        ..Default::default()
+                    }),
+                );
             } else {
                 run.muted += 1;
             }
@@ -725,7 +793,22 @@ fn sync_mail_notifications(
                 .subject
                 .clone()
                 .unwrap_or_else(|| "(件名なし)".to_string());
-            dispatch_notification(app, run, source, sender, subject);
+            dispatch_notification(
+                app,
+                run,
+                source,
+                sender.clone(),
+                subject.clone(),
+                Some(NotificationClickTarget {
+                    source: source.to_string(),
+                    id: item.id.clone(),
+                    title: subject,
+                    date: item.received_date_time.clone().unwrap_or_default(),
+                    category: sender,
+                    tab: Some("その他".to_string()),
+                    ..Default::default()
+                }),
+            );
         } else {
             run.muted += 1;
         }
@@ -818,8 +901,15 @@ fn dispatch_notification(
     source: &str,
     title: String,
     body: String,
+    target: Option<NotificationClickTarget>,
 ) {
-    match crate::ai::send_native_notification(app, &title, &body) {
+    let result = if let Some(target) = target {
+        send_actionable_native_notification(app, &title, &body, target)
+    } else {
+        crate::ai::send_native_notification(app, &title, &body)
+    };
+
+    match result {
         Ok(detail) => {
             run.dispatched += 1;
             record_event(run, source, "dispatched", title, body, detail);
@@ -828,6 +918,57 @@ fn dispatch_notification(
             run.failed += 1;
             record_event(run, source, "failed", title, body, error);
         }
+    }
+}
+
+fn send_actionable_native_notification(
+    app: &AppHandle,
+    title: &str,
+    body: &str,
+    target: NotificationClickTarget,
+) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        let bundle_id = app.config().identifier.clone();
+        let title = title.to_string();
+        let body = body.to_string();
+        std::thread::spawn(move || {
+            let _ = mac_notification_sys::set_application(&bundle_id);
+            let mut notification = mac_notification_sys::Notification::new();
+            notification
+                .title(&title)
+                .message(&body)
+                .wait_for_click(true);
+
+            match notification.send() {
+                Ok(mac_notification_sys::NotificationResponse::Click)
+                | Ok(mac_notification_sys::NotificationResponse::ActionButton(_)) => {
+                    activate_notification_target(&app, target);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    log::warn!("actionable notification failed: {}", e);
+                }
+            }
+        });
+        Ok("Notification queued with click target".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let detail = crate::ai::send_native_notification(app, title, body)?;
+        Ok(format!("{}; click target not supported on this platform", detail))
+    }
+}
+
+fn activate_notification_target(app: &AppHandle, target: NotificationClickTarget) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    if let Err(e) = app.emit("notification-activated", target) {
+        log::warn!("notification activation emit failed: {}", e);
     }
 }
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { mailAuthState, cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, getCacheTimestamp, unreadMailCount, updateCacheEntry } from "../stores";
+  import { mailAuthState, cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, getCacheTimestamp, unreadMailCount, updateCacheEntry, requestedMailMessageId } from "../stores";
   import { mailCheckSession, mailOpenLogin, mailFetchInbox, mailFetchMessage, mailFetchProfile, mailFetchAttachments, mailDownloadAttachment } from "../api";
   import type { MailMessage, MailDetail, MailAttachment } from "../api";
   import Icon from "../Icon.svelte";
@@ -12,11 +12,14 @@
   let error = $state("");
   let messages = $state<MailMessage[]>([]);
   let selectedMessage = $state<MailDetail | null>(null);
+  let pendingDetailMessage = $state<MailMessage | null>(null);
   let loadingDetail = $state(false);
+  let detailError = $state("");
   let loadingMore = $state(false);
   let refreshing = $state(false);
   let page = $state(0);
   const PAGE_SIZE = 20;
+  let detailRequestId = 0;
 
   // Attachment state
   let attachments = $state<MailAttachment[]>([]);
@@ -25,6 +28,8 @@
   let downloadErrors = $state<Record<string, string>>({});
 
   let unlistenLogin: (() => void) | null = null;
+  let unsubscribeRequestedMail: (() => void) | null = null;
+  let pendingMailOpenId = $state<string | null>(null);
 
   // Cache sanitized HTML per message id so re-renders don't re-run DOMPurify
   // on potentially large email bodies. Bound the cache so long sessions
@@ -57,6 +62,12 @@
   });
 
   onMount(async () => {
+    unsubscribeRequestedMail = requestedMailMessageId.subscribe((id) => {
+      if (!id) return;
+      pendingMailOpenId = id;
+      void flushPendingMailOpen();
+    });
+
     unlistenLogin = await listen<{ email: string; displayName: string }>("mail-login-success", async (event) => {
       mailAuthState.set({
         authenticated: true,
@@ -87,7 +98,7 @@
     }
   });
 
-  onDestroy(() => { unlistenLogin?.(); unsubMail(); stopTick(); });
+  onDestroy(() => { unlistenLogin?.(); unsubscribeRequestedMail?.(); unsubMail(); stopTick(); });
 
   async function loadInbox() {
     loading = messages.length === 0;
@@ -98,6 +109,7 @@
       lastFetchTs = getCacheTimestamp("mail_inbox");
       startTick();
       page = 0;
+      await flushPendingMailOpen();
     } catch (e: any) {
       error = typeof e === "string" ? e : e?.message ?? "読み込みに失敗しました";
     } finally {
@@ -112,6 +124,7 @@
       messages = await refreshBackendManagedCache("mail_inbox");
       lastFetchTs = getCacheTimestamp("mail_inbox");
       page = 0;
+      await flushPendingMailOpen();
     } finally {
       refreshing = false;
     }
@@ -130,31 +143,62 @@
   }
 
   async function openMessage(msg: MailMessage) {
+    const requestId = ++detailRequestId;
+    pendingDetailMessage = msg;
+    selectedMessage = null;
     loadingDetail = true;
+    detailError = "";
     attachments = [];
+    attachmentsLoading = false;
     downloadErrors = {};
     try {
-      selectedMessage = await mailFetchMessage(msg.id);
+      const detail = await mailFetchMessage(msg.id);
+      if (requestId !== detailRequestId) return;
+      selectedMessage = detail;
+      pendingDetailMessage = null;
       messages = messages.map(m => m.id === msg.id ? { ...m, isRead: true } : m);
       // Update cache so sidebar badge and notifications view reflect the change
       updateCacheEntry<MailMessage[]>("mail_inbox", (msgs) =>
         msgs.map(m => m.id === msg.id ? { ...m, isRead: true } : m)
       );
       // Fetch attachments in background if any
-      if (selectedMessage.hasAttachments) {
+      if (detail.hasAttachments) {
         attachmentsLoading = true;
         mailFetchAttachments(msg.id).then(list => {
+          if (requestId !== detailRequestId) return;
           attachments = list;
         }).catch(() => {
+          if (requestId !== detailRequestId) return;
           attachments = [];
         }).finally(() => {
+          if (requestId !== detailRequestId) return;
           attachmentsLoading = false;
         });
       }
     } catch (e: any) {
-      error = typeof e === "string" ? e : e?.message ?? "メール読み込み失敗";
+      if (requestId !== detailRequestId) return;
+      detailError = typeof e === "string" ? e : e?.message ?? "メール読み込み失敗";
+    } finally {
+      if (requestId === detailRequestId) loadingDetail = false;
     }
-    loadingDetail = false;
+  }
+
+  async function flushPendingMailOpen() {
+    const id = pendingMailOpenId;
+    if (!id || loadingDetail || !$mailAuthState.authenticated) return;
+
+    pendingMailOpenId = null;
+    requestedMailMessageId.set(null);
+    const existing = messages.find(m => m.id === id);
+    await openMessage(existing ?? {
+      id,
+      subject: null,
+      bodyPreview: null,
+      from: null,
+      receivedDateTime: null,
+      isRead: false,
+      hasAttachments: null,
+    });
   }
 
   async function downloadAttachment(attachment: MailAttachment) {
@@ -179,8 +223,13 @@
   }
 
   function closeDetail() {
+    detailRequestId += 1;
     selectedMessage = null;
+    pendingDetailMessage = null;
+    loadingDetail = false;
+    detailError = "";
     attachments = [];
+    attachmentsLoading = false;
     downloadErrors = {};
   }
 
@@ -231,12 +280,14 @@
     return out;
   }
 
-  function senderName(msg: MailMessage): string {
+  type MailHeaderLike = Pick<MailMessage, "subject" | "from" | "receivedDateTime">;
+
+  function senderName(msg: MailHeaderLike): string {
     if (!msg.from?.emailAddress) return "不明";
     return msg.from.emailAddress.name || msg.from.emailAddress.address || "不明";
   }
 
-  function senderInitial(msg: MailMessage): string {
+  function senderInitial(msg: MailHeaderLike): string {
     const name = senderName(msg);
     if (!name || name === "不明") return "?";
     // Use first char — handles CJK, latin, etc.
@@ -246,7 +297,7 @@
   // Avatar colour is purely a function of the sender's address — cache so
   // the per-row hash isn't recomputed on every reactive re-render of the list.
   const avatarColorCache = new Map<string, string>();
-  function avatarColor(msg: MailMessage): string {
+  function avatarColor(msg: MailHeaderLike): string {
     const addr = msg.from?.emailAddress?.address || senderName(msg);
     const cached = avatarColorCache.get(addr);
     if (cached !== undefined) return cached;
@@ -282,6 +333,8 @@
   let unreadCount = $derived(messages.filter(m => !m.isRead).length);
   $effect(() => { unreadMailCount.set(unreadCount); });
   let agoText = $derived(updatedAgoText());
+  let detailHeaderMessage = $derived(selectedMessage ?? pendingDetailMessage);
+  let inDetailMode = $derived(Boolean(detailHeaderMessage || loadingDetail || detailError));
 </script>
 
 <div class="mail-view">
@@ -320,7 +373,7 @@
   {:else}
     <!-- Header -->
     <div class="mail-header">
-      {#if selectedMessage}
+      {#if inDetailMode}
         <button class="back-btn" onclick={closeDetail}>
           <Icon name="chevron.left" size={16} />
           <span>戻る</span>
@@ -337,7 +390,7 @@
         </div>
       {/if}
       <div class="header-actions">
-        {#if !selectedMessage}
+        {#if !inDetailMode}
           <button class="refresh-btn" class:spinning={refreshing} onclick={manualRefresh} disabled={refreshing} title="更新">
             <Icon name="arrow.clockwise" size={14} />
           </button>
@@ -345,16 +398,62 @@
       </div>
     </div>
 
-    {#if selectedMessage}
+    {#if inDetailMode}
       <!-- Detail -->
       <div class="mail-detail">
-        {#if loadingDetail}
-          <div class="center-state"><div class="spinner"></div></div>
+        {#if detailError}
+          <div class="detail-header">
+            <h3 class="detail-subject">{detailHeaderMessage?.subject || "(件名なし)"}</h3>
+          </div>
+          <div class="detail-error-state">
+            <Icon name="exclamationmark.triangle" size={24} />
+            <p>{detailError}</p>
+            {#if detailHeaderMessage}
+              <button class="retry-btn" onclick={() => openMessage(detailHeaderMessage as MailMessage)}>再試行</button>
+            {/if}
+          </div>
+        {:else if loadingDetail}
+          <div class="detail-header detail-header-loading">
+            <h3 class="detail-subject">{detailHeaderMessage?.subject || "メールを開いています"}</h3>
+            <div class="detail-sender-row">
+              {#if detailHeaderMessage?.from}
+                <div class="detail-avatar" style="background:{avatarColor(detailHeaderMessage)}">
+                  {senderInitial(detailHeaderMessage)}
+                </div>
+                <div class="detail-sender-info">
+                  <div class="detail-from-name">{senderName(detailHeaderMessage)}</div>
+                  <div class="detail-from-email">{detailHeaderMessage.from.emailAddress.address || ""}</div>
+                </div>
+                <div class="detail-date">{formatFullDate(detailHeaderMessage.receivedDateTime)}</div>
+              {:else}
+                <div class="detail-avatar skeleton-avatar"></div>
+                <div class="detail-sender-info">
+                  <div class="skeleton-line sender-skeleton"></div>
+                  <div class="skeleton-line email-skeleton"></div>
+                </div>
+              {/if}
+            </div>
+          </div>
+          <div class="detail-loading-body" aria-live="polite">
+            <div class="detail-loading-note">
+              <div class="spinner small-spinner"></div>
+              <span>本文を読み込み中...</span>
+            </div>
+            <div class="body-skeleton">
+              <div class="skeleton-line wide"></div>
+              <div class="skeleton-line full"></div>
+              <div class="skeleton-line full"></div>
+              <div class="skeleton-line medium"></div>
+              <div class="skeleton-gap"></div>
+              <div class="skeleton-line full"></div>
+              <div class="skeleton-line short"></div>
+            </div>
+          </div>
         {:else}
           <div class="detail-header">
             <h3 class="detail-subject">{selectedMessage.subject || "(件名なし)"}</h3>
             <div class="detail-sender-row">
-              <div class="detail-avatar" style="background:{avatarColor({ from: selectedMessage.from } as MailMessage)}">
+              <div class="detail-avatar" style="background:{avatarColor(selectedMessage)}">
                 {(selectedMessage.from?.emailAddress?.name || "?").charAt(0).toUpperCase()}
               </div>
               <div class="detail-sender-info">
@@ -869,6 +968,93 @@
     border-radius: 4px;
     font-size: 11px;
     color: var(--text-secondary);
+  }
+
+  .detail-loading-body {
+    padding: 20px 0;
+  }
+
+  .detail-loading-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 26px;
+    padding: 4px 10px;
+    border: 0.5px solid var(--glass-border);
+    border-radius: 7px;
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    font-size: 12px;
+  }
+
+  .small-spinner {
+    width: 13px;
+    height: 13px;
+    border-width: 1.5px;
+  }
+
+  .body-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 22px;
+  }
+
+  .skeleton-line,
+  .skeleton-avatar {
+    overflow: hidden;
+    position: relative;
+    background: var(--bg-secondary);
+  }
+
+  .skeleton-line::after,
+  .skeleton-avatar::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-primary) 8%, transparent), transparent);
+    animation: skeleton-shimmer 1.3s ease-in-out infinite;
+  }
+
+  .skeleton-line {
+    height: 11px;
+    border-radius: 6px;
+  }
+
+  .skeleton-avatar {
+    background: var(--bg-secondary) !important;
+  }
+
+  .sender-skeleton { width: 150px; max-width: 60%; }
+  .email-skeleton { width: 220px; max-width: 82%; height: 9px; margin-top: 7px; }
+  .skeleton-line.wide { width: 72%; }
+  .skeleton-line.full { width: 100%; }
+  .skeleton-line.medium { width: 58%; }
+  .skeleton-line.short { width: 34%; }
+  .skeleton-gap { height: 8px; }
+
+  @keyframes skeleton-shimmer {
+    to { transform: translateX(100%); }
+  }
+
+  .detail-error-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 240px;
+    color: var(--text-tertiary);
+    text-align: center;
+  }
+
+  .detail-error-state p {
+    max-width: 360px;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
   }
 
   .detail-body {

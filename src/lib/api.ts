@@ -17,7 +17,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, requestedMailMessageId } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
@@ -109,6 +109,12 @@ if (!__selahGlobal[__SELAH_LISTENERS_KEY]) {
       console.warn("[Selah] backend cache sync failed:", err);
     });
   });
+
+  listen<NotificationActivationTarget>("notification-activated", (event) => {
+    handleNotificationActivation(event.payload).catch((err) => {
+      console.warn("[Selah] notification activation failed:", err);
+    });
+  });
 }
 
 function applyBackendSessionStatus(status: BackendSessionStatus) {
@@ -168,6 +174,61 @@ interface BackendSessionStatus {
   mail_authenticated: boolean;
   mail_email: string;
   mail_display_name: string;
+}
+
+interface NotificationActivationTarget {
+  source: "kgc" | "luna" | "kwic" | "mail";
+  id: string;
+  title: string;
+  date: string;
+  category: string;
+  tab?: string | null;
+  url?: string | null;
+  courseInfo?: string | null;
+  informationType?: string | null;
+  personCategoryCd?: string | null;
+  categoryCd?: string | null;
+}
+
+async function handleNotificationActivation(target: NotificationActivationTarget): Promise<void> {
+  if (!target?.source) {
+    activeTab.set("notifications");
+    return;
+  }
+
+  if (target.source === "mail") {
+    activeTab.set("mail");
+    if (target.id) requestedMailMessageId.set(target.id);
+    return;
+  }
+
+  if (target.source === "luna") {
+    activeTab.set("notifications");
+    if (target.url) {
+      await lunaInvoke("university_open_detail_window", {
+        path: target.url,
+        title: target.title || "Luna",
+        courseName: target.courseInfo || null,
+      });
+    }
+    return;
+  }
+
+  if (target.source === "kwic") {
+    activeTab.set("notifications");
+    if (target.id) {
+      await kwicOpenDetail({
+        id: target.id,
+        title: target.title || "KWIC",
+        information_type: target.informationType || "",
+        person_category_cd: target.personCategoryCd || "",
+        category_cd: target.categoryCd || "",
+      });
+    }
+    return;
+  }
+
+  activeTab.set("notifications");
 }
 
 // ============ Unified Session Management ============

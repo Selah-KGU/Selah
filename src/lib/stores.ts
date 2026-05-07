@@ -308,6 +308,7 @@ export const activeSettingsPanel = writable<SettingsPanel>("ai");
 export const aiRefreshRequested = writable<boolean>(false);
 export const unreadNotifCount = writable<number>(0);
 export const unreadMailCount = writable<number>(0);
+export const requestedMailMessageId = writable<string | null>(null);
 
 // ============ AI Refresh Scheduler ============
 export const aiNotifStore = writable<{ result: any; sources: any[]; timestamp: number } | null>(null);

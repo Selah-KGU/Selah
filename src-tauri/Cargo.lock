@@ -4764,6 +4764,7 @@ dependencies = [
  "llama-cpp-2",
  "log",
  "lopdf",
+ "mac-notification-sys",
  "notify-rust",
  "objc2",
  "objc2-app-kit",
