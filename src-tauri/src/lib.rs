@@ -147,6 +147,11 @@ fn save_data_cache(
     db.save_data_cache(&key, &json)
 }
 
+#[tauri::command]
+fn request_app_restart(app: tauri::AppHandle) {
+    app.request_restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[allow(unused_mut)]
@@ -442,6 +447,7 @@ pub fn run() {
             get_data_cache,
             get_data_cache_updated_at,
             save_data_cache,
+            request_app_restart,
             webview_toolbar::browser_go_back,
             webview_toolbar::browser_go_forward,
             webview_toolbar::browser_reload,

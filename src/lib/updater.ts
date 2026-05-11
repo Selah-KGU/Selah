@@ -1,4 +1,5 @@
 import { writable, get } from "svelte/store";
+import { invoke } from "@tauri-apps/api/core";
 import type { DownloadEvent, RuntimeUpdate } from "./updaterRuntime";
 
 export type AppUpdatePhase =
@@ -267,15 +268,14 @@ export async function downloadAndInstallAppUpdate(): Promise<void> {
 
     await replacePendingUpdate(null);
 
-    const isWindows = typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
     updateStore({
       phase: "installing",
       available: false,
-      status: isWindows
-        ? "更新を適用しています。まもなくアプリを終了します。"
-        : "更新をインストールしました。アプリを再起動すると新しい版が有効になります。",
+      status: "更新をインストールしました。アプリを再起動しています...",
       progressPercent: 100,
     });
+
+    await invoke<void>("request_app_restart");
   } catch (error) {
     updateStore({
       phase: "error",
