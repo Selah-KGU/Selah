@@ -11,13 +11,13 @@ hero:
   actions:
     - theme: brand
       text: ダウンロード
-      link: https://github.com/mirai-mamori/Selah/releases/latest
+      link: https://github.com/Selah-KGU/Selah/releases/latest
     - theme: alt
       text: 機能を見る
       link: /guide/features
     - theme: alt
       text: GitHub
-      link: https://github.com/mirai-mamori/Selah
+      link: https://github.com/Selah-KGU/Selah
 
 features:
   - icon: "\U0001F3E0"

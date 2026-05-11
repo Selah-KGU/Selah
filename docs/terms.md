@@ -9,7 +9,7 @@
 本アプリは、関西学院大学の教務システム等にアクセスするための**サードパーティ**デスクトップクライアントです。
 
 - 本アプリは個人が開発する source-available プロジェクトであり、大学の公式アプリケーションではありません
-- 本アプリは [PolyForm Noncommercial License 1.0.0](https://github.com/mirai-mamori/Selah/blob/main/LICENSE) の下で提供されます
+- 本アプリは [PolyForm Noncommercial License 1.0.0](https://github.com/Selah-KGU/Selah/blob/main/LICENSE) の下で提供されます
 - 本アプリの商用利用には、開発者からの別途許可が必要です
 - 本アプリが利用する第三者ライブラリは、それぞれの upstream ライセンスに従います
 
@@ -85,4 +85,4 @@ AI 機能（履修分析・学習計画・通知サマリー）は、OpenAI / Go
 
 ## お問い合わせ
 
-本規約に関するご質問は、[GitHub Issues](https://github.com/mirai-mamori/Selah/issues) までお寄せください。
+本規約に関するご質問は、[GitHub Issues](https://github.com/Selah-KGU/Selah/issues) までお寄せください。

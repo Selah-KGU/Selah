@@ -2,7 +2,7 @@
 
 ## ダウンロード
 
-[最新リリース](https://github.com/mirai-mamori/Selah/releases/latest) から、お使いの OS に合ったインストーラーをダウンロードしてください。
+[最新リリース](https://github.com/Selah-KGU/Selah/releases/latest) から、お使いの OS に合ったインストーラーをダウンロードしてください。
 
 ### macOS
 

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/mirai-mamori/Selah?label=download&style=flat-square" alt="Latest Release"></a>
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/Selah-KGU/Selah?label=download&style=flat-square" alt="Latest Release"></a>
   <img src="https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2F11-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-green?style=flat-square" alt="License: PolyForm Noncommercial 1.0.0">
 </p>

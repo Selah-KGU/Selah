@@ -91,4 +91,4 @@ AI 機能（履修分析・学習計画・通知サマリー）は**任意の機
 
 ## お問い合わせ
 
-プライバシーに関するご質問は、[GitHub Issues](https://github.com/mirai-mamori/Selah/issues) までお寄せください。
+プライバシーに関するご質問は、[GitHub Issues](https://github.com/Selah-KGU/Selah/issues) までお寄せください。
