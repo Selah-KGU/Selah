@@ -17,7 +17,7 @@ export default defineConfig({
       {
         text: 'v1.0.0',
         items: [
-          { text: 'リリースノート', link: 'https://github.com/mirai-mamori/Selah/releases' },
+          { text: 'リリースノート', link: 'https://github.com/Selah-KGU/Selah/releases' },
         ],
       },
       {
@@ -62,11 +62,11 @@ export default defineConfig({
       ],
     },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/mirai-mamori/Selah' },
+      { icon: 'github', link: 'https://github.com/Selah-KGU/Selah' },
     ],
     footer: {
       message: '<a href="/privacy">プライバシーポリシー</a> | <a href="/terms">利用規約</a> | PolyForm Noncommercial License 1.0.0',
-      copyright: 'Copyright 2025-2026 mirai-mamori',
+      copyright: 'Copyright 2025-2026 Selah-KGU',
     },
     search: {
       provider: 'local',
