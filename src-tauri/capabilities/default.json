@@ -27,6 +27,7 @@
     "settings",
     "downloads",
     "ai-result",
+    "md-reader-*",
     "mail-login",
     "gcal-login",
     "tray-popup",

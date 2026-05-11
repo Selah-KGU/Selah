@@ -2,8 +2,10 @@ use crate::client;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use super::load_download_config;
 
@@ -158,9 +160,17 @@ pub fn record_download(
         downloaded_at: now_ms,
         file_exists: true,
     };
-    records.push(record);
-    if records.len() > 500 {
-        records.drain(0..records.len() - 500);
+    // Dedupe by path: a prior `scan_download_dir` (e.g. triggered by opening
+    // the downloads window while this download was in flight) may have already
+    // inserted a `scan_*` record for this exact path. Replace it so the user
+    // sees one entry per file, not two.
+    if let Some(existing) = records.iter_mut().find(|r| r.path == record.path) {
+        *existing = record;
+    } else {
+        records.push(record);
+        if records.len() > 500 {
+            records.drain(0..records.len() - 500);
+        }
     }
     let _ = save_download_history(&records);
 }
@@ -192,12 +202,23 @@ pub fn scan_download_dir() -> Vec<DownloadRecord> {
     let mut discovered: Vec<DownloadRecord> = Vec::new();
     scan_dir_recursive(&base, "", &known_paths, &mut discovered, 0);
 
+    // Re-load so a concurrent record_download (e.g. a Luna download that
+    // finished after we built `known_paths`) is not clobbered, and dedupe by
+    // path so the same file never appears twice in history.
     if !discovered.is_empty() {
-        records.extend(discovered);
-        if records.len() > 500 {
-            records.drain(0..records.len() - 500);
+        let mut latest = load_download_history();
+        let existing: std::collections::HashSet<String> =
+            latest.iter().map(|r| r.path.clone()).collect();
+        for rec in discovered {
+            if !existing.contains(&rec.path) {
+                latest.push(rec);
+            }
         }
-        let _ = save_download_history(&records);
+        if latest.len() > 500 {
+            latest.drain(0..latest.len() - 500);
+        }
+        let _ = save_download_history(&latest);
+        records = latest;
     }
 
     records.retain(|r| !r.path.is_empty());
@@ -316,9 +337,11 @@ pub fn check_file_downloaded(
     found
 }
 
-#[tauri::command]
-pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
+/// Validate that `path` exists and resolves under one of the allowed download
+/// roots (app default `~/Documents/Selah`, OS Downloads, or the user's custom
+/// download dir). Returns the canonical path on success.
+fn validate_downloads_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(path);
     if !p.exists() {
         return Err("ファイルが見つかりません".into());
     }
@@ -349,10 +372,143 @@ pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), S
     if !allowed {
         return Err("ダウンロードフォルダ外のファイルは開けません".into());
     }
+    Ok(canonical)
+}
+
+fn is_markdown_ext(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let canonical = validate_downloads_path(&path)?;
+    if is_markdown_ext(&canonical) {
+        return open_markdown_file_window(app, canonical.to_string_lossy().to_string());
+    }
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_path(canonical.to_string_lossy(), None::<&str>)
         .map_err(|e| format!("ファイルを開けませんでした: {}", e))?;
+    Ok(())
+}
+
+/// Open a downloaded file with the OS default app, bypassing the built-in
+/// Markdown reader. Used by the reader's "外部で開く" button.
+#[tauri::command]
+pub fn open_downloaded_file_external(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let canonical = validate_downloads_path(&path)?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(canonical.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("ファイルを開けませんでした: {}", e))?;
+    Ok(())
+}
+
+/// Max size of a markdown file the in-app reader will load. Larger files are
+/// pushed to the external opener.
+const MARKDOWN_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Pending payloads keyed by window label. The markdown reader window pulls
+/// from here on startup to avoid a race where the backend emits the
+/// `markdown-content` event before the page's listener attaches.
+static PENDING_MARKDOWN_PAYLOADS: LazyLock<Mutex<HashMap<String, serde_json::Value>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn markdown_window_label(canonical: &std::path::Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    canonical.to_string_lossy().hash(&mut hasher);
+    format!("md-reader-{:x}", hasher.finish())
+}
+
+/// Open (or focus) the in-app Markdown reader window for the given file.
+#[tauri::command]
+pub fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let canonical = validate_downloads_path(&path)?;
+    let meta = std::fs::metadata(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
+    if meta.len() > MARKDOWN_MAX_BYTES {
+        // Fall back to the system opener for oversized files so the user can
+        // still get to them.
+        return open_downloaded_file_external(app, canonical.to_string_lossy().to_string());
+    }
+    let bytes = std::fs::read(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
+    let markdown = String::from_utf8_lossy(&bytes).to_string();
+    let filename = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Markdown")
+        .to_string();
+    let path_str = canonical.to_string_lossy().to_string();
+    let label = markdown_window_label(&canonical);
+    let payload = serde_json::json!({
+        "path": path_str,
+        "filename": filename.clone(),
+        "markdown": markdown,
+        "error": serde_json::Value::Null,
+    });
+
+    if let Ok(mut map) = PENDING_MARKDOWN_PAYLOADS.lock() {
+        map.insert(label.clone(), payload.clone());
+    }
+
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.emit_to(&label, "markdown-content", &payload);
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    let win = tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App("markdown-reader.html".into()),
+    )
+    .title(&filename)
+    .inner_size(820.0, 720.0)
+    .min_inner_size(420.0, 360.0)
+    .resizable(true)
+    .build()
+    .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
+
+    // Backup emit after the page has had time to attach its listener. The page
+    // also pulls via `get_pending_markdown_payload`, so whichever path lands
+    // first wins.
+    let payload_clone = payload.clone();
+    let label_clone = label.clone();
+    let win_clone = win.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let _ = win_clone.emit_to(&label_clone, "markdown-content", &payload_clone);
+    });
+
+    Ok(())
+}
+
+/// Called by the markdown reader on init to fetch its payload synchronously.
+/// Removes the entry so subsequent calls return null.
+#[tauri::command]
+pub fn get_pending_markdown_payload(label: String) -> Option<serde_json::Value> {
+    PENDING_MARKDOWN_PAYLOADS
+        .lock()
+        .ok()
+        .and_then(|mut m| m.remove(&label))
+}
+
+/// Write Markdown contents back to disk. Restricted to .md/.markdown files
+/// inside the allowed download roots, with a size cap matching the reader's.
+#[tauri::command]
+pub fn write_markdown_file(path: String, contents: String) -> Result<(), String> {
+    let canonical = validate_downloads_path(&path)?;
+    if !is_markdown_ext(&canonical) {
+        return Err("Markdown ファイルのみ編集できます".into());
+    }
+    if contents.len() as u64 > MARKDOWN_MAX_BYTES {
+        return Err("ファイルが大きすぎます（8MBを超えるMarkdownはサポートしていません）".into());
+    }
+    std::fs::write(&canonical, contents.as_bytes())
+        .map_err(|e| format!("保存失敗: {}", e))?;
     Ok(())
 }
 

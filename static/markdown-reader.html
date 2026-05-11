@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: https: file:">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Markdown</title>
+<style>
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f5f7;
+    --bg-code: #f4f4f6;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-tertiary: #98989d;
+    --border: rgba(0, 0, 0, 0.08);
+    --accent: #002855;
+    --accent-hover: #003d80;
+    --blue: #007aff;
+    --green: #34c759;
+    --orange: #ff9500;
+    --red: #ff3b30;
+    --md-font-size: 14px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg-primary: #1c1c1e;
+      --bg-secondary: #2c2c2e;
+      --bg-code: #2c2c2e;
+      --text-primary: #f5f5f7;
+      --text-secondary: #98989d;
+      --text-tertiary: #6e6e73;
+      --border: rgba(255, 255, 255, 0.08);
+      --accent: #4a90d9;
+      --accent-hover: #6aa8f0;
+      --blue: #0a84ff;
+      --green: #30d158;
+      --orange: #ff9f0a;
+      --red: #ff453a;
+      color-scheme: dark;
+    }
+  }
+  [data-theme="dark"] {
+    --bg-primary: #1c1c1e;
+    --bg-secondary: #2c2c2e;
+    --bg-code: #2c2c2e;
+    --text-primary: #f5f5f7;
+    --text-secondary: #98989d;
+    --text-tertiary: #6e6e73;
+    --border: rgba(255, 255, 255, 0.08);
+    --accent: #4a90d9;
+    --accent-hover: #6aa8f0;
+    --blue: #0a84ff;
+    --green: #30d158;
+    --orange: #ff9f0a;
+    --red: #ff453a;
+    color-scheme: dark;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Noto Sans JP", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    line-height: 1.65;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border-bottom: 0.5px solid var(--border);
+    background: var(--bg-primary);
+    flex-shrink: 0;
+    -webkit-user-select: none;
+    user-select: none;
+    flex-wrap: wrap;
+  }
+  .tb-spacer { flex: 1; }
+  .tb-group {
+    display: inline-flex;
+    align-items: center;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .tb-group .tb-btn {
+    border: none;
+    background: none;
+    border-radius: 0;
+    border-right: 0.5px solid var(--border);
+  }
+  .tb-group .tb-btn:last-child { border-right: none; }
+  .tb-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 4px; padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 11px; font-weight: 500;
+    color: var(--text-secondary); background: var(--bg-secondary);
+    border: 1px solid var(--border); cursor: pointer;
+    font-family: inherit;
+    transition: background 0.12s, color 0.12s;
+    white-space: nowrap;
+  }
+  .tb-btn:hover:not(:disabled) { background: var(--border); color: var(--text-primary); }
+  .tb-btn:disabled { opacity: 0.4; cursor: default; }
+  .tb-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .tb-btn.primary:hover:not(:disabled) { background: var(--accent-hover); color: #fff; }
+  .tb-btn.primary:disabled { background: var(--text-tertiary); border-color: var(--text-tertiary); color: #fff; opacity: 0.5; }
+  .tb-btn.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .tb-btn .dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--orange);
+    margin-left: 2px;
+  }
+  .tb-label {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    padding: 0 6px;
+    font-variant-numeric: tabular-nums;
+    min-width: 32px;
+    text-align: center;
+  }
+
+  .layout {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .toc {
+    width: 220px;
+    flex-shrink: 0;
+    border-right: 0.5px solid var(--border);
+    background: var(--bg-secondary);
+    overflow-y: auto;
+    padding: 16px 6px 24px;
+  }
+  .toc.hidden { display: none; }
+  .toc-header {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 10px 10px;
+  }
+  .toc-empty {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    padding: 8px 10px;
+  }
+  .toc-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: inherit;
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .toc-item:hover { background: var(--bg-primary); color: var(--text-primary); }
+  .toc-item.active { background: var(--bg-primary); color: var(--accent); font-weight: 600; }
+  .toc-item.lv-2 { padding-left: 22px; }
+  .toc-item.lv-3 { padding-left: 34px; font-size: 11.5px; }
+  .toc-item.lv-4 { padding-left: 46px; font-size: 11.5px; color: var(--text-tertiary); }
+  .toc-item.lv-5 { padding-left: 58px; font-size: 11px; color: var(--text-tertiary); }
+  .toc-item.lv-6 { padding-left: 70px; font-size: 11px; color: var(--text-tertiary); }
+
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+  }
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .doc {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 28px 36px 60px;
+    font-size: var(--md-font-size);
+  }
+  .doc h1, .doc h2, .doc h3, .doc h4, .doc h5, .doc h6 {
+    margin: 1.4em 0 0.5em;
+    line-height: 1.3;
+    font-weight: 700;
+    scroll-margin-top: 16px;
+  }
+  .doc h1 { font-size: 1.7em; padding-bottom: 0.3em; border-bottom: 0.5px solid var(--border); }
+  .doc h2 { font-size: 1.35em; padding-bottom: 0.25em; border-bottom: 0.5px solid var(--border); }
+  .doc h3 { font-size: 1.15em; }
+  .doc h4 { font-size: 1em; }
+  .doc h5 { font-size: 0.92em; color: var(--text-secondary); }
+  .doc h6 { font-size: 0.85em; color: var(--text-tertiary); }
+  .doc p { margin: 0.7em 0; }
+  .doc a { color: var(--blue); text-decoration: none; }
+  .doc a:hover { text-decoration: underline; }
+  .doc ul, .doc ol { padding-left: 1.6em; margin: 0.6em 0; }
+  .doc li { margin: 0.2em 0; }
+  .doc li > p { margin: 0.2em 0; }
+  .doc blockquote {
+    border-left: 3px solid var(--border);
+    padding: 0.2em 0.9em;
+    color: var(--text-secondary);
+    margin: 0.8em 0;
+  }
+  .doc code {
+    background: var(--bg-code);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+  }
+  .doc pre {
+    background: var(--bg-code);
+    padding: 12px 14px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0.8em 0;
+    border: 0.5px solid var(--border);
+  }
+  .doc pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+    line-height: 1.55;
+  }
+  .doc table {
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    font-size: 0.92em;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .doc th, .doc td {
+    border: 0.5px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .doc th { background: var(--bg-secondary); font-weight: 600; }
+  .doc hr { border: none; border-top: 0.5px solid var(--border); margin: 1.4em 0; }
+  .doc img { max-width: 100%; height: auto; border-radius: 6px; }
+  .doc input[type="checkbox"] { margin-right: 4px; }
+
+  .editor-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .editor {
+    flex: 1;
+    width: 100%;
+    border: none;
+    outline: none;
+    resize: none;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: calc(var(--md-font-size) - 1px);
+    line-height: 1.6;
+    padding: 24px 36px 48px;
+    display: block;
+    tab-size: 2;
+  }
+
+  .hidden { display: none !important; }
+
+  .loading, .error {
+    padding: 48px 36px;
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 13px;
+  }
+  .error { color: var(--red); }
+  .spinner {
+    display: inline-block;
+    width: 18px; height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--text-primary);
+    color: var(--bg-primary);
+    padding: 8px 16px;
+    border-radius: 18px;
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 1000;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  .toast.error { background: var(--red); color: #fff; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <button class="tb-btn" id="tocToggleBtn" type="button" title="目次の表示/非表示">目次を表示</button>
+
+  <div class="tb-spacer"></div>
+
+  <div class="tb-group" title="本文の文字サイズを変更">
+    <button class="tb-btn" id="fontDownBtn" type="button">文字を縮小</button>
+    <span class="tb-label" id="fontLabel">14px</span>
+    <button class="tb-btn" id="fontUpBtn" type="button">文字を拡大</button>
+  </div>
+
+  <button class="tb-btn" id="editToggleBtn" type="button">編集モード</button>
+  <button class="tb-btn primary hidden" id="saveBtn" type="button" disabled>保存<span class="dot hidden" id="dirtyDot"></span></button>
+  <button class="tb-btn hidden" id="cancelBtn" type="button">編集を取消</button>
+
+  <button class="tb-btn" id="revealBtn" type="button">Finderで表示</button>
+  <button class="tb-btn" id="externalBtn" type="button">外部アプリで開く</button>
+</div>
+
+<div class="layout">
+  <aside class="toc hidden" id="toc">
+    <div class="toc-header">目次</div>
+    <div id="tocList"></div>
+  </aside>
+
+  <div class="main">
+    <div class="scroll" id="viewScroll">
+      <div class="doc" id="doc">
+        <div class="loading"><span class="spinner"></span>読み込み中…</div>
+      </div>
+    </div>
+    <div class="editor-wrap hidden" id="editorWrap">
+      <textarea class="editor" id="editor" spellcheck="false" placeholder="# 新規 Markdown"></textarea>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="marked.umd.js"></script>
+<script src="purify.min.js"></script>
+<script>
+(function() {
+  try {
+    var t = localStorage.getItem('selah-theme');
+    if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+
+  var tauri = window.__TAURI__ || {};
+  var invoke = tauri.core && tauri.core.invoke;
+  var listen = tauri.event && tauri.event.listen;
+
+  var currentPath = '';
+  var savedMarkdown = '';      // last value known to be on disk
+  var editing = false;
+  var FONT_KEY = 'selah-md-font-size';
+  var TOC_KEY = 'selah-md-toc-open';
+  var FONT_STEPS = [12, 13, 14, 15, 16, 18, 20];
+  var fontSize = 14;
+  var tocVisible = false;
+  var tocHeadings = []; // [{ id, level, text, el }]
+  var activeTocId = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ── Font size ──
+  function applyFontSize() {
+    document.documentElement.style.setProperty('--md-font-size', fontSize + 'px');
+    $('fontLabel').textContent = fontSize + 'px';
+    $('fontDownBtn').disabled = fontSize <= FONT_STEPS[0];
+    $('fontUpBtn').disabled = fontSize >= FONT_STEPS[FONT_STEPS.length - 1];
+  }
+  function setFontSize(px) {
+    fontSize = px;
+    try { localStorage.setItem(FONT_KEY, String(px)); } catch (e) {}
+    applyFontSize();
+  }
+  function bumpFont(delta) {
+    var idx = FONT_STEPS.indexOf(fontSize);
+    if (idx < 0) idx = FONT_STEPS.indexOf(14);
+    var next = Math.max(0, Math.min(FONT_STEPS.length - 1, idx + delta));
+    setFontSize(FONT_STEPS[next]);
+  }
+  try {
+    var stored = parseInt(localStorage.getItem(FONT_KEY) || '', 10);
+    if (FONT_STEPS.indexOf(stored) !== -1) fontSize = stored;
+  } catch (e) {}
+  applyFontSize();
+
+  // ── TOC ──
+  function setTocVisible(v) {
+    tocVisible = !!v && tocHeadings.length > 0;
+    $('toc').classList.toggle('hidden', !tocVisible);
+    $('tocToggleBtn').classList.toggle('active', tocVisible);
+    $('tocToggleBtn').textContent = tocVisible ? '目次を隠す' : '目次を表示';
+    try { localStorage.setItem(TOC_KEY, tocVisible ? '1' : '0'); } catch (e) {}
+  }
+  function updateTocAvailability() {
+    var hasHeadings = tocHeadings.length > 0;
+    var btn = $('tocToggleBtn');
+    btn.disabled = !hasHeadings;
+    if (!hasHeadings && tocVisible) setTocVisible(false);
+  }
+  function slugify(text, used) {
+    var base = String(text || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s　]+/g, '-')
+      .replace(/[^\w\-぀-ヿ一-鿿가-힯]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+    if (!base) base = 'section';
+    var id = base, n = 1;
+    while (used[id]) { id = base + '-' + (++n); }
+    used[id] = true;
+    return id;
+  }
+  function buildToc() {
+    var headings = $('doc').querySelectorAll('h1, h2, h3, h4, h5, h6');
+    var used = Object.create(null);
+    tocHeadings = [];
+    headings.forEach(function (h) {
+      if (!h.id) h.id = slugify(h.textContent, used);
+      else used[h.id] = true;
+      tocHeadings.push({
+        id: h.id,
+        level: parseInt(h.tagName.substring(1), 10),
+        text: h.textContent || '',
+        el: h,
+      });
+    });
+    var list = $('tocList');
+    list.innerHTML = '';
+    if (tocHeadings.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'toc-empty';
+      empty.textContent = '見出しがありません';
+      list.appendChild(empty);
+    } else {
+      // Normalize levels so the shallowest heading becomes lv-1 for visual indent.
+      var minLevel = tocHeadings.reduce(function (m, h) { return Math.min(m, h.level); }, 6);
+      tocHeadings.forEach(function (h) {
+        var btn = document.createElement('button');
+        var displayLevel = Math.min(6, h.level - minLevel + 1);
+        btn.className = 'toc-item lv-' + displayLevel;
+        btn.type = 'button';
+        btn.textContent = h.text;
+        btn.title = h.text;
+        btn.dataset.id = h.id;
+        btn.addEventListener('click', function () { scrollToHeading(h.id); });
+        list.appendChild(btn);
+      });
+    }
+    updateTocAvailability();
+    updateActiveHeading();
+  }
+  function scrollToHeading(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    $('viewScroll').scrollTo({ top: el.offsetTop - 12, behavior: 'smooth' });
+  }
+  function updateActiveHeading() {
+    if (tocHeadings.length === 0) return;
+    var scrollEl = $('viewScroll');
+    var top = scrollEl.scrollTop + 24;
+    var current = tocHeadings[0];
+    for (var i = 0; i < tocHeadings.length; i++) {
+      if (tocHeadings[i].el.offsetTop <= top) current = tocHeadings[i];
+      else break;
+    }
+    if (current.id === activeTocId) return;
+    activeTocId = current.id;
+    $('tocList').querySelectorAll('.toc-item').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.id === activeTocId);
+    });
+  }
+
+  // ── Title / dirty state ──
+  function setTitleText(filename) {
+    document.title = filename || 'Markdown';
+  }
+  function setDirty(dirty) {
+    $('saveBtn').disabled = !dirty;
+    $('dirtyDot').classList.toggle('hidden', !dirty);
+  }
+  function currentEditorIsDirty() {
+    return editing && $('editor').value !== savedMarkdown;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c];
+    });
+  }
+
+  // ── Render markdown ──
+  function render(markdown) {
+    var html;
+    if (window.marked) {
+      window.marked.setOptions({ gfm: true, breaks: false });
+      html = window.marked.parse(markdown);
+    } else {
+      html = '<pre>' + escapeHtml(markdown) + '</pre>';
+    }
+    if (window.DOMPurify) {
+      html = window.DOMPurify.sanitize(html, {
+        FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form'],
+        FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus'],
+      });
+    }
+    var doc = $('doc');
+    doc.innerHTML = html;
+    $('viewScroll').scrollTop = 0;
+    activeTocId = null;
+
+    doc.querySelectorAll('a[href]').forEach(function (a) {
+      a.addEventListener('click', function (ev) {
+        var href = a.getAttribute('href') || '';
+        if (href.startsWith('#')) {
+          ev.preventDefault();
+          scrollToHeading(href.slice(1));
+          return;
+        }
+        ev.preventDefault();
+        if (!invoke) return;
+        if (/^https?:/i.test(href)) {
+          invoke('open_in_system_browser', { url: href }).catch(function (e) {
+            console.error('[md-reader] open URL failed:', e);
+          });
+        }
+      });
+    });
+
+    buildToc();
+  }
+
+  function showError(msg) {
+    $('doc').innerHTML = '<div class="error">' + escapeHtml(msg) + '</div>';
+    tocHeadings = [];
+    $('tocList').innerHTML = '';
+    updateTocAvailability();
+  }
+
+  // ── Edit mode ──
+  function enterEdit() {
+    $('editor').value = savedMarkdown;
+    setDirty(false);
+    editing = true;
+    $('viewScroll').classList.add('hidden');
+    $('editorWrap').classList.remove('hidden');
+    $('editToggleBtn').classList.add('hidden');
+    $('saveBtn').classList.remove('hidden');
+    $('cancelBtn').classList.remove('hidden');
+    setTimeout(function () { $('editor').focus(); }, 0);
+  }
+  function exitEdit() {
+    editing = false;
+    $('editorWrap').classList.add('hidden');
+    $('viewScroll').classList.remove('hidden');
+    $('editToggleBtn').classList.remove('hidden');
+    $('saveBtn').classList.add('hidden');
+    $('cancelBtn').classList.add('hidden');
+    setDirty(false);
+  }
+  function cancelEdit() {
+    if (currentEditorIsDirty()) {
+      if (!confirm('編集中の内容は破棄されます。よろしいですか?')) return;
+    }
+    exitEdit();
+  }
+
+  // ── Toast ──
+  var toastTimer = null;
+  function toast(msg, isError) {
+    var el = $('toast');
+    el.textContent = msg;
+    el.classList.toggle('error', !!isError);
+    el.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 1800);
+  }
+
+  // ── Save ──
+  async function save() {
+    if (!invoke || !currentPath) return;
+    var contents = $('editor').value;
+    var btn = $('saveBtn');
+    btn.disabled = true;
+    var dot = $('dirtyDot');
+    var label = btn.firstChild;
+    var prev = label && label.nodeValue;
+    if (label && label.nodeType === 3) label.nodeValue = '保存中…';
+    try {
+      await invoke('write_markdown_file', { path: currentPath, contents: contents });
+      savedMarkdown = contents;
+      render(savedMarkdown);
+      setDirty(false);
+      toast('保存しました');
+      exitEdit();
+    } catch (e) {
+      console.error('[md-reader] save failed:', e);
+      toast('保存失敗: ' + (e && e.message ? e.message : String(e)), true);
+      setDirty(true);
+    } finally {
+      if (label && label.nodeType === 3) label.nodeValue = prev || '保存';
+      btn.disabled = !currentEditorIsDirty();
+    }
+  }
+
+  function applyPayload(payload) {
+    if (!payload) return;
+    currentPath = payload.path || currentPath;
+    setTitleText(payload.filename || '');
+    if (payload.error) {
+      savedMarkdown = '';
+      showError(payload.error);
+      $('editToggleBtn').disabled = true;
+      return;
+    }
+    savedMarkdown = payload.markdown || '';
+    render(savedMarkdown);
+    if (editing) {
+      toast('ファイルが更新されました');
+    } else {
+      $('editToggleBtn').disabled = false;
+    }
+    // Restore previously-chosen TOC visibility once headings are available.
+    try {
+      var pref = localStorage.getItem(TOC_KEY);
+      if (pref === '1' && tocHeadings.length > 0 && !tocVisible) setTocVisible(true);
+    } catch (e) {}
+  }
+
+  // ── Wiring ──
+  $('tocToggleBtn').addEventListener('click', function () { setTocVisible(!tocVisible); });
+  $('fontDownBtn').addEventListener('click', function () { bumpFont(-1); });
+  $('fontUpBtn').addEventListener('click', function () { bumpFont(1); });
+  $('editToggleBtn').addEventListener('click', enterEdit);
+  $('cancelBtn').addEventListener('click', cancelEdit);
+  $('saveBtn').addEventListener('click', save);
+  $('editor').addEventListener('input', function () { setDirty(currentEditorIsDirty()); });
+  $('viewScroll').addEventListener('scroll', function () {
+    if (!editing && tocVisible) updateActiveHeading();
+  });
+
+  document.addEventListener('keydown', function (ev) {
+    var mod = ev.metaKey || ev.ctrlKey;
+    if (mod && ev.key === 's') {
+      ev.preventDefault();
+      if (editing && currentEditorIsDirty()) save();
+      return;
+    }
+    if (mod && ev.key === 'e') {
+      ev.preventDefault();
+      if (editing) cancelEdit(); else enterEdit();
+      return;
+    }
+    if (mod && (ev.key === '+' || ev.key === '=')) { ev.preventDefault(); bumpFont(1); return; }
+    if (mod && ev.key === '-') { ev.preventDefault(); bumpFont(-1); return; }
+    if (editing && ev.key === 'Escape') { ev.preventDefault(); cancelEdit(); return; }
+  });
+
+  window.addEventListener('beforeunload', function (ev) {
+    if (currentEditorIsDirty()) {
+      ev.preventDefault();
+      ev.returnValue = '';
+    }
+  });
+
+  $('revealBtn').addEventListener('click', function () {
+    if (!invoke || !currentPath) return;
+    invoke('luna_reveal_file', { path: currentPath }).catch(function (e) {
+      console.error('[md-reader] reveal failed:', e);
+    });
+  });
+  $('externalBtn').addEventListener('click', function () {
+    if (!invoke || !currentPath) return;
+    invoke('open_downloaded_file_external', { path: currentPath }).catch(function (e) {
+      console.error('[md-reader] open external failed:', e);
+    });
+  });
+
+  document.addEventListener('DOMContentLoaded', function () {
+    if (listen) {
+      listen('markdown-content', function (ev) { applyPayload(ev.payload); });
+    }
+    if (invoke) {
+      var label = (tauri.window && tauri.window.getCurrentWindow && tauri.window.getCurrentWindow().label) || '';
+      invoke('get_pending_markdown_payload', { label: label }).then(function (payload) {
+        if (payload) applyPayload(payload);
+      }).catch(function () {});
+    }
+  });
+})();
+</script>
+</body>
+</html>
