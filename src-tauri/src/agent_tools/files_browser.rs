@@ -313,7 +313,7 @@ pub(super) async fn open_downloaded_file(
         return Err("pathを指定してください".into());
     }
     let path = resolve_allowed_download_path(raw_path)?;
-    crate::commands::open_downloaded_file(app.clone(), path.to_string_lossy().to_string())?;
+    crate::commands::open_downloaded_file(app.clone(), path.to_string_lossy().to_string()).await?;
     Ok(json!({
         "status": "opened",
         "path": path.to_string_lossy(),
@@ -504,7 +504,7 @@ pub(super) async fn open_luna_attachment(
         &bytes,
         Some(&resolved.course_name),
     )?;
-    crate::commands::open_downloaded_file(app.clone(), saved_path.clone())?;
+    crate::commands::open_downloaded_file(app.clone(), saved_path.clone()).await?;
 
     Ok(json!({
         "status": "downloaded_and_opened",

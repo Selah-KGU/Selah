@@ -727,9 +727,27 @@
     }
     if (invoke) {
       var label = (tauri.window && tauri.window.getCurrentWindow && tauri.window.getCurrentWindow().label) || '';
-      invoke('get_pending_markdown_payload', { label: label }).then(function (payload) {
-        if (payload) applyPayload(payload);
-      }).catch(function () {});
+      // Attempt to fetch the pre-stored payload immediately, then retry a few
+      // times with increasing delays to handle slow WebView2 initialisation on
+      // Windows where the IPC channel may not be fully ready at DOMContentLoaded.
+      var attempts = 0;
+      var delays = [0, 300, 700, 1500];
+      function tryFetchPayload() {
+        invoke('get_pending_markdown_payload', { label: label }).then(function (payload) {
+          if (payload) {
+            applyPayload(payload);
+          } else if (attempts < delays.length - 1) {
+            attempts++;
+            setTimeout(tryFetchPayload, delays[attempts]);
+          }
+        }).catch(function () {
+          if (attempts < delays.length - 1) {
+            attempts++;
+            setTimeout(tryFetchPayload, delays[attempts]);
+          }
+        });
+      }
+      tryFetchPayload();
     }
   });
 })();

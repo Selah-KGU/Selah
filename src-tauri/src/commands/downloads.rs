@@ -351,11 +351,16 @@ fn validate_downloads_path(path: &str) -> Result<std::path::PathBuf, String> {
     let app_default = default_download_dir()
         .canonicalize()
         .unwrap_or_else(|_| default_download_dir());
-    let sys_downloads = dirs::download_dir().unwrap_or_else(|| {
+    let sys_downloads_raw = dirs::download_dir().unwrap_or_else(|| {
         dirs::home_dir()
             .map(|h| h.join("Downloads"))
             .unwrap_or_else(std::env::temp_dir)
     });
+    // Canonicalize sys_downloads so the starts_with comparison works correctly
+    // on Windows where canonicalize() adds the \\?\\ extended-path prefix.
+    let sys_downloads = sys_downloads_raw
+        .canonicalize()
+        .unwrap_or(sys_downloads_raw);
     let dl_config = load_download_config();
     let custom_dir = if dl_config.download_dir.is_empty() {
         None
@@ -383,10 +388,10 @@ fn is_markdown_ext(path: &std::path::Path) -> bool {
 }
 
 #[tauri::command]
-pub fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+pub async fn open_downloaded_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let canonical = validate_downloads_path(&path)?;
     if is_markdown_ext(&canonical) {
-        return open_markdown_file_window(app, canonical.to_string_lossy().to_string());
+        return open_markdown_file_window(app, canonical.to_string_lossy().to_string()).await;
     }
     use tauri_plugin_opener::OpenerExt;
     app.opener()
@@ -425,7 +430,7 @@ fn markdown_window_label(canonical: &std::path::Path) -> String {
 
 /// Open (or focus) the in-app Markdown reader window for the given file.
 #[tauri::command]
-pub fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> Result<(), String> {
+pub async fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let canonical = validate_downloads_path(&path)?;
     let meta = std::fs::metadata(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
@@ -474,12 +479,13 @@ pub fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> Result<
 
     // Backup emit after the page has had time to attach its listener. The page
     // also pulls via `get_pending_markdown_payload`, so whichever path lands
-    // first wins.
+    // first wins. Use a longer delay on all platforms to account for slower
+    // WebView2 initialisation on Windows.
     let payload_clone = payload.clone();
     let label_clone = label.clone();
     let win_clone = win.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
         let _ = win_clone.emit_to(&label_clone, "markdown-content", &payload_clone);
     });
 
