@@ -80,7 +80,7 @@
     if ($appUpdateState.totalBytes && $appUpdateState.totalBytes > 0) {
       return `${formatBytes($appUpdateState.downloadedBytes)} / ${formatBytes($appUpdateState.totalBytes)}`;
     }
-    return `${formatBytes($appUpdateState.downloadedBytes)} を受信しました`;
+    return `${formatBytes($appUpdateState.downloadedBytes)} を受信済み`;
   }
 
   function updateProviderLabel(): string {
@@ -96,7 +96,7 @@
 
   async function confirmDelete() {
     if (isDemoActive()) {
-      deleteErr = "演示モードではローカルデータ削除は実行しません。";
+      deleteErr = "デモモードではローカルデータの削除は行いません。";
       return;
     }
     try {
@@ -213,7 +213,7 @@
 
   {#if $appUpdateState.available}
     <div class="row">
-      <span class="row-label">新しい版</span>
+      <span class="row-label">新しいバージョン</span>
       <div class="row-input">
         <div class="update-version">{$appUpdateState.version}</div>
         {#if $appUpdateState.notes}

@@ -82,7 +82,7 @@
     ["about", "このアプリについて", "第三者ライセンス", "third party notice dependency"],
     ["about", "アプリ更新", "現在", "version バージョン"],
     ["about", "アプリ更新", "進行状況", "update progress"],
-    ["about", "アプリ更新", "新しい版", "update release"],
+    ["about", "アプリ更新", "新しいバージョン", "update release"],
     ["about", "アプリ更新", "手動更新", "manual download"],
     ["debug", "デバッグ", "通知状態", "notification debug log", true],
   ];

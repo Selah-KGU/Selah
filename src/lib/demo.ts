@@ -500,7 +500,7 @@ export function demoKwicDetail(n: Pick<KwicPortalNotification, "id" | "title">) 
     title: n.title,
     date: futureDate(-1),
     sender: "KWIC ポータル",
-    body_html: bodies[n.id] ?? "<p>演示用の詳細本文です。</p>",
+    body_html: bodies[n.id] ?? "<p>デモ用の詳細本文です。</p>",
     attachments: [],
   };
 }
@@ -554,7 +554,7 @@ export function demoLunaDetail(path: string) {
     sections: [
       {
         heading: "概要",
-        body: "演示用の Luna 詳細です。授業の要点、提出条件、注意事項をここで確認できます。",
+        body: "デモ用の Luna 詳細です。授業の要点、提出条件、注意事項をここで確認できます。",
       },
       {
         heading: "ポイント",
@@ -632,7 +632,7 @@ export function demoFetchPage(path: string): string {
   </head>
   <body>
     <h1>Selah Demo</h1>
-    <p>このページは演示モード用の簡易 HTML です。</p>
+    <p>このページはデモモード用の簡易 HTML です。</p>
     <p>path: ${path}</p>
     <table class="output">
       <tr><th>タイトル</th><th>掲示日</th><th>分類</th></tr>

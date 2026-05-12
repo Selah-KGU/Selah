@@ -45,17 +45,15 @@ Selah（以下「本アプリ」）は、関西学院大学の教務システム
 | Luna LMS (luna.kwansei.ac.jp) | LMS データの取得 | 認証 Cookie |
 | Microsoft 365 | 大学メールの取得 | 認証 Cookie |
 | KG-Course (kg-course.kwansei.ac.jp) | SSO 認証 | ログイン資格情報 |
-| Open-Meteo API | 天気情報の取得 | おおよその位置情報（緯度・経度） |
+| Open-Meteo API | 天気情報の取得 | 西宮上ケ原キャンパスの固定座標のみ（位置情報は取得しません） |
 | OpenAI API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
 | Google Gemini API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
-| Apple Calendar (EventKit) | カレンダー同期（macOS） | 授業名・教室・時限 |
 | Google Calendar API（任意） | カレンダー同期 | 授業名・教室・時限（OAuth 認証が必要） |
 
 ### カレンダー同期について
 
 時間割のカレンダー同期機能を使用する場合、授業名・教室・時限の情報が外部カレンダーに書き込まれます。
 
-- **Apple カレンダー（macOS）**: macOS の EventKit を使用し、ローカルの Apple カレンダーにイベントを作成します。初回利用時にカレンダーアクセスの権限許可が必要です。
 - **Google カレンダー**: Google Calendar API を使用します。Google アカウントとの OAuth 連携が必要であり、OAuth トークンはローカルに保存されます。
 
 ### レポート提出・掲示板投稿について

@@ -276,7 +276,7 @@
 
   async function send() {
     if (isDemoActive()) {
-      alert("演示モードでは Agent チャットは無効です。");
+      alert("デモモードでは Agent チャットは無効です。");
       return;
     }
     let text = inputText.trim();
@@ -367,7 +367,7 @@
 
   async function toggleStt() {
     if (isDemoActive()) {
-      alert("演示モードでは Agent 音声入力は使えません。");
+      alert("デモモードでは Agent 音声入力は使えません。");
       return;
     }
     if (sttListening) {

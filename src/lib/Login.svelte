@@ -36,7 +36,7 @@
       authState.update((s) => ({
         ...s,
         loading: false,
-        error: e?.message || e?.toString() || "演示モードの起動に失敗しました",
+        error: e?.message || e?.toString() || "デモモードの起動に失敗しました",
       }));
     }
   }
@@ -133,11 +133,11 @@
 {#if showDemoConfirm}
   <div class="demo-confirm-shell" role="presentation">
     <div class="demo-confirm-card" role="dialog" aria-modal="true" aria-labelledby="demo-confirm-title">
-      <div id="demo-confirm-title" class="demo-confirm-title">演示モード</div>
-      <div class="demo-confirm-body">テストデータで演示モードに入ります。実際のログインは行われません。</div>
+      <div id="demo-confirm-title" class="demo-confirm-title">デモモード</div>
+      <div class="demo-confirm-body">テストデータでデモモードに入ります。実際のログインは行われません。</div>
       <div class="demo-confirm-actions">
         <button type="button" class="demo-confirm-btn demo-confirm-cancel" onclick={cancelDemoMode}>キャンセル</button>
-        <button type="button" class="demo-confirm-btn demo-confirm-enter" onclick={startDemoMode}>演示モードに入る</button>
+        <button type="button" class="demo-confirm-btn demo-confirm-enter" onclick={startDemoMode}>デモモードに入る</button>
       </div>
     </div>
   </div>

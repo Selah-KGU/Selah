@@ -96,7 +96,7 @@
       await gcalSaveConfig(gcalClientId.trim(), gcalClientSecret.trim());
       await gcalOpenLogin();
       gcalStatusColor = "var(--text-secondary)";
-      gcalStatusMsg = isDemoActive() ? "演示モードでは認証処理を行いません" : "ブラウザで認証中...";
+      gcalStatusMsg = isDemoActive() ? "デモモードでは認証処理を行いません" : "ブラウザで認証中...";
     } catch (e) {
       gcalStatusColor = "var(--red)";
       gcalStatusMsg = "認証失敗: " + String(e);
@@ -108,7 +108,7 @@
     try {
       await gcalDisconnect();
       gcalStatusColor = "var(--green)";
-      gcalStatusMsg = isDemoActive() ? "演示モードでは連携状態を変更しません" : "連携を解除しました";
+      gcalStatusMsg = isDemoActive() ? "デモモードでは連携状態を変更しません" : "連携を解除しました";
       void checkGcalSession();
     } catch (e) {
       gcalStatusColor = "var(--red)";
@@ -120,7 +120,7 @@
   async function gcalClear() {
     try {
       await gcalClearCalendar();
-      const r = isDemoActive() ? "演示モードではカレンダーを変更しません" : "Google Calendar のイベントを削除しました";
+      const r = isDemoActive() ? "デモモードではカレンダーを変更しません" : "Google Calendar のイベントを削除しました";
       gcalStatusColor = "var(--green)";
       gcalStatusMsg = r;
       void checkGcalSession();
@@ -136,7 +136,7 @@
       if (!isDemoActive()) {
         await invoke<string>("gcal_clear_calendar", { deleteCalendar: true });
       }
-      const r = isDemoActive() ? "演示モードではカレンダーを削除しません" : "Google Calendar を削除しました";
+      const r = isDemoActive() ? "デモモードではカレンダーを削除しません" : "Google Calendar を削除しました";
       gcalStatusColor = "var(--green)";
       gcalStatusMsg = r;
       void checkGcalSession();

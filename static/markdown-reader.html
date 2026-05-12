@@ -270,7 +270,8 @@
   }
   .doc th { background: var(--bg-secondary); font-weight: 600; }
   .doc hr { border: none; border-top: 0.5px solid var(--border); margin: 1.4em 0; }
-  .doc img { max-width: 100%; height: auto; border-radius: 6px; }
+  .doc img { max-width: 100%; height: auto; border-radius: 6px; cursor: zoom-in; transition: opacity 0.15s; display: block; margin: 8px auto; }
+  .doc img:hover { opacity: 0.88; }
   .doc input[type="checkbox"] { margin-right: 4px; }
 
   .editor-wrap {
@@ -352,7 +353,7 @@
 
   <button class="tb-btn" id="editToggleBtn" type="button">編集モード</button>
   <button class="tb-btn primary hidden" id="saveBtn" type="button" disabled>保存<span class="dot hidden" id="dirtyDot"></span></button>
-  <button class="tb-btn hidden" id="cancelBtn" type="button">編集を取消</button>
+  <button class="tb-btn hidden" id="cancelBtn" type="button">編集を取り消す</button>
 
   <button class="tb-btn" id="revealBtn" type="button">Finderで表示</button>
   <button class="tb-btn" id="externalBtn" type="button">外部アプリで開く</button>
@@ -554,6 +555,8 @@
     $('viewScroll').scrollTop = 0;
     activeTocId = null;
 
+    // Image lightbox — handled by shared lightbox.js via event delegation
+
     doc.querySelectorAll('a[href]').forEach(function (a) {
       a.addEventListener('click', function (ev) {
         var href = a.getAttribute('href') || '';
@@ -752,5 +755,6 @@
   });
 })();
 </script>
+<script src="lightbox.js"></script>
 </body>
 </html>

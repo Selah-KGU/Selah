@@ -44,7 +44,7 @@
     if (isDemoActive()) {
       downloadDir = "/Users/demo/Documents/Selah";
       statusColor = "var(--green)";
-      statusMsg = "演示用の保存先を選択しました";
+      statusMsg = "デモ用の保存先を選択しました";
       setTimeout(() => { statusMsg = ""; }, 4000);
       return;
     }

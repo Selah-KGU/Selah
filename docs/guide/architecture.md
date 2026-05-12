@@ -18,9 +18,11 @@ Selah の技術的なアーキテクチャの概要です。
 |  +------------------------------------+  |
 |  | Tauri Commands                     |  |
 |  | HTTP Client (reqwest)              |  |
-|  | HTML Parser (html5ever)             |  |
+|  | HTML Parser (scraper)              |  |
 |  | SQLite (rusqlite, WAL)             |  |
-|  | AI Client (OpenAI / Gemini)        |  |
+|  | AI Client (local llama-cpp-2 /     |  |
+|  |            OpenAI / Gemini)        |  |
+|  | STT (sherpa-onnx + SenseVoice)     |  |
 |  +------------------------------------+  |
 +------------------------------------------+
 |  External Services                       |

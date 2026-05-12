@@ -34,7 +34,7 @@ async function mountReportSubmitForm(invoke, params, path) {
         '<div class="report-file-selected">' +
         '<span id="reportFileName"></span>' +
         '<span id="reportFileSize" style="opacity:0.5;margin-left:8px"></span>' +
-        '<button id="reportFileRemove" class="report-remove-btn" title="取消">&times;</button>' +
+        '<button id="reportFileRemove" class="report-remove-btn" title="削除">&times;</button>' +
         '</div>' +
         '</div>';
     }

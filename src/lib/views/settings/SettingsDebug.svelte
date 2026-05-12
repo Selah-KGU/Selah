@@ -131,7 +131,7 @@
     try {
       if (isDemoActive()) {
         browserHtml = `<!doctype html><html><body><h1>Debug Demo</h1><p>path: ${browserPath}</p></body></html>`;
-        addLog("info", `ブラウザ: ${browserPath} を演示モードで表示`);
+        addLog("info", `ブラウザ: ${browserPath} をデモモードで表示`);
         return;
       }
       browserHtml = await fetchPage(browserPath);
@@ -218,7 +218,7 @@
         latency_ms: 40 + idx * 12,
         error: "",
       }));
-      addLog("info", "演示モードの接続テストを表示しました");
+      addLog("info", "デモモードの接続テストを表示しました");
       isPinging = false;
       return;
     }
@@ -241,7 +241,7 @@
   async function sendTestNotification() {
     try {
       if (isDemoActive()) {
-        addLog("info", `演示通知: "${notifTestMsg}"`);
+        addLog("info", `デモ通知: "${notifTestMsg}"`);
         return;
       }
       await invoke("debug_test_notification", { title: "Selah", body: notifTestMsg });
@@ -255,7 +255,7 @@
     notifSyncing = true;
     try {
       if (isDemoActive()) {
-        addLog("info", "演示モード: 通知同期をスキップ");
+        addLog("info", "デモモード: 通知同期をスキップ");
         return;
       }
       await invoke("notification_sync_now");

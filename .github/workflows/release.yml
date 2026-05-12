@@ -14,8 +14,12 @@ jobs:
     outputs:
       version: ${{ steps.versions.outputs.version }}
       tag: ${{ steps.versions.outputs.tag }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -39,6 +43,32 @@ jobs:
           echo "Computed version: ${VERSION} (${REASON}, date floor ${DATE_FLOOR})"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        env:
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PREV=$(git tag -l 'v*' --sort=-version:refname | grep -v "^${TAG}$" | head -n1 || true)
+          if [ -n "${PREV}" ]; then
+            LOG=$(git log "${PREV}..HEAD" --no-merges --pretty=format:'- %s (%h)' || true)
+            HEADER="## Changes since ${PREV}"
+          else
+            LOG=$(git log --no-merges --pretty=format:'- %s (%h)' || true)
+            HEADER="## Commit history"
+          fi
+          if [ -z "${LOG}" ]; then
+            LOG="- (no new commits)"
+          fi
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            echo "${HEADER}"
+            echo ""
+            echo "${LOG}"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
   release-macos:
     needs: prepare
@@ -106,7 +136,7 @@ jobs:
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
-          releaseBody: "See the assets to download and install this release."
+          releaseBody: ${{ needs.prepare.outputs.notes }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
@@ -349,7 +379,7 @@ jobs:
           projectPath: s
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
-          releaseBody: "See the assets to download and install this release."
+          releaseBody: ${{ needs.prepare.outputs.notes }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

@@ -10,7 +10,7 @@ function sanitizeRichTextHtml(input) {
     p: true, br: true, ul: true, ol: true, li: true,
     code: true, pre: true, blockquote: true,
     h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
-    span: true, div: true
+    span: true, div: true, img: true
   };
 
   var tpl = document.createElement('template');
@@ -73,6 +73,17 @@ function sanitizeRichTextHtml(input) {
       var href = safeHref(node.getAttribute('href'));
       if (!href) return inner;
       return '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener">' + inner + '</a>';
+    }
+
+    if (tag === 'img') {
+      var rawSrc = String(node.getAttribute('src') || '').trim();
+      var safeSrc = '';
+      if (rawSrc.startsWith('https://') || /^data:image\/(png|jpe?g|gif|webp|svg\+xml|bmp|avif);base64,/i.test(rawSrc)) {
+        safeSrc = rawSrc;
+      }
+      if (!safeSrc) return '';
+      var altAttr = escapeHtml(String(node.getAttribute('alt') || ''));
+      return '<img src="' + escapeHtml(safeSrc) + '" alt="' + altAttr + '" loading="lazy" data-lightbox="1">';
     }
 
     var styleAttr = '';

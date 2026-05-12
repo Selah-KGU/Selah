@@ -39,7 +39,7 @@
   async function checkPerm() {
     if (isDemoActive()) {
       permState = "ok";
-      permLabel = "演示モード";
+      permLabel = "デモモード";
       return;
     }
     try {

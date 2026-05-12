@@ -83,7 +83,7 @@
   async function logout() {
     if (isDemoActive()) {
       statusColor = "var(--text-secondary)";
-      statusMsg = "演示モードではメール連携を解除しません";
+      statusMsg = "デモモードではメール連携を解除しません";
       setTimeout(() => { statusMsg = ""; }, 4000);
       return;
     }

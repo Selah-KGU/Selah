@@ -46,7 +46,7 @@ function defaultStatus(): string {
   if (distributionChannel === "msstore") {
     return "このビルドの更新は Microsoft Store から配信されます。";
   }
-  return "更新を確認すると、GitHub Releases から新しい版を取得します。";
+  return "更新を確認すると、GitHub Releases から新しいバージョンを取得します。";
 }
 
 const DEFAULT_STATUS = defaultStatus();

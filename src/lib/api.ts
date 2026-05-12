@@ -1056,7 +1056,7 @@ export async function gcalCheckSession(): Promise<GcalStatus> {
 }
 
 export async function gcalSyncTimetable(entries: GcalSyncEntry[], weekLabel: string): Promise<string> {
-  if (_isDemo()) return `演示モード: ${entries.length}件を ${weekLabel || "今週"} として同期した体験を表示しました`;
+  if (_isDemo()) return `デモモード: ${entries.length}件を ${weekLabel || "今週"} として同期した体験を表示しました`;
   return invoke<string>("gcal_sync_timetable", { entries, weekLabel });
 }
 
@@ -1601,7 +1601,7 @@ function buildDemoLiveSummaries(lines: LiveTranscriptLine[]): LiveSummaryChunk[]
   if (lines.length === 0) return [];
   const recent = lines.slice(-3).map((line) => line.text).join(" / ");
   return [{
-    title: "演示要約",
+    title: "デモ用要約",
     range_label: "最近",
     body: `### 全体要約\n${recent || "このセッションでは授業内容の要点がまとめられます。"}\n\n### 次に見るポイント\n- キーワードを 2〜3 個に絞って見返す\n- 宿題や小テストに関係する箇所を先に確認する`,
     line_count: lines.length,
@@ -1617,7 +1617,7 @@ function buildDemoLiveTranscript(course: LiveCourseInfo): LiveTranscriptLine[] {
     });
   const name = course.course_name || "自由ノート";
   return [
-    { at: at(0), text: `${name} の演示セッションを開始しました。今日のテーマと到達目標を確認します。` },
+    { at: at(0), text: `${name} のデモセッションを開始しました。今日のテーマと到達目標を確認します。` },
     { at: at(2), text: "授業で強調されたキーワードを短くメモし、あとで見返しやすい形に整理します。" },
     { at: at(4), text: "課題や小テストにつながるポイントを先に押さえておくと復習が楽になります。" },
   ];
@@ -2128,7 +2128,7 @@ export async function agentListConversations(): Promise<AgentConversationSummary
 }
 
 export async function agentCreateConversation(title?: string): Promise<string> {
-  if (_isDemo()) throw new Error("演示モードでは Agent は利用できません");
+  if (_isDemo()) throw new Error("デモモードでは Agent は利用できません");
   return invoke<string>("agent_create_conversation", { title: title ?? null });
 }
 
@@ -2142,7 +2142,7 @@ export async function agentSend(
   content: string,
   images: AgentImagePart[] = [],
 ): Promise<void> {
-  if (_isDemo()) throw new Error("演示モードでは Agent は利用できません");
+  if (_isDemo()) throw new Error("デモモードでは Agent は利用できません");
   return invoke("agent_send", { convId, content, images });
 }
 

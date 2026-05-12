@@ -22,8 +22,12 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -89,6 +93,32 @@ jobs:
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             "$tag_ref" | grep -Eq '^(204|404|422)$'
           echo "Deleted existing draft release for ${TAG}"
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PREV=$(git tag -l 'v*' --sort=-version:refname | grep -v "^${TAG}$" | head -n1 || true)
+          if [ -n "${PREV}" ]; then
+            LOG=$(git log "${PREV}..HEAD" --no-merges --pretty=format:'- %s (%h)' || true)
+            HEADER="## Changes since ${PREV}"
+          else
+            LOG=$(git log --no-merges --pretty=format:'- %s (%h)' || true)
+            HEADER="## Commit history"
+          fi
+          if [ -z "${LOG}" ]; then
+            LOG="- (no new commits)"
+          fi
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            echo "${HEADER}"
+            echo ""
+            echo "${LOG}"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
   # ── macOS (universal) ─────────────────────────────────────────────────────
   build-macos:
@@ -160,7 +190,7 @@ jobs:
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
-          releaseBody: "Draft build from ${{ github.sha }}. Test this draft, then publish it manually if it is ready."
+          releaseBody: ${{ needs.prepare.outputs.notes }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
@@ -406,7 +436,7 @@ jobs:
           projectPath: s
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Selah ${{ needs.prepare.outputs.tag }}"
-          releaseBody: "Draft build from ${{ github.sha }}. Test this draft, then publish it manually if it is ready."
+          releaseBody: ${{ needs.prepare.outputs.notes }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

@@ -608,7 +608,7 @@
     testBusy = true;
     showStatus("接続をテスト中...", "loading");
     try {
-      let r = "演示モード接続 OK";
+      let r = "デモモード接続 OK";
       if (isDemoActive()) {
         writeDemoState("selah-demo-ai-config", getConfig());
       } else {
@@ -628,7 +628,7 @@
     localTestOk = null;
     localTestMsg = "モデルを読み込み中...";
     try {
-      let r = "演示モードのローカルモデルは利用可能です";
+      let r = "デモモードのローカルモデルは利用可能です";
       if (isDemoActive()) {
         writeDemoState("selah-demo-ai-config", getConfig());
       } else {
@@ -650,7 +650,7 @@
     sttTestOk = null;
     sttTestMsg = "STT モデルを読み込み中...";
     try {
-      let r = "演示モードの STT モデルは利用可能です";
+      let r = "デモモードの STT モデルは利用可能です";
       if (isDemoActive()) {
         writeDemoState(DEMO_STT_CONFIG_KEY, {
           selected_model: selectedSttModel,

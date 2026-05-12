@@ -618,3 +618,16 @@
   .survey-info-bar { display:flex; flex-wrap:wrap; gap:10px; padding:0 24px; margin-top:4px; }
   .survey-info-chip { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--text-secondary); background:var(--bg-tertiary); padding:4px 10px; border-radius:6px; }
   .survey-info-chip strong { color:var(--text-primary); font-weight:500; }
+
+  /* ── Responsive images in rich text ── */
+  .rich-text img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    cursor: zoom-in;
+    display: block;
+    margin: 8px auto;
+    transition: opacity 0.15s;
+  }
+  .rich-text img:hover { opacity: 0.88; }
+

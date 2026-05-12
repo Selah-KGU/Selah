@@ -92,7 +92,7 @@
       if (isDemoActive()) {
         await initiateRelogin();
         statusColor = "var(--green)";
-        statusMsg = "演示モードの再認証状態を更新しました";
+        statusMsg = "デモモードの再認証状態を更新しました";
       } else {
         const ok = await syncSession("all");
         if (ok) {
