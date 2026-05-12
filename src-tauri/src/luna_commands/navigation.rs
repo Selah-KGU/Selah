@@ -3,21 +3,32 @@ use crate::{config, luna_client, LunaState};
 use std::sync::atomic::Ordering;
 use tauri::{Manager, State};
 
+/// Infer `(mode, idnumber, info_id)` from a Luna detail URL when the caller
+/// did not pass an explicit `mode`.
+///
+/// We are deliberately conservative here: only routes where the existing
+/// backend parser + renderer pipeline already exists are auto-detected. For
+/// other module types (e.g. お問い合わせ / inquiry) the default branch keeps
+/// rendering the generic detail until a proper parser exists, instead of
+/// pointing at a specialised renderer that would just bail with a parameter
+/// error.
 fn infer_luna_window_target(
     path: &str,
     mode: Option<&str>,
     idnumber: Option<&str>,
-) -> (Option<String>, Option<String>) {
-    if mode.is_some() {
-        return (
-            mode.map(ToString::to_string),
-            idnumber.map(ToString::to_string),
-        );
+    info_id: Option<&str>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let explicit_mode = mode.map(ToString::to_string);
+    let explicit_idnumber = idnumber.map(ToString::to_string);
+    let explicit_info_id = info_id.map(ToString::to_string);
+
+    if explicit_mode.is_some() {
+        return (explicit_mode, explicit_idnumber, explicit_info_id);
     }
 
     let raw = path.trim();
     if raw.is_empty() {
-        return (None, idnumber.map(ToString::to_string));
+        return (None, explicit_idnumber, explicit_info_id);
     }
 
     let full = if raw.starts_with("http://") || raw.starts_with("https://") {
@@ -26,15 +37,19 @@ fn infer_luna_window_target(
         format!("{}{}", config::LUNA_BASE, raw)
     };
     let Ok(url) = url::Url::parse(&full) else {
-        return (None, idnumber.map(ToString::to_string));
+        return (None, explicit_idnumber, explicit_info_id);
     };
 
-    let inferred_idnumber = url
-        .query_pairs()
-        .find_map(|(k, v)| (k == "idnumber").then(|| v.into_owned()))
-        .or_else(|| idnumber.map(ToString::to_string));
+    let query_param = |key: &str| -> Option<String> {
+        url.query_pairs()
+            .find_map(|(k, v)| (k == key).then(|| v.into_owned()))
+            .filter(|s| !s.is_empty())
+    };
+
+    let inferred_idnumber = explicit_idnumber.clone().or_else(|| query_param("idnumber"));
     let path_name = url.path();
 
+    // Course top / attendance share the same path; the fragment disambiguates.
     if path_name == "/lms/course" || path_name == "/lms/contents" {
         let hash = url.fragment().unwrap_or_default();
         let inferred_mode = if hash == "attendance" {
@@ -42,10 +57,60 @@ fn infer_luna_window_target(
         } else {
             "course"
         };
-        return (Some(inferred_mode.to_string()), inferred_idnumber);
+        return (
+            Some(inferred_mode.to_string()),
+            inferred_idnumber,
+            explicit_info_id,
+        );
     }
 
-    (None, inferred_idnumber)
+    // Announcement detail discards the original `path` in the URL builder and
+    // only re-uses idnumber + informationId, so we only infer it when both are
+    // present — otherwise the renderer would error with "パラメータが不足".
+    if path_name == "/lms/coursetop/information/listdetail" {
+        let info_from_query = query_param("informationId");
+        if inferred_idnumber.is_some() && (explicit_info_id.is_some() || info_from_query.is_some())
+        {
+            return (
+                Some("announcement".to_string()),
+                inferred_idnumber,
+                explicit_info_id.or(info_from_query),
+            );
+        }
+    }
+
+    // Forum thread — needed so a "new comment" notification can land directly
+    // on the thread post-list view (not the generic detail page, which omits
+    // the post stream). `thread_postfile` is a download endpoint, exclude it.
+    if path_name == "/lms/course/forums/thread" {
+        return (
+            Some("thread".to_string()),
+            inferred_idnumber,
+            explicit_info_id.or_else(|| query_param("threadId")),
+        );
+    }
+
+    // Forum theme top — "new thread created" notifications point here. Falls
+    // through to the discussion list renderer.
+    if path_name == "/lms/course/forums/themetop" {
+        return (
+            Some("discussion".to_string()),
+            inferred_idnumber,
+            explicit_info_id.or_else(|| query_param("forumId")),
+        );
+    }
+
+    // Inquiry (メッセージ / お問い合わせ) — message thread between student and
+    // teacher. Both `/post` and `/firstSet` land on the same renderable page.
+    if path_name.starts_with("/lms/course/inquiry/") {
+        return (
+            Some("inquiry".to_string()),
+            inferred_idnumber,
+            explicit_info_id.or_else(|| query_param("inquiryId")),
+        );
+    }
+
+    (None, inferred_idnumber, explicit_info_id)
 }
 
 /// Open the shared university detail shell in a separate native window.
@@ -73,7 +138,12 @@ pub async fn university_open_detail_window(
     }
     let id = UNIVERSITY_DETAIL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("university-detail-{}", id);
-    let (mode, idnumber) = infer_luna_window_target(&path, mode.as_deref(), idnumber.as_deref());
+    let (mode, idnumber, info_id) = infer_luna_window_target(
+        &path,
+        mode.as_deref(),
+        idnumber.as_deref(),
+        info_id.as_deref(),
+    );
 
     let url_str = match mode.as_deref() {
         Some("material") => {
@@ -108,11 +178,26 @@ pub async fn university_open_detail_window(
             parts
         }
         Some("discussion") => {
-            format!(
+            let mut parts = format!(
                 "university-detail.html?mode=discussion&path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
-            )
+            );
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
+            parts
+        }
+        Some("inquiry") => {
+            let mut parts = format!(
+                "university-detail.html?mode=inquiry&path={}&title={}",
+                urlencoding::encode(&path),
+                urlencoding::encode(&title)
+            );
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
+            parts
         }
         Some("report") => {
             let mut parts = format!(
@@ -143,11 +228,15 @@ pub async fn university_open_detail_window(
             parts
         }
         Some("thread") => {
-            format!(
+            let mut parts = format!(
                 "university-detail.html?mode=thread&path={}&title={}",
                 urlencoding::encode(&path),
                 urlencoding::encode(&title)
-            )
+            );
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
+            parts
         }
         Some("course") => {
             let mut parts = format!(
@@ -286,19 +375,22 @@ mod tests {
 
     #[test]
     fn infers_course_mode_from_course_top_url() {
-        let (mode, idnumber) = infer_luna_window_target(
+        let (mode, idnumber, info_id) = infer_luna_window_target(
             "/lms/course?idnumber=2026341810090201#information",
+            None,
             None,
             None,
         );
         assert_eq!(mode.as_deref(), Some("course"));
         assert_eq!(idnumber.as_deref(), Some("2026341810090201"));
+        assert!(info_id.is_none());
     }
 
     #[test]
     fn infers_attendance_mode_from_attendance_hash() {
-        let (mode, idnumber) = infer_luna_window_target(
+        let (mode, idnumber, _) = infer_luna_window_target(
             "/lms/course?idnumber=2026341810090201#attendance",
+            None,
             None,
             None,
         );
@@ -307,13 +399,108 @@ mod tests {
     }
 
     #[test]
-    fn leaves_detail_paths_unmodified() {
-        let (mode, idnumber) = infer_luna_window_target(
-            "/lms/course/report/submission?idnumber=2026341810090201&reportId=1",
+    fn infers_announcement_mode_with_information_id() {
+        let (mode, idnumber, info_id) = infer_luna_window_target(
+            "/lms/coursetop/information/listdetail?idnumber=2026341810090201&informationId=7",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(mode.as_deref(), Some("announcement"));
+        assert_eq!(idnumber.as_deref(), Some("2026341810090201"));
+        assert_eq!(info_id.as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn infers_discussion_mode_for_forum_themetop_url() {
+        let (mode, idnumber, info_id) = infer_luna_window_target(
+            "/lms/course/forums/themetop?idnumber=2026341340000201&forumId=9003",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(mode.as_deref(), Some("discussion"));
+        assert_eq!(idnumber.as_deref(), Some("2026341340000201"));
+        assert_eq!(info_id.as_deref(), Some("9003"));
+    }
+
+    #[test]
+    fn infers_thread_mode_for_forum_thread_url() {
+        // 揭示板 new-comment notifications carry a /forums/thread URL — these
+        // must land on the thread renderer so the post list shows up.
+        let (mode, idnumber, info_id) = infer_luna_window_target(
+            "/lms/course/forums/thread?idnumber=2026341810090201&forumId=8375&threadId=53077",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(mode.as_deref(), Some("thread"));
+        assert_eq!(idnumber.as_deref(), Some("2026341810090201"));
+        assert_eq!(info_id.as_deref(), Some("53077"));
+
+        // thread_postfile is a download endpoint, not a page.
+        let (mode, _, _) = infer_luna_window_target(
+            "/lms/course/forums/thread_postfile?fileId=foo",
+            None,
             None,
             None,
         );
         assert!(mode.is_none());
-        assert_eq!(idnumber.as_deref(), Some("2026341810090201"));
+    }
+
+    #[test]
+    fn infers_inquiry_mode_for_inquiry_paths() {
+        for path in [
+            "/lms/course/inquiry/post?idnumber=2026510010040201&inquiryId=320411",
+            "/lms/course/inquiry/firstSet?idnumber=2026510010040201&inquiryId=320411",
+        ] {
+            let (mode, idnumber, info_id) =
+                infer_luna_window_target(path, None, None, None);
+            assert_eq!(mode.as_deref(), Some("inquiry"), "{path}");
+            assert_eq!(idnumber.as_deref(), Some("2026510010040201"), "{path}");
+            assert_eq!(info_id.as_deref(), Some("320411"), "{path}");
+        }
+    }
+
+    #[test]
+    fn leaves_unrecognised_paths_to_generic_parser() {
+        // Modules without a dedicated parser+renderer pipeline yet (e.g. report
+        // / survey via path-only callers) should still fall through to the
+        // generic detail. LunaTodo already path-routes these explicitly.
+        let (mode, _, _) = infer_luna_window_target(
+            "/lms/course/report/submission?idnumber=2026341810090201&reportId=42",
+            None,
+            None,
+            None,
+        );
+        assert!(mode.is_none());
+    }
+
+    #[test]
+    fn does_not_infer_announcement_when_information_id_missing() {
+        // Without informationId, the announcement renderer can't fetch anything
+        // — fall back to the generic detail rather than producing an error
+        // window.
+        let (mode, _, _) = infer_luna_window_target(
+            "/lms/coursetop/information/listdetail?idnumber=2026341810090201",
+            None,
+            None,
+            None,
+        );
+        assert!(mode.is_none());
+    }
+
+    #[test]
+    fn explicit_mode_wins_over_inference() {
+        let (mode, idnumber, info_id) = infer_luna_window_target(
+            "/lms/coursetop/information/listdetail?idnumber=2026341810090201&informationId=7",
+            Some("course"),
+            None,
+            None,
+        );
+        assert_eq!(mode.as_deref(), Some("course"));
+        // Explicit mode keeps caller-provided values verbatim — we don't second-guess by parsing the path.
+        assert!(idnumber.is_none());
+        assert!(info_id.is_none());
     }
 }

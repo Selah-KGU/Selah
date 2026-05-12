@@ -6,31 +6,26 @@ pub(in crate::luna_parser) fn extract_named_quill_text(
     var_name: &str,
 ) -> Option<String> {
     // Pattern: _QuillUtil.varName.setJsonData("...", ...)
-    // or: _QuillUtil.varName = ... .setJsonData("...", ...)
     let pattern = format!("{}.setJsonData(\"", var_name);
     let pos = html.find(&pattern)?;
     let after = &html[pos + pattern.len()..];
-    // Find the closing ", 'reference') or similar
-    // The JSON string ends at the last " before the next , or )
-    // The JSON is double-escaped: \" inside the JS string
-    let mut end = 0;
-    let chars: Vec<char> = after.chars().collect();
+    // Byte-level scan for closing unescaped ": safe because ASCII 0x22/0x5C
+    // cannot appear as UTF-8 continuation bytes (continuation bytes are 0x80–0xBF).
+    let bytes = after.as_bytes();
+    let mut end: Option<usize> = None;
     let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '\\' && i + 1 < chars.len() {
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
             i += 2; // skip escaped char
             continue;
         }
-        if chars[i] == '"' {
-            end = i;
+        if bytes[i] == b'"' {
+            end = Some(i);
             break;
         }
         i += 1;
     }
-    if end == 0 {
-        return None;
-    }
-    let json_str = &after[..end];
+    let json_str = &after[..end?];
     extract_quill_rich_html(json_str)
 }
 
@@ -99,6 +94,9 @@ pub(in crate::luna_parser) fn extract_quill_rich_html(json_str: &str) -> Option<
     let ops = val.get("ops")?.as_array()?;
 
     let mut html = String::new();
+    // Track whether any non-newline content was emitted to avoid allocating
+    // temporary strings just for the emptiness check below.
+    let mut has_content = false;
     for op in ops {
         let Some(insert) = op.get("insert").and_then(|v| v.as_str()) else {
             continue;
@@ -109,6 +107,7 @@ pub(in crate::luna_parser) fn extract_quill_rich_html(json_str: &str) -> Option<
         for ch in insert.chars() {
             if ch == '\n' {
                 if !segment.is_empty() {
+                    has_content = true;
                     html.push_str(&wrap_quill_inline_attrs(&segment, attrs));
                     segment.clear();
                 }
@@ -118,19 +117,10 @@ pub(in crate::luna_parser) fn extract_quill_rich_html(json_str: &str) -> Option<
             }
         }
         if !segment.is_empty() {
+            has_content = true;
             html.push_str(&wrap_quill_inline_attrs(&segment, attrs));
         }
     }
 
-    let compact = html
-        .replace("<br>", "")
-        .replace("<br/>", "")
-        .replace("<br />", "")
-        .trim()
-        .to_string();
-    if compact.is_empty() {
-        None
-    } else {
-        Some(html)
-    }
+    if has_content { Some(html) } else { None }
 }

@@ -29,6 +29,8 @@ function detailRendererScriptsForMode(mode) {
     scripts.push('render-thread-posts.js', 'render-thread.js');
   } else if (mode === 'survey') {
     scripts.push('render-survey.js');
+  } else if (mode === 'inquiry') {
+    scripts.push('render-inquiry.js');
   } else if (mode === 'kgc' || mode === 'syllabus') {
     scripts.push('render-external.js');
   } else if (mode === 'kwic') {
@@ -141,6 +143,11 @@ document.addEventListener('DOMContentLoaded', async function() {
       _currentPagePath = path;
       if (params.get('courseName')) _currentCourseName = params.get('courseName');
       renderSurveyDetail(await invoke('luna_fetch_survey_detail', { path: path }));
+    } else if (mode === 'inquiry') {
+      if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+      _currentPagePath = path;
+      if (params.get('courseName')) _currentCourseName = params.get('courseName');
+      renderInquiryDetail(await invoke('luna_fetch_inquiry_detail', { path: path }));
     } else if (mode === 'kwic') {
       var kwicId = params.get('informationId') || '';
       if (!kwicId) { renderDetail({ error: '\u901a\u77e5ID\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }

@@ -377,26 +377,24 @@ pub fn parse_luna_detail_page(html: &str) -> LunaDetailPage {
 
     // === Extract forum posts (掲示板 thread pages) ===
     // Luna forum threads show posts in .post-body or .thread-post-body etc.
-    let forum_post_selectors = [
-        ".thread-post-area",
-        ".post-list-area .post-body",
-        ".forum-post-content",
-        ".forums-thread-content",
+    let forum_post_selectors: &[&LazyLock<Selector>] = &[
+        &SEL_FORUM_POST_THREAD_AREA,
+        &SEL_FORUM_POST_LIST_BODY,
+        &SEL_FORUM_POST_CONTENT,
+        &SEL_FORUMS_THREAD_CONTENT,
     ];
-    for sel_str in &forum_post_selectors {
-        if let Ok(post_sel) = Selector::parse(sel_str) {
-            for post_el in doc.select(&post_sel) {
-                let post_text = post_el.text().collect::<String>();
-                let trimmed = post_text.trim().to_string();
-                if !trimmed.is_empty()
-                    && trimmed.len() > 3
-                    && !sections.iter().any(|s| s.body.contains(&trimmed))
-                {
-                    sections.push(LunaDetailSection {
-                        heading: String::new(),
-                        body: trimmed,
-                    });
-                }
+    for post_sel in forum_post_selectors {
+        for post_el in doc.select(post_sel) {
+            let post_text = post_el.text().collect::<String>();
+            let trimmed = post_text.trim().to_string();
+            if !trimmed.is_empty()
+                && trimmed.len() > 3
+                && !sections.iter().any(|s| s.body.contains(&trimmed))
+            {
+                sections.push(LunaDetailSection {
+                    heading: String::new(),
+                    body: trimmed,
+                });
             }
         }
     }

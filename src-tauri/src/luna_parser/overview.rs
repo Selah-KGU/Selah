@@ -486,8 +486,8 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
     if posts.is_empty() {
         // This is a thread detail page (/lms/course/forums/thread)
         // All content is in meta rows, threadPostList is loaded via AJAX
-        // Extract thread description from headerContents Quill if available
-        if let Some(header_content) = extract_named_quill_text(html, "headerContents") {
+        // Extract thread description from threadContents Quill if available
+        if let Some(header_content) = extract_named_quill_text(html, "threadContents") {
             if !header_content.is_empty() {
                 posts.push(LunaDiscussionPost {
                     title: String::new(),
@@ -512,7 +512,7 @@ pub fn parse_luna_discussion_thread(html: &str) -> LunaDiscussionThread {
 }
 
 /// Parse a Luna thread detail page (/lms/course/forums/thread)
-/// Extracts: テーマ, スレッド title, 登録者, 説明 (headerContents Quill), 更新日時
+/// Extracts: テーマ, スレッド title, 登録者, 説明 (threadContents Quill), 更新日時
 pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
     let doc = Html::parse_document(html);
 
@@ -557,8 +557,8 @@ pub fn parse_luna_thread_detail(html: &str) -> LunaDiscussionThread {
         }
     }
 
-    // Description from headerContents Quill
-    let description = extract_named_quill_text(html, "headerContents").unwrap_or_default();
+    // Description from threadContents Quill
+    let description = extract_named_quill_text(html, "threadContents").unwrap_or_default();
 
     // Parse posts from #threadPostList (embedded in the page)
     let mut posts = Vec::new();

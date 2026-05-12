@@ -6,6 +6,8 @@ use std::sync::LazyLock;
 mod course;
 #[path = "luna_parser/detail.rs"]
 mod detail;
+#[path = "luna_parser/inquiry.rs"]
+mod inquiry;
 #[path = "luna_parser/overview.rs"]
 mod overview;
 
@@ -20,6 +22,9 @@ pub use detail::{
     parse_luna_announcement_detail, parse_luna_detail_page, LunaAttachment, LunaDetailPage,
     LunaDetailSection,
 };
+pub use inquiry::{parse_luna_inquiry_detail, LunaInquiryDetail};
+#[allow(unused_imports)]
+pub use inquiry::LunaInquiryPost;
 pub use overview::*;
 
 /// Five content lists returned from the contents page (materials, reports, examinations, discussions, surveys)
@@ -105,6 +110,23 @@ sel!(SEL_POST_ID, ".postId");
 sel!(SEL_MSG_BLOCK, ".discussion-message-block");
 sel!(SEL_DISCUSS_MESS_FILE, ".discuss_mess_file");
 
+// ── Inquiry (お問い合わせ / メッセージ) selectors ──
+sel!(SEL_INQUIRY_FORM, "#inquirySetForm");
+sel!(SEL_INQUIRY_MSG_BLOCK, ".discussion-message-block");
+sel!(SEL_INQUIRY_MSG_MAIN, ".discussion-message-main");
+sel!(SEL_INQUIRY_MSG_FILE, ".discuss_mess_file");
+sel!(SEL_INQUIRY_QL_EDITOR, ".ql-editor");
+sel!(SEL_INQUIRY_MSG_FOOTER, ".message-margin-top");
+sel!(SEL_INQUIRY_HIDDEN_POSTID, ".contents-hidden.postId");
+sel!(SEL_INQUIRY_HIDDEN_CONTENTS, ".contents-hidden.contents");
+sel!(SEL_INQUIRY_BLOCK_TITLE, ".block-title .block-title-txt");
+sel!(SEL_INQUIRY_POSTFILE_FORM, "#inquiryPostFile");
+sel!(SEL_INQUIRY_UPFILE_FORM, "#inquiryFileForm");
+sel!(SEL_INQUIRY_FILENAME_INPUT, "input.fileName");
+sel!(SEL_INQUIRY_OBJECTNAME_INPUT, "input.objectName");
+sel!(SEL_INQUIRY_POSTID_INPUT, "input.postId");
+sel!(SEL_INQUIRY_SCANSTATUS_INPUT, "input.scanStatus");
+
 // ── Detail page selectors ──
 sel!(SEL_REPORT_FORM, "#reportDownloadForm");
 sel!(SEL_FORUMS_FORM, "#forumsPostFile");
@@ -121,6 +143,12 @@ sel!(
     SEL_BODY_LINK,
     ".contents-input-area a[href], .ql-editor a[href]"
 );
+
+// ── Forum post fallback selectors (detail page) ──
+sel!(SEL_FORUM_POST_THREAD_AREA, ".thread-post-area");
+sel!(SEL_FORUM_POST_LIST_BODY, ".post-list-area .post-body");
+sel!(SEL_FORUM_POST_CONTENT, ".forum-post-content");
+sel!(SEL_FORUMS_THREAD_CONTENT, ".forums-thread-content");
 
 // ── Course top selectors ──
 sel!(SEL_INFO_RESULT, ".course-result-list.sp-contents-hidden");

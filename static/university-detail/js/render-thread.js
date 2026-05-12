@@ -14,11 +14,13 @@ function renderThreadDetail(data, threadUrl) {
     }
     h += '</div>';
   }
-  // Show posts if available from initial parse
+  // Show posts if available from initial parse. When the parse returned no
+  // posts (e.g. brand-new thread, or backend session error), show a clear empty
+  // state instead of pinning a spinner that never resolves.
   if (data.posts && data.posts.length) {
     h += '<div id="threadPostsArea"></div>';
   } else {
-    h += '<div id="threadPostsArea"><div class="loading-text" style="text-align:center;padding:20px;color:var(--text-tertiary);font-size:13px">\u8aad\u307f\u8fbc\u307f\u4e2d...</div></div>';
+    h += '<div id="threadPostsArea"><div class="empty" style="text-align:center;padding:20px;color:var(--text-tertiary);font-size:13px">\u307e\u3060\u6295\u7a3f\u304c\u3042\u308a\u307e\u305b\u3093</div></div>';
   }
   h += '<div class="reply-section"><h3>\u8fd4\u4fe1</h3>';
   h += '<textarea id="replyContent" class="text-input" rows="4" placeholder="\u8fd4\u4fe1\u5185\u5bb9\u3092\u5165\u529b..."></textarea>';
