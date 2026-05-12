@@ -726,7 +726,15 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     if (listen) {
-      listen('markdown-content', function (ev) { applyPayload(ev.payload); });
+      listen('markdown-content', function (ev) {
+        var p = ev && ev.payload;
+        if (!p) return;
+        // Tauri may deliver `markdown-content` events to every reader window
+        // regardless of the backend's emit_to target, so ignore payloads meant
+        // for another file once this window has bound to its own path.
+        if (currentPath && p.path && p.path !== currentPath) return;
+        applyPayload(p);
+      });
     }
     if (invoke) {
       var label = (tauri.window && tauri.window.getCurrentWindow && tauri.window.getCurrentWindow().label) || '';
