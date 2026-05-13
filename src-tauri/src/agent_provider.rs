@@ -38,6 +38,17 @@ fn clear_remote_cancel(gen_id: &str) {
     }
 }
 
+/// Derive the gen id used during the planning phase. Keeping this prefix
+/// distinct from the answer-phase id lets `cancel` clear both reliably even
+/// when the same conv id is reused.
+fn plan_gen_id(conv_id: &str) -> String {
+    if conv_id.is_empty() {
+        String::new()
+    } else {
+        format!("plan:{}", conv_id)
+    }
+}
+
 fn collect_gemini_text_parts(parts: Option<&serde_json::Value>) -> String {
     parts
         .and_then(|p| p.as_array())
@@ -92,6 +103,7 @@ impl AgentProvider {
     }
 
     /// Non-streaming inference used for Phase 1 (planning).
+    /// `gen_id` should be the conversation id so cancel requests reach planning too.
     pub async fn plan(
         &self,
         messages: Vec<ChatMessage>,
@@ -99,6 +111,7 @@ impl AgentProvider {
         temperature: f32,
         prefill: &str,
         think_budget_pct: u32,
+        gen_id: &str,
     ) -> Result<String, AgentError> {
         match self {
             Self::Local {
@@ -108,6 +121,7 @@ impl AgentProvider {
                 let model_id = model_id.clone();
                 let file_name = file_name.clone();
                 let prefill = prefill.to_string();
+                let gen_id = plan_gen_id(gen_id);
                 tokio::task::spawn_blocking(move || {
                     local_ai::run_inference(local_ai::InferenceRequest {
                         model_id,
@@ -116,7 +130,7 @@ impl AgentProvider {
                         sampler: local_ai::SamplerConfig::deterministic(temperature),
                         max_tokens,
                         prefill,
-                        gen_id: String::new(),
+                        gen_id,
                         think_budget_pct,
                     })
                 })
@@ -125,9 +139,14 @@ impl AgentProvider {
                 .map_err(AgentError::model)
             }
             Self::Remote { config } => {
-                remote_chat_completion(config, messages, max_tokens, temperature)
-                    .await
-                    .map_err(AgentError::model)
+                let plan_id = plan_gen_id(gen_id);
+                clear_remote_cancel(&plan_id);
+                let result =
+                    remote_chat_completion(config, messages, max_tokens, temperature, &plan_id)
+                        .await
+                        .map_err(AgentError::model);
+                clear_remote_cancel(&plan_id);
+                result
             }
         }
     }
@@ -181,9 +200,15 @@ impl AgentProvider {
     }
 
     /// Cancel any ongoing inference for `gen_id`.
+    /// Cancels both the answer-phase id and the synthesised plan-phase id.
     pub fn cancel(gen_id: &str) {
         local_ai::cancel_inference(gen_id);
         cancel_remote(gen_id);
+        let plan_id = plan_gen_id(gen_id);
+        if !plan_id.is_empty() {
+            local_ai::cancel_inference(&plan_id);
+            cancel_remote(&plan_id);
+        }
     }
 
     /// Whether the provider honours assistant prefill (used for Phase 1 JSON).
@@ -216,7 +241,11 @@ async fn remote_chat_completion(
     messages: Vec<ChatMessage>,
     max_tokens: u32,
     temperature: f32,
+    cancel_id: &str,
 ) -> Result<String, String> {
+    if !cancel_id.is_empty() && is_remote_cancelled(cancel_id) {
+        return Err("推論はキャンセルされました".into());
+    }
     match config.provider.as_str() {
         "gemini" => remote_gemini_non_streaming(config, messages, max_tokens, temperature).await,
         _ => remote_openai_non_streaming(config, messages, max_tokens, temperature).await,
@@ -356,16 +385,19 @@ where
     clear_remote_cancel(gen_id);
     let callback = Arc::new(Mutex::new(on_chunk));
     let callback_for_stream = callback.clone();
-    let filtered = ThinkFilter::wrap(move |chunk: &str, is_think: bool| {
-        if let Ok(mut cb) = callback_for_stream.lock() {
-            (*cb)(chunk, is_think);
-        }
-    });
+    let (mut filtered, mut flush) =
+        ThinkFilter::wrap_with_flush(move |chunk: &str, is_think: bool| {
+            if let Ok(mut cb) = callback_for_stream.lock() {
+                (*cb)(chunk, is_think);
+            }
+        });
     let stream_messages = messages.clone();
+    let stream_callback = move |chunk: &str, is_think: bool| filtered(chunk, is_think);
     let result = match config.provider.as_str() {
-        "gemini" => remote_gemini_stream(config, stream_messages, gen_id, filtered).await,
-        _ => remote_openai_stream(config, stream_messages, gen_id, filtered).await,
+        "gemini" => remote_gemini_stream(config, stream_messages, gen_id, stream_callback).await,
+        _ => remote_openai_stream(config, stream_messages, gen_id, stream_callback).await,
     };
+    flush();
     clear_remote_cancel(gen_id);
     let answer = result?;
     if answer.trim().is_empty() && !is_remote_cancelled(gen_id) {
@@ -382,17 +414,19 @@ where
                 config.max_tokens
             },
             config.temperature,
+            gen_id,
         )
         .await?;
         if !fallback.is_empty() {
             let callback_for_fallback = callback.clone();
-            let filtered = ThinkFilter::wrap(move |chunk: &str, is_think: bool| {
-                if let Ok(mut cb) = callback_for_fallback.lock() {
-                    (*cb)(chunk, is_think);
-                }
-            });
-            let mut filtered = filtered;
-            filtered(&fallback, false);
+            let (mut feed, mut flush_fb) =
+                ThinkFilter::wrap_with_flush(move |chunk: &str, is_think: bool| {
+                    if let Ok(mut cb) = callback_for_fallback.lock() {
+                        (*cb)(chunk, is_think);
+                    }
+                });
+            feed(&fallback, false);
+            flush_fb();
         }
         let _ = think_budget_pct;
         return Ok(fallback);
@@ -410,22 +444,42 @@ struct ThinkFilter<F: FnMut(&str, bool) + Send + 'static> {
 }
 
 impl<F: FnMut(&str, bool) + Send + 'static> ThinkFilter<F> {
-    fn wrap(inner: F) -> impl FnMut(&str, bool) + Send + 'static {
-        let mut state = ThinkFilter {
+    /// Returns `(feed, flush)`. `feed(chunk, is_think)` ingests a chunk;
+    /// `flush()` drains any buffered tail (call it once the upstream stream
+    /// has ended so a trailing partial `<think>` block is not silently lost).
+    fn wrap_with_flush(
+        inner: F,
+    ) -> (
+        Box<dyn FnMut(&str, bool) + Send>,
+        Box<dyn FnMut() + Send>,
+    ) {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(ThinkFilter {
             inner,
             buf: String::new(),
             in_think: false,
-        };
-        move |chunk: &str, is_think: bool| {
+        }));
+        let feed_state = state.clone();
+        let feed = Box::new(move |chunk: &str, is_think: bool| {
+            let mut guard = match feed_state.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
             if is_think {
-                // Provider already classified this as reasoning — forward verbatim.
-                (state.inner)(chunk, true);
+                (guard.inner)(chunk, true);
                 return;
             }
-            state.buf.push_str(chunk);
-            state.drain(false);
-        }
+            guard.buf.push_str(chunk);
+            guard.drain(false);
+        });
+        let flush_state = state;
+        let flush = Box::new(move || {
+            if let Ok(mut guard) = flush_state.lock() {
+                guard.drain(true);
+            }
+        });
+        (feed, flush)
     }
+
 
     fn drain(&mut self, flush: bool) {
         loop {

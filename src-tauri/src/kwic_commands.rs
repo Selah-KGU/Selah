@@ -261,6 +261,39 @@ pub struct KwicAttachment {
     pub url: String,
 }
 
+/// Agent-accessible variant of `kwic_fetch_detail`. Resolves state from the
+/// AppHandle and skips the cache-on-error fallback so the agent always sees
+/// the most accurate result (or a real error message).
+pub async fn kwic_fetch_detail_internal(
+    app: &tauri::AppHandle,
+    information_id: &str,
+    information_type: &str,
+    person_category_cd: &str,
+    category_cd: &str,
+) -> Result<KwicNotificationDetail, String> {
+    use tauri::Manager;
+    let state = app.state::<KwicState>();
+    let http = kwic_http(&state).await?;
+    let home_html = kwic_get(&http, "/portal/home").await?;
+    let csrf = extract_csrf_token(&home_html)
+        .ok_or_else(|| "CSRFトークンが取得できませんでした".to_string())?;
+    let detail_html = kwic_post(
+        &http,
+        "/portal/home/information/detail",
+        &[
+            ("_csrf", &csrf),
+            ("informationId", information_id),
+            ("informationType", information_type),
+            ("personCategoryCd", person_category_cd),
+            ("categoryCd", category_cd),
+            ("selectCategoryCd", category_cd),
+            ("pageViewListNum", "10"),
+        ],
+    )
+    .await?;
+    Ok(parse_detail_html(&detail_html))
+}
+
 /// Fetch and parse a KWIC Portal notification detail inline (no webview).
 /// The detail page is fetched via POST to /portal/home/information/detail
 /// using the same form parameters as the portal's #PortalinformationDtl form.

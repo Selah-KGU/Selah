@@ -11,6 +11,8 @@ use crate::db::Database;
 
 #[path = "agent_tools/academic.rs"]
 mod academic;
+#[path = "agent_tools/calendar.rs"]
+mod calendar;
 #[path = "agent_tools/files_browser.rs"]
 mod files_browser;
 #[path = "agent_tools/insights.rs"]
@@ -21,6 +23,7 @@ mod mail_lookup;
 mod records;
 
 use academic::*;
+use calendar::*;
 use files_browser::*;
 use insights::*;
 use mail_lookup::*;
@@ -58,6 +61,8 @@ enum ArgSchema {
     OptionalText { key: &'static str, max_len: usize },
     /// URL arg.
     Url,
+    /// URL + optional explicit filename for the saved file.
+    DownloadUrl,
     /// Browser click action.
     BrowserClick,
     /// Browser fill action.
@@ -70,6 +75,12 @@ enum ArgSchema {
     BrowserScroll,
     /// Browser wait action.
     BrowserWait,
+    /// Google Calendar single-event creation.
+    CalendarEvent,
+    /// Google Calendar event update (event_id required, rest optional).
+    CalendarUpdate,
+    /// Google Calendar event delete (event_id required).
+    CalendarEventId,
 }
 
 struct ToolSpec {
@@ -199,6 +210,16 @@ const TOOL_SPECS: &[ToolSpec] = &[
         },
     },
     ToolSpec {
+        name: "get_notification_detail",
+        category: "お知らせ・メール",
+        signature: "get_notification_detail(title: string)",
+        purpose: "KWIC/KGC/Lunaのお知らせ本文・送信者・添付を取得(直近の一覧キャッシュから検索)",
+        schema: ArgSchema::Text {
+            key: "title",
+            max_len: 200,
+        },
+    },
+    ToolSpec {
         name: "list_recent_mail",
         category: "お知らせ・メール",
         signature: "list_recent_mail(limit?: number)",
@@ -211,6 +232,20 @@ const TOOL_SPECS: &[ToolSpec] = &[
         signature: "read_mail(message_id: string)",
         purpose: "メール本文",
         schema: ArgSchema::MailMessageId,
+    },
+    ToolSpec {
+        name: "search_mail",
+        category: "お知らせ・メール",
+        signature: "search_mail(keyword: string, limit?: number)",
+        purpose: "受信メールを件名・本文プレビュー・送信者でキーワード検索",
+        schema: ArgSchema::LimitKeyword,
+    },
+    ToolSpec {
+        name: "list_luna_announcements",
+        category: "お知らせ・メール",
+        signature: "list_luna_announcements(limit?: number, keyword?: string)",
+        purpose: "Luna科目掲示の一覧(keywordで科目名フィルタ)",
+        schema: ArgSchema::LimitKeyword,
     },
     ToolSpec {
         name: "get_mail_profile",
@@ -305,6 +340,20 @@ const TOOL_SPECS: &[ToolSpec] = &[
         signature: "open_downloaded_file(path: string)",
         purpose: "ダウンロード済みファイルをアプリ外部の既定アプリで開く",
         schema: ArgSchema::FilePath,
+    },
+    ToolSpec {
+        name: "delete_downloaded_file",
+        category: "ダウンロードファイル",
+        signature: "delete_downloaded_file(path: string)",
+        purpose: "ダウンロードフォルダ内のファイルを削除する",
+        schema: ArgSchema::FilePath,
+    },
+    ToolSpec {
+        name: "download_url",
+        category: "ダウンロードファイル",
+        signature: "download_url(url: string, filename?: string)",
+        purpose: "任意の http(s) URL をダウンロードフォルダに保存する(50MB上限)",
+        schema: ArgSchema::DownloadUrl,
     },
     ToolSpec {
         name: "open_luna_attachment",
@@ -416,6 +465,51 @@ const TOOL_SPECS: &[ToolSpec] = &[
         purpose: "指定したテキストや要素が出るまで少し待つ",
         schema: ArgSchema::BrowserWait,
     },
+    ToolSpec {
+        name: "browser_close",
+        category: "ブラウザ",
+        signature: "browser_close(target?: string)",
+        purpose: "アプリ内ブラウザのウィンドウを閉じる",
+        schema: ArgSchema::OptionalText {
+            key: "target",
+            max_len: 120,
+        },
+    },
+    ToolSpec {
+        name: "get_today_brief",
+        category: "学生情報・その他",
+        signature: "get_today_brief()",
+        purpose: "今日の授業・差し迫った締切・天気をまとめて取得",
+        schema: ArgSchema::Empty,
+    },
+    ToolSpec {
+        name: "create_google_calendar_event",
+        category: "Google Calendar",
+        signature: "create_google_calendar_event(title: string, date: string, start_time: string, end_time: string, location?: string, description?: string)",
+        purpose: "Google Calendarに単発イベントを追加する。date=YYYY-MM-DD, start_time/end_time=HH:MM。Google連携が必要。",
+        schema: ArgSchema::CalendarEvent,
+    },
+    ToolSpec {
+        name: "list_google_calendar_events",
+        category: "Google Calendar",
+        signature: "list_google_calendar_events()",
+        purpose: "Agentが登録したGoogle Calendarイベントの一覧（event_idを含む）を返す。編集・削除の前に呼び出す。",
+        schema: ArgSchema::Empty,
+    },
+    ToolSpec {
+        name: "delete_google_calendar_event",
+        category: "Google Calendar",
+        signature: "delete_google_calendar_event(event_id: string)",
+        purpose: "Agentが登録したGoogle Calendarイベントをevent_idで削除する。",
+        schema: ArgSchema::CalendarEventId,
+    },
+    ToolSpec {
+        name: "update_google_calendar_event",
+        category: "Google Calendar",
+        signature: "update_google_calendar_event(event_id: string, title?: string, date?: string, start_time?: string, end_time?: string, location?: string, description?: string)",
+        purpose: "Agentが登録したGoogle Calendarイベントを編集する。event_id必須、他は変更したフィールドのみ指定。",
+        schema: ArgSchema::CalendarUpdate,
+    },
 ];
 
 /// Check if a tool name is in the registry.
@@ -437,9 +531,12 @@ pub async fn dispatch(app: &tauri::AppHandle, name: &str, args: &Value) -> Value
         "list_luna_todos" => list_luna_todos(app).await,
         "list_recent_notifications" => list_recent_notifications(app, args).await,
         "search_notifications" => search_notifications(app, args).await,
+        "get_notification_detail" => get_notification_detail(app, args).await,
         "get_course_detail" => get_course_detail(app, args).await,
         "list_recent_mail" => list_recent_mail(app, args).await,
         "read_mail" => read_mail(app, args).await,
+        "search_mail" => search_mail(app, args).await,
+        "list_luna_announcements" => list_luna_announcements(app, args).await,
         "get_student_profile" => get_student_profile(app).await,
         "get_mail_profile" => get_mail_profile(app).await,
         "list_syllabus_favorites" => list_syllabus_favorites(app, args).await,
@@ -459,6 +556,8 @@ pub async fn dispatch(app: &tauri::AppHandle, name: &str, args: &Value) -> Value
         "read_downloaded_file" | "inspect_file" => read_downloaded_file(args).await,
         "write_downloaded_text_file" => write_downloaded_text_file(args).await,
         "open_downloaded_file" => open_downloaded_file(app, args).await,
+        "delete_downloaded_file" => delete_downloaded_file(args).await,
+        "download_url" => download_url(args).await,
         "open_luna_attachment" => open_luna_attachment(app, args).await,
         "download_luna_attachment" => download_luna_attachment(app, args).await,
         "list_browser_windows" => list_browser_windows(app).await,
@@ -473,8 +572,21 @@ pub async fn dispatch(app: &tauri::AppHandle, name: &str, args: &Value) -> Value
         "browser_press" => browser_press(app, args).await,
         "browser_scroll" => browser_scroll(app, args).await,
         "browser_wait_for" => browser_wait_for(app, args).await,
-        // is_known_tool guard above ensures we never reach here
-        _ => unreachable!(),
+        "browser_close" => browser_close_tool(app, args).await,
+        "get_today_brief" => get_today_brief(app).await,
+        "create_google_calendar_event" => create_google_calendar_event(app, args).await,
+        "list_google_calendar_events" => list_google_calendar_events(app).await,
+        "delete_google_calendar_event" => delete_google_calendar_event(app, args).await,
+        "update_google_calendar_event" => update_google_calendar_event(app, args).await,
+        // Listed in TOOL_SPECS but not yet wired here. Treated as a soft
+        // failure so a forgotten dispatch arm cannot panic in production.
+        other => {
+            log::error!(
+                "[agent tools] tool {} is registered but has no dispatch arm",
+                other
+            );
+            Err(format!("tool {} is not implemented yet", other))
+        }
     };
     match result {
         Ok(v) => v,
@@ -565,12 +677,27 @@ fn sanitize_by_schema(schema: ArgSchema, args: &Value) -> Option<Value> {
             Some(Value::Object(out))
         }
         ArgSchema::Url => sanitize_url_arg(args, "url").map(|url| json!({ "url": url })),
+        ArgSchema::DownloadUrl => {
+            let url = sanitize_url_arg(args, "url")?;
+            let filename = sanitize_text_arg(args, "filename", 200);
+            let mut out = serde_json::Map::new();
+            out.insert("url".into(), Value::String(url));
+            if let Some(name) = filename {
+                out.insert("filename".into(), Value::String(name));
+            }
+            Some(Value::Object(out))
+        }
         ArgSchema::BrowserClick => sanitize_browser_click_args(args),
         ArgSchema::BrowserFill => sanitize_browser_fill_args(args),
         ArgSchema::BrowserSelect => sanitize_browser_select_args(args),
         ArgSchema::BrowserPress => sanitize_browser_press_args(args),
         ArgSchema::BrowserScroll => sanitize_browser_scroll_args(args),
         ArgSchema::BrowserWait => sanitize_browser_wait_args(args),
+        ArgSchema::CalendarEvent => sanitize_calendar_event_args(args),
+        ArgSchema::CalendarUpdate => sanitize_calendar_update_args(args),
+        ArgSchema::CalendarEventId => {
+            sanitize_text_arg(args, "event_id", 200).map(|id| json!({ "event_id": id }))
+        }
     }
 }
 
@@ -805,6 +932,68 @@ fn sanitize_browser_wait_args(args: &Value) -> Option<Value> {
         out.insert("text".into(), Value::String(text));
     }
     out.insert("timeout_ms".into(), Value::Number(timeout_ms.into()));
+    Some(Value::Object(out))
+}
+
+fn sanitize_calendar_event_args(args: &Value) -> Option<Value> {
+    // title, date, start_time, end_time are required.
+    let title = sanitize_text_arg(args, "title", 200)?;
+    let date = sanitize_text_arg(args, "date", 10)?;
+    let start_time = sanitize_text_arg(args, "start_time", 5)?;
+    let end_time = sanitize_text_arg(args, "end_time", 5)?;
+    // Basic structural validation — real format validation happens inside the tool.
+    if date.len() != 10 || !date.chars().nth(4).map(|c| c == '-').unwrap_or(false) {
+        return None;
+    }
+    if start_time.len() != 5 || end_time.len() != 5 {
+        return None;
+    }
+    let location = sanitize_text_arg(args, "location", 200);
+    let description = sanitize_text_arg(args, "description", 500);
+    let mut out = serde_json::Map::new();
+    out.insert("title".into(), Value::String(title));
+    out.insert("date".into(), Value::String(date));
+    out.insert("start_time".into(), Value::String(start_time));
+    out.insert("end_time".into(), Value::String(end_time));
+    if let Some(loc) = location {
+        out.insert("location".into(), Value::String(loc));
+    }
+    if let Some(desc) = description {
+        out.insert("description".into(), Value::String(desc));
+    }
+    Some(Value::Object(out))
+}
+
+fn sanitize_calendar_update_args(args: &Value) -> Option<Value> {
+    // event_id is required; all other fields are optional.
+    let event_id = sanitize_text_arg(args, "event_id", 200)?;
+    let title = sanitize_text_arg(args, "title", 200);
+    let date = sanitize_text_arg(args, "date", 10).filter(|d| {
+        d.len() == 10 && d.chars().nth(4).map(|c| c == '-').unwrap_or(false)
+    });
+    let start_time = sanitize_text_arg(args, "start_time", 5).filter(|t| t.len() == 5);
+    let end_time = sanitize_text_arg(args, "end_time", 5).filter(|t| t.len() == 5);
+    let location = sanitize_text_arg(args, "location", 200);
+    let description = sanitize_text_arg(args, "description", 500);
+    let mut out = serde_json::Map::new();
+    out.insert("event_id".into(), Value::String(event_id));
+    if let Some(v) = title { out.insert("title".into(), Value::String(v)); }
+    if let Some(v) = date { out.insert("date".into(), Value::String(v)); }
+    if let Some(v) = start_time { out.insert("start_time".into(), Value::String(v)); }
+    if let Some(v) = end_time { out.insert("end_time".into(), Value::String(v)); }
+    // Pass through location/description even if empty so tool knows to clear them.
+    if args.get("location").is_some() {
+        out.insert(
+            "location".into(),
+            location.map(Value::String).unwrap_or(Value::Null),
+        );
+    }
+    if args.get("description").is_some() {
+        out.insert(
+            "description".into(),
+            description.map(Value::String).unwrap_or(Value::Null),
+        );
+    }
     Some(Value::Object(out))
 }
 

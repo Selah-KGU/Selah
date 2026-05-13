@@ -121,6 +121,111 @@ pub(super) async fn get_upcoming_deadlines(app: &tauri::AppHandle) -> Result<Val
     Ok(json!({ "deadlines": items }))
 }
 
+pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, String> {
+    let db = app.state::<Database>();
+    let now = chrono::Local::now();
+    use chrono::Datelike;
+    let dow = now.weekday().number_from_monday() as i32;
+    let dow_label = match dow {
+        1 => "月曜日",
+        2 => "火曜日",
+        3 => "水曜日",
+        4 => "木曜日",
+        5 => "金曜日",
+        6 => "土曜日",
+        7 => "日曜日",
+        _ => "?",
+    };
+
+    // Today's classes (best-effort: snapshot may be missing).
+    let classes: Vec<Value> = match db.get_snapshot_state() {
+        Ok(Some(snap)) if !snap.current_week_label.is_empty() => {
+            let kgc = db
+                .get_kgc_courses(&snap.current_week_label)
+                .unwrap_or_default();
+            let luna = db.get_luna_courses().unwrap_or_default();
+            let mut out: Vec<Value> = Vec::new();
+            for c in kgc.iter().filter(|c| c.day == dow) {
+                out.push(json!({
+                    "source": "kgc",
+                    "period": c.period,
+                    "name": c.name,
+                    "room": c.room,
+                    "cancelled": c.is_cancelled,
+                    "makeup": c.is_makeup,
+                    "room_changed": c.is_room_changed,
+                }));
+            }
+            for c in luna.iter().filter(|c| c.day == dow) {
+                out.push(json!({
+                    "source": "luna",
+                    "period": c.period,
+                    "name": c.name,
+                    "teacher": c.teacher,
+                }));
+            }
+            out.sort_by_key(|v| v.get("period").and_then(|x| x.as_i64()).unwrap_or(0));
+            out
+        }
+        _ => Vec::new(),
+    };
+
+    // Most-urgent unsubmitted deadlines (max 5).
+    let acts = db.get_all_luna_activities().unwrap_or_default();
+    let luna_courses = db.get_luna_courses().unwrap_or_default();
+    let mut deadlines: Vec<Value> = Vec::new();
+    for a in &acts {
+        if !matches!(a.activity_type.as_str(), "report" | "exam" | "discussion") {
+            continue;
+        }
+        if a.status.contains("提出済") || a.status.contains("回答済") {
+            continue;
+        }
+        let urgency = deadline_urgency(&a.period, &now);
+        if !matches!(urgency, "overdue" | "critical" | "soon") {
+            continue;
+        }
+        let course = luna_courses
+            .iter()
+            .find(|c| c.luna_id == a.luna_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        deadlines.push(json!({
+            "type": a.activity_type,
+            "course": course,
+            "title": a.title,
+            "deadline": a.period,
+            "urgency": urgency,
+        }));
+    }
+    deadlines.sort_by_key(|v| match v.get("urgency").and_then(|u| u.as_str()).unwrap_or("normal") {
+        "overdue" => 0,
+        "critical" => 1,
+        "soon" => 2,
+        _ => 3,
+    });
+    deadlines.truncate(5);
+
+    // Weather (best-effort).
+    let weather = match crate::commands::fetch_weather().await {
+        Ok(data) => Some(json!({
+            "temperature_c": data.temperature,
+            "humidity_pct": data.humidity,
+            "wind_kmh": data.wind_speed,
+            "weather_code": data.weather_code,
+        })),
+        Err(_) => None,
+    };
+
+    Ok(json!({
+        "date": now.format("%Y-%m-%d").to_string(),
+        "day_of_week": dow_label,
+        "classes": classes,
+        "urgent_deadlines": deadlines,
+        "weather": weather,
+    }))
+}
+
 pub(super) async fn refresh_data(app: &tauri::AppHandle) -> Result<Value, String> {
     let started = std::time::Instant::now();
     let luna_state = app.state::<crate::LunaState>();

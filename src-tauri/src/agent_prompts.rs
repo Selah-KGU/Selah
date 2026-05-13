@@ -32,6 +32,11 @@ pub fn plan_system_prompt(date_context: &str, supports_prefill: bool) -> String 
 const PLAN_HEADER: &str = "\
 You are the tool-planning stage. Your only job is to choose the right tools.
 
+=== CATALOG CONSTRAINT ===
+You MUST only select tools from the 'Available tools' list below.
+Never invent, guess, or compose tool names. If no listed tool can fulfill the
+request, output {\"tools\":[]} and let Phase 2 explain the limitation.
+
 === PRIMARY RULE ===
 If the request touches campus data, downloaded files, attachments, deadlines,
 mail, grades, schedules, browser pages, URLs, or webpage contents, use tools.
@@ -191,6 +196,18 @@ Open found file:
 Read found file:
 {\"tools\":[{\"name\":\"read_downloaded_file\",\"args\":{\"path\":\"<PATH_FROM_HISTORY>\"}}]}
 
+Add single event to Google Calendar (extract all fields from conversation):
+{\"tools\":[{\"name\":\"create_google_calendar_event\",\"args\":{\"title\":\"政治学基礎2 中間試験\",\"date\":\"2026-05-25\",\"start_time\":\"11:10\",\"end_time\":\"12:40\",\"location\":\"B号館201教室\"}}]}
+
+List agent-created calendar events (before delete/edit):
+{\"tools\":[{\"name\":\"list_google_calendar_events\",\"args\":{}}]}
+
+Delete a calendar event (after listing to get event_id):
+{\"tools\":[{\"name\":\"delete_google_calendar_event\",\"args\":{\"event_id\":\"<event_id_from_list>\"}}]}
+
+Update a calendar event (only changed fields):
+{\"tools\":[{\"name\":\"update_google_calendar_event\",\"args\":{\"event_id\":\"<event_id_from_list>\",\"date\":\"2026-05-26\",\"start_time\":\"13:00\",\"end_time\":\"14:30\"}}]}
+
 No tools:
 {\"tools\":[]}
 
@@ -219,7 +236,18 @@ No tools:
 - wait for page update -> browser_wait_for
 - weather -> get_weather
 - weekly overview -> get_weekly_summary
-- refresh / reconnect -> refresh_data";
+- today brief / overview / 今日まとめ -> get_today_brief
+- search mail by keyword -> search_mail
+- notification body / detail / 内容 / 本文 -> get_notification_detail (after list_recent_notifications or search_notifications)
+- luna course announcements -> list_luna_announcements
+- delete a downloaded file -> delete_downloaded_file
+- save a URL to downloads -> download_url
+- close current browser window -> browser_close
+- refresh / reconnect -> refresh_data
+- add to Google Calendar / カレンダーに追加 / 加进日历 -> create_google_calendar_event (title, date YYYY-MM-DD, start_time HH:MM, end_time HH:MM; extract from conversation context)
+- list / show agent calendar events -> list_google_calendar_events
+- delete a calendar event -> list_google_calendar_events (to get event_id) then delete_google_calendar_event(event_id)
+- edit / update a calendar event -> list_google_calendar_events (to get event_id) then update_google_calendar_event(event_id, ...changed fields only)";
 
 const PLAN_FOOTER: &str = "
 
@@ -305,6 +333,7 @@ You can truthfully say you can:
 - open and inspect pages in the in-app browser webview
 - inspect filtered page content plus visible headings, links, buttons, and forms
 - click, fill, select, press keys, scroll, and wait inside the in-app browser
+- add, list, edit, and delete Google Calendar events (when the user has linked their Google account)
 You must not:
 - print tool names, JSON, argument objects, pseudo logs, or function-call syntax
 - output strings like `call:...{...}`

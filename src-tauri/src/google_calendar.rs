@@ -57,11 +57,29 @@ pub struct TokenData {
 }
 
 /// Tracks which events we have synced.
-/// event_map key: "YYYY-MM-DD-period" (e.g. "2026-04-07-3")
+/// event_map key: "YYYY-MM-DD-period" (e.g. "2026-04-07-3") — timetable sync only.
+/// agent_event_map key: Google event ID — events created by the agent via
+/// `create_google_calendar_event`. Stored separately so timetable sync never
+/// touches them. Format of value: JSON-encoded `AgentEventMeta`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SyncState {
     pub calendar_id: String,
     pub event_map: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub agent_event_map: std::collections::HashMap<String, AgentEventMeta>,
+}
+
+/// Metadata stored locally for each agent-created calendar event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEventMeta {
+    pub title: String,
+    pub date: String,
+    pub start_time: String,
+    pub end_time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -634,6 +652,187 @@ impl GoogleCalendarClient {
             week_count, created, updated, deleted
         ))
     }
+
+    /// Create a single free-form event on the "Selah 時間割" calendar.
+    /// `date` must be YYYY-MM-DD, `start_time` / `end_time` must be HH:MM.
+    /// Returns a human-readable confirmation string.
+    pub async fn create_single_event(
+        &mut self,
+        title: &str,
+        date: &str,
+        start_time: &str,
+        end_time: &str,
+        location: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<String, String> {
+        if !self.is_authenticated() {
+            return Err("Google Calendarにログインしていません。設定画面から連携してください。".into());
+        }
+        // Basic format validation to prevent injection into the API call.
+        let date_re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap();
+        let time_re = regex::Regex::new(r"^\d{2}:\d{2}$").unwrap();
+        if !date_re.is_match(date) {
+            return Err(format!("日付フォーマットが不正です (期待: YYYY-MM-DD): {}", date));
+        }
+        if !time_re.is_match(start_time) || !time_re.is_match(end_time) {
+            return Err("時刻フォーマットが不正です (期待: HH:MM)".into());
+        }
+        let cal_id = self.ensure_calendar().await?;
+        let start_dt = format!("{}T{}:00", date, start_time);
+        let end_dt = format!("{}T{}:00", date, end_time);
+        let mut body = serde_json::json!({
+            "summary": title,
+            "start": { "dateTime": start_dt, "timeZone": "Asia/Tokyo" },
+            "end":   { "dateTime": end_dt,   "timeZone": "Asia/Tokyo" },
+        });
+        if let Some(loc) = location {
+            body["location"] = serde_json::Value::String(loc.to_string());
+        }
+        if let Some(desc) = description {
+            body["description"] = serde_json::Value::String(desc.to_string());
+        }
+        let event_id = self.create_event(&cal_id, &body).await?;
+        // Persist locally so we can list / edit / delete later.
+        self.sync_state.agent_event_map.insert(
+            event_id,
+            AgentEventMeta {
+                title: title.to_string(),
+                date: date.to_string(),
+                start_time: start_time.to_string(),
+                end_time: end_time.to_string(),
+                location: location.map(|s| s.to_string()),
+                description: description.map(|s| s.to_string()),
+            },
+        );
+        save_sync_state(&self.sync_state)?;
+        Ok(format!(
+            "「{}」を {} {} – {} にGoogle Calendarへ登録しました。",
+            title, date, start_time, end_time
+        ))
+    }
+
+    /// List all agent-created events (newest date first).
+    pub fn list_agent_events(&self) -> Vec<(String, AgentEventMeta)> {
+        let mut items: Vec<(String, AgentEventMeta)> = self
+            .sync_state
+            .agent_event_map
+            .iter()
+            .map(|(id, meta)| (id.clone(), meta.clone()))
+            .collect();
+        // Sort descending by date then start_time.
+        items.sort_by(|a, b| {
+            b.1.date
+                .cmp(&a.1.date)
+                .then(b.1.start_time.cmp(&a.1.start_time))
+        });
+        items
+    }
+
+    /// Delete an agent-created event by its Google event ID.
+    pub async fn delete_agent_event(&mut self, event_id: &str) -> Result<String, String> {
+        if !self.is_authenticated() {
+            return Err("Google Calendarにログインしていません。".into());
+        }
+        let meta = self
+            .sync_state
+            .agent_event_map
+            .get(event_id)
+            .cloned()
+            .ok_or_else(|| format!("イベントID '{}' は見つかりません", event_id))?;
+        let cal_id = self.sync_state.calendar_id.clone();
+        if cal_id.is_empty() {
+            return Err("カレンダーが作成されていません".into());
+        }
+        // Best-effort API delete; if already gone on Google side, still remove locally.
+        let _ = self.delete_event(&cal_id, event_id).await;
+        self.sync_state.agent_event_map.remove(event_id);
+        save_sync_state(&self.sync_state)?;
+        Ok(format!("「{}」({} {}) を削除しました。", meta.title, meta.date, meta.start_time))
+    }
+
+    /// Update an agent-created event. Only fields provided (Some) are changed.
+    pub async fn update_agent_event(
+        &mut self,
+        event_id: &str,
+        title: Option<&str>,
+        date: Option<&str>,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        location: Option<Option<&str>>,
+        description: Option<Option<&str>>,
+    ) -> Result<String, String> {
+        if !self.is_authenticated() {
+            return Err("Google Calendarにログインしていません。".into());
+        }
+        let meta = self
+            .sync_state
+            .agent_event_map
+            .get(event_id)
+            .cloned()
+            .ok_or_else(|| format!("イベントID '{}' は見つかりません", event_id))?;
+        let cal_id = self.sync_state.calendar_id.clone();
+        if cal_id.is_empty() {
+            return Err("カレンダーが作成されていません".into());
+        }
+
+        let date_re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap();
+        let time_re = regex::Regex::new(r"^\d{2}:\d{2}$").unwrap();
+
+        let new_title = title.unwrap_or(&meta.title);
+        let new_date = date.unwrap_or(&meta.date);
+        let new_start = start_time.unwrap_or(&meta.start_time);
+        let new_end = end_time.unwrap_or(&meta.end_time);
+        if !date_re.is_match(new_date) {
+            return Err(format!("日付フォーマットが不正です: {}", new_date));
+        }
+        if !time_re.is_match(new_start) || !time_re.is_match(new_end) {
+            return Err("時刻フォーマットが不正です (HH:MM)".into());
+        }
+        let new_location: Option<String> = match location {
+            Some(Some(v)) => Some(v.to_string()),
+            Some(None) => None, // explicitly cleared
+            None => meta.location.clone(),
+        };
+        let new_description: Option<String> = match description {
+            Some(Some(v)) => Some(v.to_string()),
+            Some(None) => None,
+            None => meta.description.clone(),
+        };
+
+        let start_dt = format!("{}T{}:00", new_date, new_start);
+        let end_dt = format!("{}T{}:00", new_date, new_end);
+        let mut body = serde_json::json!({
+            "summary": new_title,
+            "start": { "dateTime": start_dt, "timeZone": "Asia/Tokyo" },
+            "end":   { "dateTime": end_dt,   "timeZone": "Asia/Tokyo" },
+        });
+        if let Some(ref loc) = new_location {
+            body["location"] = serde_json::Value::String(loc.clone());
+        }
+        if let Some(ref desc) = new_description {
+            body["description"] = serde_json::Value::String(desc.clone());
+        }
+        self.update_event(&cal_id, event_id, &body).await?;
+
+        // Update local metadata.
+        let updated_meta = AgentEventMeta {
+            title: new_title.to_string(),
+            date: new_date.to_string(),
+            start_time: new_start.to_string(),
+            end_time: new_end.to_string(),
+            location: new_location,
+            description: new_description,
+        };
+        self.sync_state
+            .agent_event_map
+            .insert(event_id.to_string(), updated_meta);
+        save_sync_state(&self.sync_state)?;
+        Ok(format!(
+            "「{}」を {} {} – {} に更新しました。",
+            new_title, new_date, new_start, new_end
+        ))
+    }
+
 
     async fn create_event(
         &mut self,

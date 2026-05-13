@@ -94,6 +94,23 @@ struct AgentConfig {
     preview_bytes: usize,
     /// Hard timeout for a single tool execution.
     tool_timeout_secs: u64,
+    /// Extended timeout for slow refresh-style tools.
+    slow_tool_timeout_secs: u64,
+}
+
+/// Tools that are known to take much longer than `tool_timeout_secs` because
+/// they hit the network across many courses. Returning a timeout for them
+/// while the work continues in the background creates "failed but actually
+/// succeeded" inconsistencies, so they get their own ceiling.
+const SLOW_TOOLS: &[&str] = &["refresh_data", "download_url"];
+
+fn timeout_for(tool: &str) -> std::time::Duration {
+    let secs = if SLOW_TOOLS.contains(&tool) {
+        CFG.slow_tool_timeout_secs
+    } else {
+        CFG.tool_timeout_secs
+    };
+    std::time::Duration::from_secs(secs)
 }
 
 const CFG: AgentConfig = AgentConfig {
@@ -112,6 +129,7 @@ const CFG: AgentConfig = AgentConfig {
     recent_tool_context: 3,
     preview_bytes: 180,
     tool_timeout_secs: 35,
+    slow_tool_timeout_secs: 120,
 };
 
 // ─────────────────────── Stream Events ───────────────────────
@@ -280,20 +298,21 @@ async fn plan_phase(
         };
     }
     emit(app, conv_id, &StreamEvent::Phase { stage: "planning" });
-    choose_plan(provider, history, user_text).await
+    choose_plan(provider, history, user_text, conv_id).await
 }
 
 async fn choose_plan(
     provider: &AgentProvider,
     history: &[crate::db::AgentMessageRow],
     user_text: &str,
+    conv_id: &str,
 ) -> Plan {
     // Fast path: heuristic covers unambiguous keywords.
     if let Some(plan) = heuristic_plan(history, user_text) {
         return finalize_plan(plan, history, user_text);
     }
     // Slow path: ask model.
-    match run_plan_inference(provider, history, user_text).await {
+    match run_plan_inference(provider, history, user_text, conv_id).await {
         Ok(plan) => finalize_plan(plan, history, user_text),
         Err(e) => {
             log::warn!("agent plan phase failed: {} — proceeding with no tools", e);
@@ -306,6 +325,7 @@ async fn run_plan_inference(
     provider: &AgentProvider,
     history: &[crate::db::AgentMessageRow],
     user_text: &str,
+    conv_id: &str,
 ) -> Result<Plan, AgentError> {
     let supports_prefill = provider.supports_prefill();
     log::debug!(
@@ -327,6 +347,7 @@ async fn run_plan_inference(
             CFG.plan_temperature,
             prefill,
             CFG.plan_think_budget_pct,
+            conv_id,
         )
         .await?;
 
@@ -578,6 +599,31 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                     .collect::<Vec<_>>()
                     .join("; ")
             }),
+        "list_google_calendar_events" => {
+            parsed.get("events").and_then(|v| v.as_array()).map(|items| {
+                items
+                    .iter()
+                    .take(5)
+                    .map(|e| {
+                        format!(
+                            "cal[id={}, title={}, date={} {}-{}]",
+                            e.get("event_id").and_then(|v| v.as_str()).unwrap_or(""),
+                            e.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                            e.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                            e.get("start_time").and_then(|v| v.as_str()).unwrap_or(""),
+                            e.get("end_time").and_then(|v| v.as_str()).unwrap_or(""),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+        }
+        "create_google_calendar_event"
+        | "delete_google_calendar_event"
+        | "update_google_calendar_event" => parsed
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(|s| format!("cal_action[{}]", s)),
         _ => None,
     };
     trim_to(summary.as_deref().unwrap_or(json), 260)
@@ -649,15 +695,16 @@ async fn execute_tools(
             call.name,
             serde_json::to_string(&call.args).unwrap_or_default()
         );
+        let timeout = timeout_for(&call.name);
         let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(CFG.tool_timeout_secs),
+            timeout,
             agent_tools::dispatch(app, &call.name, &call.args),
         )
         .await
         {
             Ok(result) => result,
             Err(_) => json!({
-                "error": format!("tool timed out after {}s", CFG.tool_timeout_secs),
+                "error": format!("tool timed out after {}s", timeout.as_secs()),
             }),
         };
         let ok = result.get("error").is_none();
@@ -713,15 +760,16 @@ async fn execute_tools(
                     "[agent tool] auto-follow name=read_downloaded_file args={}",
                     serde_json::to_string(&auto_args).unwrap_or_default()
                 );
+                let auto_timeout = timeout_for("read_downloaded_file");
                 let auto_result = match tokio::time::timeout(
-                    std::time::Duration::from_secs(CFG.tool_timeout_secs),
+                    auto_timeout,
                     agent_tools::dispatch(app, "read_downloaded_file", &auto_args),
                 )
                 .await
                 {
                     Ok(result) => result,
                     Err(_) => json!({
-                        "error": format!("tool timed out after {}s", CFG.tool_timeout_secs),
+                        "error": format!("tool timed out after {}s", auto_timeout.as_secs()),
                     }),
                 };
                 let auto_ok = auto_result.get("error").is_none();
@@ -853,7 +901,11 @@ fn build_answer_messages(
         system.push_str("</tool_results>\n");
     }
 
-    let recent = recent_tool_results(history, CFG.recent_tool_context);
+    let current_names: HashSet<&str> = tool_results.iter().map(|(n, _)| n.as_str()).collect();
+    let recent: Vec<(String, String)> = recent_tool_results(history, CFG.recent_tool_context)
+        .into_iter()
+        .filter(|(name, _)| !current_names.contains(name.as_str()))
+        .collect();
     if !recent.is_empty() {
         system.push_str("\n<recent_tool_results>\n");
         for (name, json) in &recent {
@@ -991,6 +1043,22 @@ const HEURISTIC_RULES: &[HeuristicRule] = &[
         keywords: &["天気", "weather", "天气"],
         requires: &[],
         tool: "get_weather",
+        args: || json!({}),
+    },
+    HeuristicRule {
+        keywords: &[
+            "今天怎么过",
+            "今日どう",
+            "今日のまとめ",
+            "今日の予定",
+            "今日のブリーフ",
+            "todaysummary",
+            "todaybrief",
+            "今天有什么安排",
+            "一日の流れ",
+        ],
+        requires: &[],
+        tool: "get_today_brief",
         args: || json!({}),
     },
     HeuristicRule {
@@ -1172,6 +1240,22 @@ const HEURISTIC_RULES: &[HeuristicRule] = &[
         tool: "refresh_data",
         args: || json!({}),
     },
+    // Google Calendar — list only (create/edit/delete require model to extract args)
+    HeuristicRule {
+        keywords: &[
+            "カレンダー一覧",
+            "登録したイベント",
+            "登録済みイベント",
+            "calendarlist",
+            "日历列表",
+            "已添加的日历",
+            "日历事件列表",
+            "listcalendar",
+        ],
+        requires: &[],
+        tool: "list_google_calendar_events",
+        args: || json!({}),
+    },
 ];
 
 fn heuristic_plan(history: &[crate::db::AgentMessageRow], user_text: &str) -> Option<Plan> {
@@ -1316,6 +1400,7 @@ fn is_smalltalk_or_identity(norm: &str) -> bool {
     if norm.is_empty() {
         return true;
     }
+    // Pure greetings / acknowledgements — never need a tool.
     const SMALLTALK: &[&str] = &[
         "こんにちは",
         "こんばんは",
@@ -1334,6 +1419,7 @@ fn is_smalltalk_or_identity(norm: &str) -> bool {
         "元気",
         "howareyou",
     ];
+    // "Who are you / introduce yourself" style — answer comes from persona only.
     const IDENTITY: &[&str] = &[
         "あなたは誰",
         "君は誰",
@@ -1342,17 +1428,23 @@ fn is_smalltalk_or_identity(norm: &str) -> bool {
         "whoareyou",
         "自己紹介",
         "介绍一下自己",
-        "好き",
-        "like",
-        "喜歡",
-        "喜欢",
-        "意见",
-        "意見",
-        "怎么看",
-        "どう思う",
     ];
+    // Pure opinion / feeling questions about the assistant. Kept very short and
+    // generic so utterances like "経済学が好き" with concrete subjects still
+    // fall through to the planner.
+    const OPINION: &[&str] = &["どう思う", "怎么看", "意见", "意見"];
     let short = norm.chars().count() <= 24;
-    (short && contains_any(norm, SMALLTALK)) || (short && contains_any(norm, IDENTITY))
+    let very_short = norm.chars().count() <= 10;
+    if short && contains_any(norm, SMALLTALK) {
+        return true;
+    }
+    if short && contains_any(norm, IDENTITY) {
+        return true;
+    }
+    if very_short && contains_any(norm, OPINION) {
+        return true;
+    }
+    false
 }
 
 fn recent_downloaded_file_path(history: &[crate::db::AgentMessageRow]) -> Option<String> {
@@ -1582,6 +1674,13 @@ fn is_follow_up_with_context(history: &[crate::db::AgentMessageRow], norm: &str)
         "收到",
         "明白",
         "なるほど",
+        // Short CJK acknowledgements that never start an action sequence.
+        // Note: "好", "行", "加", "要", "可以" are intentionally excluded because
+        // they frequently serve as directives ("好，加进日历") that should still
+        // trigger tool calls.
+        "嗯",      // uh-huh / mm-hmm (Chinese)
+        "そうですか", // I see / is that so (Japanese)
+        "そうか",   // I see (Japanese)
     ];
     norm.chars().count() <= 24 && contains_any(norm, ACK_MARKERS)
 }
@@ -1707,17 +1806,40 @@ fn extract_kgc_code(text: &str) -> Option<String> {
     None
 }
 
+/// Real KGC course codes start with a small set of faculty-letter prefixes.
+/// Adding the whitelist here prevents tokens like `PDF12345` or `MAC10000` —
+/// which fit the structural pattern of letters+digits — from being
+/// dispatched as syllabus lookups.
+const KGC_PREFIX_WHITELIST: &[&str] = &[
+    "AB", "AE", "AL", "AS", "BL", "BU", "CO", "CS", "DC", "EC", "ED", "EN", "FD", "GE", "GS",
+    "HS", "HU", "IB", "IC", "IS", "JP", "LA", "LB", "LE", "LI", "LR", "LS", "MA", "MD", "ME",
+    "MM", "MS", "NS", "PA", "PE", "PH", "PL", "PO", "PS", "RC", "RE", "SC", "SD", "SO", "SP",
+    "ST", "TA", "TC", "TH", "TM", "TS", "UC",
+];
+
 fn looks_like_kgc_code(token: &str) -> bool {
-    let letters = token
+    let letters_n = token
         .chars()
         .take_while(|c| c.is_ascii_alphabetic())
         .count();
-    let digits = token
+    let digits_n = token
         .chars()
-        .skip(letters)
+        .skip(letters_n)
         .take_while(|c| c.is_ascii_digit())
         .count();
-    letters >= 2 && digits >= 3 && letters + digits == token.len()
+    if !(letters_n >= 2 && digits_n >= 3 && letters_n + digits_n == token.len()) {
+        return false;
+    }
+    // Real KGC codes are typically 2-3 letter prefix + 4-5 digits.
+    if letters_n > 4 || digits_n > 6 {
+        return false;
+    }
+    let prefix: String = token
+        .chars()
+        .take(2)
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    KGC_PREFIX_WHITELIST.contains(&prefix.as_str())
 }
 
 fn trim_to(s: &str, max_chars: usize) -> String {
@@ -1978,6 +2100,124 @@ mod tests {
     fn heuristic_student_profile() {
         let plan = heuristic_plan(&[], "学籍番号教えて").expect("plan");
         assert_eq!(plan.tools[0].name, "get_student_profile");
+    }
+
+    #[test]
+    fn heuristic_today_brief() {
+        let plan = heuristic_plan(&[], "今天有什么安排").expect("plan");
+        assert_eq!(plan.tools[0].name, "get_today_brief");
+    }
+
+    #[test]
+    fn kgc_code_whitelist_rejects_random_token() {
+        // PDF12345 fits the structural pattern but isn't a real KGC prefix.
+        assert_eq!(extract_kgc_code("PDF12345 syllabus"), None);
+        // AB12345 should still be picked up.
+        assert_eq!(
+            extract_kgc_code("AB12345 syllabus"),
+            Some("AB12345".into())
+        );
+    }
+
+    #[test]
+    fn opinion_short_skips_smalltalk_but_long_does_not() {
+        assert!(should_skip_tools(&[], "どう思う？"));
+        assert!(!should_skip_tools(&[], "経済学が好きだから経済学の授業教えて"));
+    }
+
+    #[test]
+    fn dispatch_known_includes_new_tools() {
+        for name in [
+            "search_mail",
+            "list_luna_announcements",
+            "delete_downloaded_file",
+            "download_url",
+            "browser_close",
+            "get_today_brief",
+            "get_notification_detail",
+        ] {
+            assert!(
+                agent_tools::is_known_tool(name),
+                "tool {} missing from registry",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_get_notification_detail_args() {
+        let args = serde_json::json!({"title": "  休講のお知らせ  "});
+        let cleaned = agent_tools::sanitize_tool_args("get_notification_detail", &args).unwrap();
+        assert_eq!(cleaned.get("title").and_then(|v| v.as_str()), Some("休講のお知らせ"));
+
+        let empty = serde_json::json!({});
+        assert!(agent_tools::sanitize_tool_args("get_notification_detail", &empty).is_none());
+    }
+
+    #[test]
+    fn all_registered_tools_have_dispatch_arms() {
+        // Smoke check: every name we expose in TOOL_SPECS must come back is_known.
+        // Catches the inverse of the panic we removed — a tool listed but not
+        // wired (or vice versa).
+        for name in [
+            "list_today_classes",
+            "list_week_classes",
+            "search_courses",
+            "get_course_context",
+            "get_course_detail",
+            "get_cancellations",
+            "get_makeup_classes",
+            "get_room_changes",
+            "get_exam_timetable",
+            "list_luna_todos",
+            "get_grades",
+            "get_registration",
+            "list_syllabus_favorites",
+            "list_recent_notifications",
+            "search_notifications",
+            "get_notification_detail",
+            "list_recent_mail",
+            "read_mail",
+            "search_mail",
+            "list_luna_announcements",
+            "get_mail_profile",
+            "get_student_profile",
+            "get_weather",
+            "get_weekly_summary",
+            "get_todo_guide",
+            "get_upcoming_deadlines",
+            "get_luna_activity_detail",
+            "refresh_data",
+            "list_downloaded_files",
+            "read_downloaded_file",
+            "inspect_file",
+            "write_downloaded_text_file",
+            "open_downloaded_file",
+            "delete_downloaded_file",
+            "download_url",
+            "open_luna_attachment",
+            "download_luna_attachment",
+            "list_browser_windows",
+            "open_browser_url",
+            "read_browser_page",
+            "browser_back",
+            "browser_forward",
+            "browser_reload_page",
+            "browser_click",
+            "browser_fill",
+            "browser_select_option",
+            "browser_press",
+            "browser_scroll",
+            "browser_wait_for",
+            "browser_close",
+            "get_today_brief",
+        ] {
+            assert!(
+                agent_tools::is_known_tool(name),
+                "tool {} missing from TOOL_SPECS",
+                name
+            );
+        }
     }
 
     #[test]

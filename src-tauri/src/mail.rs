@@ -154,9 +154,11 @@ pub struct MailClient {
 }
 
 /// Validate a Graph API message ID (alphanumeric, hyphens, underscores, equals, dots).
+/// Real Graph IDs are URL-safe base64 (~150 chars typical) but tenants with long
+/// folder hierarchies can push past 200, so we reserve some headroom.
 pub(crate) fn validate_message_id(id: &str) -> Result<(), String> {
     if id.is_empty()
-        || id.len() > 200
+        || id.len() > 512
         || !id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_=.".contains(c))

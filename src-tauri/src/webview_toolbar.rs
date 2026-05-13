@@ -1014,6 +1014,29 @@ pub async fn browser_get_url(app: tauri::AppHandle, target: String) -> Result<St
     wv.url().map(|u| u.to_string()).map_err(|e| e.to_string())
 }
 
+/// Close the browser window that owns `target` (which may be either the window
+/// label, the `-ct` content webview label, or the `-tb` toolbar webview label).
+/// Removes the label from the registry so subsequent `list_browser_windows`
+/// calls reflect reality even before Tauri finishes destroying the window.
+pub async fn browser_close(app: tauri::AppHandle, target: String) -> Result<String, String> {
+    let label = target
+        .strip_suffix("-ct")
+        .or_else(|| target.strip_suffix("-tb"))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| target.clone());
+    let window = app
+        .get_window(&label)
+        .ok_or_else(|| format!("ウィンドウが見つかりません: {}", label))?;
+    BROWSER_WINDOW_LABELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&label);
+    window
+        .close()
+        .map_err(|e| format!("ウィンドウを閉じられませんでした: {}", e))?;
+    Ok(label)
+}
+
 #[tauri::command]
 pub async fn browser_report_page_text(report: BrowserPageTextReport) -> Result<(), String> {
     let tx = PAGE_TEXT_WAITERS

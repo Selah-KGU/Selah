@@ -545,6 +545,8 @@
       get_course_detail: "科目の詳細を確認中…",
       list_recent_mail: "メールを確認中…",
       read_mail: "メールを読んでいます…",
+      search_mail: "メールを検索中…",
+      list_luna_announcements: "Luna科目の掲示を確認中…",
       get_student_profile: "学生情報を確認中…",
       get_mail_profile: "メールアカウントを確認中…",
       list_syllabus_favorites: "お気に入りシラバスを確認中…",
@@ -565,6 +567,8 @@
       inspect_file: "ファイルの内容を読んでいます…",
       write_downloaded_text_file: "ファイルを書き換えています…",
       open_downloaded_file: "ファイルを開いています…",
+      delete_downloaded_file: "ファイルを削除しています…",
+      download_url: "URLからファイルを保存しています…",
       open_luna_attachment: "添付ファイルを開いています…",
       download_luna_attachment: "添付ファイルをダウンロードしています…",
       list_browser_windows: "開いているブラウザを確認中…",
@@ -579,6 +583,9 @@
       browser_press: "キー操作を送っています…",
       browser_scroll: "ページを移動しています…",
       browser_wait_for: "ページの変化を待っています…",
+      browser_close: "ブラウザを閉じています…",
+      get_today_brief: "今日のまとめを作成中…",
+      get_notification_detail: "お知らせ本文を取得中…",
     };
     return map[n] ?? n;
   }

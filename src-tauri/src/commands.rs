@@ -244,6 +244,21 @@ pub async fn fetch_notifications(
     kgc_fetch_cached!(state, db, "notifications", "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
 }
 
+/// Agent-accessible KGC notification detail fetch. The detail endpoint is the
+/// link captured during list parsing, so callers pass the relative path verbatim.
+pub async fn fetch_notification_detail_internal(
+    app: &tauri::AppHandle,
+    path: &str,
+) -> Result<parser::NotificationDetail, String> {
+    if !path.starts_with("/uniasv2/") {
+        return Err("許可されていないパスです".into());
+    }
+    use tauri::Manager;
+    let state = app.state::<KgcState>();
+    let html = kgc_try_fetch(&state, path).await?;
+    Ok(parser::parse_notification_detail(&html))
+}
+
 #[tauri::command]
 pub async fn fetch_page(state: State<'_, KgcState>, path: String) -> Result<String, String> {
     // Only allow paths under the university system
