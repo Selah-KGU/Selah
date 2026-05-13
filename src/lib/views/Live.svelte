@@ -76,7 +76,7 @@
   const MIN_AI_SUMMARIZATION_MS = 2 * 60 * 1000;
   const NO_EFFECTIVE_SPEECH_AUTO_PAUSE_MS = 10 * 60 * 1000;
   const PAUSED_AUTO_FINISH_MS = 20 * 60 * 1000;
-  const LIVE_AUTO_GUARD_INTERVAL_MS = 30 * 1000;
+  const LIVE_AUTO_GUARD_INTERVAL_MS = 60 * 1000;
   let pendingActivationMode: "start" | "resume" | null = null;
   let cancelSessionOnStartFailure = false;
   let lastEffectiveSpeechAtMs: number | null = null;
@@ -256,12 +256,14 @@
   }
 
   $effect(() => {
-    // Only run the 5s clock while a session is active. When idle the badge
+    // Only run the clock while a session is active. When idle the badge
     // doesn't display remaining time, so waking the event loop is wasted.
+    // 30s tick: the badge is minute-resolution ("残 X 分"), so anything
+    // tighter just burns power re-deriving the same string.
     if (snapshot.active) {
       if (!timeTimer) {
         now = new Date();
-        timeTimer = setInterval(() => { now = new Date(); }, 5000);
+        timeTimer = setInterval(() => { now = new Date(); }, 30_000);
       }
       if (!liveAutoGuardTimer) {
         liveAutoGuardTimer = setInterval(() => {

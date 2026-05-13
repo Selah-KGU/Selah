@@ -525,6 +525,18 @@ pub fn remove_download_record(id: String) -> Result<(), String> {
     save_download_history(&records)
 }
 
+/// Remove any download history entries whose path matches `path`. Used when a
+/// file is being deleted from disk and we don't want a dangling "missing file"
+/// entry in the downloads list.
+pub fn remove_download_records_by_path(path: &str) {
+    let mut records = load_download_history();
+    let before = records.len();
+    records.retain(|r| r.path != path);
+    if records.len() != before {
+        let _ = save_download_history(&records);
+    }
+}
+
 #[tauri::command]
 pub fn clear_download_history() -> Result<(), String> {
     save_download_history(&[])

@@ -1806,10 +1806,15 @@ mod tests {
     }
 
     #[test]
-    fn follow_up_reuses_recent_tool_context() {
+    fn detail_or_referential_follow_up_runs_tools_again() {
+        // Even when recent tool context exists, follow-ups that ask for more
+        // detail or refer ambiguously ("那个呢？") should re-plan rather than
+        // silently reuse stale context — false positives there give wrong
+        // answers. Only explicit acknowledgments skip tools; see
+        // `follow_up_with_thanks_skips_tools` for that case.
         let history = vec![tool_row("list_today_classes")];
-        assert!(should_skip_tools(&history, "那个呢？"));
-        assert!(should_skip_tools(&history, "もう少し詳しく"));
+        assert!(!should_skip_tools(&history, "那个呢？"));
+        assert!(!should_skip_tools(&history, "もう少し詳しく"));
     }
 
     #[test]

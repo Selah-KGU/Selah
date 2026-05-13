@@ -159,7 +159,38 @@ $directMLPackage = Save-NuGetPackage `
     -Version $DirectMLVersion `
     -DestinationDir $downloadDir
 
-git clone --depth 1 --branch $SherpaVersion https://github.com/k2-fsa/sherpa-onnx.git $sourceDir
+function Invoke-GitCloneWithRetry {
+    param(
+        [string]$Branch,
+        [string]$Url,
+        [string]$Destination,
+        [int]$MaxAttempts = 5
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        if (Test-Path $Destination) {
+            Remove-Item $Destination -Recurse -Force
+        }
+
+        Write-Host "git clone attempt $attempt of $MaxAttempts"
+        & git -c http.postBuffer=524288000 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 `
+            clone --depth 1 --branch $Branch $Url $Destination
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+
+        Write-Warning "git clone failed with exit code $LASTEXITCODE"
+        if ($attempt -lt $MaxAttempts) {
+            $delay = [Math]::Min(30, [Math]::Pow(2, $attempt))
+            Write-Host "Retrying in $delay seconds..."
+            Start-Sleep -Seconds $delay
+        }
+    }
+
+    throw "git clone $Url (branch $Branch) failed after $MaxAttempts attempts"
+}
+
+Invoke-GitCloneWithRetry -Branch $SherpaVersion -Url "https://github.com/k2-fsa/sherpa-onnx.git" -Destination $sourceDir
 
 Update-DirectMLCMakePackageVersions `
     -SourceDir $sourceDir `

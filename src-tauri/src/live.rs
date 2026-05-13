@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-const CACHE_DEBOUNCE: Duration = Duration::from_secs(5);
+const CACHE_DEBOUNCE: Duration = Duration::from_secs(30);
 const MIN_AI_SUMMARIZATION_DURATION_SECS: i64 = 120;
 static LAST_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
 const FREE_NOTE_FOLDER_NAME: &str = "自由ノート";
@@ -79,6 +79,15 @@ struct LiveSession {
     pending_lines: Arc<Vec<LiveTranscriptLine>>,
     summaries: Arc<Vec<LiveSummaryChunk>>,
     batch_started_at: DateTime<Local>,
+    /// True when this session began with no prior cache for today —
+    /// i.e. it owns the on-disk .md/day_cache and cancel may scrub them.
+    /// False when resumed from an earlier session today; cancel must leave
+    /// the prior content intact.
+    is_fresh_start: bool,
+    /// How many entries of `transcript_lines` have already been persisted
+    /// (either in the main cache snapshot or appended to the deltas log).
+    /// Drives the incremental day-cache write.
+    persisted_line_count: usize,
 }
 
 impl LiveSession {
@@ -121,6 +130,34 @@ fn live_storage_dir(course: &LiveCourseInfo) -> std::path::PathBuf {
     }
 }
 
+/// Single transcript line appended to the deltas log. Field names are short
+/// (`i`/`t`/`a`) because we write one of these per spoken line — saves bytes
+/// over a session.
+#[derive(Debug, Serialize)]
+struct LiveLineDeltaRef<'a> {
+    i: usize,
+    t: &'a str,
+    a: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct LiveLineDeltaOwned {
+    i: usize,
+    t: String,
+    a: String,
+}
+
+/// Borrowing view of `LiveDayCache` used only for serialization, so we don't
+/// have to deep-clone the transcript Vec every rewrite.
+#[derive(Debug, Serialize)]
+struct LiveDayCacheRef<'a> {
+    date: String,
+    course_name: &'a str,
+    started_at: String,
+    transcript_lines: &'a [LiveTranscriptLine],
+    summaries: &'a [LiveSummaryChunk],
+}
+
 fn day_cache_path(course: &LiveCourseInfo) -> Option<std::path::PathBuf> {
     if course.is_free_note {
         return None;
@@ -131,50 +168,211 @@ fn day_cache_path(course: &LiveCourseInfo) -> Option<std::path::PathBuf> {
     Some(dir.join(format!(".{}_{}_live.cache.json", date_str, safe_name)))
 }
 
+/// Append-only NDJSON log of transcript lines not yet folded into the main
+/// snapshot. Lets us avoid rewriting the full cache every 30s.
+fn day_cache_deltas_path(course: &LiveCourseInfo) -> Option<std::path::PathBuf> {
+    if course.is_free_note {
+        return None;
+    }
+    let dir = live_storage_dir(course);
+    let date_str = Local::now().format("%Y%m%d").to_string();
+    let safe_name = sanitize_filename_component(&course.course_name);
+    Some(dir.join(format!(".{}_{}_live.lines.ndjson", date_str, safe_name)))
+}
+
 fn load_day_cache(course: &LiveCourseInfo) -> Option<LiveDayCache> {
     let path = day_cache_path(course)?;
     let data = std::fs::read_to_string(&path).ok()?;
-    let cache: LiveDayCache = serde_json::from_str(&data).ok()?;
+    let mut cache: LiveDayCache = serde_json::from_str(&data).ok()?;
     let today = Local::now().format("%Y-%m-%d").to_string();
-    if cache.date == today && cache.course_name == course.course_name {
-        Some(cache)
-    } else {
-        // stale cache from a different day
+    if cache.date != today || cache.course_name != course.course_name {
+        // stale cache from a different day; nuke both sides.
         let _ = std::fs::remove_file(&path);
-        None
+        if let Some(d) = day_cache_deltas_path(course) {
+            let _ = std::fs::remove_file(d);
+        }
+        return None;
+    }
+    // Replay any deltas not yet folded into the snapshot. A crash between cache
+    // rewrite and deltas truncation can leave stale entries with `i` less than
+    // the snapshot's line count — we filter those out.
+    if let Some(deltas_path) = day_cache_deltas_path(course) {
+        if let Ok(deltas_data) = std::fs::read_to_string(&deltas_path) {
+            replay_deltas_into(&mut cache, &deltas_data);
+        }
+    }
+    Some(cache)
+}
+
+/// Append entries from a deltas NDJSON blob into `cache.transcript_lines`.
+/// - Entries with `i < cache.transcript_lines.len()` are skipped as stale
+///   (already in the snapshot, e.g. after a crash between snapshot rewrite
+///   and deltas truncation).
+/// - A gap (`i > expected`) stops the replay so out-of-order entries can't
+///   silently reorder transcripts.
+fn replay_deltas_into(cache: &mut LiveDayCache, deltas_text: &str) {
+    for raw in deltas_text.lines() {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let Ok(delta) = serde_json::from_str::<LiveLineDeltaOwned>(raw) else {
+            continue;
+        };
+        let expected = cache.transcript_lines.len();
+        if delta.i < expected {
+            continue;
+        }
+        if delta.i != expected {
+            break;
+        }
+        cache.transcript_lines.push(LiveTranscriptLine {
+            text: delta.t,
+            at: delta.a,
+        });
     }
 }
 
-fn save_day_cache(
+/// Full snapshot rewrite. Also truncates the deltas log since the snapshot now
+/// includes everything. Called on flush/finish, not per line.
+fn save_day_cache_full(
     course: &LiveCourseInfo,
     started_at: DateTime<Local>,
     transcript_lines: &[LiveTranscriptLine],
     summaries: &[LiveSummaryChunk],
 ) {
-    let cache = LiveDayCache {
+    let cache_ref = LiveDayCacheRef {
         date: Local::now().format("%Y-%m-%d").to_string(),
-        course_name: course.course_name.clone(),
+        course_name: &course.course_name,
         started_at: format_datetime(started_at),
-        transcript_lines: transcript_lines.to_vec(),
-        summaries: summaries.to_vec(),
+        transcript_lines,
+        summaries,
     };
     let Some(path) = day_cache_path(course) else {
         return;
     };
-    if let Ok(json) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(&path, json);
+    let Ok(json) = serde_json::to_string(&cache_ref) else {
+        return;
+    };
+    if std::fs::write(&path, json).is_ok() {
+        if let Some(deltas) = day_cache_deltas_path(course) {
+            let _ = std::fs::remove_file(deltas);
+        }
     }
+}
+
+/// Append new transcript lines `[start..]` to the deltas log. Cheap incremental
+/// write — typically a few hundred bytes vs the tens-to-hundreds of KB a full
+/// snapshot rewrite would cost.
+fn append_day_cache_deltas(
+    course: &LiveCourseInfo,
+    transcript_lines: &[LiveTranscriptLine],
+    start: usize,
+) {
+    if start >= transcript_lines.len() {
+        return;
+    }
+    let Some(path) = day_cache_deltas_path(course) else {
+        return;
+    };
+    use std::io::Write;
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let mut buf = String::with_capacity((transcript_lines.len() - start) * 64);
+    for (offset, line) in transcript_lines[start..].iter().enumerate() {
+        let delta = LiveLineDeltaRef {
+            i: start + offset,
+            t: &line.text,
+            a: &line.at,
+        };
+        if let Ok(json) = serde_json::to_string(&delta) {
+            buf.push_str(&json);
+            buf.push('\n');
+        }
+    }
+    let _ = file.write_all(buf.as_bytes());
 }
 
 fn remove_day_cache(course: &LiveCourseInfo) {
     if let Some(path) = day_cache_path(course) {
         let _ = std::fs::remove_file(path);
     }
+    if let Some(deltas) = day_cache_deltas_path(course) {
+        let _ = std::fs::remove_file(deltas);
+    }
+}
+
+/// Stable filename for a session's formal markdown. Anchored to `started_at` so a
+/// mid-session save and the final save land at the same path — finish overwrites
+/// the partial file rather than leaving an orphan.
+fn formal_markdown_filename(course: &LiveCourseInfo, started_at: DateTime<Local>) -> String {
+    if course.is_free_note {
+        format!(
+            "{}_{}_live.md",
+            started_at.format("%Y%m%d"),
+            started_at.format("%H%M%S")
+        )
+    } else {
+        format!(
+            "{}_{}_live.md",
+            started_at.format("%Y%m%d"),
+            sanitize_filename_component(&course.course_name)
+        )
+    }
+}
+
+/// Write a partial formal markdown file mid-session so a crash before stop still
+/// leaves recoverable content on disk. The overall summary is a placeholder —
+/// `live_finish_session` overwrites with the AI-generated overall summary at stop.
+fn write_partial_markdown_file(
+    course: &LiveCourseInfo,
+    started_at: DateTime<Local>,
+    transcript_lines: &[LiveTranscriptLine],
+    summaries: &[LiveSummaryChunk],
+) {
+    if transcript_lines.is_empty() {
+        return;
+    }
+    let overall_summary =
+        "### 全体要約\n_(セッション継続中…保存時に確定します)_".to_string();
+    let markdown = build_markdown(
+        course,
+        started_at,
+        Local::now(),
+        &overall_summary,
+        summaries,
+        transcript_lines,
+    );
+    let dir = live_storage_dir(course);
+    let path = dir.join(formal_markdown_filename(course, started_at));
+    if std::fs::write(&path, markdown.as_bytes()).is_err() {
+        return;
+    }
+    let path_str = path.to_string_lossy().to_string();
+    let file_name = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("live.md");
+    // record_download dedupes by path, so repeated mid-session calls just update
+    // the size/timestamp of a single download entry rather than spawning dupes.
+    crate::commands::record_download(
+        file_name,
+        &path_str,
+        Some(&course.course_name),
+        "live",
+        markdown.len() as u64,
+    );
 }
 
 /// Auto-save session state to day cache (non-fatal on error).
-/// Debounced: if `force` is false, skip when called within CACHE_DEBOUNCE of the
-/// previous write. This prevents disk wake-ups on every final transcript line.
+/// - `force=false` (per-line trigger, debounced): append only newly-added lines
+///   to the deltas log. Tiny write, no full re-serialization.
+/// - `force=true` (per-flush / finish trigger): full snapshot rewrite and
+///   truncate the deltas log. Catches the latest summaries too.
 fn auto_save_day_cache(state: &LiveState, force: bool) {
     if !force {
         let now = instant_now_ms();
@@ -183,19 +381,34 @@ fn auto_save_day_cache(state: &LiveState, force: bool) {
             return;
         }
     }
-    let guard = state.0.lock().ok();
-    if let Some(Some(session)) = guard.as_deref() {
-        if session.course.is_free_note {
-            return;
-        }
-        save_day_cache(
+    let Ok(mut guard) = state.0.lock() else {
+        return;
+    };
+    let Some(session) = guard.as_mut() else {
+        return;
+    };
+    if session.course.is_free_note {
+        return;
+    }
+
+    if force {
+        save_day_cache_full(
             &session.course,
             session.started_at,
             &session.transcript_lines,
             &session.summaries,
         );
-        LAST_CACHE_WRITE.store(instant_now_ms(), Ordering::Relaxed);
+        session.persisted_line_count = session.transcript_lines.len();
+    } else {
+        let total = session.transcript_lines.len();
+        let start = session.persisted_line_count;
+        if start >= total {
+            return;
+        }
+        append_day_cache_deltas(&session.course, &session.transcript_lines, start);
+        session.persisted_line_count = total;
     }
+    LAST_CACHE_WRITE.store(instant_now_ms(), Ordering::Relaxed);
 }
 
 fn empty_snapshot() -> LiveSessionSnapshot {
@@ -608,7 +821,9 @@ pub fn live_start_session(
     let now = Local::now();
 
     // Load accumulated data from earlier in the same course today
-    let (prev_transcript, prev_summaries, original_start) = match load_day_cache(&course) {
+    let cached = load_day_cache(&course);
+    let is_fresh_start = cached.is_none();
+    let (prev_transcript, prev_summaries, original_start) = match cached {
         Some(cache) => (cache.transcript_lines, cache.summaries, cache.started_at),
         None => (Vec::new(), Vec::new(), format_datetime(now)),
     };
@@ -616,6 +831,7 @@ pub fn live_start_session(
         .map(|naive| naive.and_local_timezone(Local).unwrap())
         .unwrap_or(now);
 
+    let persisted_line_count = prev_transcript.len();
     let session = LiveSession {
         session_id: uuid::Uuid::new_v4().to_string(),
         course,
@@ -624,6 +840,8 @@ pub fn live_start_session(
         pending_lines: Arc::new(Vec::new()),
         summaries: Arc::new(prev_summaries),
         batch_started_at: now,
+        is_fresh_start,
+        persisted_line_count,
     };
     let snapshot = session.snapshot();
     let mut guard = state
@@ -679,8 +897,39 @@ pub async fn live_flush_summary(
     state: tauri::State<'_, LiveState>,
     force: bool,
 ) -> Result<LiveSessionSnapshot, String> {
+    let summary_count_before = {
+        let guard = state
+            .0
+            .lock()
+            .map_err(|_| "Live state lock failed".to_string())?;
+        guard.as_ref().map(|s| s.summaries.len()).unwrap_or(0)
+    };
     let snapshot = flush_session_summary(&state, force).await?;
     auto_save_day_cache(&state, true);
+
+    // Whenever the AI flush actually produced a new summary chunk, also persist
+    // the formal .md file. Cheap insurance: a crash before stop now leaves a
+    // real markdown on disk, not just the hidden day_cache sidecar.
+    if snapshot.summaries.len() > summary_count_before {
+        let info = {
+            let guard = state
+                .0
+                .lock()
+                .map_err(|_| "Live state lock failed".to_string())?;
+            guard.as_ref().map(|s| {
+                (
+                    s.course.clone(),
+                    s.started_at,
+                    s.transcript_lines.clone(),
+                    s.summaries.clone(),
+                )
+            })
+        };
+        if let Some((course, started_at, transcript_lines, summaries)) = info {
+            write_partial_markdown_file(&course, started_at, &transcript_lines, &summaries);
+        }
+    }
+
     emit_live_update(&app, &state);
     Ok(snapshot)
 }
@@ -694,8 +943,39 @@ pub fn live_cancel_session(
         .0
         .lock()
         .map_err(|_| "Live state lock failed".to_string())?;
+    // Grab info we need to scrub on-disk artifacts before dropping the session.
+    // The flush path may have written a partial .md (and recorded it in the
+    // downloads history) — leaving those behind would contradict the UI's
+    // "破棄" message. But only scrub when this session was a fresh start;
+    // a resumed session shares its .md and day_cache with earlier completed
+    // recordings today, and we must not destroy that prior content.
+    let cleanup = guard.as_ref().map(|s| {
+        (
+            s.course.clone(),
+            s.started_at,
+            !s.transcript_lines.is_empty(),
+            s.is_fresh_start,
+        )
+    });
     *guard = None;
     drop(guard);
+
+    if let Some((course, started_at, had_transcript, is_fresh_start)) = cleanup {
+        if is_fresh_start {
+            if had_transcript {
+                let partial_path =
+                    live_storage_dir(&course).join(formal_markdown_filename(&course, started_at));
+                if partial_path.exists() {
+                    let _ = std::fs::remove_file(&partial_path);
+                }
+                crate::commands::remove_download_records_by_path(&partial_path.to_string_lossy());
+            }
+            if !course.is_free_note {
+                remove_day_cache(&course);
+            }
+        }
+    }
+
     emit_live_update(&app, &state);
     Ok(())
 }
@@ -797,24 +1077,11 @@ pub async fn live_finish_session(
     );
 
     let dir = live_storage_dir(&course);
-    let base_name = if course.is_free_note {
-        format!(
-            "{}_{}_live.md",
-            ended_at.format("%Y%m%d"),
-            ended_at.format("%H%M%S")
-        )
-    } else {
-        format!(
-            "{}_{}_live.md",
-            ended_at.format("%Y%m%d"),
-            sanitize_filename_component(&course.course_name)
-        )
-    };
-    let path = dir.join(&base_name);
+    let path = dir.join(formal_markdown_filename(&course, started_at));
     std::fs::write(&path, markdown.as_bytes()).map_err(|e| format!("Markdown保存失敗: {}", e))?;
 
     // Save day cache so next session for same course today can resume
-    save_day_cache(&course, started_at, &transcript_lines, &summaries);
+    save_day_cache_full(&course, started_at, &transcript_lines, &summaries);
 
     let path_str = path.to_string_lossy().to_string();
     let file_name = path
@@ -856,6 +1123,7 @@ pub async fn live_finish_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn skip_ai_summarization_for_sessions_under_two_minutes() {
@@ -868,5 +1136,187 @@ mod tests {
             now - chrono::Duration::seconds(120),
             now
         ));
+    }
+
+    fn fixture_cache(transcript: Vec<(&str, &str)>) -> LiveDayCache {
+        LiveDayCache {
+            date: "2026-05-13".to_string(),
+            course_name: "テスト".to_string(),
+            started_at: "2026-05-13 10:00:00".to_string(),
+            transcript_lines: transcript
+                .into_iter()
+                .map(|(text, at)| LiveTranscriptLine {
+                    text: text.to_string(),
+                    at: at.to_string(),
+                })
+                .collect(),
+            summaries: Vec::new(),
+        }
+    }
+
+    fn delta_line(i: usize, text: &str, at: &str) -> String {
+        serde_json::to_string(&LiveLineDeltaRef { i, t: text, a: at }).unwrap()
+    }
+
+    #[test]
+    fn replay_appends_new_deltas_in_order() {
+        let mut cache = fixture_cache(vec![("hello", "10:00:01")]);
+        let deltas = format!(
+            "{}\n{}\n",
+            delta_line(1, "world", "10:00:02"),
+            delta_line(2, "again", "10:00:03"),
+        );
+        replay_deltas_into(&mut cache, &deltas);
+        assert_eq!(cache.transcript_lines.len(), 3);
+        assert_eq!(cache.transcript_lines[1].text, "world");
+        assert_eq!(cache.transcript_lines[2].at, "10:00:03");
+    }
+
+    #[test]
+    fn replay_skips_stale_entries_already_in_snapshot() {
+        // Snapshot already has 2 lines (e.g. last flush wrote both into cache.json),
+        // but deltas still contains those entries because the truncation didn't run.
+        let mut cache = fixture_cache(vec![("a", "10:00:01"), ("b", "10:00:02")]);
+        let deltas = format!(
+            "{}\n{}\n{}\n",
+            delta_line(0, "a", "10:00:01"), // stale
+            delta_line(1, "b", "10:00:02"), // stale
+            delta_line(2, "c", "10:00:03"), // new
+        );
+        replay_deltas_into(&mut cache, &deltas);
+        assert_eq!(cache.transcript_lines.len(), 3);
+        assert_eq!(cache.transcript_lines[2].text, "c");
+    }
+
+    #[test]
+    fn replay_stops_on_gap_to_avoid_reorder() {
+        let mut cache = fixture_cache(vec![("a", "10:00:01")]);
+        // Missing index 1; should stop before applying index 2.
+        let deltas = format!(
+            "{}\n{}\n",
+            delta_line(2, "c", "10:00:03"),
+            delta_line(3, "d", "10:00:04"),
+        );
+        replay_deltas_into(&mut cache, &deltas);
+        assert_eq!(cache.transcript_lines.len(), 1);
+    }
+
+    #[test]
+    fn replay_tolerates_blank_and_corrupt_lines() {
+        let mut cache = fixture_cache(vec![("a", "10:00:01")]);
+        let deltas = format!(
+            "\n{}\nnot-json\n{}\n",
+            delta_line(1, "b", "10:00:02"),
+            delta_line(2, "c", "10:00:03"),
+        );
+        replay_deltas_into(&mut cache, &deltas);
+        // The "not-json" between two valid entries is skipped (`continue`), and
+        // replay keeps going — `b` at index 1 lands, then `c` at index 2 lands.
+        assert_eq!(cache.transcript_lines.len(), 3);
+        assert_eq!(cache.transcript_lines[2].text, "c");
+    }
+
+    #[test]
+    fn replay_noop_on_empty_deltas() {
+        let mut cache = fixture_cache(vec![("a", "10:00:01")]);
+        replay_deltas_into(&mut cache, "");
+        assert_eq!(cache.transcript_lines.len(), 1);
+    }
+
+    #[test]
+    fn delta_roundtrips_preserve_escapes() {
+        // Newlines / quotes in transcript text must survive NDJSON encoding so a
+        // single delta entry stays on one line.
+        let line = LiveTranscriptLine {
+            text: "first\nsecond \"quoted\"".to_string(),
+            at: "10:00:01".to_string(),
+        };
+        let serialized = serde_json::to_string(&LiveLineDeltaRef {
+            i: 0,
+            t: &line.text,
+            a: &line.at,
+        })
+        .unwrap();
+        // Must not contain a raw newline; deltas file splits by '\n'.
+        assert!(!serialized.contains('\n'));
+        // Roundtrip
+        let parsed: LiveLineDeltaOwned = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(parsed.t, line.text);
+        assert_eq!(parsed.a, line.at);
+    }
+
+    #[test]
+    fn formal_filename_anchors_to_started_at_date() {
+        // started_at on 2026-05-12 23:50; "now" doesn't matter — filename uses
+        // the start date so partial mid-session and final on the next calendar
+        // day land on the same path.
+        let course = LiveCourseInfo {
+            course_name: "高等数学".into(),
+            course_code: "M101".into(),
+            room: "".into(),
+            teacher: "".into(),
+            day: 1,
+            period: 1,
+            time_label: "".into(),
+            is_free_note: false,
+        };
+        let dt = Local
+            .with_ymd_and_hms(2026, 5, 12, 23, 50, 0)
+            .single()
+            .unwrap();
+        let name = formal_markdown_filename(&course, dt);
+        assert!(name.starts_with("20260512_"));
+        assert!(name.ends_with("_live.md"));
+    }
+
+    #[test]
+    fn free_note_formal_filename_uses_started_at_time() {
+        let course = LiveCourseInfo {
+            course_name: FREE_NOTE_FOLDER_NAME.into(),
+            course_code: "".into(),
+            room: "".into(),
+            teacher: "".into(),
+            day: 0,
+            period: 0,
+            time_label: "".into(),
+            is_free_note: true,
+        };
+        let dt = Local
+            .with_ymd_and_hms(2026, 5, 13, 14, 30, 45)
+            .single()
+            .unwrap();
+        let name = formal_markdown_filename(&course, dt);
+        assert_eq!(name, "20260513_143045_live.md");
+    }
+
+    #[test]
+    fn snapshot_serialization_does_not_clone_vec() {
+        // The serialized JSON must round-trip back into a LiveDayCache with the
+        // original transcript_lines/summaries. This ensures LiveDayCacheRef
+        // (the borrow-only serializer) is wire-compatible with LiveDayCache
+        // (the owned deserializer).
+        let lines = vec![
+            LiveTranscriptLine {
+                text: "one".into(),
+                at: "10:00:01".into(),
+            },
+            LiveTranscriptLine {
+                text: "two".into(),
+                at: "10:00:02".into(),
+            },
+        ];
+        let summaries: Vec<LiveSummaryChunk> = vec![];
+        let cache_ref = LiveDayCacheRef {
+            date: "2026-05-13".into(),
+            course_name: "テスト",
+            started_at: "2026-05-13 10:00:00".into(),
+            transcript_lines: &lines,
+            summaries: &summaries,
+        };
+        let json = serde_json::to_string(&cache_ref).unwrap();
+        let parsed: LiveDayCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.transcript_lines.len(), 2);
+        assert_eq!(parsed.transcript_lines[1].text, "two");
+        assert_eq!(parsed.course_name, "テスト");
     }
 }
