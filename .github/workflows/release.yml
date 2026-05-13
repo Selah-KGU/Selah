@@ -57,12 +57,13 @@ jobs:
           TAG: ${{ steps.versions.outputs.tag }}
         run: |
           set -euo pipefail
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
-          status=$(curl -sS -o release.json -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "$api")
-          if [ "$status" = "404" ]; then
+          if node scripts/find-release-by-tag.mjs --tag "${TAG}" --output release.json; then
+            :
+          else
+            status=$?
+            if [ "$status" != "2" ]; then
+              exit "$status"
+            fi
             tag_ref="https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"
             curl -sS -o /tmp/delete-tag.out -w "%{http_code}" -X DELETE \
               -H "Accept: application/vnd.github+json" \
@@ -70,11 +71,6 @@ jobs:
               "$tag_ref" | grep -Eq '^(204|404|422)$'
             echo "No existing release for ${TAG}"
             exit 0
-          fi
-          if [ "$status" != "200" ]; then
-            cat release.json
-            echo "::error::Failed to inspect release ${TAG} (HTTP ${status})"
-            exit 1
           fi
           node <<'NODE' > release-meta.env
           import fs from "node:fs";
@@ -473,12 +469,7 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          repo="${GITHUB_REPOSITORY}"
-          api="https://api.github.com/repos/${repo}/releases/tags/${TAG}"
-          curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "$api" -o release.json
+          node scripts/find-release-by-tag.mjs --tag "${TAG}" --output release.json --required
           node --input-type=module <<'NODE'
           import fs from "node:fs";
           const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
@@ -503,7 +494,7 @@ jobs:
           # Re-upload latest.json if it was patched (delete old asset first, then upload)
           if [ -f needs_reupload ]; then
             release_id=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync("release.json", "utf8")).id)')
-            node scripts/upload-release-asset.mjs --tag "${TAG}" --expected-release-id "${release_id}" --file latest.json --name latest.json --require-draft
+            node scripts/upload-release-asset.mjs --release release.json --expected-release-id "${release_id}" --file latest.json --name latest.json --require-draft
           else
             echo "No re-upload needed"
           fi

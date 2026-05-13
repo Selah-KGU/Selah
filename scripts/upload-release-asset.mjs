@@ -74,9 +74,37 @@ async function fetchReleaseByTag(repo, token, tag) {
     },
   });
   if (result.status !== 200) {
+    if (result.status === 404) {
+      const release = await findReleaseByTag(repo, token, tag);
+      if (release) return release;
+    }
     throw new Error(`Failed to refresh release ${tag}: ${result.status} ${result.body}`);
   }
   return JSON.parse(result.body);
+}
+
+async function findReleaseByTag(repo, token, tag) {
+  for (let page = 1; page <= 5; page++) {
+    const result = await apiRequest({
+      method: "GET",
+      path: `/repos/${repo}/releases?per_page=100&page=${page}`,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "selah-ci",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (result.status !== 200) {
+      throw new Error(`Failed to list releases while searching for ${tag}: ${result.status} ${result.body}`);
+    }
+    const releases = JSON.parse(result.body);
+    if (!Array.isArray(releases) || releases.length === 0) break;
+    const release = releases.find((item) => item.tag_name === tag);
+    if (release) return release;
+    if (releases.length < 100) break;
+  }
+  return null;
 }
 
 async function main() {
