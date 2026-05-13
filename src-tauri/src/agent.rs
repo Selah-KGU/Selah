@@ -428,7 +428,23 @@ fn build_plan_messages(
         images: Vec::new(),
     });
 
-    msgs
+    // Merge consecutive same-role messages so the list is always strictly
+    // alternating user/assistant. Gemini API rejects requests where two
+    // consecutive content blocks have the same role; this situation arises
+    // naturally when multiple tool rows from the same turn are each mapped
+    // to "assistant" above.  OpenAI tolerates it, but merging is cleaner.
+    let mut merged: Vec<ChatMessage> = Vec::new();
+    for msg in msgs {
+        if let Some(last) = merged.last_mut() {
+            if last.role == msg.role && last.role != "system" {
+                last.content.push('\n');
+                last.content.push_str(&msg.content);
+                continue;
+            }
+        }
+        merged.push(msg);
+    }
+    merged
 }
 
 fn summarize_plan_tool_result(name: &str, json: &str) -> String {
@@ -624,6 +640,327 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
             .get("message")
             .and_then(|v| v.as_str())
             .map(|s| format!("cal_action[{}]", s)),
+        "get_today_brief" => {
+            let class_count = parsed
+                .get("classes")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let deadline_count = parsed
+                .get("urgent_deadlines")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let first_class = parsed
+                .get("classes")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Some(format!(
+                "today_brief[date={}, classes={}, urgent_deadlines={}, first={}]",
+                parsed.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                class_count,
+                deadline_count,
+                first_class,
+            ))
+        }
+        "get_weekly_summary" => {
+            let week = parsed
+                .get("current_week")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let preview = parsed
+                .get("weekly_summary")
+                .and_then(|v| v.as_str())
+                .map(|s| s.chars().take(60).collect::<String>())
+                .unwrap_or_default();
+            Some(format!(
+                "weekly_summary[week={}, preview={}]",
+                week, preview
+            ))
+        }
+        "get_grades" => {
+            let items = parsed
+                .get("curriculum")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let deficit_count = items
+                .iter()
+                .filter(|c| {
+                    c.get("deficit")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                })
+                .count();
+            Some(format!(
+                "grades[categories={}, deficits={}]",
+                items.len(),
+                deficit_count
+            ))
+        }
+        "get_luna_activity_detail" => {
+            let title = parsed
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let deadline = parsed
+                .get("deadline")
+                .or_else(|| parsed.get("period"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let body_preview = parsed
+                .get("body")
+                .or_else(|| parsed.get("description"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.chars().take(80).collect::<String>())
+                .unwrap_or_default();
+            let attachment_count = parsed
+                .get("attachments")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Some(format!(
+                "activity[title={}, deadline={}, attachments={}, body_preview={}]",
+                title, deadline, attachment_count, body_preview
+            ))
+        }
+        "list_luna_announcements" => parsed
+            .get("announcements")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .take(5)
+                    .map(|a| {
+                        format!(
+                            "announce[course={}, title={}]",
+                            a.get("course").and_then(|v| v.as_str()).unwrap_or(""),
+                            a.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+        "get_notification_detail" => {
+            let title = parsed
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let source = parsed
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let body_preview = parsed
+                .get("body")
+                .or_else(|| parsed.get("body_html"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.chars().take(120).collect::<String>())
+                .unwrap_or_default();
+            let attachment_count = parsed
+                .get("attachments")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Some(format!(
+                "notification_detail[source={}, title={}, attachments={}, body={}]",
+                source, title, attachment_count, body_preview
+            ))
+        }
+        "get_weather" => {
+            let temp = parsed
+                .get("current")
+                .and_then(|c| c.get("temperature_c"))
+                .and_then(|v| v.as_f64())
+                .map(|t| format!("{}°C", t))
+                .unwrap_or_default();
+            let weather = parsed
+                .get("current")
+                .and_then(|c| c.get("weather"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Some(format!("weather[{} {}]", weather, temp))
+        }
+        "get_student_profile" => {
+            let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let faculty = parsed.get("faculty").and_then(|v| v.as_str()).unwrap_or("");
+            let dept = parsed.get("department").and_then(|v| v.as_str()).unwrap_or("");
+            Some(format!("profile[name={}, faculty={}, dept={}]", name, faculty, dept))
+        }
+        "get_mail_profile" => {
+            let name = parsed.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
+            let mail = parsed.get("mail").and_then(|v| v.as_str()).unwrap_or("");
+            Some(format!("mail_profile[name={}, mail={}]", name, mail))
+        }
+        "list_syllabus_favorites" => parsed
+            .get("favorites")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .map(|f| {
+                        format!(
+                            "syllabus[{}]",
+                            f.get("course_title").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+        "list_today_classes" | "list_week_classes" => parsed
+            .get("classes")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                let label = parsed
+                    .get("day_of_week")
+                    .or_else(|| parsed.get("week_label"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let classes: String = items
+                    .iter()
+                    .take(5)
+                    .map(|c| {
+                        format!(
+                            "[{}{}]",
+                            c.get("period").and_then(|v| v.as_str()).unwrap_or(""),
+                            c.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                format!("classes[{}] {}", label, classes)
+            }),
+        "get_cancellations" => parsed
+            .get("cancellations")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                let entries: String = items
+                    .iter()
+                    .take(3)
+                    .map(|c| {
+                        format!(
+                            "[{} {}]",
+                            c.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                            c.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                format!("cancellations[{}] {}", items.len(), entries)
+            }),
+        "get_makeup_classes" => parsed
+            .get("makeup_classes")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                let entries: String = items
+                    .iter()
+                    .take(3)
+                    .map(|c| {
+                        format!(
+                            "[{} {}]",
+                            c.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                            c.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                format!("makeup_classes[{}] {}", items.len(), entries)
+            }),
+        "get_room_changes" => parsed
+            .get("room_changes")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                let entries: String = items
+                    .iter()
+                    .take(3)
+                    .map(|c| {
+                        format!(
+                            "[{} {} → {}]",
+                            c.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                            c.get("course_name").and_then(|v| v.as_str()).unwrap_or(""),
+                            c.get("room").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                format!("room_changes[{}] {}", items.len(), entries)
+            }),
+        "get_exam_timetable" => parsed
+            .get("exams")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                let entries: String = items
+                    .iter()
+                    .take(4)
+                    .map(|e| {
+                        format!(
+                            "[{} {}]",
+                            e.get("day").and_then(|v| v.as_str()).unwrap_or(""),
+                            e.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                format!("exams[{}] {}", items.len(), entries)
+            }),
+        "get_registration" => {
+            let year = parsed.get("year_semester").and_then(|v| v.as_str()).unwrap_or("");
+            let course_count = parsed
+                .get("courses")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Some(format!("registration[semester={}, courses={}]", year, course_count))
+        }
+        "get_todo_guide" => {
+            let age = parsed
+                .get("generated_hours_ago")
+                .and_then(|v| v.as_i64())
+                .map(|h| format!("{}h ago", h))
+                .unwrap_or_default();
+            let priority = parsed
+                .get("priority_summary")
+                .and_then(|v| v.as_str())
+                .map(|s| s.chars().take(80).collect::<String>())
+                .unwrap_or_default();
+            Some(format!("todo_guide[generated={}, priority={}]", age, priority))
+        }
+        "refresh_data" => {
+            let refreshed = parsed
+                .get("refreshed")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Some(format!("refresh_data[refreshed_count={}]", refreshed))
+        }
+        "search_courses" => parsed
+            .get("matches")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .map(|m| {
+                        format!(
+                            "course[{}]",
+                            m.get("display_name").and_then(|v| v.as_str()).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+        "get_course_detail" => {
+            let code = parsed.get("kgc_code").and_then(|v| v.as_str()).unwrap_or("");
+            let plan_count = parsed
+                .get("session_plan")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Some(format!("course_detail[code={}, plan_sessions={}]", code, plan_count))
+        }
         _ => None,
     };
     trim_to(summary.as_deref().unwrap_or(json), 260)
@@ -1657,6 +1994,22 @@ fn is_follow_up_with_context(history: &[crate::db::AgentMessageRow], norm: &str)
         "附件",
         "本文",
         "添付",
+        // Calendar / action words — a short message that contains both an
+        // acknowledgement and a directive (e.g. "了解、日历加一下") must still
+        // trigger tool planning, not be silently swallowed.
+        "日历",
+        "カレンダー",
+        "calendar",
+        "加进",
+        "加入",
+        "追加",
+        "登録",
+        "削除",
+        "删除",
+        "编辑",
+        "修改",
+        "変更",
+        "更新",
     ];
     if contains_any(norm, DETAIL_MARKERS) {
         return false;

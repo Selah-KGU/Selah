@@ -102,7 +102,11 @@ pub async fn agent_send(
     content: String,
     images: Option<Vec<ImagePart>>,
 ) -> Result<(), String> {
+    let content = content.trim().to_string();
     let imgs = images.unwrap_or_default();
+    if content.is_empty() && imgs.is_empty() {
+        return Err("メッセージが空です".into());
+    }
     agent::agent_send(app, conv_id, content, imgs).await
 }
 

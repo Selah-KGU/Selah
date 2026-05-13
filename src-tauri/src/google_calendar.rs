@@ -228,6 +228,10 @@ fn generate_pkce() -> (String, String) {
 /// Parse week_label like "2026/03/30(月)～2026/04/05(日)" to get Monday's date
 static WEEK_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(\d{4})/(\d{2})/(\d{2})").expect("valid hardcoded regex"));
+static DATE_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("valid hardcoded regex"));
+static TIME_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^\d{2}:\d{2}$").expect("valid hardcoded regex"));
 
 fn parse_week_start(week_label: &str) -> Result<chrono::NaiveDate, String> {
     let re = &*WEEK_RE;
@@ -669,12 +673,10 @@ impl GoogleCalendarClient {
             return Err("Google Calendarにログインしていません。設定画面から連携してください。".into());
         }
         // Basic format validation to prevent injection into the API call.
-        let date_re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap();
-        let time_re = regex::Regex::new(r"^\d{2}:\d{2}$").unwrap();
-        if !date_re.is_match(date) {
+        if !DATE_RE.is_match(date) {
             return Err(format!("日付フォーマットが不正です (期待: YYYY-MM-DD): {}", date));
         }
-        if !time_re.is_match(start_time) || !time_re.is_match(end_time) {
+        if !TIME_RE.is_match(start_time) || !TIME_RE.is_match(end_time) {
             return Err("時刻フォーマットが不正です (期待: HH:MM)".into());
         }
         let cal_id = self.ensure_calendar().await?;
@@ -775,17 +777,14 @@ impl GoogleCalendarClient {
             return Err("カレンダーが作成されていません".into());
         }
 
-        let date_re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap();
-        let time_re = regex::Regex::new(r"^\d{2}:\d{2}$").unwrap();
-
         let new_title = title.unwrap_or(&meta.title);
         let new_date = date.unwrap_or(&meta.date);
         let new_start = start_time.unwrap_or(&meta.start_time);
         let new_end = end_time.unwrap_or(&meta.end_time);
-        if !date_re.is_match(new_date) {
+        if !DATE_RE.is_match(new_date) {
             return Err(format!("日付フォーマットが不正です: {}", new_date));
         }
-        if !time_re.is_match(new_start) || !time_re.is_match(new_end) {
+        if !TIME_RE.is_match(new_start) || !TIME_RE.is_match(new_end) {
             return Err("時刻フォーマットが不正です (HH:MM)".into());
         }
         let new_location: Option<String> = match location {

@@ -219,6 +219,8 @@ fn strip_html(s: &str) -> String {
             _ => {}
         }
     }
+    // Decode common HTML entities (including numeric decimal forms).
+    let out = decode_html_entities(&out);
     let out = out.replace('\u{00a0}', " ");
     let mut collapsed = String::with_capacity(out.len());
     let mut prev_ws = false;
@@ -234,6 +236,73 @@ fn strip_html(s: &str) -> String {
         }
     }
     collapsed.trim().to_string()
+}
+
+fn decode_html_entities(s: &str) -> String {
+    // Handle named entities and numeric character references.
+    // Only the subset commonly found in email / HTML mail bodies.
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        if let Some(semi) = rest[1..].find(';').map(|i| i + 1) {
+            let entity = &rest[1..semi]; // between & and ;
+            let decoded = match entity {
+                "amp" => "&",
+                "lt" => "<",
+                "gt" => ">",
+                "quot" => "\"",
+                "apos" => "'",
+                "nbsp" => "\u{00a0}",
+                "copy" => "©",
+                "reg" => "®",
+                "trade" => "™",
+                "hellip" => "…",
+                "mdash" => "—",
+                "ndash" => "–",
+                "laquo" => "«",
+                "raquo" => "»",
+                "middot" => "·",
+                "bull" => "•",
+                "ldquo" => "\u{201C}",
+                "rdquo" => "\u{201D}",
+                "lsquo" => "\u{2018}",
+                "rsquo" => "\u{2019}",
+                _ if entity.starts_with('#') => {
+                    let code = &entity[1..];
+                    let n: Option<u32> = if code.starts_with('x') || code.starts_with('X') {
+                        u32::from_str_radix(&code[1..], 16).ok()
+                    } else {
+                        code.parse().ok()
+                    };
+                    if let Some(c) = n.and_then(char::from_u32) {
+                        out.push(c);
+                        rest = &rest[semi + 1..];
+                        continue;
+                    }
+                    // Unknown numeric entity — emit as-is.
+                    out.push_str(&rest[..semi + 1]);
+                    rest = &rest[semi + 1..];
+                    continue;
+                }
+                _ => {
+                    // Unknown named entity — emit as-is.
+                    out.push_str(&rest[..semi + 1]);
+                    rest = &rest[semi + 1..];
+                    continue;
+                }
+            };
+            out.push_str(decoded);
+            rest = &rest[semi + 1..];
+        } else {
+            // No closing semicolon — emit the & literally.
+            out.push('&');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn truncate_bytes(s: &str, max: usize) -> String {
