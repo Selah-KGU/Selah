@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: https:">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ダウンロード</title>
+<title>資料管理</title>
 <style>
   :root {
     --bg-primary: #ffffff;
@@ -79,36 +79,57 @@
   /* ── Sidebar ── */
   .layout { display: flex; flex: 1; overflow: hidden; }
   .sidebar {
-    width: 180px; flex-shrink: 0; padding: 12px 8px;
+    width: 200px; flex-shrink: 0; padding: 12px 8px;
     border-right: 0.5px solid var(--border); display: flex; flex-direction: column; gap: 1px;
     background: var(--bg-primary); overflow-y: auto;
   }
   .sidebar-section { margin-bottom: 12px; }
   .sidebar-label {
+    display: flex; align-items: center; justify-content: space-between;
     font-size: 10px; font-weight: 600; color: var(--text-tertiary);
     text-transform: uppercase; letter-spacing: 0.5px;
     padding: 6px 10px 4px; user-select: none;
   }
+  .sidebar-clear {
+    font-size: 9px; color: var(--text-tertiary); cursor: pointer;
+    text-transform: none; letter-spacing: 0; padding: 1px 5px; border-radius: 4px;
+    background: none; border: none; font-family: inherit;
+    transition: color 0.12s, background 0.12s;
+  }
+  .sidebar-clear:hover { color: var(--accent); background: var(--bg-hover); }
+  .sidebar-clear.hidden { display: none; }
   .nav-item {
     display: flex; align-items: center; gap: 8px;
-    padding: 7px 10px; border-radius: 8px; cursor: pointer;
+    padding: 6px 10px; border-radius: 8px; cursor: pointer;
     font-size: 12px; color: var(--text-secondary);
     transition: background 0.12s, color 0.12s;
     -webkit-app-region: no-drag; border: none; background: none;
     width: 100%; text-align: left;
   }
   .nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-  .nav-item.active { background: var(--bg-active); color: var(--accent); font-weight: 600; }
+  .nav-item.selected { background: var(--bg-active); color: var(--accent); font-weight: 600; }
+  .nav-check {
+    width: 14px; height: 14px; flex-shrink: 0; border-radius: 4px;
+    border: 1.5px solid var(--border-strong);
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .nav-item.selected .nav-check { background: var(--accent); border-color: var(--accent); }
+  .nav-item.selected .nav-check svg { color: #fff; }
+  .nav-item:not(.selected) .nav-check svg { display: none; }
   .nav-icon {
-    width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; opacity: 0.7;
   }
-  .nav-item.active .nav-icon { opacity: 1; }
+  .nav-label {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .nav-count {
     margin-left: auto; font-size: 10px; font-weight: 600;
     color: var(--text-tertiary); min-width: 18px; text-align: right;
     font-variant-numeric: tabular-nums;
   }
+  .nav-item.selected .nav-count { color: var(--accent); }
 
   /* ── Main content ── */
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -117,16 +138,20 @@
   .toolbar {
     display: flex; align-items: center; gap: 8px;
     padding: 10px 16px; border-bottom: 0.5px solid var(--border);
-    background: var(--bg-primary); flex-shrink: 0;
+    background: var(--bg-primary); flex-shrink: 0; flex-wrap: wrap;
+  }
+  .toolbar-row {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; min-width: 0; flex-wrap: wrap;
   }
   .search-box {
-    flex: 1; display: flex; align-items: center; gap: 6px;
+    flex: 1 1 280px; display: flex; align-items: center; gap: 6px;
     background: var(--bg-input); border: 1px solid var(--border);
-    border-radius: 8px; padding: 6px 10px;
-    transition: border-color 0.15s;
+    min-height: 30px; border-radius: 8px; padding: 0 10px;
+    transition: border-color 0.15s; min-width: 180px; max-width: 100%;
   }
   .search-box:focus-within { border-color: var(--accent); }
-  .search-box svg { color: var(--text-tertiary); flex-shrink: 0; }
+  .search-box svg { color: var(--text-tertiary); flex-shrink: 0; width: 14px; height: 14px; }
   .search-input {
     flex: 1; border: none; background: none; outline: none;
     font-size: 12px; color: var(--text-primary);
@@ -135,15 +160,154 @@
   .search-input::placeholder { color: var(--text-tertiary); }
   .toolbar-btn {
     display: flex; align-items: center; justify-content: center;
-    padding: 6px 10px; gap: 4px; border-radius: 8px;
+    height: 30px; padding: 0 10px; gap: 6px; border-radius: 8px;
     font-size: 11px; font-weight: 500;
     color: var(--text-secondary); background: var(--bg-secondary);
     border: 1px solid var(--border); cursor: pointer;
     transition: background 0.12s, color 0.12s; white-space: nowrap;
+    font-family: inherit; flex: 0 0 auto;
+  }
+  .toolbar-btn > svg {
+    width: 14px; height: 14px; flex-shrink: 0;
+    stroke-width: 1.8;
   }
   .toolbar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .toolbar-btn.danger { color: var(--red); }
   .toolbar-btn.danger:hover { background: color-mix(in srgb, var(--red) 8%, transparent); }
+  .toolbar-btn.active {
+    background: var(--bg-active); color: var(--accent); border-color: var(--accent);
+  }
+
+  /* Sort dropdown */
+  .sort-wrap { position: relative; flex: 0 0 auto; }
+  .sort-menu {
+    position: absolute; top: calc(100% + 4px); right: 0;
+    background: var(--bg-primary); border: 1px solid var(--border-strong);
+    border-radius: 8px; box-shadow: var(--shadow-card); padding: 4px;
+    min-width: 160px; z-index: 100; display: none;
+  }
+  .sort-menu.open { display: block; }
+  .sort-menu-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-radius: 6px;
+    font-size: 12px; color: var(--text-primary);
+    background: none; border: none; cursor: pointer;
+    width: 100%; text-align: left; font-family: inherit;
+  }
+  .sort-menu-item:hover { background: var(--bg-hover); }
+  .sort-menu-item.active { background: var(--bg-active); color: var(--accent); font-weight: 600; }
+  .sort-menu-divider {
+    height: 1px; background: var(--border); margin: 4px 0;
+  }
+  .sort-menu-check { width: 12px; flex-shrink: 0; opacity: 0; }
+  .sort-menu-item.active .sort-menu-check { opacity: 1; }
+
+  /* Period chips */
+  .period-chips {
+    display: flex; align-items: center; gap: 4px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    min-height: 30px; border-radius: 8px; padding: 2px; flex: 0 1 auto;
+    max-width: 100%; overflow-x: auto; scrollbar-width: none;
+  }
+  .period-chips::-webkit-scrollbar { display: none; }
+  .period-chip {
+    height: 24px; padding: 0 8px; border-radius: 6px;
+    font-size: 11px; font-weight: 500;
+    color: var(--text-secondary); background: none; border: none;
+    cursor: pointer; transition: background 0.12s, color 0.12s;
+    white-space: nowrap; font-family: inherit;
+  }
+  .period-chip:hover { color: var(--text-primary); }
+  .period-chip.active {
+    background: var(--bg-primary); color: var(--accent); font-weight: 600;
+    box-shadow: 0 0.5px 2px rgba(0, 0, 0, 0.08);
+  }
+
+  .view-toggle {
+    display: flex; align-items: center; gap: 2px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    min-height: 30px; border-radius: 8px; padding: 2px; flex: 0 0 auto;
+  }
+  .view-toggle-btn {
+    width: 28px; height: 24px; display: flex; align-items: center; justify-content: center;
+    border: none; border-radius: 6px; color: var(--text-secondary);
+    background: transparent; cursor: pointer; padding: 0;
+  }
+  .view-toggle-btn svg {
+    width: 14px; height: 14px; flex-shrink: 0;
+    stroke-width: 1.8;
+  }
+  .view-toggle-btn:hover { color: var(--text-primary); }
+  .view-toggle-btn.active {
+    color: var(--accent); background: var(--bg-primary);
+    box-shadow: 0 0.5px 2px rgba(0, 0, 0, 0.08);
+  }
+
+  @media (max-width: 980px) {
+    .toolbar { padding: 8px 10px; }
+    .toolbar-row { gap: 6px; }
+    .search-box { flex-basis: 100%; }
+    .period-chips { order: 2; }
+    .view-toggle { order: 3; }
+    .sort-wrap { order: 4; }
+    #missingBtn { order: 5; }
+    #scanBtn { order: 6; }
+    #dupBtn { order: 7; }
+    #clearBtn { order: 8; }
+  }
+
+  @media (max-width: 700px) {
+    .sidebar { width: 168px; }
+    .toolbar-btn { padding: 0 8px; }
+    .period-chip { padding: 0 7px; }
+  }
+
+  /* Active filter bar */
+  .filter-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 16px; border-bottom: 0.5px solid var(--border);
+    background: var(--bg-secondary); flex-shrink: 0; flex-wrap: wrap;
+  }
+  .filter-bar.hidden { display: none; }
+  .filter-bar-label {
+    font-size: 10px; font-weight: 600; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-right: 2px;
+  }
+  .filter-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 4px 3px 8px; border-radius: 12px;
+    font-size: 11px; color: var(--accent);
+    background: var(--bg-active); border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .filter-pill-x {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%;
+    color: var(--accent); background: none; border: none; cursor: pointer;
+    transition: background 0.12s;
+  }
+  .filter-pill-x:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .filter-clear-all {
+    margin-left: auto; font-size: 10px; color: var(--text-tertiary);
+    background: none; border: none; cursor: pointer; font-family: inherit;
+    padding: 2px 6px; border-radius: 4px;
+  }
+  .filter-clear-all:hover { color: var(--red); background: var(--bg-hover); }
+
+  /* Selection actions */
+  .selection-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 16px; border-bottom: 0.5px solid var(--border);
+    background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+    flex-shrink: 0;
+  }
+  .selection-bar.hidden { display: none; }
+  .selection-summary {
+    font-size: 11px; font-weight: 600; color: var(--accent);
+    margin-right: auto;
+  }
+  .selection-actions {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
 
   /* ── File list ── */
   .file-list {
@@ -156,8 +320,14 @@
     font-size: 11px; font-weight: 600; color: var(--text-secondary);
     border-bottom: 1px solid var(--border);
   }
-  .group-header-name { flex: 1; }
+  .group-header-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .group-count { font-size: 10px; color: var(--text-tertiary); font-weight: 500; }
+
+  .file-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+    gap: 10px;
+  }
 
   .file-row {
     display: flex; align-items: center; gap: 10px;
@@ -166,11 +336,85 @@
   }
   .file-row:hover { background: var(--bg-hover); }
 
+  .file-card {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px;
+    min-height: 150px; padding: 12px 8px 10px;
+    border: 1px solid transparent; border-radius: 8px;
+    background: transparent; transition: background 0.12s, border-color 0.12s;
+  }
+  .file-card:hover { background: var(--bg-hover); border-color: var(--border); }
+  .file-card.missing { opacity: 0.5; }
+  .file-card .file-select {
+    position: absolute; top: 7px; left: 7px;
+    opacity: 0; transition: opacity 0.12s;
+  }
+  .file-card:hover .file-select,
+  .file-card:has(input:checked) .file-select { opacity: 1; }
+  .file-card-icon {
+    width: 54px; height: 62px; margin-top: 4px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 8px; color: #fff; font-size: 11px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.3px;
+    box-shadow: inset 0 -10px 18px rgba(0, 0, 0, 0.08);
+  }
+  .file-card-preview {
+    width: 82px; height: 68px; margin-top: 2px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 8px; overflow: hidden;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    color: var(--text-tertiary); font-size: 10px;
+  }
+  .file-card-preview img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
+  .file-card-preview-text {
+    width: 100%; height: 100%; padding: 6px;
+    font-size: 8.5px; line-height: 1.25;
+    color: var(--text-secondary); text-align: left;
+    white-space: pre-wrap; overflow: hidden;
+    background: var(--bg-primary);
+  }
+  .file-card-preview.pending {
+    background: color-mix(in srgb, var(--accent) 5%, var(--bg-secondary));
+  }
+  .file-card-preview.fallback {
+    width: 54px; height: 62px;
+    border: none; color: #fff; font-size: 11px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.3px;
+    box-shadow: inset 0 -10px 18px rgba(0, 0, 0, 0.08);
+  }
+  .file-card-name {
+    width: 100%; min-height: 34px; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    line-clamp: 2;
+    overflow: hidden; text-align: center; font-size: 11px; font-weight: 600;
+    color: var(--text-primary); cursor: pointer; line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .file-card-name:hover { color: var(--accent); }
+  .file-card-meta {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 4px;
+    font-size: 9px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden;
+  }
+  .file-card-meta span { overflow: hidden; text-overflow: ellipsis; }
+  .file-card-actions {
+    display: flex; align-items: center; justify-content: center; gap: 2px;
+    opacity: 0; transition: opacity 0.12s;
+  }
+  .file-card:hover .file-card-actions { opacity: 1; }
+
   .file-icon {
     width: 32px; height: 32px; border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
     font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0;
     text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .file-select {
+    width: 20px; height: 20px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .file-select input {
+    width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer;
   }
   .file-info { flex: 1; min-width: 0; }
   .file-name {
@@ -244,6 +488,70 @@
     font-size: 10px; color: var(--text-tertiary); flex-shrink: 0;
     background: var(--bg-primary);
   }
+
+  /* ── Duplicate manager ── */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 200;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.28); padding: 24px;
+  }
+  .modal-backdrop.open { display: flex; }
+  .duplicate-modal {
+    width: min(760px, 100%); max-height: min(680px, 90vh);
+    display: flex; flex-direction: column; overflow: hidden;
+    background: var(--bg-primary); border: 1px solid var(--border-strong);
+    border-radius: 10px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+  }
+  .modal-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 16px; border-bottom: 0.5px solid var(--border);
+  }
+  .modal-title { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .modal-subtitle { margin-top: 2px; font-size: 11px; color: var(--text-tertiary); }
+  .modal-close {
+    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    border: none; border-radius: 6px; background: transparent;
+    color: var(--text-secondary); cursor: pointer;
+  }
+  .modal-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .modal-body { padding: 10px 12px; overflow-y: auto; flex: 1; }
+  .modal-foot {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 12px 16px; border-top: 0.5px solid var(--border);
+  }
+  .duplicate-group {
+    border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; margin-bottom: 10px; background: var(--bg-primary);
+  }
+  .duplicate-group-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; background: var(--bg-secondary);
+    font-size: 11px; color: var(--text-secondary); font-weight: 600;
+  }
+  .duplicate-item {
+    display: grid; grid-template-columns: 1fr auto; gap: 8px;
+    padding: 8px 10px; border-top: 0.5px solid var(--border);
+  }
+  .duplicate-name {
+    min-width: 0; font-size: 12px; font-weight: 500;
+    color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .duplicate-path {
+    min-width: 0; margin-top: 2px; font-size: 10px;
+    color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .duplicate-tags { display: flex; align-items: center; gap: 5px; }
+  .duplicate-tag {
+    padding: 1px 5px; border-radius: 4px; font-size: 9px; font-weight: 600;
+    background: var(--bg-secondary); color: var(--text-secondary); white-space: nowrap;
+  }
+  .duplicate-tag.keep { background: var(--bg-active); color: var(--accent); }
+  .duplicate-empty {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 180px; gap: 8px; color: var(--text-tertiary); text-align: center;
+  }
+  .duplicate-empty strong { color: var(--text-secondary); font-size: 13px; }
+  .modal-action-row { display: flex; align-items: center; gap: 8px; }
 </style>
 </head>
 <body>
@@ -251,36 +559,117 @@
   <div class="sidebar" id="sidebar">
     <div class="sidebar-section">
       <div class="sidebar-label">表示</div>
-      <button class="nav-item active" data-view="all" onclick="switchView('all')">
+      <button class="nav-item selected" data-clear-all-filters>
+        <span class="nav-check"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
         <span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l4 4 4-4"/><line x1="12" y1="8" x2="12" y2="16"/></svg></span>
-        すべて
+        <span class="nav-label">すべて</span>
         <span class="nav-count" id="count-all">0</span>
       </button>
     </div>
     <div class="sidebar-section" id="section-courses">
-      <div class="sidebar-label">コース</div>
+      <div class="sidebar-label">
+        <span>コース</span>
+        <button class="sidebar-clear hidden" data-clear-cat="course">クリア</button>
+      </div>
     </div>
     <div class="sidebar-section" id="section-types">
-      <div class="sidebar-label">ファイル形式</div>
+      <div class="sidebar-label">
+        <span>ファイル形式</span>
+        <button class="sidebar-clear hidden" data-clear-cat="type">クリア</button>
+      </div>
     </div>
     <div class="sidebar-section" id="section-sources">
-      <div class="sidebar-label">ソース</div>
+      <div class="sidebar-label">
+        <span>ソース</span>
+        <button class="sidebar-clear hidden" data-clear-cat="source">クリア</button>
+      </div>
     </div>
   </div>
   <div class="main">
     <div class="toolbar">
-      <div class="search-box">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input class="search-input" type="text" placeholder="ファイル名やコース名で検索…" id="searchInput" oninput="applyFilters()">
+      <div class="toolbar-row">
+        <div class="search-box">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input class="search-input" type="text" placeholder="ファイル名やコース名で検索…" id="searchInput">
+        </div>
+        <div class="period-chips" role="tablist" aria-label="期間">
+          <button class="period-chip" data-period="today">今日</button>
+          <button class="period-chip" data-period="week">今週</button>
+          <button class="period-chip" data-period="month">今月</button>
+          <button class="period-chip active" data-period="all">全期間</button>
+        </div>
+        <div class="view-toggle" aria-label="表示方式">
+          <button class="view-toggle-btn active" data-view-mode="list" title="リスト表示" aria-label="リスト表示">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.2" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button class="view-toggle-btn" data-view-mode="icons" title="アイコン表示" aria-label="アイコン表示">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          </button>
+        </div>
+        <div class="sort-wrap">
+          <button class="toolbar-btn" id="sortBtn" title="並び順">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M11 18h2"/></svg>
+            <span id="sortLabel">日付（新しい順）</span>
+          </button>
+          <div class="sort-menu" id="sortMenu">
+            <button class="sort-menu-item active" data-sort-key="date">
+              <span class="sort-menu-check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <span>日付</span>
+            </button>
+            <button class="sort-menu-item" data-sort-key="name">
+              <span class="sort-menu-check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <span>名前</span>
+            </button>
+            <button class="sort-menu-item" data-sort-key="size">
+              <span class="sort-menu-check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <span>サイズ</span>
+            </button>
+            <button class="sort-menu-item" data-sort-key="type">
+              <span class="sort-menu-check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <span>形式</span>
+            </button>
+            <div class="sort-menu-divider"></div>
+            <button class="sort-menu-item active" data-sort-dir="desc">
+              <span class="sort-menu-check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <span>降順</span>
+            </button>
+            <button class="sort-menu-item" data-sort-dir="asc">
+              <span class="sort-menu-check"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>
+              <span>昇順</span>
+            </button>
+          </div>
+        </div>
+        <button class="toolbar-btn" id="missingBtn" title="欠落ファイルの表示切替">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l22 22"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 11 7 11 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 1 12s4 7 11 7a9.74 9.74 0 0 0 5.39-1.61"/></svg>
+          <span id="missingLabel">欠落を表示</span>
+        </button>
+        <button class="toolbar-btn" onclick="scanDir()" id="scanBtn" title="ダウンロードフォルダをスキャンして未登録ファイルを検出">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          スキャン
+        </button>
+        <button class="toolbar-btn" onclick="scanDuplicates()" id="dupBtn" title="内容が同じファイルを検出して整理">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>
+          重複整理
+        </button>
+        <button class="toolbar-btn danger" onclick="clearHistory()" id="clearBtn" style="display:none">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          履歴クリア
+        </button>
       </div>
-      <button class="toolbar-btn" onclick="scanDir()" id="scanBtn" title="ダウンロードフォルダをスキャンして未登録ファイルを検出">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        フォルダをスキャン
-      </button>
-      <button class="toolbar-btn danger" onclick="clearHistory()" id="clearBtn" style="display:none">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        履歴をクリア
-      </button>
+    </div>
+    <div class="filter-bar hidden" id="filterBar">
+      <span class="filter-bar-label">絞込</span>
+      <div id="filterPills" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1"></div>
+      <button class="filter-clear-all" id="filterClearAll">すべて解除</button>
+    </div>
+    <div class="selection-bar hidden" id="selectionBar">
+      <span class="selection-summary" id="selectionSummary">0件選択中</span>
+      <div class="selection-actions">
+        <button class="toolbar-btn" onclick="selectAllVisible()">表示中を選択</button>
+        <button class="toolbar-btn" onclick="clearSelection()">選択解除</button>
+        <button class="toolbar-btn" onclick="deleteSelectedRecords()">履歴から削除</button>
+        <button class="toolbar-btn danger" onclick="deleteSelectedFiles()" id="deleteSelectedFilesBtn">ファイルを削除</button>
+      </div>
     </div>
     <div class="file-list" id="fileList">
       <div class="loading-state"><div class="spinner"></div></div>
@@ -288,6 +677,28 @@
     <div class="status-bar">
       <span id="statusText">読み込み中…</span>
       <span id="statusSize"></span>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="duplicateModal">
+  <div class="duplicate-modal">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">重複ファイル整理</div>
+        <div class="modal-subtitle" id="duplicateSummary">内容が同じファイルを検出します</div>
+      </div>
+      <button class="modal-close" onclick="closeDuplicateModal()" title="閉じる">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="duplicateBody"></div>
+    <div class="modal-foot">
+      <span id="duplicateFootText">未スキャン</span>
+      <div class="modal-action-row">
+        <button class="toolbar-btn" onclick="scanDuplicates()">再スキャン</button>
+        <button class="toolbar-btn danger" id="duplicateCleanupBtn" onclick="cleanupDuplicates()">推奨以外を削除</button>
+      </div>
     </div>
   </div>
 </div>
@@ -303,11 +714,59 @@
   syncTheme();
 
   var invoke = window.__TAURI__?.core?.invoke;
+  var event = window.__TAURI__?.event;
 
   // ── State ──
   var allRecords = [];
-  var currentView = 'all';      // 'all' | 'course:xxx' | 'type:xxx' | 'source:xxx'
+  var filters = {
+    courses: new Set(),
+    types: new Set(),
+    sources: new Set(),
+  };
+  var period = 'all';            // 'today' | 'week' | 'month' | 'all'
+  var hideMissing = true;        // hide missing files by default
+  var sortKey = 'date';          // 'date' | 'name' | 'size' | 'type'
+  var sortDir = 'desc';          // 'asc' | 'desc'
+  var viewMode = 'list';          // 'list' | 'icons'
   var searchQuery = '';
+  var duplicateGroups = [];
+  var duplicateCleanupArmed = false;
+  var selectedIds = new Set();
+  var currentFilteredRecords = [];
+  var bulkDeleteArmed = false;
+  var previewCache = new Map();
+
+  // ── Persistence ──
+  function loadPrefs() {
+    try {
+      var raw = localStorage.getItem('downloads-prefs');
+      if (!raw) return;
+      var p = JSON.parse(raw);
+      if (p.period) period = p.period;
+      if (typeof p.hideMissing === 'boolean') hideMissing = p.hideMissing;
+      if (p.sortKey) sortKey = p.sortKey;
+      if (p.sortDir) sortDir = p.sortDir;
+      if (p.viewMode === 'list' || p.viewMode === 'icons') viewMode = p.viewMode;
+    } catch(e) {}
+  }
+  function savePrefs() {
+    try {
+      localStorage.setItem('downloads-prefs', JSON.stringify({
+        period: period, hideMissing: hideMissing, sortKey: sortKey, sortDir: sortDir, viewMode: viewMode,
+      }));
+    } catch(e) {}
+  }
+  loadPrefs();
+
+  // ── Focus course from URL hash ──
+  function readFocusCourse() {
+    try {
+      var h = (location.hash || '').replace(/^#/, '');
+      var params = new URLSearchParams(h);
+      return params.get('course') || '';
+    } catch(e) { return ''; }
+  }
+  var pendingFocusCourse = readFocusCourse();
 
   // ── File type colors & labels ──
   var FILE_TYPE_MAP = {
@@ -329,6 +788,7 @@
     mp3:  { color: '#e67e22', label: 'MP3' },
     txt:  { color: '#7f8c8d', label: 'TXT' },
     csv:  { color: '#27ae60', label: 'CSV' },
+    md:   { color: '#0a84ff', label: 'MD'  },
     html: { color: '#e44d26', label: 'HTML' },
     htm:  { color: '#e44d26', label: 'HTML' },
   };
@@ -337,7 +797,12 @@
     luna: 'Luna LMS',
     mail: 'メール',
     kwic: 'KWIC',
+    live: 'Liveノート',
     scan: 'スキャン',
+  };
+
+  var SORT_KEY_LABELS = {
+    date: '日付', name: '名前', size: 'サイズ', type: '形式',
   };
 
   function getExt(filename) {
@@ -372,7 +837,11 @@
   }
 
   function escapeHtml(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function escapeAttr(s) {
+    return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
   }
 
   // ── Data loading ──
@@ -384,21 +853,52 @@
       console.error('Failed to load downloads:', e);
       allRecords = [];
     }
+    applyPendingFocus();
+    rebuild();
+  }
+
+  function applyPendingFocus() {
+    if (!pendingFocusCourse) return;
+    // Match by exact canonical name (backend already simplifies).
+    var key = pendingFocusCourse.trim();
+    if (!key) { pendingFocusCourse = ''; return; }
+    // Find any record whose course_name matches (backend stores simplified).
+    var has = allRecords.some(function(r) {
+      return (r.course_name || '').trim() === key;
+    });
+    if (has) {
+      filters.courses.clear();
+      filters.courses.add(key);
+    } else {
+      // Try case-insensitive match
+      var found = allRecords.find(function(r) {
+        return (r.course_name || '').trim().toLowerCase() === key.toLowerCase();
+      });
+      if (found) {
+        filters.courses.clear();
+        filters.courses.add(found.course_name);
+      } else {
+        filters.courses.clear();
+        filters.courses.add(key);
+      }
+    }
+    pendingFocusCourse = '';
+  }
+
+  // ── Sidebar building ──
+  function rebuild() {
     buildSidebar();
     applyFilters();
   }
 
-  // ── Sidebar building ──
   function buildSidebar() {
-    // Count total
     document.getElementById('count-all').textContent = allRecords.length;
 
-    // Group by course
     var courses = {};
     var types = {};
     var sources = {};
     allRecords.forEach(function(r) {
-      var c = r.course_name || '未分類';
+      var c = (r.course_name || '').trim() || '未分類';
       courses[c] = (courses[c] || 0) + 1;
       var ext = getExt(r.filename) || 'other';
       types[ext] = (types[ext] || 0) + 1;
@@ -406,89 +906,238 @@
       sources[s] = (sources[s] || 0) + 1;
     });
 
-    // Courses
-    var courseSection = document.getElementById('section-courses');
-    courseSection.innerHTML = '<div class="sidebar-label">コース</div>';
-    Object.keys(courses).sort().forEach(function(name) {
-      var btn = document.createElement('button');
-      btn.className = 'nav-item' + (currentView === 'course:' + name ? ' active' : '');
-      btn.setAttribute('data-view', 'course:' + name);
-      btn.onclick = function() { switchView('course:' + name); };
-      btn.innerHTML = '<span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15z"/></svg></span>'
-        + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</span>'
-        + '<span class="nav-count">' + courses[name] + '</span>';
-      courseSection.appendChild(btn);
+    renderSidebarSection('section-courses', 'コース', 'course', courses, filters.courses, function(k) {
+      return '<span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15z"/></svg></span>';
+    }, function(k) { return k; });
+
+    renderSidebarSection('section-types', 'ファイル形式', 'type', types, filters.types, function(k) {
+      var info = FILE_TYPE_MAP[k] || { color: '#95a5a6', label: k.toUpperCase() };
+      return '<span class="nav-icon" style="color:' + info.color + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>';
+    }, function(k) {
+      var info = FILE_TYPE_MAP[k] || { label: k.toUpperCase() || 'OTHER' };
+      return info.label;
     });
 
-    // File types
-    var typeSection = document.getElementById('section-types');
-    typeSection.innerHTML = '<div class="sidebar-label">ファイル形式</div>';
-    Object.keys(types).sort().forEach(function(ext) {
-      var info = FILE_TYPE_MAP[ext] || { color: '#95a5a6', label: ext.toUpperCase() };
-      var btn = document.createElement('button');
-      btn.className = 'nav-item' + (currentView === 'type:' + ext ? ' active' : '');
-      btn.setAttribute('data-view', 'type:' + ext);
-      btn.onclick = function() { switchView('type:' + ext); };
-      btn.innerHTML = '<span class="nav-icon" style="color:' + info.color + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>'
-        + escapeHtml(info.label)
-        + '<span class="nav-count">' + types[ext] + '</span>';
-      typeSection.appendChild(btn);
-    });
+    renderSidebarSection('section-sources', 'ソース', 'source', sources, filters.sources, function() {
+      return '<span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>';
+    }, function(k) { return SOURCE_LABELS[k] || k; });
 
-    // Sources
-    var sourceSection = document.getElementById('section-sources');
-    sourceSection.innerHTML = '<div class="sidebar-label">ソース</div>';
-    Object.keys(sources).sort().forEach(function(src) {
-      var label = SOURCE_LABELS[src] || src;
+    syncClearButtons();
+    syncAllSelected();
+  }
+
+  function renderSidebarSection(sectionId, sectionLabel, kind, counts, selectedSet, iconFn, labelFn) {
+    var sec = document.getElementById(sectionId);
+    sec.innerHTML = '<div class="sidebar-label"><span>' + sectionLabel + '</span>'
+      + '<button class="sidebar-clear ' + (selectedSet.size === 0 ? 'hidden' : '') + '" data-clear-cat="' + kind + '">クリア</button>'
+      + '</div>';
+    Object.keys(counts).sort(function(a, b) {
+      return (labelFn(a) || '').localeCompare(labelFn(b) || '', 'ja');
+    }).forEach(function(key) {
+      var sel = selectedSet.has(key);
       var btn = document.createElement('button');
-      btn.className = 'nav-item' + (currentView === 'source:' + src ? ' active' : '');
-      btn.setAttribute('data-view', 'source:' + src);
-      btn.onclick = function() { switchView('source:' + src); };
-      btn.innerHTML = '<span class="nav-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>'
-        + escapeHtml(label)
-        + '<span class="nav-count">' + sources[src] + '</span>';
-      sourceSection.appendChild(btn);
+      btn.className = 'nav-item' + (sel ? ' selected' : '');
+      btn.setAttribute('data-filter-kind', kind);
+      btn.setAttribute('data-filter-value', key);
+      btn.innerHTML = '<span class="nav-check"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>'
+        + iconFn(key)
+        + '<span class="nav-label" title="' + escapeHtml(labelFn(key)) + '">' + escapeHtml(labelFn(key)) + '</span>'
+        + '<span class="nav-count">' + counts[key] + '</span>';
+      btn.addEventListener('click', function() { toggleFilter(kind, key); });
+      sec.appendChild(btn);
     });
   }
 
-  function switchView(view) {
-    currentView = view;
-    // Update active state
-    document.querySelectorAll('.nav-item').forEach(function(el) {
-      el.classList.toggle('active', el.getAttribute('data-view') === view);
+  function syncClearButtons() {
+    document.querySelectorAll('.sidebar-clear[data-clear-cat]').forEach(function(btn) {
+      var cat = btn.getAttribute('data-clear-cat');
+      var set = setForKind(cat);
+      btn.classList.toggle('hidden', !set || set.size === 0);
+      btn.onclick = function(e) {
+        e.stopPropagation();
+        if (set) set.clear();
+        rebuild();
+      };
     });
-    applyFilters();
+  }
+
+  function syncAllSelected() {
+    var anySelected = filters.courses.size > 0 || filters.types.size > 0 || filters.sources.size > 0;
+    var allBtn = document.querySelector('[data-clear-all-filters]');
+    if (allBtn) allBtn.classList.toggle('selected', !anySelected);
+  }
+
+  function setForKind(kind) {
+    if (kind === 'course') return filters.courses;
+    if (kind === 'type') return filters.types;
+    if (kind === 'source') return filters.sources;
+    return null;
+  }
+
+  function toggleFilter(kind, key) {
+    var set = setForKind(kind);
+    if (!set) return;
+    if (set.has(key)) set.delete(key);
+    else set.add(key);
+    rebuild();
+  }
+
+  function clearAllFilters() {
+    filters.courses.clear();
+    filters.types.clear();
+    filters.sources.clear();
+    rebuild();
   }
 
   // ── Filtering ──
+  function periodCutoff() {
+    if (period === 'all') return 0;
+    var now = new Date();
+    if (period === 'today') {
+      var d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      return d.getTime();
+    }
+    if (period === 'week') {
+      // Last 7 days, by midnight 6 days ago
+      var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+      return d.getTime();
+    }
+    if (period === 'month') {
+      var d = new Date(now.getFullYear(), now.getMonth(), 1);
+      return d.getTime();
+    }
+    return 0;
+  }
+
   function applyFilters() {
     searchQuery = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+    var cutoff = periodCutoff();
+
     var filtered = allRecords.filter(function(r) {
-      // View filter
-      if (currentView !== 'all') {
-        if (currentView.startsWith('course:')) {
-          var course = currentView.slice(7);
-          var rCourse = r.course_name || '未分類';
-          if (rCourse !== course) return false;
-        } else if (currentView.startsWith('type:')) {
-          var ext = currentView.slice(5);
-          if ((getExt(r.filename) || 'other') !== ext) return false;
-        } else if (currentView.startsWith('source:')) {
-          var src = currentView.slice(7);
-          if ((r.source || 'other') !== src) return false;
-        }
+      // Missing toggle
+      if (hideMissing && r.file_exists === false) return false;
+
+      // Sidebar filters
+      var courseKey = (r.course_name || '').trim() || '未分類';
+      if (filters.courses.size > 0 && !filters.courses.has(courseKey)) return false;
+
+      var ext = getExt(r.filename) || 'other';
+      if (filters.types.size > 0 && !filters.types.has(ext)) return false;
+
+      var src = r.source || 'other';
+      if (filters.sources.size > 0 && !filters.sources.has(src)) return false;
+
+      // Period
+      if (cutoff > 0) {
+        var ts = Number(r.downloaded_at || 0);
+        if (!ts || ts < cutoff) return false;
       }
-      // Search filter
+
+      // Search
       if (searchQuery) {
-        var haystack = (r.filename + ' ' + r.course_name + ' ' + (SOURCE_LABELS[r.source] || r.source)).toLowerCase();
+        var haystack = ((r.filename || '') + ' ' + (r.course_name || '') + ' ' + (SOURCE_LABELS[r.source] || r.source || '')).toLowerCase();
         if (haystack.indexOf(searchQuery) === -1) return false;
       }
+
       return true;
     });
 
+    sortRecords(filtered);
+    currentFilteredRecords = filtered;
+    pruneSelection();
     renderFiles(filtered);
+    renderFilterBar();
+    renderSelectionBar();
     updateStatus(filtered);
+    syncToolbarButtons();
     document.getElementById('clearBtn').style.display = allRecords.length > 0 ? '' : 'none';
+  }
+
+  function sortRecords(records) {
+    var dir = sortDir === 'asc' ? 1 : -1;
+    records.sort(function(a, b) {
+      var av, bv;
+      switch (sortKey) {
+        case 'name':
+          return dir * (a.filename || '').localeCompare(b.filename || '', 'ja', { numeric: true });
+        case 'size':
+          av = a.size_bytes || 0; bv = b.size_bytes || 0;
+          return dir * (av - bv);
+        case 'type':
+          av = getExt(a.filename) || ''; bv = getExt(b.filename) || '';
+          if (av === bv) return (a.filename || '').localeCompare(b.filename || '', 'ja');
+          return dir * av.localeCompare(bv);
+        case 'date':
+        default:
+          av = Number(a.downloaded_at || 0); bv = Number(b.downloaded_at || 0);
+          return dir * (av - bv);
+      }
+    });
+  }
+
+  // ── Filter pills bar ──
+  function renderFilterBar() {
+    var bar = document.getElementById('filterBar');
+    var pills = document.getElementById('filterPills');
+    var allSets = [
+      { kind: 'course', label: 'コース', set: filters.courses, format: function(k) { return k; } },
+      { kind: 'type',   label: '形式',   set: filters.types,   format: function(k) { var info = FILE_TYPE_MAP[k] || { label: k.toUpperCase() }; return info.label; } },
+      { kind: 'source', label: 'ソース', set: filters.sources, format: function(k) { return SOURCE_LABELS[k] || k; } },
+    ];
+    var html = '';
+    var hasAny = false;
+    allSets.forEach(function(g) {
+      g.set.forEach(function(v) {
+        hasAny = true;
+        html += '<span class="filter-pill">'
+          + '<span style="opacity:0.7;font-size:9px;text-transform:uppercase;letter-spacing:0.4px">' + escapeHtml(g.label) + '</span>'
+          + '<span>' + escapeHtml(g.format(v)) + '</span>'
+          + '<button class="filter-pill-x" data-pill-kind="' + g.kind + '" data-pill-value="' + escapeHtml(v) + '" title="解除">'
+          + '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
+          + '</button></span>';
+      });
+    });
+    bar.classList.toggle('hidden', !hasAny);
+    pills.innerHTML = html;
+    pills.querySelectorAll('.filter-pill-x').forEach(function(b) {
+      b.addEventListener('click', function() {
+        var kind = b.getAttribute('data-pill-kind');
+        var value = b.getAttribute('data-pill-value');
+        var s = setForKind(kind);
+        if (s) s.delete(value);
+        rebuild();
+      });
+    });
+  }
+
+  // ── Toolbar button sync ──
+  function syncToolbarButtons() {
+    // Sort label
+    var dirLabel = sortDir === 'asc'
+      ? (sortKey === 'date' ? '古い順' : sortKey === 'size' ? '小さい順' : '昇順')
+      : (sortKey === 'date' ? '新しい順' : sortKey === 'size' ? '大きい順' : '降順');
+    document.getElementById('sortLabel').textContent = SORT_KEY_LABELS[sortKey] + '（' + dirLabel + '）';
+
+    document.querySelectorAll('[data-sort-key]').forEach(function(b) {
+      b.classList.toggle('active', b.getAttribute('data-sort-key') === sortKey);
+    });
+    document.querySelectorAll('[data-sort-dir]').forEach(function(b) {
+      b.classList.toggle('active', b.getAttribute('data-sort-dir') === sortDir);
+    });
+
+    // Period chips
+    document.querySelectorAll('.period-chip').forEach(function(c) {
+      c.classList.toggle('active', c.getAttribute('data-period') === period);
+    });
+
+    // Missing toggle
+    var missBtn = document.getElementById('missingBtn');
+    missBtn.classList.toggle('active', !hideMissing);
+    document.getElementById('missingLabel').textContent = hideMissing ? '欠落を表示' : '欠落を非表示';
+
+    document.querySelectorAll('[data-view-mode]').forEach(function(b) {
+      b.classList.toggle('active', b.getAttribute('data-view-mode') === viewMode);
+    });
   }
 
   // ── Rendering ──
@@ -503,51 +1152,60 @@
       return;
     }
 
-    // Group by view context
-    var grouped;
-    if (currentView === 'all' && !searchQuery) {
-      // Group by date
-      grouped = groupByDate(records);
-    } else if (currentView.startsWith('course:')) {
-      // Already filtered by course, group by type
-      grouped = groupByType(records);
-    } else if (currentView.startsWith('type:')) {
-      // Already filtered by type, group by course
-      grouped = groupByCourse(records);
-    } else {
-      // Group by course
-      grouped = groupByCourse(records);
-    }
-
+    var grouped = groupRecordsByContext(records);
     var html = '';
     grouped.forEach(function(g) {
       html += '<div class="group">';
-      html += '<div class="group-header"><span class="group-header-name">' + escapeHtml(g.label) + '</span><span class="group-count">' + g.items.length + '件</span></div>';
-      g.items.forEach(function(r) {
-        html += renderFileRow(r);
-      });
+      html += '<div class="group-header"><span class="group-header-name" title="' + escapeHtml(g.label) + '">' + escapeHtml(g.label) + '</span><span class="group-count">' + g.items.length + '件</span></div>';
+      if (viewMode === 'icons') {
+        html += '<div class="file-grid">';
+        g.items.forEach(function(r) { html += renderFileCard(r); });
+        html += '</div>';
+      } else {
+        g.items.forEach(function(r) { html += renderFileRow(r); });
+      }
       html += '</div>';
     });
     container.innerHTML = html;
+    bindSelectionCheckboxes();
+    loadVisiblePreviews();
+  }
+
+  function groupRecordsByContext(records) {
+    // Heuristic: choose the most informative grouping.
+    // - If sorting by date and no specific course filter: date buckets
+    // - Otherwise: group by course (or by type if only one course is selected)
+    var oneCourse = filters.courses.size === 1;
+
+    if (sortKey === 'date' && !oneCourse) {
+      return groupByDate(records);
+    }
+    if (oneCourse) {
+      return groupByType(records);
+    }
+    return groupByCourse(records);
   }
 
   function groupByDate(records) {
     var now = new Date();
     var todayStr = now.toDateString();
     var yesterday = new Date(now.getTime() - 86400000).toDateString();
-    var groups = { 'today': [], 'yesterday': [], 'thisWeek': [], 'older': [] };
+    var groups = { today: [], yesterday: [], thisWeek: [], thisMonth: [], older: [] };
     records.forEach(function(r) {
-      var d = new Date(r.downloaded_at);
+      var ts = Number(r.downloaded_at || 0);
+      var d = new Date(ts);
       var ds = d.toDateString();
       if (ds === todayStr) groups.today.push(r);
       else if (ds === yesterday) groups.yesterday.push(r);
-      else if (now.getTime() - r.downloaded_at < 7 * 86400000) groups.thisWeek.push(r);
+      else if (now.getTime() - ts < 7 * 86400000) groups.thisWeek.push(r);
+      else if (now.getFullYear() === d.getFullYear() && now.getMonth() === d.getMonth()) groups.thisMonth.push(r);
       else groups.older.push(r);
     });
     var result = [];
     if (groups.today.length) result.push({ label: '今日', items: groups.today });
     if (groups.yesterday.length) result.push({ label: '昨日', items: groups.yesterday });
     if (groups.thisWeek.length) result.push({ label: '今週', items: groups.thisWeek });
+    if (groups.thisMonth.length) result.push({ label: '今月', items: groups.thisMonth });
     if (groups.older.length) result.push({ label: 'それ以前', items: groups.older });
     return result;
   }
@@ -556,7 +1214,7 @@
     var map = {};
     var order = [];
     records.forEach(function(r) {
-      var c = r.course_name || '未分類';
+      var c = (r.course_name || '').trim() || '未分類';
       if (!map[c]) { map[c] = []; order.push(c); }
       map[c].push(r);
     });
@@ -568,7 +1226,6 @@
     var order = [];
     records.forEach(function(r) {
       var ext = getExt(r.filename) || 'other';
-      var info = FILE_TYPE_MAP[ext] || { label: ext.toUpperCase() || 'OTHER' };
       if (!map[ext]) { map[ext] = []; order.push(ext); }
       map[ext].push(r);
     });
@@ -580,11 +1237,11 @@
 
   function renderFileRow(r) {
     var info = getTypeInfo(r.filename);
-    var ext = getExt(r.filename);
     var source = SOURCE_LABELS[r.source] || r.source || '';
     var missing = r.file_exists === false;
     var rowClass = 'file-row' + (missing ? ' missing' : '');
     return '<div class="' + rowClass + '" data-id="' + escapeHtml(r.id) + '">'
+      + '<label class="file-select" title="選択"><input type="checkbox" data-select-id="' + escapeHtml(r.id) + '" ' + (selectedIds.has(r.id) ? 'checked' : '') + '></label>'
       + '<div class="file-icon" style="background:' + info.color + '">' + escapeHtml(info.label) + '</div>'
       + '<div class="file-info">'
       + (missing
@@ -603,27 +1260,149 @@
       + '</div></div>';
   }
 
-  function escapeAttr(s) {
-    return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  function renderFileCard(r) {
+    var info = getTypeInfo(r.filename);
+    var source = SOURCE_LABELS[r.source] || r.source || '';
+    var missing = r.file_exists === false;
+    var cardClass = 'file-card' + (missing ? ' missing' : '');
+    var previewAttrs = !missing && canPreviewFile(r.filename)
+      ? ' data-preview-path="' + escapeHtml(r.path) + '" data-preview-ext="' + escapeHtml(info.label) + '" data-preview-color="' + escapeHtml(info.color) + '"'
+      : '';
+    return '<div class="' + cardClass + '" data-id="' + escapeHtml(r.id) + '">'
+      + '<label class="file-select" title="選択"><input type="checkbox" data-select-id="' + escapeHtml(r.id) + '" ' + (selectedIds.has(r.id) ? 'checked' : '') + '></label>'
+      + renderCardPreviewShell(r, info, missing, previewAttrs)
+      + (missing
+        ? '<div class="file-card-name" title="' + escapeHtml(r.filename) + '">' + escapeHtml(r.filename) + '</div>'
+        : '<div class="file-card-name" onclick="openFile(\'' + escapeAttr(r.path) + '\')" title="クリックして開く: ' + escapeHtml(r.filename) + '">' + escapeHtml(r.filename) + '</div>')
+      + '<div class="file-card-meta">'
+      + (missing ? '<span class="missing-badge">なし</span>' : '<span>' + formatSize(r.size_bytes) + '</span>')
+      + (source ? '<span>·</span><span>' + escapeHtml(source) + '</span>' : '')
+      + '</div>'
+      + '<div class="file-card-actions">'
+      + (missing ? '' : '<button class="action-btn" onclick="revealFile(\'' + escapeAttr(r.path) + '\')" title="Finderで表示"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>')
+      + '<button class="action-btn remove" onclick="removeRecord(\'' + escapeAttr(r.id) + '\')" title="履歴から削除"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>'
+      + '</div></div>';
+  }
+
+  function renderCardPreviewShell(r, info, missing, previewAttrs) {
+    if (missing || !canPreviewFile(r.filename)) {
+      return '<div class="file-card-icon" style="background:' + info.color + '">' + escapeHtml(info.label) + '</div>';
+    }
+    return '<div class="file-card-preview pending"' + previewAttrs + '>'
+      + '<div class="file-card-preview fallback" style="background:' + info.color + '">' + escapeHtml(info.label) + '</div>'
+      + '</div>';
+  }
+
+  function canPreviewFile(filename) {
+    var ext = getExt(filename);
+    return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'md', 'markdown', 'txt', 'csv', 'json', 'log'].indexOf(ext) >= 0;
+  }
+
+  function fallbackPreviewHtml(ext, color) {
+    return '<div class="file-card-preview fallback" style="background:' + escapeHtml(color) + '">' + escapeHtml(ext || 'FILE') + '</div>';
+  }
+
+  function applyPreview(el, preview) {
+    if (!preview) return;
+    el.classList.remove('pending');
+    var dataUrl = preview.data_url || preview.dataUrl || '';
+    if (preview.kind === 'image' && dataUrl) {
+      el.innerHTML = '<img src="' + escapeHtml(dataUrl) + '" alt="">';
+    } else if (preview.kind === 'text' && preview.text) {
+      el.innerHTML = '<div class="file-card-preview-text">' + escapeHtml(preview.text) + '</div>';
+    }
+  }
+
+  function loadVisiblePreviews() {
+    if (viewMode !== 'icons' || !invoke) return;
+    document.querySelectorAll('[data-preview-path]').forEach(function(el) {
+      var path = el.getAttribute('data-preview-path');
+      if (!path) return;
+      if (previewCache.has(path)) {
+        applyPreview(el, previewCache.get(path));
+        return;
+      }
+      invoke('get_download_preview', { path: path }).then(function(preview) {
+        previewCache.set(path, preview || null);
+        applyPreview(el, preview);
+      }).catch(function() {
+        previewCache.set(path, null);
+        el.classList.remove('pending');
+      });
+    });
+  }
+
+  function recordById(id) {
+    return allRecords.find(function(r) { return r.id === id; }) || null;
+  }
+
+  function selectedRecords() {
+    var rows = [];
+    selectedIds.forEach(function(id) {
+      var rec = recordById(id);
+      if (rec) rows.push(rec);
+    });
+    return rows;
+  }
+
+  function pruneSelection() {
+    var known = new Set(allRecords.map(function(r) { return r.id; }));
+    Array.from(selectedIds).forEach(function(id) {
+      if (!known.has(id)) selectedIds.delete(id);
+    });
+  }
+
+  function bindSelectionCheckboxes() {
+    document.querySelectorAll('[data-select-id]').forEach(function(input) {
+      input.addEventListener('click', function(e) { e.stopPropagation(); });
+      input.addEventListener('change', function() {
+        var id = input.getAttribute('data-select-id');
+        if (!id) return;
+        if (input.checked) selectedIds.add(id);
+        else selectedIds.delete(id);
+        bulkDeleteArmed = false;
+        renderSelectionBar();
+      });
+    });
+  }
+
+  function renderSelectionBar() {
+    var bar = document.getElementById('selectionBar');
+    var summary = document.getElementById('selectionSummary');
+    var deleteBtn = document.getElementById('deleteSelectedFilesBtn');
+    var rows = selectedRecords();
+    var existing = rows.filter(function(r) { return r.file_exists !== false && r.path; });
+    bar.classList.toggle('hidden', rows.length === 0);
+    summary.textContent = rows.length + '件選択中';
+    deleteBtn.disabled = existing.length === 0;
+    if (!bulkDeleteArmed) deleteBtn.textContent = 'ファイルを削除';
+  }
+
+  function selectAllVisible() {
+    currentFilteredRecords.forEach(function(r) { selectedIds.add(r.id); });
+    bulkDeleteArmed = false;
+    renderFiles(currentFilteredRecords);
+    renderSelectionBar();
+  }
+
+  function clearSelection() {
+    selectedIds.clear();
+    bulkDeleteArmed = false;
+    renderFiles(currentFilteredRecords);
+    renderSelectionBar();
   }
 
   // ── Actions ──
   async function openFile(path) {
     if (!invoke) return;
-    try {
-      await invoke('open_downloaded_file', { path: path });
-    } catch(e) {
-      console.error('Failed to open file:', e);
-    }
+    try { await invoke('open_downloaded_file', { path: path }); }
+    catch(e) { console.error('Failed to open file:', e); }
   }
 
   async function revealFile(path) {
     if (!invoke) return;
-    try {
-      await invoke('luna_reveal_file', { path: path });
-    } catch(e) {
-      console.error('Failed to reveal file:', e);
-    }
+    try { await invoke('luna_reveal_file', { path: path }); }
+    catch(e) { console.error('Failed to reveal file:', e); }
   }
 
   async function removeRecord(id) {
@@ -631,10 +1410,60 @@
     try {
       await invoke('remove_download_record', { id: id });
       allRecords = allRecords.filter(function(r) { return r.id !== id; });
-      buildSidebar();
-      applyFilters();
+      selectedIds.delete(id);
+      rebuild();
+    } catch(e) { console.error('Failed to remove record:', e); }
+  }
+
+  async function deleteSelectedRecords() {
+    if (!invoke) return;
+    var ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    try {
+      await invoke('remove_download_records', { ids: ids });
+      allRecords = allRecords.filter(function(r) { return !selectedIds.has(r.id); });
+      selectedIds.clear();
+      bulkDeleteArmed = false;
+      rebuild();
+      document.getElementById('statusText').textContent = ids.length + '件を履歴から削除しました';
     } catch(e) {
-      console.error('Failed to remove record:', e);
+      console.error('Failed to remove selected records:', e);
+      document.getElementById('statusText').textContent = '履歴削除に失敗しました: ' + e;
+    }
+  }
+
+  async function deleteSelectedFiles() {
+    if (!invoke) return;
+    var rows = selectedRecords().filter(function(r) { return r.file_exists !== false && r.path; });
+    var paths = rows.map(function(r) { return r.path; });
+    if (!paths.length) return;
+
+    var btn = document.getElementById('deleteSelectedFilesBtn');
+    if (!bulkDeleteArmed) {
+      bulkDeleteArmed = true;
+      btn.textContent = 'もう一度押して削除';
+      document.getElementById('statusText').textContent = paths.length + '件のファイルを削除します';
+      return;
+    }
+    bulkDeleteArmed = false;
+    btn.disabled = true;
+    btn.textContent = '削除中…';
+    try {
+      var result = await invoke('delete_downloaded_files', { paths: paths });
+      allRecords = await invoke('scan_download_dir');
+      selectedIds.clear();
+      rebuild();
+      var deleted = result.deleted_count ?? result.deletedCount ?? 0;
+      var failed = result.failed_count ?? result.failedCount ?? 0;
+      document.getElementById('statusText').textContent = failed > 0
+        ? deleted + '件削除、' + failed + '件失敗'
+        : deleted + '件のファイルを削除しました';
+    } catch(e) {
+      console.error('Failed to delete selected files:', e);
+      document.getElementById('statusText').textContent = 'ファイル削除に失敗しました: ' + e;
+    } finally {
+      btn.textContent = 'ファイルを削除';
+      renderSelectionBar();
     }
   }
 
@@ -643,11 +1472,8 @@
     try {
       await invoke('clear_download_history');
       allRecords = [];
-      buildSidebar();
-      applyFilters();
-    } catch(e) {
-      console.error('Failed to clear history:', e);
-    }
+      rebuild();
+    } catch(e) { console.error('Failed to clear history:', e); }
   }
 
   async function scanDir() {
@@ -659,8 +1485,7 @@
       var before = allRecords.length;
       allRecords = await invoke('scan_download_dir');
       var added = allRecords.length - before;
-      buildSidebar();
-      applyFilters();
+      rebuild();
       if (added > 0) {
         document.getElementById('statusText').textContent = added + '件の新しいファイルを検出しました';
       } else {
@@ -670,7 +1495,162 @@
       console.error('Failed to scan:', e);
     } finally {
       btn.disabled = false;
-      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> フォルダをスキャン';
+      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> スキャン';
+    }
+  }
+
+  function duplicateCleanupPaths() {
+    var paths = [];
+    duplicateGroups.forEach(function(g) {
+      (g.items || []).forEach(function(item) {
+        if (!isDuplicateKeep(item) && duplicateFileExists(item)) paths.push(item.path);
+      });
+    });
+    return paths;
+  }
+
+  function duplicateWasteBytes() {
+    return duplicateGroups.reduce(function(sum, g) {
+      var count = (g.items || []).filter(function(item) { return !isDuplicateKeep(item) && duplicateFileExists(item); }).length;
+      return sum + (duplicateGroupSize(g) * count);
+    }, 0);
+  }
+
+  function isDuplicateKeep(item) {
+    return item.is_recommended === true || item.isRecommended === true;
+  }
+
+  function duplicateFileExists(item) {
+    return item.file_exists !== false && item.fileExists !== false;
+  }
+
+  function duplicateGroupSize(group) {
+    return Number(group.size_bytes ?? group.sizeBytes ?? 0);
+  }
+
+  function duplicateGroupHash(group) {
+    return String(group.content_hash ?? group.contentHash ?? '');
+  }
+
+  function openDuplicateModal() {
+    document.getElementById('duplicateModal').classList.add('open');
+  }
+
+  function closeDuplicateModal() {
+    document.getElementById('duplicateModal').classList.remove('open');
+    duplicateCleanupArmed = false;
+  }
+
+  function renderDuplicateModal(loading) {
+    var body = document.getElementById('duplicateBody');
+    var summary = document.getElementById('duplicateSummary');
+    var foot = document.getElementById('duplicateFootText');
+    var cleanupBtn = document.getElementById('duplicateCleanupBtn');
+
+    if (loading) {
+      summary.textContent = '内容ハッシュを計算しています';
+      foot.textContent = 'スキャン中…';
+      cleanupBtn.disabled = true;
+      body.innerHTML = '<div class="duplicate-empty"><div class="spinner"></div><strong>重複を確認中</strong><span>同じサイズのファイルだけを読み込んで照合します</span></div>';
+      return;
+    }
+
+    var cleanupPaths = duplicateCleanupPaths();
+    cleanupBtn.disabled = cleanupPaths.length === 0;
+    cleanupBtn.textContent = '推奨以外を削除';
+    duplicateCleanupArmed = false;
+    if (!duplicateGroups.length) {
+      summary.textContent = '内容が重複しているファイルはありません';
+      foot.textContent = '整理不要';
+      body.innerHTML = '<div class="duplicate-empty"><strong>重複ファイルは見つかりませんでした</strong><span>ファイル名が違う場合も内容ハッシュで確認済みです</span></div>';
+      return;
+    }
+
+    summary.textContent = duplicateGroups.length + '組の重複 · 削減候補 ' + formatSize(duplicateWasteBytes());
+    foot.textContent = cleanupPaths.length + '件を削除候補として選択中';
+    var html = '';
+    duplicateGroups.forEach(function(g, idx) {
+      var hash = duplicateGroupHash(g);
+      html += '<div class="duplicate-group">';
+      html += '<div class="duplicate-group-head"><span>重複 ' + (idx + 1) + ' · ' + formatSize(duplicateGroupSize(g)) + '</span><span title="' + escapeHtml(hash) + '">' + escapeHtml(hash.slice(0, 12)) + '</span></div>';
+      (g.items || []).forEach(function(item) {
+        var source = SOURCE_LABELS[item.source] || item.source || '';
+        html += '<div class="duplicate-item">';
+        html += '<div style="min-width:0">';
+        html += '<div class="duplicate-name" title="' + escapeHtml(item.filename) + '">' + escapeHtml(item.filename) + '</div>';
+        html += '<div class="duplicate-path" title="' + escapeHtml(item.path) + '">' + escapeHtml(item.path) + '</div>';
+        html += '</div>';
+        html += '<div class="duplicate-tags">';
+        if (isDuplicateKeep(item)) html += '<span class="duplicate-tag keep">保留</span>';
+        else html += '<span class="duplicate-tag">削除候補</span>';
+        if (item.course_name) html += '<span class="duplicate-tag">' + escapeHtml(item.course_name) + '</span>';
+        if (source) html += '<span class="duplicate-tag">' + escapeHtml(source) + '</span>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+    });
+    body.innerHTML = html;
+  }
+
+  async function scanDuplicates() {
+    if (!invoke) return;
+    duplicateCleanupArmed = false;
+    openDuplicateModal();
+    renderDuplicateModal(true);
+    var btn = document.getElementById('dupBtn');
+    btn.disabled = true;
+    try {
+      duplicateGroups = await invoke('scan_duplicate_downloads');
+      renderDuplicateModal(false);
+    } catch(e) {
+      console.error('Failed to scan duplicates:', e);
+      duplicateGroups = [];
+      document.getElementById('duplicateSummary').textContent = '重複スキャンに失敗しました';
+      document.getElementById('duplicateFootText').textContent = String(e);
+      document.getElementById('duplicateCleanupBtn').disabled = true;
+      document.getElementById('duplicateBody').innerHTML = '<div class="duplicate-empty"><strong>スキャンできませんでした</strong><span>' + escapeHtml(e) + '</span></div>';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function cleanupDuplicates() {
+    if (!invoke) return;
+    var paths = duplicateCleanupPaths();
+    if (!paths.length) return;
+
+    var btn = document.getElementById('duplicateCleanupBtn');
+    var foot = document.getElementById('duplicateFootText');
+    if (!duplicateCleanupArmed) {
+      duplicateCleanupArmed = true;
+      btn.textContent = 'もう一度押して削除';
+      foot.textContent = paths.length + '件を削除します。各グループの「保留」は残ります';
+      return;
+    }
+    duplicateCleanupArmed = false;
+    btn.disabled = true;
+    btn.textContent = '削除中…';
+    try {
+      var result = await invoke('cleanup_duplicate_downloads', { paths: paths });
+      allRecords = await invoke('scan_download_dir');
+      rebuild();
+      duplicateGroups = await invoke('scan_duplicate_downloads');
+      renderDuplicateModal(false);
+      var deleted = result.deleted_count ?? result.deletedCount ?? 0;
+      var failed = result.failed_count ?? result.failedCount ?? 0;
+      var errors = result.errors || [];
+      document.getElementById('statusText').textContent = failed > 0
+        ? deleted + '件削除、' + failed + '件失敗'
+        : deleted + '件の重複ファイルを削除しました';
+      if (failed > 0 && errors.length) {
+        document.getElementById('duplicateFootText').textContent = errors.slice(0, 2).join(' / ');
+      }
+    } catch(e) {
+      console.error('Failed to cleanup duplicates:', e);
+      document.getElementById('duplicateFootText').textContent = String(e);
+    } finally {
+      btn.textContent = '推奨以外を削除';
+      btn.disabled = duplicateCleanupPaths().length === 0;
     }
   }
 
@@ -681,6 +1661,82 @@
     if (missing > 0) statusParts.push(missing + '件欠落');
     document.getElementById('statusText').textContent = statusParts.join(' · ');
     document.getElementById('statusSize').textContent = total ? '合計 ' + formatSize(total) : '';
+  }
+
+  // ── Event wiring ──
+  document.getElementById('searchInput').addEventListener('input', applyFilters);
+
+  document.querySelectorAll('.period-chip').forEach(function(c) {
+    c.addEventListener('click', function() {
+      period = c.getAttribute('data-period');
+      savePrefs();
+      applyFilters();
+    });
+  });
+
+  document.getElementById('missingBtn').addEventListener('click', function() {
+    hideMissing = !hideMissing;
+    savePrefs();
+    applyFilters();
+  });
+
+  document.querySelectorAll('[data-view-mode]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      var mode = b.getAttribute('data-view-mode');
+      if (mode !== 'list' && mode !== 'icons') return;
+      viewMode = mode;
+      savePrefs();
+      renderFiles(currentFilteredRecords);
+      syncToolbarButtons();
+    });
+  });
+
+  // Sort menu
+  var sortBtn = document.getElementById('sortBtn');
+  var sortMenu = document.getElementById('sortMenu');
+  sortBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    sortMenu.classList.toggle('open');
+  });
+  document.addEventListener('click', function(e) {
+    if (!sortMenu.contains(e.target) && e.target !== sortBtn) {
+      sortMenu.classList.remove('open');
+    }
+  });
+  document.querySelectorAll('[data-sort-key]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      sortKey = b.getAttribute('data-sort-key');
+      savePrefs();
+      applyFilters();
+    });
+  });
+  document.querySelectorAll('[data-sort-dir]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      sortDir = b.getAttribute('data-sort-dir');
+      savePrefs();
+      applyFilters();
+    });
+  });
+
+  // Clear-all and per-section clears
+  document.querySelector('[data-clear-all-filters]').addEventListener('click', function() {
+    clearAllFilters();
+  });
+  document.getElementById('filterClearAll').addEventListener('click', clearAllFilters);
+
+  // Listen for focus-course event from backend (when window is re-focused)
+  if (event && typeof event.listen === 'function') {
+    event.listen('focus-course', function(e) {
+      var name = String(e && e.payload || '').trim();
+      if (!name) {
+        filters.courses.clear();
+        rebuild();
+        return;
+      }
+      pendingFocusCourse = name;
+      applyPendingFocus();
+      rebuild();
+    });
   }
 
   // ── Init ──

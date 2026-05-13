@@ -3,8 +3,10 @@ function renderCourseDetail(data, idnumber, kgcPath) {
   if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
   _currentCourseName = data.course_name || _currentCourseName || null;
 
-  // Luna link in titlebar
-  document.getElementById('titlebar').innerHTML = '<button class="luna-open-btn" data-luna-course-url="https://luna.kwansei.ac.jp/lms/course?idnumber=' + encodeURIComponent(idnumber) + '" title="LUNA\u3067\u958b\u304f"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>LUNA</button>';
+  // Titlebar: materials manager focused on this course + LUNA
+  document.getElementById('titlebar').innerHTML =
+    '<button class="luna-open-btn" data-materials-course="' + escapeHtml(data.course_name || '') + '" title="\u3053\u306e\u30b3\u30fc\u30b9\u306e\u8cc7\u6599\u3092\u7ba1\u7406"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>\u8cc7\u6599\u7ba1\u7406</button>'
+    + '<button class="luna-open-btn" data-luna-course-url="https://luna.kwansei.ac.jp/lms/course?idnumber=' + encodeURIComponent(idnumber) + '" title="LUNA\u3067\u958b\u304f"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>LUNA</button>';
 
   // Hero Header
   var h = '<div class="hero">';
@@ -308,6 +310,11 @@ function renderCourseDetail(data, idnumber, kgcPath) {
   });
   document.getElementById('titlebar').querySelectorAll('[data-luna-course-url]').forEach(function(b) {
     b.addEventListener('click', function() { invoke('open_external_url', { url: b.dataset.lunaCourseUrl }); });
+  });
+  document.getElementById('titlebar').querySelectorAll('[data-materials-course]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      invoke('open_downloads_window', { focusCourse: b.dataset.materialsCourse || null });
+    });
   });
   loadCourseLiveNotes(_currentCourseName || data.course_name || '');
 

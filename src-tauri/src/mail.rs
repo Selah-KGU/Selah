@@ -588,38 +588,18 @@ impl MailClient {
             message_id,
             urlencoding::encode(attachment_id),
         );
-        let data = self.graph_get_bytes(&url).await?;
-
         let downloads_dir = crate::commands::resolve_download_dir(None);
+        let dest = downloads_dir.join(&safe_name);
 
-        // Avoid overwriting: append a counter if file exists
-        let mut dest = downloads_dir.join(&safe_name);
         if dest.exists() {
-            let stem = std::path::Path::new(&safe_name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("attachment");
-            let ext = std::path::Path::new(&safe_name)
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
-            let mut i = 1u32;
-            loop {
-                let candidate = if ext.is_empty() {
-                    format!("{} ({})", stem, i)
-                } else {
-                    format!("{} ({}).{}", stem, i, ext)
-                };
-                dest = downloads_dir.join(&candidate);
-                if !dest.exists() {
-                    break;
-                }
-                if i >= 999 {
-                    return Err("ファイル名の競合を解決できません".into());
-                }
-                i += 1;
-            }
+            let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+            let path_str = dest.to_string_lossy().to_string();
+            crate::commands::record_download(&safe_name, &path_str, None, "mail", size);
+            log::info!("Attachment already exists: {}", path_str);
+            return Ok(path_str);
         }
+
+        let data = self.graph_get_bytes(&url).await?;
 
         std::fs::write(&dest, &data).map_err(|e| format!("ファイル保存失敗: {}", e))?;
 

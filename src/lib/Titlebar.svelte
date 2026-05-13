@@ -170,7 +170,7 @@
         <Icon name="sun" size={14} />
       {/if}
     </button>
-    <button class="tb-btn" onclick={openDownloadsWindow} title="ダウンロード" aria-label="ダウンロード">
+    <button class="tb-btn" onclick={() => openDownloadsWindow()} title="ダウンロード" aria-label="ダウンロード">
       <Icon name="arrow.down.circle" size={14} />
     </button>
     <button

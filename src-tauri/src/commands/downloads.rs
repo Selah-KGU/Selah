@@ -1,9 +1,12 @@
 use crate::client;
+use base64::Engine;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
@@ -47,10 +50,23 @@ pub fn simplify_course_name(name: &str) -> String {
         Regex::new(r"[（(][^)）]*(?:学期|限|クラス|組|セメスター|Quarter|Semester)[^)）]*[)）]\s*$")
             .unwrap()
     });
+    // Strip trailing bare year / year-range, e.g. " 2025", "_2024-2025",
+    // "（2025年度）", "(2025)" that don't contain a term keyword.
+    static RE_YEAR_SUFFIX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"[\s_\-–・]*[（(]?\d{4}(?:[\-–]\d{2,4})?(?:年度?)?[)）]?\s*$").unwrap()
+    });
+    // Strip leading schedule prefix like "水４・金２ " or "月３金４ ".
+    // Pattern: one or more (day-char + half/full-width digit) joined by ・/・/space,
+    // followed by whitespace.
+    static RE_SCHEDULE_PREFIX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^(?:[月火水木金土日][０-９0-9][\s・・]*)+").unwrap()
+    });
 
     let s = RE_DEPT_CODE.replace(name, "");
+    let s = RE_SCHEDULE_PREFIX.replace(&s, "");
     let s = RE_BRACKET.replace_all(&s, "");
     let s = RE_PAREN_SUFFIX.replace_all(&s, "");
+    let s = RE_YEAR_SUFFIX.replace_all(&s, "");
     let s: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let s = s.trim().to_string();
     if s.is_empty() {
@@ -107,6 +123,41 @@ pub struct DownloadRecord {
     pub file_exists: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DuplicateFileItem {
+    pub id: String,
+    pub filename: String,
+    pub path: String,
+    pub course_name: String,
+    pub source: String,
+    pub size_bytes: u64,
+    pub downloaded_at: i64,
+    pub file_exists: bool,
+    pub is_recommended: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DuplicateFileGroup {
+    pub content_hash: String,
+    pub size_bytes: u64,
+    pub items: Vec<DuplicateFileItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DuplicateCleanupResult {
+    pub deleted_count: usize,
+    pub failed_count: usize,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadPreview {
+    pub kind: String,
+    pub mime: String,
+    pub data_url: Option<String>,
+    pub text: Option<String>,
+}
+
 fn download_history_path() -> std::path::PathBuf {
     client::data_dir().join("download_history.json")
 }
@@ -140,8 +191,12 @@ pub fn record_download(
     size_bytes: u64,
 ) {
     let mut records = load_download_history();
+    // Normalize course name to its simplified form. Without this, downloads
+    // recorded by Luna (full name with dept code and term suffix) and
+    // entries discovered by scan_download_dir (folder name = simplified)
+    // would land in two separate buckets even though they're the same course.
     let course_label = match course_name.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(c) => c.to_string(),
+        Some(c) => sanitize_path_component(&simplify_course_name(c)),
         None if load_download_config().classify_by_course => OTHER_CATEGORY.to_string(),
         None => String::new(),
     };
@@ -211,6 +266,18 @@ pub fn scan_download_dir() -> Vec<DownloadRecord> {
             latest.iter().map(|r| r.path.clone()).collect();
         for rec in discovered {
             if !existing.contains(&rec.path) {
+                // Remove any stale (file-missing) records with the same
+                // filename so the moved/reclassified file doesn't appear twice.
+                // Only remove stale entries for the SAME (filename, course_name)
+                // pair so same-named files in different courses are not dropped.
+                let fname_lower = rec.filename.to_lowercase();
+                let course_lower = rec.course_name.to_lowercase();
+                latest.retain(|r| {
+                    r.path == rec.path
+                        || r.filename.to_lowercase() != fname_lower
+                        || r.course_name.to_lowercase() != course_lower
+                        || std::path::Path::new(&r.path).exists()
+                });
                 latest.push(rec);
             }
         }
@@ -255,10 +322,18 @@ fn scan_dir_recursive(
             if name.starts_with('.') {
                 continue;
             }
-            // Immediate parent folder becomes the course label. This matches
-            // how live.rs records free notes (course_name="自由ノート") even
-            // though they live under "その他/自由ノート/".
-            scan_dir_recursive(&path, name, known, discovered, depth + 1);
+            // Immediate parent folder becomes the course label. Normalize the
+            // folder name so newly discovered files get the same simplified
+            // course_name as records written by record_download (which also
+            // calls simplify_course_name). This prevents the sidebar from
+            // showing both "日本語" and "日本語 2025" as separate groups.
+            let simplified_name = sanitize_path_component(&simplify_course_name(name));
+            let label: &str = if simplified_name.is_empty() {
+                name
+            } else {
+                simplified_name.as_str()
+            };
+            scan_dir_recursive(&path, label, known, discovered, depth + 1);
         }
     }
 }
@@ -293,10 +368,169 @@ fn try_discover_file(
         filename: filename.to_string(),
         path: path_str,
         course_name: course_folder.to_string(),
-        source: "scan".to_string(),
+        source: infer_scanned_source(filename, course_folder).to_string(),
         size_bytes: metadata.len(),
         downloaded_at: modified,
         file_exists: true,
+    })
+}
+
+fn infer_scanned_source(filename: &str, course_folder: &str) -> &'static str {
+    let folder = course_folder.trim();
+    let file_lower = filename.to_lowercase();
+    if folder == "自由ノート" || file_lower.ends_with("_live.md") {
+        return "live";
+    }
+    if folder.is_empty() {
+        "scan"
+    } else {
+        "luna"
+    }
+}
+
+fn file_sha256(path: &std::path::Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("{} を開けませんでした: {}", path.display(), e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("{} を読み込めませんでした: {}", path.display(), e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn recommend_duplicate_keep(items: &[DownloadRecord]) -> usize {
+    items
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, r)| {
+            let source_score = match r.source.as_str() {
+                "luna" => 4,
+                "live" => 3,
+                "mail" => 2,
+                "kwic" => 1,
+                _ => 0,
+            };
+            (source_score, r.downloaded_at, r.path.len())
+        })
+        .map(|(idx, _)| idx)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+pub fn scan_duplicate_downloads() -> Result<Vec<DuplicateFileGroup>, String> {
+    let records = scan_download_dir();
+    let mut by_size: HashMap<u64, Vec<DownloadRecord>> = HashMap::new();
+    for mut record in records {
+        if record.size_bytes == 0 || record.path.trim().is_empty() {
+            continue;
+        }
+        let path = std::path::Path::new(&record.path);
+        if !path.is_file() {
+            continue;
+        }
+        if validate_downloads_path(&record.path).is_err() {
+            continue;
+        }
+        record.file_exists = true;
+        by_size.entry(record.size_bytes).or_default().push(record);
+    }
+
+    let mut groups = Vec::new();
+    for (size, same_size) in by_size {
+        if same_size.len() < 2 {
+            continue;
+        }
+        let mut by_hash: HashMap<String, Vec<DownloadRecord>> = HashMap::new();
+        for record in same_size {
+            let hash = file_sha256(std::path::Path::new(&record.path))?;
+            by_hash.entry(hash).or_default().push(record);
+        }
+        for (hash, mut items) in by_hash {
+            if items.len() < 2 {
+                continue;
+            }
+            items.sort_by(|a, b| b.downloaded_at.cmp(&a.downloaded_at));
+            let keep_idx = recommend_duplicate_keep(&items);
+            let flat_items = items
+                .into_iter()
+                .enumerate()
+                .map(|(idx, r)| DuplicateFileItem {
+                    id: r.id,
+                    filename: r.filename,
+                    path: r.path,
+                    course_name: r.course_name,
+                    source: r.source,
+                    size_bytes: r.size_bytes,
+                    downloaded_at: r.downloaded_at,
+                    file_exists: r.file_exists,
+                    is_recommended: idx == keep_idx,
+                })
+                .collect();
+            groups.push(DuplicateFileGroup {
+                content_hash: hash,
+                size_bytes: size,
+                items: flat_items,
+            });
+        }
+    }
+
+    groups.sort_by(|a, b| {
+        let a_waste = a
+            .size_bytes
+            .saturating_mul(a.items.len().saturating_sub(1) as u64);
+        let b_waste = b
+            .size_bytes
+            .saturating_mul(b.items.len().saturating_sub(1) as u64);
+        b_waste.cmp(&a_waste)
+    });
+    Ok(groups)
+}
+
+#[tauri::command]
+pub fn cleanup_duplicate_downloads(paths: Vec<String>) -> Result<DuplicateCleanupResult, String> {
+    delete_downloaded_files(paths)
+}
+
+#[tauri::command]
+pub fn delete_downloaded_files(paths: Vec<String>) -> Result<DuplicateCleanupResult, String> {
+    let mut deleted_count = 0usize;
+    let mut failed_count = 0usize;
+    let mut errors = Vec::new();
+
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match validate_downloads_path(trimmed) {
+            Ok(canonical) => match std::fs::remove_file(&canonical) {
+                Ok(_) => {
+                    deleted_count += 1;
+                    remove_download_records_by_path(&canonical.to_string_lossy());
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    errors.push(format!("{}: {}", canonical.display(), e));
+                }
+            },
+            Err(e) => {
+                failed_count += 1;
+                errors.push(format!("{}: {}", trimmed, e));
+            }
+        }
+    }
+
+    Ok(DuplicateCleanupResult {
+        deleted_count,
+        failed_count,
+        errors,
     })
 }
 
@@ -307,10 +541,14 @@ pub fn check_file_downloaded(
 ) -> Option<DownloadRecord> {
     let records = load_download_history();
     let target = filename.to_lowercase();
+    // Compare via the simplified/canonical course name. The caller usually
+    // passes the full course title (with dept code and term suffix), but
+    // stored records hold the simplified form after normalization.
     let query_course = course_name
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(|c| sanitize_path_component(&simplify_course_name(c)));
     let mut found: Option<DownloadRecord> = None;
     for r in records.iter().rev() {
         let rname = r.filename.to_lowercase();
@@ -320,8 +558,9 @@ pub fn check_file_downloaded(
         // When caller supplies a course name, require an exact match. Records
         // with an empty course_name (legacy, or saved with classify disabled)
         // are treated as non-matches to avoid false positives across courses.
-        if let Some(cn) = query_course {
-            if r.course_name != cn {
+        if let Some(cn) = &query_course {
+            let stored = sanitize_path_component(&simplify_course_name(&r.course_name));
+            if stored != *cn {
                 continue;
             }
         }
@@ -385,6 +624,83 @@ fn is_markdown_ext(path: &std::path::Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false)
+}
+
+fn preview_mime(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+fn is_text_preview_ext(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "md" | "markdown" | "txt" | "csv" | "json" | "log"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn get_download_preview(path: String) -> Result<Option<DownloadPreview>, String> {
+    const IMAGE_PREVIEW_MAX_BYTES: u64 = 10 * 1024 * 1024;
+    const TEXT_PREVIEW_MAX_BYTES: u64 = 512 * 1024;
+    const TEXT_PREVIEW_CHARS: usize = 700;
+
+    let canonical = validate_downloads_path(&path)?;
+    let meta = std::fs::metadata(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
+    if !meta.is_file() {
+        return Ok(None);
+    }
+
+    if let Some(mime) = preview_mime(&canonical) {
+        if meta.len() > IMAGE_PREVIEW_MAX_BYTES {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        return Ok(Some(DownloadPreview {
+            kind: "image".to_string(),
+            mime: mime.to_string(),
+            data_url: Some(format!("data:{};base64,{}", mime, encoded)),
+            text: None,
+        }));
+    }
+
+    if is_text_preview_ext(&canonical) {
+        if meta.len() > TEXT_PREVIEW_MAX_BYTES {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
+        let raw = String::from_utf8_lossy(&bytes);
+        let preview = raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text: String = preview.chars().take(TEXT_PREVIEW_CHARS).collect();
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(DownloadPreview {
+            kind: "text".to_string(),
+            mime: "text/plain".to_string(),
+            data_url: None,
+            text: Some(text),
+        }));
+    }
+
+    Ok(None)
 }
 
 #[tauri::command]
@@ -513,8 +829,7 @@ pub fn write_markdown_file(path: String, contents: String) -> Result<(), String>
     if contents.len() as u64 > MARKDOWN_MAX_BYTES {
         return Err("ファイルが大きすぎます（8MBを超えるMarkdownはサポートしていません）".into());
     }
-    std::fs::write(&canonical, contents.as_bytes())
-        .map_err(|e| format!("保存失敗: {}", e))?;
+    std::fs::write(&canonical, contents.as_bytes()).map_err(|e| format!("保存失敗: {}", e))?;
     Ok(())
 }
 
@@ -522,6 +837,14 @@ pub fn write_markdown_file(path: String, contents: String) -> Result<(), String>
 pub fn remove_download_record(id: String) -> Result<(), String> {
     let mut records = load_download_history();
     records.retain(|r| r.id != id);
+    save_download_history(&records)
+}
+
+#[tauri::command]
+pub fn remove_download_records(ids: Vec<String>) -> Result<(), String> {
+    let ids: std::collections::HashSet<String> = ids.into_iter().collect();
+    let mut records = load_download_history();
+    records.retain(|r| !ids.contains(&r.id));
     save_download_history(&records)
 }
 
@@ -540,6 +863,66 @@ pub fn remove_download_records_by_path(path: &str) {
 #[tauri::command]
 pub fn clear_download_history() -> Result<(), String> {
     save_download_history(&[])
+}
+
+/// Rewrite each history entry's `course_name` to its simplified, sanitized
+/// form. Pre-normalization, the same logical course often appeared under
+/// multiple buckets (full dept-coded name from `record_download`, simplified
+/// folder name from `scan_download_dir`). Idempotent.
+pub fn migrate_normalize_course_names() {
+    let mut records = load_download_history();
+    let mut changed = false;
+    for r in records.iter_mut() {
+        let trimmed = r.course_name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized = sanitize_path_component(&simplify_course_name(trimmed));
+        if normalized != r.course_name {
+            r.course_name = normalized;
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = save_download_history(&records);
+    }
+}
+
+/// Remove duplicate history entries caused by file migration (old path no
+/// longer exists but a new path for the same filename was inserted by
+/// scan_download_dir). Keeps the entry whose file actually exists; if both
+/// exist (unlikely) keeps the more-recent one. Idempotent.
+pub fn migrate_deduplicate_by_filename() {
+    let mut records = load_download_history();
+    let original_len = records.len();
+    // Group indices by lowercase filename. Prefer live files; among ties keep
+    // the one with the larger downloaded_at timestamp.
+    // Key on (filename, course_name) so same-named files in different courses
+    // are treated as independent records and never collapsed into one.
+    let mut keep: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        let key = (r.filename.to_lowercase(), r.course_name.to_lowercase());
+        let entry = keep.entry(key).or_insert(i);
+        let prev = &records[*entry];
+        let cur = &records[i];
+        let prev_live = std::path::Path::new(&prev.path).exists();
+        let cur_live = std::path::Path::new(&cur.path).exists();
+        if !prev_live && cur_live {
+            *entry = i;
+        } else if prev_live == cur_live && cur.downloaded_at > prev.downloaded_at {
+            *entry = i;
+        }
+    }
+    let keep_set: std::collections::HashSet<usize> = keep.values().copied().collect();
+    records = records
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, r)| if keep_set.contains(&i) { Some(r) } else { None })
+        .collect();
+    if records.len() != original_len {
+        let _ = save_download_history(&records);
+    }
 }
 
 /// Move files sitting at the root of the download base dir into `その他/`.
@@ -634,6 +1017,137 @@ pub fn migrate_uncategorized_to_other() {
             if r.course_name.trim().is_empty() {
                 r.course_name = OTHER_CATEGORY.to_string();
             }
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = save_download_history(&records);
+    }
+}
+
+/// Rename course subdirectories whose name does not match the simplified form
+/// (e.g. "水４・金２ 日本語I ４" → "日本語I ４"). Files inside are moved to the
+/// canonical folder; history paths are updated accordingly. Idempotent.
+pub fn migrate_rename_course_folders() {
+    let config = load_download_config();
+    if !config.classify_by_course {
+        return;
+    }
+    let base = if config.download_dir.is_empty() {
+        default_download_dir()
+    } else {
+        std::path::PathBuf::from(&config.download_dir)
+    };
+    if !base.is_dir() {
+        return;
+    }
+
+    // Collect all immediate subdirectories whose simplified name differs.
+    let mut renames: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let src = entry.path();
+        if !src.is_dir() {
+            continue;
+        }
+        let Some(raw_name) = src.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if raw_name.starts_with('.') {
+            continue;
+        }
+        let simplified = sanitize_path_component(&simplify_course_name(raw_name));
+        if simplified.is_empty() || simplified == raw_name {
+            continue;
+        }
+        let dest = base.join(&simplified);
+        renames.push((src, dest));
+    }
+
+    if renames.is_empty() {
+        return;
+    }
+
+    // Build path rewrite map: old_file_path → new_file_path
+    let mut path_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for (src_dir, dest_dir) in &renames {
+        if let Err(e) = std::fs::create_dir_all(dest_dir) {
+            log::warn!(
+                "migrate_rename_course_folders: failed to create {:?}: {}",
+                dest_dir,
+                e
+            );
+            continue;
+        }
+
+        // Move every file from src_dir into dest_dir.
+        let Ok(file_entries) = std::fs::read_dir(src_dir) else {
+            continue;
+        };
+        for fe in file_entries.flatten() {
+            let file_src = fe.path();
+            if !file_src.is_file() {
+                continue;
+            }
+            let Some(fname) = file_src.file_name().map(|n| n.to_os_string()) else {
+                continue;
+            };
+            let mut file_dest = dest_dir.join(&fname);
+            if file_dest.exists() {
+                let stem = std::path::Path::new(&fname)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let ext = std::path::Path::new(&fname)
+                    .extension()
+                    .map(|e| format!(".{}", e.to_string_lossy()))
+                    .unwrap_or_default();
+                let mut i = 1u32;
+                loop {
+                    let candidate = dest_dir.join(format!("{} ({}){}", stem, i, ext));
+                    if !candidate.exists() {
+                        file_dest = candidate;
+                        break;
+                    }
+                    i += 1;
+                    if i > 999 {
+                        break;
+                    }
+                }
+            }
+            match std::fs::rename(&file_src, &file_dest) {
+                Ok(()) => {
+                    path_map.insert(
+                        file_src.to_string_lossy().to_string(),
+                        file_dest.to_string_lossy().to_string(),
+                    );
+                }
+                Err(e) => log::warn!(
+                    "migrate_rename_course_folders: move {:?} -> {:?}: {}",
+                    file_src,
+                    file_dest,
+                    e
+                ),
+            }
+        }
+        // Remove now-empty source directory (best-effort)
+        let _ = std::fs::remove_dir(src_dir);
+    }
+
+    // Update history records: fix both path and course_name
+    let mut records = load_download_history();
+    let mut changed = false;
+    for r in records.iter_mut() {
+        if let Some(new_path) = path_map.get(&r.path) {
+            r.path = new_path.clone();
+            changed = true;
+        }
+        let normalized = sanitize_path_component(&simplify_course_name(&r.course_name));
+        if !normalized.is_empty() && normalized != r.course_name {
+            r.course_name = normalized;
             changed = true;
         }
     }

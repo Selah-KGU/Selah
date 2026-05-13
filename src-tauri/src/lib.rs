@@ -242,6 +242,9 @@ pub fn run() {
             background_refresh::start_background_refresh_loop(app.handle());
             notifier::start_notification_loop(app.handle());
             commands::migrate_uncategorized_to_other();
+            commands::migrate_rename_course_folders();
+            commands::migrate_normalize_course_names();
+            commands::migrate_deduplicate_by_filename();
             #[cfg(target_os = "macos")]
             {
                 macos_native_agent::setup(app.handle());
@@ -431,13 +434,18 @@ pub fn run() {
             background_refresh::backend_sync_session_status_now,
             commands::list_downloads,
             commands::scan_download_dir,
+            commands::scan_duplicate_downloads,
+            commands::cleanup_duplicate_downloads,
+            commands::delete_downloaded_files,
             commands::check_file_downloaded,
             commands::open_downloaded_file,
             commands::open_downloaded_file_external,
+            commands::get_download_preview,
             commands::open_markdown_file_window,
             commands::get_pending_markdown_payload,
             commands::write_markdown_file,
             commands::remove_download_record,
+            commands::remove_download_records,
             commands::clear_download_history,
             commands::open_downloads_window,
             tray::update_tray,

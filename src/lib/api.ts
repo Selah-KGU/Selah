@@ -1727,13 +1727,13 @@ export async function openSettingsWindow(panel?: string): Promise<void> {
   activeTab.set("settings");
 }
 
-export async function openDownloadsWindow(): Promise<void> {
+export async function openDownloadsWindow(focusCourse?: string): Promise<void> {
   if (_isDemo()) {
     activeSettingsPanel.set("download");
     activeTab.set("settings");
     return;
   }
-  return invoke<void>("open_downloads_window");
+  return invoke<void>("open_downloads_window", { focusCourse: focusCourse ?? null });
 }
 
 export async function openProfileEditWindow(): Promise<void> {

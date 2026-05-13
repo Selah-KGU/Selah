@@ -123,20 +123,45 @@ pub async fn open_registration_window(app: tauri::AppHandle) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub async fn open_downloads_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_downloads_window(
+    app: tauri::AppHandle,
+    focus_course: Option<String>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    let course = focus_course
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| super::downloads::simplify_course_name(s).trim().to_string())
+        .filter(|s| !s.is_empty());
+
     if let Some(win) = app.get_webview_window("downloads") {
         let _ = win.set_focus();
+        if let Some(c) = &course {
+            let _ = win.emit_to("downloads", "focus-course", c);
+        } else {
+            let _ = win.emit_to("downloads", "focus-course", "");
+        }
         return Ok(());
     }
+
+    // Encode the course name into the URL hash so the page can read it
+    // synchronously on first paint without waiting on an event.
+    let url_with_hash = if let Some(c) = &course {
+        let encoded = url::form_urlencoded::byte_serialize(c.as_bytes()).collect::<String>();
+        format!("downloads.html#course={}", encoded)
+    } else {
+        "downloads.html".to_string()
+    };
 
     tauri::WebviewWindowBuilder::new(
         &app,
         "downloads",
-        tauri::WebviewUrl::App("downloads.html".into()),
+        tauri::WebviewUrl::App(url_with_hash.into()),
     )
-    .title("ダウンロード")
-    .inner_size(780.0, 520.0)
-    .min_inner_size(560.0, 360.0)
+    .title("資料管理")
+    .inner_size(900.0, 600.0)
+    .min_inner_size(640.0, 380.0)
     .resizable(true)
     .build()
     .map_err(|e| format!("Failed to open downloads window: {}", e))?;

@@ -95,7 +95,9 @@ pub(crate) async fn luna_download(http: &reqwest::Client, path: &str) -> Result<
     Err("リダイレクトが多すぎます".into())
 }
 
-/// Save bytes to the download folder with conflict avoidance (appends " (N)" if the file exists).
+/// Save bytes to the download folder. In materials-management semantics,
+/// an existing file with the same name in the same course folder means it has
+/// already been downloaded, so we reuse it instead of creating " (1)" copies.
 /// If course_name is provided and classify_by_course is enabled, saves into a course subfolder.
 pub(crate) fn save_to_downloads(
     filename: &str,
@@ -106,38 +108,18 @@ pub(crate) fn save_to_downloads(
     let _ = std::fs::create_dir_all(&downloads);
     let save_path = downloads.join(filename);
 
-    let final_path = if save_path.exists() {
-        let stem = std::path::Path::new(filename)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
-        let ext = std::path::Path::new(filename)
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let mut i = 1;
-        loop {
-            let name = if ext.is_empty() {
-                format!("{} ({})", stem, i)
-            } else {
-                format!("{} ({}).{}", stem, i, ext)
-            };
-            let candidate = downloads.join(&name);
-            if !candidate.exists() {
-                break candidate;
-            }
-            if i >= 999 {
-                return Err("ファイル名の競合を解決できません".into());
-            }
-            i += 1;
-        }
-    } else {
-        save_path
-    };
+    if save_path.exists() {
+        let size = std::fs::metadata(&save_path)
+            .map(|m| m.len())
+            .unwrap_or(bytes.len() as u64);
+        let path_str = save_path.to_string_lossy().to_string();
+        crate::commands::record_download(filename, &path_str, course_name, "luna", size);
+        return Ok(path_str);
+    }
 
-    std::fs::write(&final_path, bytes).map_err(|e| format!("ファイル保存失敗: {}", e))?;
+    std::fs::write(&save_path, bytes).map_err(|e| format!("ファイル保存失敗: {}", e))?;
 
-    let path_str = final_path.to_string_lossy().to_string();
+    let path_str = save_path.to_string_lossy().to_string();
     crate::commands::record_download(filename, &path_str, course_name, "luna", bytes.len() as u64);
 
     Ok(path_str)
