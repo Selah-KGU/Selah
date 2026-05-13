@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-draft-${{ github.ref }}
-  cancel-in-progress: true
+  group: updater-draft-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   # ── Read version (shared) ─────────────────────────────────────────────────
@@ -486,6 +486,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Verify draft updater feed
         shell: bash
         env:
@@ -546,21 +548,8 @@ jobs:
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             -L "$(cat latest_asset_url.txt)" \
             -o latest.json
-          node <<'NODE'
-          import fs from "node:fs";
-          const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
-          const required = [
-            "darwin-aarch64",
-            "darwin-x86_64",
-            "darwin-aarch64-app",
-            "darwin-x86_64-app",
-            "windows-x86_64",
-            "windows-x86_64-nsis",
-          ];
-          for (const key of required) {
-            const item = feed.platforms?.[key];
-            if (!item?.url || !item?.signature) {
-              throw new Error(`latest.json missing ${key} url/signature`);
-            }
-          }
-          NODE
+          node scripts/reconcile-updater-signatures.mjs --release release.json --latest latest.json --marker needs_reupload
+          if [ -f needs_reupload ]; then
+            release_id=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync("release.json", "utf8")).id)')
+            node scripts/upload-release-asset.mjs --tag "${TAG}" --expected-release-id "${release_id}" --file latest.json --name latest.json --require-draft
+          fi

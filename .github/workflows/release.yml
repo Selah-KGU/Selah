@@ -8,9 +8,15 @@ on:
         required: false
         default: ""
 
+concurrency:
+  group: updater-draft-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.versions.outputs.version }}
       tag: ${{ steps.versions.outputs.tag }}
@@ -43,6 +49,55 @@ jobs:
           echo "Computed version: ${VERSION} (${REASON}, date floor ${DATE_FLOOR})"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Reset existing draft release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
+          status=$(curl -sS -o release.json -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$api")
+          if [ "$status" = "404" ]; then
+            tag_ref="https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"
+            curl -sS -o /tmp/delete-tag.out -w "%{http_code}" -X DELETE \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "$tag_ref" | grep -Eq '^(204|404|422)$'
+            echo "No existing release for ${TAG}"
+            exit 0
+          fi
+          if [ "$status" != "200" ]; then
+            cat release.json
+            echo "::error::Failed to inspect release ${TAG} (HTTP ${status})"
+            exit 1
+          fi
+          node <<'NODE' > release-meta.env
+          import fs from "node:fs";
+          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          console.log(`id=${release.id}`);
+          console.log(`draft=${release.draft ? "true" : "false"}`);
+          console.log(`url=${release.html_url || ""}`);
+          NODE
+          source release-meta.env
+          if [ "$draft" != "true" ]; then
+            echo "Release ${TAG} is already published: ${url}. The resolver should have selected a newer patch, so leaving it untouched."
+            exit 0
+          fi
+          curl -fsSL -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${id}"
+          tag_ref="https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"
+          curl -sS -o /tmp/delete-tag.out -w "%{http_code}" -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$tag_ref" | grep -Eq '^(204|404|422)$'
+          echo "Deleted existing draft release for ${TAG}"
 
       - name: Generate release notes
         id: notes
@@ -409,6 +464,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Verify draft updater feed
         shell: bash
         env:
@@ -441,176 +498,12 @@ jobs:
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             -L "$(cat latest_asset_url.txt)" \
             -o latest.json
-          # Reconcile latest.json signatures against the actual .sig artifacts.
-          # tauri-action runs macOS and Windows in separate jobs; the Windows job can re-sign
-          # the macOS .tar.gz (or produce a mismatched .sig), leaving latest.json stale.
-          # This step downloads every .sig artifact, encodes it to base64, and patches
-          # latest.json in-place so all platform signatures match the uploaded artifacts.
-          # The corrected latest.json is then re-uploaded to the draft release.
-          node --input-type=module <<'NODE'
-          import fs from "node:fs";
-          import https from "node:https";
-
-          const token = process.env.GITHUB_TOKEN;
-          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
-          const feed = JSON.parse(fs.readFileSync("latest.json", "utf8"));
-
-          async function downloadText(asset) {
-            return new Promise((resolve, reject) => {
-              function get(u, withAuth) {
-                const opts = {
-                  headers: {
-                    "Accept": "application/octet-stream",
-                    "User-Agent": "selah-ci",
-                    ...(withAuth ? { "Authorization": `Bearer ${token}` } : {}),
-                  },
-                };
-                https.get(u, opts, (res) => {
-                  if (res.statusCode === 301 || res.statusCode === 302) { get(res.headers.location, false); return; }
-                  let buf = "";
-                  res.setEncoding("utf8");
-                  res.on("data", (d) => buf += d);
-                  res.on("end", () => resolve(buf));
-                  res.on("error", reject);
-                }).on("error", reject);
-              }
-              get(asset.url, true);
-            });
-          }
-
-          // Convert raw minisign sig text to the base64 string tauri-plugin-updater expects.
-          function sigToBase64(sigText) {
-            return Buffer.from(sigText).toString("base64");
-          }
-
-          // Extract raw sig line (second non-empty line) from a base64-encoded sig.
-          function rawSigLine(b64) {
-            const lines = Buffer.from(b64, "base64").toString("utf8").split("\n").map(l => l.trim()).filter(Boolean);
-            return lines[1] ?? "";
-          }
-
-          const assets = release.assets || [];
-
-          // Find macOS and Windows .sig assets
-          const macSigAsset = assets.find((a) => a.name.endsWith(".app.tar.gz.sig"));
-          const winSigAsset = assets.find((a) => a.name.endsWith("-setup.exe.sig"));
-
-          if (!macSigAsset) throw new Error("macOS .app.tar.gz.sig asset not found on release");
-          if (!winSigAsset) throw new Error("Windows -setup.exe.sig asset not found on release");
-
-          const macSigText = await downloadText(macSigAsset);
-          const winSigText = await downloadText(winSigAsset);
-          const macSigB64 = sigToBase64(macSigText);
-          const winSigB64 = sigToBase64(winSigText);
-
-          const macPlatforms = ["darwin-aarch64", "darwin-x86_64", "darwin-aarch64-app", "darwin-x86_64-app"];
-          const winPlatforms = ["windows-x86_64", "windows-x86_64-nsis"];
-          const required = [...macPlatforms, ...winPlatforms];
-
-          let patched = 0;
-          for (const key of required) {
-            const item = feed.platforms?.[key];
-            if (!item?.url || !item?.signature) {
-              throw new Error(`latest.json missing ${key} url/signature`);
-            }
-            const correctB64 = macPlatforms.includes(key) ? macSigB64 : winSigB64;
-            if (rawSigLine(item.signature) !== rawSigLine(correctB64)) {
-              console.log(`Patching latest.json [${key}]: stale sig → sig from ${macPlatforms.includes(key) ? macSigAsset.name : winSigAsset.name}`);
-              item.signature = correctB64;
-              patched++;
-            }
-          }
-
-          if (patched > 0) {
-            fs.writeFileSync("latest.json", JSON.stringify(feed, null, 2) + "\n");
-            fs.writeFileSync("needs_reupload", "1");
-            console.log(`Patched ${patched} platform(s) in latest.json — will re-upload`);
-          } else {
-            console.log("latest.json signatures already consistent with .sig artifacts — skipping re-upload");
-          }
-          NODE
+          node scripts/reconcile-updater-signatures.mjs --release release.json --latest latest.json --marker needs_reupload
 
           # Re-upload latest.json if it was patched (delete old asset first, then upload)
-          node --input-type=module <<'NODE'
-          import fs from "node:fs";
-          import https from "node:https";
-
-          const token = process.env.GITHUB_TOKEN;
-          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
-
-          async function apiRequest(method, path, body) {
-            return new Promise((resolve, reject) => {
-              const data = body ? JSON.stringify(body) : null;
-              const req = https.request({
-                hostname: "api.github.com",
-                path,
-                method,
-                headers: {
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": `Bearer ${token}`,
-                  "User-Agent": "selah-ci",
-                  ...(data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}),
-                },
-              }, (res) => {
-                let buf = "";
-                res.on("data", (d) => buf += d);
-                res.on("end", () => resolve({ status: res.statusCode, body: buf }));
-                res.on("error", reject);
-              });
-              req.on("error", reject);
-              if (data) req.write(data);
-              req.end();
-            });
-          }
-
-          async function uploadAsset(uploadUrl, name, content) {
-            const base = uploadUrl.replace(/\{[^}]+\}/, "");
-            const url = new URL(base);
-            url.searchParams.set("name", name);
-            return new Promise((resolve, reject) => {
-              const req = https.request({
-                hostname: url.hostname,
-                path: url.pathname + url.search,
-                method: "POST",
-                headers: {
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": `Bearer ${token}`,
-                  "User-Agent": "selah-ci",
-                  "Content-Type": "application/octet-stream",
-                  "Content-Length": Buffer.byteLength(content),
-                },
-              }, (res) => {
-                let buf = "";
-                res.on("data", (d) => buf += d);
-                res.on("end", () => resolve({ status: res.statusCode, body: buf }));
-                res.on("error", reject);
-              });
-              req.on("error", reject);
-              req.write(content);
-              req.end();
-            });
-          }
-
-          if (!fs.existsSync("needs_reupload")) {
-            console.log("No re-upload needed");
-            process.exit(0);
-          }
-
-          const currentFeed = fs.readFileSync("latest.json", "utf8");
-          const latestAsset = (release.assets || []).find((a) => a.name === "latest.json");
-          if (!latestAsset) throw new Error("latest.json asset not found on release");
-
-          // Delete old latest.json asset
-          const delRes = await apiRequest("DELETE", `/repos/${process.env.GITHUB_REPOSITORY}/releases/assets/${latestAsset.id}`);
-          if (delRes.status !== 204) {
-            throw new Error(`Failed to delete old latest.json asset: ${delRes.status} ${delRes.body}`);
-          }
-          console.log("Deleted old latest.json from release");
-
-          // Upload new latest.json
-          const upRes = await uploadAsset(release.upload_url, "latest.json", Buffer.from(currentFeed));
-          if (upRes.status !== 201) {
-            throw new Error(`Failed to upload new latest.json: ${upRes.status} ${upRes.body}`);
-          }
-          console.log("Re-uploaded latest.json with reconciled signatures");
-          NODE
+          if [ -f needs_reupload ]; then
+            release_id=$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync("release.json", "utf8")).id)')
+            node scripts/upload-release-asset.mjs --tag "${TAG}" --expected-release-id "${release_id}" --file latest.json --name latest.json --require-draft
+          else
+            echo "No re-upload needed"
+          fi

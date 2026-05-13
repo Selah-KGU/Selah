@@ -49,8 +49,12 @@ Selah のアプリ内更新は Tauri v2 updater と GitHub Releases の `latest.
 ## よくある事故
 
 - `Build` workflow は CI artifact に加えて配信用 draft Release も作ります。公開は手動 Publish だけで行います。
+- `Build` / `Release` はどちらも開始時に同 tag の draft Release を削除して作り直します。古い draft asset を継ぎ足して使い回さないでください。
 - `TAURI_SIGNING_PRIVATE_KEY` が空だと署名が作られず、Tauri Action は `latest.json` を skip することがあります。
 - macOS と Windows の Release job を並列にすると `latest.json` の更新が競合します。Windows job は macOS job の後に実行します。
+- `.sig` asset は raw minisign text の場合と base64 化済みの場合があります。`latest.json` の修正時は `scripts/reconcile-updater-signatures.mjs` で正規化し、盲目的に再 base64 化しないでください。
+- draft Release は main 更新ごとに作り直されるため、修正アップロード時は tag で release metadata を再取得し、検証時の release id と一致する場合だけ書き戻してください。署名照合は `latest.json` の URL と同名の `.sig` asset だけを参照し、実際の updater asset も公開鍵で検証します。
+- `Build` と `Release` workflow は同じ `updater-draft-*` concurrency group で直列化します。古い run が新しい draft asset を削除しないよう、draft を触る workflow を並列実行しないでください。
 - draft の間は公開 `latest/download/latest.json` では確認できません。workflow は GitHub API 経由で draft asset を検証します。
 
 ## Store 版との分離
