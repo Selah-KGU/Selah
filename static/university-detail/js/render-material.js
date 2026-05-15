@@ -1,6 +1,7 @@
 // Material Info
 function renderMaterialInfo(params) {
-  var data = { title: params.get('title') || '', course_name: '', sections: [], attachments: [], meta: [] };
+  _currentCourseName = params.get('courseName') || _currentCourseName || null;
+  var data = { title: params.get('title') || '', course_name: _currentCourseName || '', sections: [], attachments: [], meta: [] };
   var period = params.get('period');
   if (period) data.meta.push(['\u516c\u958b\u671f\u9593', period]);
   var desc = params.get('status');

@@ -37,9 +37,8 @@ unsafe impl Send for SendSyncDtm {}
 unsafe impl Sync for SendSyncDtm {}
 
 #[cfg(target_os = "windows")]
-static WINDOWS_SHARE_HANDLER: std::sync::LazyLock<
-    std::sync::Mutex<Option<SendSyncDtm>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+static WINDOWS_SHARE_HANDLER: std::sync::LazyLock<std::sync::Mutex<Option<SendSyncDtm>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 fn load_json_config<T: Default + DeserializeOwned>(path: &std::path::Path) -> T {
     if path.exists() {
@@ -190,7 +189,11 @@ impl Default for NativeAgentConfig {
     fn default() -> Self {
         Self {
             voice_shortcut_enabled: false,
-            voice_shortcut: if cfg!(target_os = "windows") { "lalt".into() } else { "fn".into() },
+            voice_shortcut: if cfg!(target_os = "windows") {
+                "lalt".into()
+            } else {
+                "fn".into()
+            },
             subtitle_overlay_enabled: false,
         }
     }
@@ -513,59 +516,59 @@ fn open_windows_share_picker(
     let (tx, rx) = std::sync::mpsc::channel();
 
     app.run_on_main_thread(move || {
-            let result: Result<(), String> = (|| {
-                let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
-                let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let result: Result<(), String> = (|| {
+            let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
+            let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
 
-                let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_str.as_str()))
-                    .map_err(|e| format!("共有用ファイルの取得に失敗しました: {}", e))?
-                    .get()
-                    .map_err(|e| format!("共有用ファイルの読み込みに失敗しました: {}", e))?;
-                let bitmap = RandomAccessStreamReference::CreateFromFile(&file)
-                    .map_err(|e| format!("共有画像の準備に失敗しました: {}", e))?;
-                let title_for_handler = title.clone();
-                let bitmap_for_handler = bitmap.clone();
-                let handler = TypedEventHandler::<DataTransferManager, DataRequestedEventArgs>::new(
-                    move |_, args| {
-                        if let Some(args) = args.as_ref() {
-                            let request = args.Request()?;
-                            let data = request.Data()?;
-                            let properties = data.Properties()?;
-                            properties.SetTitle(&HSTRING::from(title_for_handler.as_str()))?;
-                            properties.SetDescription(&HSTRING::from("Selah timetable image"))?;
-                            data.SetBitmap(&bitmap_for_handler)?;
-                            data.SetRequestedOperation(DataPackageOperation::Copy)?;
-                        }
-                        Ok(())
-                    },
-                );
-
-                let interop: IDataTransferManagerInterop = unsafe {
-                    RoGetActivationFactory(&HSTRING::from(
-                        "Windows.ApplicationModel.DataTransfer.DataTransferManager",
-                    ))
-                }
-                .map_err(|e| format!("Windows 共有機能の初期化に失敗しました: {}", e))?;
-                let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd) }
-                    .map_err(|e| format!("Windows 共有マネージャーの取得に失敗しました: {}", e))?;
-                let token = manager
-                    .DataRequested(&handler)
-                    .map_err(|e| format!("共有データの登録に失敗しました: {}", e))?;
-
-                if let Ok(mut previous) = WINDOWS_SHARE_HANDLER.lock() {
-                    if let Some(SendSyncDtm(old_manager, old_token)) = previous.take() {
-                        let _ = old_manager.RemoveDataRequested(old_token);
+            let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_str.as_str()))
+                .map_err(|e| format!("共有用ファイルの取得に失敗しました: {}", e))?
+                .get()
+                .map_err(|e| format!("共有用ファイルの読み込みに失敗しました: {}", e))?;
+            let bitmap = RandomAccessStreamReference::CreateFromFile(&file)
+                .map_err(|e| format!("共有画像の準備に失敗しました: {}", e))?;
+            let title_for_handler = title.clone();
+            let bitmap_for_handler = bitmap.clone();
+            let handler = TypedEventHandler::<DataTransferManager, DataRequestedEventArgs>::new(
+                move |_, args| {
+                    if let Some(args) = args.as_ref() {
+                        let request = args.Request()?;
+                        let data = request.Data()?;
+                        let properties = data.Properties()?;
+                        properties.SetTitle(&HSTRING::from(title_for_handler.as_str()))?;
+                        properties.SetDescription(&HSTRING::from("Selah timetable image"))?;
+                        data.SetBitmap(&bitmap_for_handler)?;
+                        data.SetRequestedOperation(DataPackageOperation::Copy)?;
                     }
-                    *previous = Some(SendSyncDtm(manager.clone(), token));
-                }
+                    Ok(())
+                },
+            );
 
-                unsafe { interop.ShowShareUIForWindow(hwnd) }
-                    .map_err(|e| format!("Windows 共有 UI の表示に失敗しました: {}", e))?;
-                Ok(())
-            })();
-            let _ = tx.send(result);
-        })
-        .map_err(|e| format!("Windows 共有 UI の起動に失敗しました: {}", e))?;
+            let interop: IDataTransferManagerInterop = unsafe {
+                RoGetActivationFactory(&HSTRING::from(
+                    "Windows.ApplicationModel.DataTransfer.DataTransferManager",
+                ))
+            }
+            .map_err(|e| format!("Windows 共有機能の初期化に失敗しました: {}", e))?;
+            let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd) }
+                .map_err(|e| format!("Windows 共有マネージャーの取得に失敗しました: {}", e))?;
+            let token = manager
+                .DataRequested(&handler)
+                .map_err(|e| format!("共有データの登録に失敗しました: {}", e))?;
+
+            if let Ok(mut previous) = WINDOWS_SHARE_HANDLER.lock() {
+                if let Some(SendSyncDtm(old_manager, old_token)) = previous.take() {
+                    let _ = old_manager.RemoveDataRequested(old_token);
+                }
+                *previous = Some(SendSyncDtm(manager.clone(), token));
+            }
+
+            unsafe { interop.ShowShareUIForWindow(hwnd) }
+                .map_err(|e| format!("Windows 共有 UI の表示に失敗しました: {}", e))?;
+            Ok(())
+        })();
+        let _ = tx.send(result);
+    })
+    .map_err(|e| format!("Windows 共有 UI の起動に失敗しました: {}", e))?;
 
     rx.recv()
         .map_err(|_| "Windows 共有 UI の結果受信に失敗しました".to_string())??;

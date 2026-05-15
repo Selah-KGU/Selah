@@ -968,19 +968,26 @@ fn sanitize_calendar_update_args(args: &Value) -> Option<Value> {
     // event_id is required; all other fields are optional.
     let event_id = sanitize_text_arg(args, "event_id", 200)?;
     let title = sanitize_text_arg(args, "title", 200);
-    let date = sanitize_text_arg(args, "date", 10).filter(|d| {
-        d.len() == 10 && d.chars().nth(4).map(|c| c == '-').unwrap_or(false)
-    });
+    let date = sanitize_text_arg(args, "date", 10)
+        .filter(|d| d.len() == 10 && d.chars().nth(4).map(|c| c == '-').unwrap_or(false));
     let start_time = sanitize_text_arg(args, "start_time", 5).filter(|t| t.len() == 5);
     let end_time = sanitize_text_arg(args, "end_time", 5).filter(|t| t.len() == 5);
     let location = sanitize_text_arg(args, "location", 200);
     let description = sanitize_text_arg(args, "description", 500);
     let mut out = serde_json::Map::new();
     out.insert("event_id".into(), Value::String(event_id));
-    if let Some(v) = title { out.insert("title".into(), Value::String(v)); }
-    if let Some(v) = date { out.insert("date".into(), Value::String(v)); }
-    if let Some(v) = start_time { out.insert("start_time".into(), Value::String(v)); }
-    if let Some(v) = end_time { out.insert("end_time".into(), Value::String(v)); }
+    if let Some(v) = title {
+        out.insert("title".into(), Value::String(v));
+    }
+    if let Some(v) = date {
+        out.insert("date".into(), Value::String(v));
+    }
+    if let Some(v) = start_time {
+        out.insert("start_time".into(), Value::String(v));
+    }
+    if let Some(v) = end_time {
+        out.insert("end_time".into(), Value::String(v));
+    }
     // Pass through location/description even if empty so tool knows to clear them.
     if args.get("location").is_some() {
         out.insert(

@@ -128,6 +128,7 @@ async function readDiscussionAttachmentPayload(picker) {
 
 function renderThreadPosts(container, threadData, threadUrl) {
   if (!container) return;
+  _currentCourseName = (threadData && threadData.course_name) || _currentCourseName || null;
   var posts = (threadData && threadData.posts) || [];
   if (!posts.length) {
     container.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-tertiary);font-size:12px">\u307e\u3060\u6295\u7a3f\u304c\u3042\u308a\u307e\u305b\u3093</div>';

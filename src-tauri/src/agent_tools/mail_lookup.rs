@@ -30,8 +30,8 @@ pub(super) async fn list_recent_mail(
 }
 
 pub(super) async fn search_mail(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
-    let keyword = sanitize_text_arg(args, "keyword", 80)
-        .ok_or_else(|| "keyword が空です".to_string())?;
+    let keyword =
+        sanitize_text_arg(args, "keyword", 80).ok_or_else(|| "keyword が空です".to_string())?;
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())

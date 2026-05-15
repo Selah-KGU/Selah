@@ -3,7 +3,7 @@
   import { get } from "svelte/store";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedBackendFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
   import type { NotificationsData, NotificationEntry } from "../stores";
-  import { lunaInvoke, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, isDemoActive } from "../api";
+  import { lunaInvoke, kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicFetchDetail, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, aiChat, isDemoActive, openLunaTodoItem } from "../api";
   import type { KwicPortalHome, KwicPortalNotification, KwicSubportalData, WeatherData } from "../api";
   import type { LunaTodoItem, LunaNotification, ScheduleResponse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "../types";
@@ -830,14 +830,14 @@ suggestionsのルール：
     }
   }
 
-  async function openLunaDetail(path: string, title: string) {
+  async function openLunaDetail(path: string, title: string, courseName?: string | null) {
     if (!path) return;
     if (isDemoActive()) {
       navigate("todo");
       return;
     }
     try {
-      await invoke("university_open_detail_window", { path, title });
+      await invoke("university_open_detail_window", { path, title, courseName: courseName || null });
     } catch (e) {
       console.error("Failed to open Luna detail:", e);
     }
@@ -845,7 +845,7 @@ suggestionsのルール：
 
   function openNotif(n: UnifiedNotif) {
     if (n.source === "luna" && n.url) {
-      openLunaDetail(n.url, n.title);
+      openLunaDetail(n.url, n.title, n.courseInfo);
     } else if (n.source === "kwic" && n.kwicId) {
       if (isDemoActive()) {
         navigate("notifications");
@@ -865,7 +865,11 @@ suggestionsのルール：
 
   function openTodo(item: LunaTodoItem) {
     if (item.url) {
-      openLunaDetail(item.url, item.content_name || item.content_type);
+      if (isDemoActive()) {
+        navigate("todo");
+        return;
+      }
+      openLunaTodoItem(item).catch((e) => console.error("Failed to open TODO item:", e));
     } else {
       navigate("todo");
     }

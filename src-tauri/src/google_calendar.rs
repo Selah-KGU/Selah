@@ -670,11 +670,16 @@ impl GoogleCalendarClient {
         description: Option<&str>,
     ) -> Result<String, String> {
         if !self.is_authenticated() {
-            return Err("Google Calendarにログインしていません。設定画面から連携してください。".into());
+            return Err(
+                "Google Calendarにログインしていません。設定画面から連携してください。".into(),
+            );
         }
         // Basic format validation to prevent injection into the API call.
         if !DATE_RE.is_match(date) {
-            return Err(format!("日付フォーマットが不正です (期待: YYYY-MM-DD): {}", date));
+            return Err(format!(
+                "日付フォーマットが不正です (期待: YYYY-MM-DD): {}",
+                date
+            ));
         }
         if !TIME_RE.is_match(start_time) || !TIME_RE.is_match(end_time) {
             return Err("時刻フォーマットが不正です (期待: HH:MM)".into());
@@ -749,7 +754,10 @@ impl GoogleCalendarClient {
         let _ = self.delete_event(&cal_id, event_id).await;
         self.sync_state.agent_event_map.remove(event_id);
         save_sync_state(&self.sync_state)?;
-        Ok(format!("「{}」({} {}) を削除しました。", meta.title, meta.date, meta.start_time))
+        Ok(format!(
+            "「{}」({} {}) を削除しました。",
+            meta.title, meta.date, meta.start_time
+        ))
     }
 
     /// Update an agent-created event. Only fields provided (Some) are changed.
@@ -831,7 +839,6 @@ impl GoogleCalendarClient {
             new_title, new_date, new_start, new_end
         ))
     }
-
 
     async fn create_event(
         &mut self,

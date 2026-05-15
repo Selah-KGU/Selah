@@ -68,6 +68,24 @@ pub struct LiveSaveResult {
     pub path: String,
     pub markdown: String,
     pub snapshot: LiveSessionSnapshot,
+    #[serde(default)]
+    pub suggested_todos: Vec<LiveTodoSuggestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveTodoSuggestion {
+    pub title: String,
+    pub course_name: String,
+    #[serde(default)]
+    pub content_type: String,
+    #[serde(default)]
+    pub deadline: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub source_excerpt: String,
+    pub day: i32,
+    pub period: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -337,8 +355,7 @@ fn write_partial_markdown_file(
     if transcript_lines.is_empty() {
         return;
     }
-    let overall_summary =
-        "### 全体要約\n_(セッション継続中…保存時に確定します)_".to_string();
+    let overall_summary = "### 全体要約\n_(セッション継続中…保存時に確定します)_".to_string();
     let markdown = build_markdown(
         course,
         started_at,
@@ -553,7 +570,10 @@ async fn summarize_chunk(
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: format!("あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（Markdownのみ、厳守）:\n\n- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）\n\nルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。{}", language_hint),
+            content: format!(
+                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（Markdownのみ、厳守）:\n\n- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）\n\nルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。{}",
+                language_hint
+            ),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
@@ -562,8 +582,16 @@ async fn summarize_chunk(
                 "講義: {}\n授業コード: {}\n教員: {}\n教室: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n今回の文字起こし:\n{}\n\n注記: 文字起こしの専門用語・固有名詞は STT の誤認識が混ざる可能性があります。講義名「{}」の分野脈絡を手がかりに、明らかな誤りは自然に補正してください。",
                 course.course_name,
                 course.course_code,
-                if course.teacher.is_empty() { "不明" } else { &course.teacher },
-                if course.room.is_empty() { "未設定" } else { &course.room },
+                if course.teacher.is_empty() {
+                    "不明"
+                } else {
+                    &course.teacher
+                },
+                if course.room.is_empty() {
+                    "未設定"
+                } else {
+                    &course.room
+                },
                 course.time_label,
                 recent_summary_context,
                 transcript,
@@ -607,7 +635,10 @@ async fn summarize_overall(
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: format!("あなたは大学講義ノートを仕上げるアシスタントです。分割要約と末尾の文字起こしを基に、講義全体を俯瞰する要約をMarkdownで返してください。\n\n注意事項:\n- 各分割要約を単純に繋げるのではなく、講義全体を貫くテーマや論理の流れを抽出してください。\n- 文字起こしには音声認識の誤りが含まれる可能性があります。文脈から意味を推測し、明らかな誤認識は自然な範囲で補正して構いません。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすく整理して構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、分割要約または文字起こしから十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 講義全体の理解を助ける整理はしてよいですが、補った背景知識を講義で明示された事実のように書いてはいけません。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（厳守）:\n### 全体要約\n講義全体の主旨を1段落にまとめる。\n### 今回の論点\n- 講義で取り上げられた主要論点を3〜5個、各1行の箇条書きで列挙\n\nルール:\n- 指定形式以外のセクションや見出しを追加しない。\n- 抽象的すぎる表現を避け、講義固有の具体的概念やキーワードを含める。{}", language_hint),
+            content: format!(
+                "あなたは大学講義ノートを仕上げるアシスタントです。分割要約と末尾の文字起こしを基に、講義全体を俯瞰する要約をMarkdownで返してください。\n\n注意事項:\n- 各分割要約を単純に繋げるのではなく、講義全体を貫くテーマや論理の流れを抽出してください。\n- 文字起こしには音声認識の誤りが含まれる可能性があります。文脈から意味を推測し、明らかな誤認識は自然な範囲で補正して構いません。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすく整理して構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、分割要約または文字起こしから十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 講義全体の理解を助ける整理はしてよいですが、補った背景知識を講義で明示された事実のように書いてはいけません。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（厳守）:\n### 全体要約\n講義全体の主旨を1段落にまとめる。\n### 今回の論点\n- 講義で取り上げられた主要論点を3〜5個、各1行の箇条書きで列挙\n\nルール:\n- 指定形式以外のセクションや見出しを追加しない。\n- 抽象的すぎる表現を避け、講義固有の具体的概念やキーワードを含める。{}",
+                language_hint
+            ),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
@@ -616,7 +647,11 @@ async fn summarize_overall(
                 "講義: {}\n授業コード: {}\n教員: {}\n\n分割要約:\n{}\n\n終盤の文字起こし:\n{}\n\n注記: 文字起こしには STT 誤認識が含まれる可能性があります。講義名「{}」の分野脈絡から、明らかな誤りは自然に補正してください。",
                 course.course_name,
                 course.course_code,
-                if course.teacher.is_empty() { "不明" } else { &course.teacher },
+                if course.teacher.is_empty() {
+                    "不明"
+                } else {
+                    &course.teacher
+                },
                 summary_text,
                 recent_transcript,
                 course.course_name,
@@ -626,6 +661,131 @@ async fn summarize_overall(
     ];
     let raw = crate::ai::chat_completion_public(&cfg, messages).await?;
     Ok(sanitize_model_output(&raw))
+}
+
+fn extract_json_object(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = bytes.iter().position(|b| *b == b'{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, b) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *b == b'\\' {
+                escaped = true;
+            } else if *b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match *b {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return text.get(start..=idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn value_to_trimmed_string(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(s)) => s.trim().to_string(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+async fn extract_todo_suggestions(
+    course: &LiveCourseInfo,
+    summaries: &[LiveSummaryChunk],
+    transcript_lines: &[LiveTranscriptLine],
+) -> Vec<LiveTodoSuggestion> {
+    if course.is_free_note || transcript_lines.is_empty() {
+        return Vec::new();
+    }
+    let Ok(cfg) = live_ai_config() else {
+        return Vec::new();
+    };
+    let summary_text = summaries
+        .iter()
+        .map(|chunk| format!("## {}\n{}\n{}", chunk.title, chunk.range_label, chunk.body))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let transcript = transcript_lines
+        .iter()
+        .rev()
+        .take(80)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|line| format!("- [{}] {}", line.at, line.text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let messages = vec![
+        crate::ai::ChatMessage {
+            role: "system".into(),
+            content: "あなたは大学講義ノートから学生のTODO候補だけを抽出するアシスタントです。先生が明確に課題、提出物、宿題、レポート、事前準備、復習タスク、小テスト準備として指示したものだけを抽出してください。講義内容そのもの、一般的な学習アドバイス、AIが勝手に作った復習案は含めません。締切が明示されない場合は deadline を空文字にします。出力はJSONのみで、説明文やMarkdownを付けないでください。形式: {\"todos\":[{\"title\":\"課題名\",\"content_type\":\"課題|レポート|予習|復習|テスト準備|その他\",\"deadline\":\"YYYY-MM-DD HH:mm または 空文字\",\"note\":\"学生が次にすることを短く\",\"source_excerpt\":\"根拠になる発話を短く\"}]}。候補がなければ {\"todos\":[]}。".into(),
+            images: Vec::new(),
+        },
+        crate::ai::ChatMessage {
+            role: "user".into(),
+            content: format!(
+                "講義: {}\n授業コード: {}\n曜日/時限: {} {}\n教員: {}\n\nAIレポート/分割要約:\n{}\n\n文字起こし（終盤中心）:\n{}\n\nこの講義内で明確に指示されたTODO/課題候補だけを抽出してください。",
+                course.course_name,
+                course.course_code,
+                course.day,
+                course.period,
+                if course.teacher.is_empty() { "不明" } else { &course.teacher },
+                summary_text,
+                transcript,
+            ),
+            images: Vec::new(),
+        },
+    ];
+    let Ok(raw) = crate::ai::chat_completion_public(&cfg, messages).await else {
+        return Vec::new();
+    };
+    let Some(json_text) = extract_json_object(&raw) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_text) else {
+        return Vec::new();
+    };
+    let Some(items) = value.get("todos").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items.iter().take(6) {
+        let title = value_to_trimmed_string(item.get("title"));
+        if title.is_empty() {
+            continue;
+        }
+        let content_type = value_to_trimmed_string(item.get("content_type"));
+        out.push(LiveTodoSuggestion {
+            title,
+            course_name: course.course_name.clone(),
+            content_type: if content_type.is_empty() {
+                "課題".to_string()
+            } else {
+                content_type
+            },
+            deadline: value_to_trimmed_string(item.get("deadline")),
+            note: value_to_trimmed_string(item.get("note")),
+            source_excerpt: value_to_trimmed_string(item.get("source_excerpt")),
+            day: course.day,
+            period: course.period,
+        });
+    }
+    out
 }
 
 fn build_chunk_title(index: usize, start: DateTime<Local>, end: DateTime<Local>) -> String {
@@ -1032,6 +1192,7 @@ pub async fn live_finish_session(
                 path: String::new(),
                 markdown: String::new(),
                 snapshot,
+                suggested_todos: Vec::new(),
             };
             emit_live_update(&app, &state);
             return Ok(result);
@@ -1075,6 +1236,11 @@ pub async fn live_finish_session(
         &summaries,
         &transcript_lines,
     );
+    let suggested_todos = if should_skip_ai_summarization(started_at, ended_at) {
+        Vec::new()
+    } else {
+        extract_todo_suggestions(&course, &summaries, &transcript_lines).await
+    };
 
     let dir = live_storage_dir(&course);
     let path = dir.join(formal_markdown_filename(&course, started_at));
@@ -1114,6 +1280,7 @@ pub async fn live_finish_session(
         path: path_str.clone(),
         markdown,
         snapshot,
+        suggested_todos,
     };
     let _ = app.emit("live-session-saved", &result);
     emit_live_update(&app, &state);

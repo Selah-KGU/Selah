@@ -167,7 +167,10 @@ fn stt_model_missing_message(model: &SttModelInfo) -> String {
             model.name
         )
     } else {
-        format!("{} がダウンロードされていません。設定画面からダウンロードしてください。", model.name)
+        format!(
+            "{} がダウンロードされていません。設定画面からダウンロードしてください。",
+            model.name
+        )
     }
 }
 
@@ -260,13 +263,9 @@ fn stt_execution_backend_catalog() -> Vec<SttExecutionBackendInfo> {
             experimental: true,
             available,
             availability_note: if available {
-                Some(
-                    "認識器のみ CoreML に切り替わり、VAD は引き続き CPU を使います。".into(),
-                )
+                Some("認識器のみ CoreML に切り替わり、VAD は引き続き CPU を使います。".into())
             } else {
-                Some(
-                    "このビルドでは CoreML は利用できません。".into(),
-                )
+                Some("このビルドでは CoreML は利用できません。".into())
             },
         });
     }
@@ -276,7 +275,9 @@ fn stt_execution_backend_catalog() -> Vec<SttExecutionBackendInfo> {
         backends.push(SttExecutionBackendInfo {
             id: STT_BACKEND_DIRECTML.into(),
             label: "GPU 高精度（DirectML）".into(),
-            description: "GPU を使ってより高精度な認識を行います。高精度モデルのダウンロードが必要です。".into(),
+            description:
+                "GPU を使ってより高精度な認識を行います。高精度モデルのダウンロードが必要です。"
+                    .into(),
             experimental: false,
             available,
             availability_note: if available {
@@ -1619,7 +1620,11 @@ fn partial_decode_slice(
     } else {
         partial_profile.min_interval_ms
     };
-    let interval = if fast { base_interval / 2 } else { base_interval };
+    let interval = if fast {
+        base_interval / 2
+    } else {
+        base_interval
+    };
     if last_partial_at.elapsed() < Duration::from_millis(interval) {
         return None;
     }
@@ -1868,13 +1873,19 @@ fn run_stt_session(
                             &current_utterance,
                             &mut last_partial_at,
                             &mut stable_streak,
-                            if use_directml_helper { PARTIAL_WINDOW_SECS_DIRECTML } else { PARTIAL_WINDOW_SECS },
+                            if use_directml_helper {
+                                PARTIAL_WINDOW_SECS_DIRECTML
+                            } else {
+                                PARTIAL_WINDOW_SECS
+                            },
                             use_directml_helper,
                         ) {
                             let text = if let Some(recognizer) = recognizer.as_ref() {
                                 decode_samples(recognizer, TARGET_SAMPLE_RATE, &slice)
                             } else if let Some(server) = directml_server.as_mut() {
-                                server.decode(TARGET_SAMPLE_RATE, &slice).unwrap_or_default()
+                                server
+                                    .decode(TARGET_SAMPLE_RATE, &slice)
+                                    .unwrap_or_default()
                             } else {
                                 String::new()
                             };

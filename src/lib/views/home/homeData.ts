@@ -6,6 +6,7 @@ export interface UnifiedNotif {
   source: "kgc" | "luna" | "kwic";
   title: string;
   category: string;
+  courseInfo?: string;
   date: string;
   section?: string;
   sender?: string;
@@ -127,6 +128,7 @@ export function getRecentNotifications(
       source: "luna",
       title: notif.content,
       category: notif.module || notif.course_info,
+      courseInfo: notif.course_info,
       date: notif.date,
       url: notif.url,
     });

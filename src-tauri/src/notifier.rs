@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::background_refresh;
 use crate::commands::{self, NotificationConfig};
@@ -712,7 +712,8 @@ fn sync_kwic_notifications(
                             .then(|| item.information_type.clone()),
                         person_category_cd: (!item.person_category_cd.is_empty())
                             .then(|| item.person_category_cd.clone()),
-                        category_cd: (!item.category_cd.is_empty()).then(|| item.category_cd.clone()),
+                        category_cd: (!item.category_cd.is_empty())
+                            .then(|| item.category_cd.clone()),
                         ..Default::default()
                     }),
                 );
@@ -925,51 +926,13 @@ fn send_actionable_native_notification(
     app: &AppHandle,
     title: &str,
     body: &str,
-    target: NotificationClickTarget,
+    _target: NotificationClickTarget,
 ) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let app = app.clone();
-        let bundle_id = app.config().identifier.clone();
-        let title = title.to_string();
-        let body = body.to_string();
-        std::thread::spawn(move || {
-            let _ = mac_notification_sys::set_application(&bundle_id);
-            let mut notification = mac_notification_sys::Notification::new();
-            notification
-                .title(&title)
-                .message(&body)
-                .wait_for_click(true);
-
-            match notification.send() {
-                Ok(mac_notification_sys::NotificationResponse::Click)
-                | Ok(mac_notification_sys::NotificationResponse::ActionButton(_)) => {
-                    activate_notification_target(&app, target);
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    log::warn!("actionable notification failed: {}", e);
-                }
-            }
-        });
-        Ok("Notification queued with click target".to_string())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let detail = crate::ai::send_native_notification(app, title, body)?;
-        Ok(format!("{}; click target not supported on this platform", detail))
-    }
-}
-
-fn activate_notification_target(app: &AppHandle, target: NotificationClickTarget) {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-    }
-    if let Err(e) = app.emit("notification-activated", target) {
-        log::warn!("notification activation emit failed: {}", e);
-    }
+    let detail = crate::ai::send_native_notification(app, title, body)?;
+    Ok(format!(
+        "{}; click target not supported on this platform",
+        detail
+    ))
 }
 
 fn record_event(
@@ -1023,7 +986,7 @@ fn finish_sync_debug(app: &AppHandle, run: SyncRunDebug, status: String, error: 
 fn delivery_note() -> &'static str {
     #[cfg(target_os = "macos")]
     {
-        "macOS: dispatched means notify-rust accepted the request; OS display happens asynchronously."
+        "macOS: dispatched means UserNotifications accepted the request; OS display happens asynchronously."
     }
     #[cfg(not(target_os = "macos"))]
     {

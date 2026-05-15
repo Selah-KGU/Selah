@@ -1238,7 +1238,10 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
                     .unwrap_or_default();
                 (title, url)
             } else {
-                (td.text().collect::<String>().trim().to_string(), String::new())
+                (
+                    td.text().collect::<String>().trim().to_string(),
+                    String::new(),
+                )
             }
         } else {
             continue;
@@ -1327,9 +1330,11 @@ pub fn parse_notification_detail(html: &str) -> NotificationDetail {
             detail.date = value_text.clone();
         } else if th_text.contains("分類") || th_text.contains("区分") {
             detail.category = value_text.clone();
-        } else if th_text.contains("発信") || th_text.contains("送信") || th_text.contains("掲示者") {
+        } else if th_text.contains("発信") || th_text.contains("送信") || th_text.contains("掲示者")
+        {
             detail.sender = value_text.clone();
-        } else if th_text.contains("本文") || th_text.contains("内容") || th_text.contains("詳細") {
+        } else if th_text.contains("本文") || th_text.contains("内容") || th_text.contains("詳細")
+        {
             // Preserve newlines from <br> by inserting separators around block tags.
             let raw_html = tds
                 .iter()
@@ -1346,9 +1351,11 @@ pub fn parse_notification_detail(html: &str) -> NotificationDetail {
                 continue;
             }
             let lower = name.to_lowercase();
-            if [".pdf", ".docx", ".xlsx", ".pptx", ".zip", ".doc", ".xls", ".ppt"]
-                .iter()
-                .any(|ext| lower.ends_with(ext))
+            if [
+                ".pdf", ".docx", ".xlsx", ".pptx", ".zip", ".doc", ".xls", ".ppt",
+            ]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
             {
                 detail.attachments.push(NotificationAttachment {
                     name,

@@ -526,8 +526,8 @@ pub(super) async fn get_notification_detail(
     app: &tauri::AppHandle,
     args: &Value,
 ) -> Result<Value, String> {
-    let title = sanitize_text_arg(args, "title", 200)
-        .ok_or_else(|| "title が空です".to_string())?;
+    let title =
+        sanitize_text_arg(args, "title", 200).ok_or_else(|| "title が空です".to_string())?;
     let needle = normalize_text(&title);
     let db = app.state::<Database>();
 
@@ -535,7 +535,8 @@ pub(super) async fn get_notification_detail(
     if let Ok(Some((json_str, _))) = db.get_data_cache("kwic_home") {
         if let Ok(home) = serde_json::from_str::<crate::kwic_commands::KwicPortalHome>(&json_str) {
             for section in &home.sections {
-                if section.title == "メインリンク" || section.title == "注目コンテンツ" {
+                if section.title == "メインリンク" || section.title == "注目コンテンツ"
+                {
                     continue;
                 }
                 if let Some(item) = section.items.iter().find(|i| {
@@ -600,7 +601,8 @@ pub(super) async fn get_notification_detail(
                 } else {
                     format!("/uniasv2/{}", entry.url)
                 };
-                let detail = crate::commands::fetch_notification_detail_internal(app, &path).await?;
+                let detail =
+                    crate::commands::fetch_notification_detail_internal(app, &path).await?;
                 let attachments: Vec<Value> = detail
                     .attachments
                     .iter()

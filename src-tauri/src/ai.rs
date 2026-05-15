@@ -636,41 +636,12 @@ pub async fn test_notification(
 }
 
 /// Send a native notification.
-/// macOS: uses notify-rust directly so the app's own bundle ID (and icon) is
-/// always used, bypassing the tauri plugin's dev-mode fallback to Terminal.
-/// Other platforms: uses the tauri plugin as before.
 pub fn send_native_notification(
     app: &tauri::AppHandle,
     title: &str,
     body: &str,
 ) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let bundle_id = &app.config().identifier;
-        let _ = notify_rust::set_application(bundle_id);
-        let mut n = notify_rust::Notification::new();
-        n.summary(title);
-        n.body(body);
-        n.auto_icon();
-        let n = n; // move into spawn
-        std::thread::spawn(move || {
-            if let Err(e) = n.show() {
-                log::warn!("notify-rust show failed: {}", e);
-            }
-        });
-        Ok("Notification queued".to_string())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        use tauri_plugin_notification::NotificationExt;
-        app.notification()
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-            .map(|_| "Notification sent".to_string())
-            .map_err(|e| format!("Notification unavailable: {}", e))
-    }
+    crate::native_notification::send_native_notification(app, title, body)
 }
 
 /// Debug-only test notification that bypasses notify-rust.

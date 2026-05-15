@@ -420,13 +420,11 @@ mod tests {
             teacher.attachments[0].download_action,
             "/lms/course/inquiry/inquiry_postfile"
         );
-        assert!(teacher
-            .attachments[0]
+        assert!(teacher.attachments[0]
             .download_params
             .iter()
             .any(|(k, v)| k == "idnumber" && v == "2026510010040201"));
-        assert!(teacher
-            .attachments[0]
+        assert!(teacher.attachments[0]
             .download_params
             .iter()
             .any(|(k, v)| k == "fileId" && v == "OBJ-1"));

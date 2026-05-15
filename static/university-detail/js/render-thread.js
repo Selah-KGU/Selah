@@ -2,6 +2,7 @@
 function renderThreadDetail(data, threadUrl) {
   var c = document.getElementById('content');
   if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+  _currentCourseName = data.course_name || _currentCourseName || null;
   var h = '<div class="detail-wrap">';
   if (data.course_name) h += '<div class="course-label">' + escapeHtml(data.course_name) + '</div>';
   if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';

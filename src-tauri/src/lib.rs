@@ -33,6 +33,7 @@ mod macos_native_agent;
 mod macos_subtitle_overlay;
 mod mail;
 mod mail_commands;
+mod native_notification;
 mod notifier;
 mod parser;
 mod power;
@@ -171,6 +172,7 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            #[cfg(not(target_os = "macos"))]
             app.handle().plugin(tauri_plugin_notification::init())?;
             app.handle().plugin(tauri_plugin_opener::init())?;
             app.handle()
@@ -395,6 +397,7 @@ pub fn run() {
             ai::request_ai_refresh,
             ai::test_notification,
             ai::debug_test_notification,
+            native_notification::native_notification_permission_granted,
             stt::get_stt_config,
             stt::save_stt_config,
             stt::list_stt_execution_backends,

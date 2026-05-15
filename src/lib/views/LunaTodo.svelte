@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { lunaInvoke, aiAnalyzeTodo } from "../api";
+  import { aiAnalyzeTodo, openLunaTodoItem } from "../api";
   import { cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
@@ -100,29 +100,11 @@
     return `残り${Math.floor(diff / 86400_000)}日`;
   }
 
-  async function openDetail(path: string, title: string) {
-    if (!path) return;
+  async function openTodo(item: LunaTodoItem) {
     try {
-      // Detect mode from URL path and extract params for proper window setup
-      const params: Record<string, any> = { path, title };
-      const urlParts = new URLSearchParams(path.split('?')[1] || '');
-      const idnumber = urlParts.get('idnumber') || undefined;
-
-      if (path.includes('/report/submission')) {
-        params.mode = 'report';
-        params.idnumber = idnumber;
-        params.infoId = urlParts.get('reportId') || undefined;
-      } else if (path.includes('/forums/themetop')) {
-        params.mode = 'discussion';
-      } else if (path.includes('/forums/thread')) {
-        params.mode = 'thread';
-      } else if (path.includes('/surveys/take') || path.includes('/course/surveys')) {
-        params.mode = 'survey';
-      }
-
-      await lunaInvoke("university_open_detail_window", params);
+      await openLunaTodoItem(item);
     } catch (e: any) {
-      console.error("Failed to open detail window:", e);
+      console.error("Failed to open TODO item:", e);
     }
   }
 
@@ -247,7 +229,7 @@
               class:critical={urg === "critical"}
               class:soon={urg === "soon"}
               style="--delay: {Math.min(i * 0.05, 0.5)}s"
-              onclick={() => openDetail(item.url, item.content_name || item.content_type)}
+              onclick={() => openTodo(item)}
             >
               <div class="urgency-bar" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>
                 <div class="urgency-fill" style="height: {Math.max(pct * 100, 6)}%"></div>

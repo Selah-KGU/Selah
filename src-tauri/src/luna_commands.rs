@@ -2597,7 +2597,10 @@ pub async fn luna_fetch_thread_posts(
         let idn = extract_url_param(&url, "idnumber").unwrap_or_default();
         let fid = extract_url_param(&url, "forumId").unwrap_or_default();
         if !idn.is_empty() && !fid.is_empty() {
-            format!("/lms/course/forums/themetop?idnumber={}&forumId={}", idn, fid)
+            format!(
+                "/lms/course/forums/themetop?idnumber={}&forumId={}",
+                idn, fid
+            )
         } else {
             "/lms/home".to_string()
         }

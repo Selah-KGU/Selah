@@ -365,7 +365,8 @@ function renderCourseDetail(data, idnumber, kgcPath) {
         path: '',
         title: '\u51fa\u5e2d',
         mode: 'attendance',
-        idnumber: b.dataset.attOpenWindowId
+        idnumber: b.dataset.attOpenWindowId,
+        courseName: _currentCourseName || data.course_name || null
       });
     });
   });
@@ -388,7 +389,7 @@ function renderCourseDetail(data, idnumber, kgcPath) {
       if (e.target.closest('.mat-file-btn')) return;
       var item = data.materials[parseInt(b.dataset.materialIdx)];
       if (!item) return;
-      invoke('university_open_detail_window', { path: '', title: item.title, mode: 'material', period: item.period || null, status: item.description || null, idnumber: idnumber || null, infoId: item.files?.length ? JSON.stringify(item.files) : null });
+      invoke('university_open_detail_window', { path: '', title: item.title, mode: 'material', period: item.period || null, status: item.description || null, idnumber: idnumber || null, infoId: item.files?.length ? JSON.stringify(item.files) : null, courseName: _currentCourseName || data.course_name || null });
     });
   });
 
@@ -415,7 +416,7 @@ function renderCourseDetail(data, idnumber, kgcPath) {
   c.querySelectorAll('[data-disc-idx]').forEach(function(b) {
     b.addEventListener('click', function() {
       var item = data.discussions[parseInt(b.dataset.discIdx)];
-      if (item?.url) invoke('university_open_detail_window', { path: item.url, title: item.title, mode: 'discussion' });
+      if (item?.url) invoke('university_open_detail_window', { path: item.url, title: item.title, mode: 'discussion', courseName: _currentCourseName || data.course_name || null });
     });
   });
 

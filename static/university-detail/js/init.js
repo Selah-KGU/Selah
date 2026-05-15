@@ -78,6 +78,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     } else if (mode === 'attendance') {
       var aid = params.get('idnumber');
       if (!aid) { renderDetail({ error: '\u30b3\u30fc\u30b9\u756a\u53f7\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+      if (params.get('courseName')) _currentCourseName = params.get('courseName');
       renderAttendanceDetail(await invoke('luna_fetch_course_detail', { idnumber: aid }), aid);
     } else if (mode === 'announcement') {
       var idn2 = params.get('idnumber'), infoId = params.get('infoId');
@@ -134,9 +135,13 @@ document.addEventListener('DOMContentLoaded', async function() {
       await mountReportSubmitForm(invoke, params, path);
     } else if (mode === 'discussion') {
       if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+      _currentPagePath = path;
+      if (params.get('courseName')) _currentCourseName = params.get('courseName');
       renderDiscussion(await invoke('luna_fetch_discussion_detail', { url: path }));
     } else if (mode === 'thread') {
       if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }
+      _currentPagePath = path;
+      if (params.get('courseName')) _currentCourseName = params.get('courseName');
       renderThreadDetail(await invoke('luna_fetch_thread_posts', { url: path }), path);
     } else if (mode === 'survey') {
       if (!path) { renderDetail({ error: '\u30d1\u30b9\u304c\u6307\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093' }); return; }

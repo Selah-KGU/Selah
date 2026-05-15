@@ -122,5 +122,9 @@ pub(in crate::luna_parser) fn extract_quill_rich_html(json_str: &str) -> Option<
         }
     }
 
-    if has_content { Some(html) } else { None }
+    if has_content {
+        Some(html)
+    } else {
+        None
+    }
 }

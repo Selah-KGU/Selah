@@ -33,9 +33,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
-};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetSystemMetrics, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
@@ -176,8 +174,7 @@ struct AgentState {
 
 static WINDOW: LazyLock<Mutex<OverlayWindow>> =
     LazyLock::new(|| Mutex::new(OverlayWindow::default()));
-static AGENT: LazyLock<Mutex<AgentState>> =
-    LazyLock::new(|| Mutex::new(AgentState::default()));
+static AGENT: LazyLock<Mutex<AgentState>> = LazyLock::new(|| Mutex::new(AgentState::default()));
 static CREATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 // Thread-local background brush cache (overlay Win32 thread only).
@@ -196,7 +193,11 @@ struct Spring {
 
 impl Spring {
     fn new(pos: f64) -> Self {
-        Self { pos, vel: 0.0, target: pos }
+        Self {
+            pos,
+            vel: 0.0,
+            target: pos,
+        }
     }
 
     fn set_target(&mut self, t: f64) {
@@ -236,20 +237,47 @@ fn uuid_v4() -> String {
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-\
          {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15],
     )
 }
 
 // ─ Font helpers ───────────────────────────────────────────────────────────────
 fn make_font(px: i32, bold: bool) -> HGDIOBJ {
     let name = wide_null("Segoe UI");
-    let weight = if bold { FW_BOLD as i32 } else { FW_NORMAL as i32 };
+    let weight = if bold {
+        FW_BOLD as i32
+    } else {
+        FW_NORMAL as i32
+    };
     unsafe {
         CreateFontW(
-            -px, 0, 0, 0, weight, 0, 0, 0,
-            DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32,
-            0, DEFAULT_QUALITY as u32,
+            -px,
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET as u32,
+            OUT_DEFAULT_PRECIS as u32,
+            0,
+            DEFAULT_QUALITY as u32,
             (DEFAULT_PITCH | FF_DONTCARE) as u32,
             name.as_ptr(),
         ) as HGDIOBJ
@@ -313,16 +341,22 @@ fn prefers_dark(app: &AppHandle) -> bool {
 fn system_apps_use_dark_theme() -> bool {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
-        KEY_QUERY_VALUE, REG_DWORD,
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+        REG_DWORD,
     };
-    let subkey: Vec<u16> =
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
-            .encode_utf16()
-            .collect();
+    let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+        .encode_utf16()
+        .collect();
     let mut hkey: HKEY = null_mut();
-    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_QUERY_VALUE, &mut hkey) }
-        != ERROR_SUCCESS
+    if unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut hkey,
+        )
+    } != ERROR_SUCCESS
     {
         return true;
     }
@@ -332,8 +366,12 @@ fn system_apps_use_dark_theme() -> bool {
     let mut data_type: u32 = 0;
     let res = unsafe {
         RegQueryValueExW(
-            hkey, vname.as_ptr(), null_mut(), &mut data_type,
-            &mut data as *mut u32 as *mut u8, &mut data_size,
+            hkey,
+            vname.as_ptr(),
+            null_mut(),
+            &mut data_type,
+            &mut data as *mut u32 as *mut u8,
+            &mut data_size,
         )
     };
     let _ = unsafe { RegCloseKey(hkey) };
@@ -432,7 +470,12 @@ fn apply_frame(width: i32, height: i32, center_x: i32, top_y: i32) {
             }
         }
         let _ = SetWindowPos(
-            hwnd, null_mut(), x, top_y, width, height,
+            hwnd,
+            null_mut(),
+            x,
+            top_y,
+            width,
+            height,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
         let _ = InvalidateRect(hwnd, null(), 1);
@@ -475,9 +518,17 @@ fn estimate_result_height(text: &str) -> i32 {
         if !hdc.is_null() {
             let font = get_result_font();
             let old_font = SelectObject(hdc, font);
-            let mut rect = RECT { left: 0, top: 0, right: text_w, bottom: 0 };
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: text_w,
+                bottom: 0,
+            };
             DrawTextW(
-                hdc, wide.as_ptr(), -1, &mut rect,
+                hdc,
+                wide.as_ptr(),
+                -1,
+                &mut rect,
                 DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
             );
             SelectObject(hdc, old_font);
@@ -562,7 +613,9 @@ unsafe extern "system" fn overlay_wndproc(
 
 // ─ Paint ──────────────────────────────────────────────────────────────────────
 unsafe fn paint_overlay(hwnd: HWND) {
-    let Some(state) = window_snapshot() else { return };
+    let Some(state) = window_snapshot() else {
+        return;
+    };
     let mode = CURRENT_MODE.load(Ordering::Relaxed);
 
     let mut ps = PAINTSTRUCT::default();
@@ -572,11 +625,27 @@ unsafe fn paint_overlay(hwnd: HWND) {
     }
 
     // ── Colors ────────────────────────────────────────────────────────────────
-    let bg = if state.dark { rgb(22, 20, 28) } else { rgb(250, 248, 253) };
+    let bg = if state.dark {
+        rgb(22, 20, 28)
+    } else {
+        rgb(250, 248, 253)
+    };
     // Border: pre-blended purple on bg (≈28% opacity purple over bg)
-    let border = if state.dark { rgb(63, 51, 85) } else { rgb(227, 209, 245) };
-    let text_col = if state.dark { rgb(246, 246, 250) } else { rgb(30, 24, 54) };
-    let muted_col = if state.dark { rgb(140, 136, 165) } else { rgb(150, 140, 170) };
+    let border = if state.dark {
+        rgb(63, 51, 85)
+    } else {
+        rgb(227, 209, 245)
+    };
+    let text_col = if state.dark {
+        rgb(246, 246, 250)
+    } else {
+        rgb(30, 24, 54)
+    };
+    let muted_col = if state.dark {
+        rgb(140, 136, 165)
+    } else {
+        rgb(150, 140, 170)
+    };
 
     // ── Background + thin border via RoundRect ────────────────────────────────
     let brush = get_bg_brush(bg);
@@ -590,14 +659,24 @@ unsafe fn paint_overlay(hwnd: HWND) {
     match mode {
         MODE_LISTENING => {
             // Small indicator dot on the left
-            let dot_col = if state.dark { rgb(255, 120, 158) } else { rgb(228, 78, 132) };
+            let dot_col = if state.dark {
+                rgb(255, 120, 158)
+            } else {
+                rgb(228, 78, 132)
+            };
             let dot_brush = CreateSolidBrush(dot_col);
             let null_pen = GetStockObject(NULL_PEN_STOCK);
             let ob = SelectObject(hdc, dot_brush as HGDIOBJ);
             let op = SelectObject(hdc, null_pen);
             let dx = PAD_X - 4;
             let dy = (state.height - LISTEN_INDICATOR_SIZE) / 2;
-            Ellipse(hdc, dx, dy, dx + LISTEN_INDICATOR_SIZE, dy + LISTEN_INDICATOR_SIZE);
+            Ellipse(
+                hdc,
+                dx,
+                dy,
+                dx + LISTEN_INDICATOR_SIZE,
+                dy + LISTEN_INDICATOR_SIZE,
+            );
             SelectObject(hdc, op);
             SelectObject(hdc, ob);
             DeleteObject(dot_brush as HGDIOBJ);
@@ -622,7 +701,10 @@ unsafe fn paint_overlay(hwnd: HWND) {
                 bottom: state.height,
             };
             DrawTextW(
-                hdc, wide.as_ptr(), -1, &mut rect,
+                hdc,
+                wide.as_ptr(),
+                -1,
+                &mut rect,
                 DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
             );
             SelectObject(hdc, of);
@@ -631,8 +713,16 @@ unsafe fn paint_overlay(hwnd: HWND) {
         MODE_PROCESSING => {
             // Three sequential dots
             let dot_active = DOTS_ACTIVE.load(Ordering::Relaxed);
-            let active_col = if state.dark { rgb(200, 154, 248) } else { rgb(150, 84, 220) };
-            let dim_col = if state.dark { rgb(80, 64, 108) } else { rgb(210, 200, 225) };
+            let active_col = if state.dark {
+                rgb(200, 154, 248)
+            } else {
+                rgb(150, 84, 220)
+            };
+            let dim_col = if state.dark {
+                rgb(80, 64, 108)
+            } else {
+                rgb(210, 200, 225)
+            };
 
             let total_w = DOT_SIZE * 3 + DOT_GAP * 2;
             let sx = (state.width - total_w) / 2;
@@ -664,7 +754,10 @@ unsafe fn paint_overlay(hwnd: HWND) {
                 bottom: state.height - RESULT_PAD_Y,
             };
             DrawTextW(
-                hdc, wide.as_ptr(), -1, &mut rect,
+                hdc,
+                wide.as_ptr(),
+                -1,
+                &mut rect,
                 DT_WORDBREAK | DT_TOP | DT_NOPREFIX | DT_END_ELLIPSIS,
             );
             SelectObject(hdc, of);
@@ -683,7 +776,10 @@ unsafe fn paint_overlay(hwnd: HWND) {
                 bottom: state.height,
             };
             DrawTextW(
-                hdc, wide.as_ptr(), -1, &mut rect,
+                hdc,
+                wide.as_ptr(),
+                -1,
+                &mut rect,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
             );
             SelectObject(hdc, of);
@@ -731,9 +827,17 @@ fn spawn_overlay_thread(app: &AppHandle) {
 
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
-            class_name.as_ptr(), title.as_ptr(), WS_POPUP,
-            x, top_y, LISTEN_W, LISTEN_H,
-            null_mut(), null_mut(), hinstance, null(),
+            class_name.as_ptr(),
+            title.as_ptr(),
+            WS_POPUP,
+            x,
+            top_y,
+            LISTEN_W,
+            LISTEN_H,
+            null_mut(),
+            null_mut(),
+            hinstance,
+            null(),
         );
 
         if hwnd.is_null() {
@@ -931,7 +1035,9 @@ fn stop_dots_animation() {
 }
 
 fn schedule_auto_close(delay: Duration) {
-    let token = AUTO_CLOSE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    let token = AUTO_CLOSE_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(delay).await;
         if AUTO_CLOSE_TOKEN.load(Ordering::Relaxed) == token {
@@ -1014,7 +1120,11 @@ fn transition_to_listening(app: &AppHandle, initial_text: Option<&str>) {
     } else {
         let ag = AGENT.lock().unwrap_or_else(|e| e.into_inner());
         let s = listening_display_text(&ag);
-        if s.trim().is_empty() { MUTED_TEXT.to_string() } else { s }
+        if s.trim().is_empty() {
+            MUTED_TEXT.to_string()
+        } else {
+            s
+        }
     };
     update_text_content(display);
 }
@@ -1082,7 +1192,10 @@ pub fn close_panel(app: &AppHandle, immediate: bool) {
 // キーリピートは MODE_LISTENING 中の press を無視することで自然に処理される。
 // Called from WM_AGENT_SHORTCUT_PRESS on the overlay thread.
 fn handle_shortcut_press(app: AppHandle) {
-    log::info!("[agent] shortcut press, mode={}", CURRENT_MODE.load(Ordering::Relaxed));
+    log::info!(
+        "[agent] shortcut press, mode={}",
+        CURRENT_MODE.load(Ordering::Relaxed)
+    );
     match CURRENT_MODE.load(Ordering::Relaxed) {
         MODE_LISTENING => {
             // Key is held down (repeat) or already recording — ignore.
@@ -1100,7 +1213,10 @@ fn handle_shortcut_press(app: AppHandle) {
 // Called from WM_AGENT_SHORTCUT_RELEASE on the overlay thread.
 // Hold-to-talk: releasing the key finalizes the recording and submits.
 fn handle_shortcut_release() {
-    log::info!("[agent] shortcut release, mode={}", CURRENT_MODE.load(Ordering::Relaxed));
+    log::info!(
+        "[agent] shortcut release, mode={}",
+        CURRENT_MODE.load(Ordering::Relaxed)
+    );
     if CURRENT_MODE.load(Ordering::Relaxed) == MODE_LISTENING {
         stop_listening();
     }
@@ -1118,7 +1234,10 @@ fn stop_listening() {
         }
         return;
     }
-    AGENT.lock().unwrap_or_else(|e| e.into_inner()).stop_requested = true;
+    AGENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .stop_requested = true;
     let _ = stt::stt_stop_stream();
 }
 
@@ -1169,7 +1288,10 @@ fn submit_to_agent(app: AppHandle, text: String) {
     let lid = app.listen(format!("agent_stream:{conv_id}"), move |event| {
         handle_agent_stream(&app_listener, &cid, event.payload());
     });
-    AGENT.lock().unwrap_or_else(|e| e.into_inner()).agent_listener = Some(lid);
+    AGENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .agent_listener = Some(lid);
 
     tauri::async_runtime::spawn(async move {
         let _ = agent::agent_send(app, conv_id, text, Vec::new()).await;
@@ -1178,13 +1300,23 @@ fn submit_to_agent(app: AppHandle, text: String) {
 
 fn handle_agent_stream(app: &AppHandle, _conv_id: &str, payload: &str) {
     let parsed = serde_json::from_str::<Value>(payload).unwrap_or(Value::Null);
-    let ev = parsed.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+    let ev = parsed
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
 
     match ev {
         "token" => {
-            let chunk = parsed.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+            let chunk = parsed
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             if !chunk.is_empty() {
-                AGENT.lock().unwrap_or_else(|e| e.into_inner()).result_accumulated.push_str(chunk);
+                AGENT
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .result_accumulated
+                    .push_str(chunk);
             }
         }
         "error" => {
@@ -1193,7 +1325,10 @@ fn handle_agent_stream(app: &AppHandle, _conv_id: &str, payload: &str) {
                 .and_then(|v| v.as_str())
                 .unwrap_or("エラーが発生しました");
             clear_agent_listener(app);
-            AGENT.lock().unwrap_or_else(|e| e.into_inner()).result_accumulated = msg.to_string();
+            AGENT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .result_accumulated = msg.to_string();
             transition_to_notice(app, msg);
         }
         "done" => {
@@ -1215,7 +1350,12 @@ fn handle_agent_stream(app: &AppHandle, _conv_id: &str, payload: &str) {
 }
 
 fn clear_agent_listener(app: &AppHandle) {
-    if let Some(id) = AGENT.lock().unwrap_or_else(|e| e.into_inner()).agent_listener.take() {
+    if let Some(id) = AGENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .agent_listener
+        .take()
+    {
         app.unlisten(id);
     }
 }
@@ -1288,8 +1428,8 @@ fn code_to_vk(code: &str) -> u32 {
         "arrowleft" | "left" => 0x25,
         "arrowright" | "right" => 0x27,
         // standalone modifier keys as trigger keys
-        "lalt" | "altleft" => 0xA4,   // VK_LMENU
-        "ralt" | "altright" => 0xA5,  // VK_RMENU
+        "lalt" | "altleft" => 0xA4,       // VK_LMENU
+        "ralt" | "altright" => 0xA5,      // VK_RMENU
         "lctrl" | "controlleft" => 0xA2,  // VK_LCONTROL
         "rctrl" | "controlright" => 0xA3, // VK_RCONTROL
         "lshift" | "shiftleft" => 0xA0,   // VK_LSHIFT
@@ -1344,7 +1484,12 @@ unsafe extern "system" fn ll_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM
             }
         }
     }
-    CallNextHookEx(HOOK_HANDLE.load(Ordering::Relaxed) as HHOOK, code, wparam, lparam)
+    CallNextHookEx(
+        HOOK_HANDLE.load(Ordering::Relaxed) as HHOOK,
+        code,
+        wparam,
+        lparam,
+    )
 }
 
 fn install_ll_hook() {
@@ -1459,7 +1604,10 @@ pub fn setup(app: &AppHandle) {
         if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
             return;
         }
-        let state_name = payload.get("state").and_then(|t| t.as_str()).unwrap_or_default();
+        let state_name = payload
+            .get("state")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
         let is_listening = matches!(state_name, "initializing" | "listening");
 
         if is_listening {
@@ -1504,8 +1652,10 @@ pub fn setup(app: &AppHandle) {
         transition_to_notice(&app_err, "音声入力を開始できませんでした");
     });
 
-    AGENT.lock().unwrap_or_else(|e| e.into_inner()).event_listeners =
-        vec![lid_theme, lid_final, lid_partial, lid_state, lid_err];
+    AGENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .event_listeners = vec![lid_theme, lid_final, lid_partial, lid_state, lid_err];
 }
 
 pub fn apply_config(app: &AppHandle, config: &NativeAgentConfig) -> Result<(), String> {

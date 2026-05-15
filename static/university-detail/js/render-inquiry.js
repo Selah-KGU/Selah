@@ -10,6 +10,7 @@ function renderInquiryDetail(data) {
     c.innerHTML = '<div class="error">データがありません</div>';
     return;
   }
+  _currentCourseName = data.course_name || _currentCourseName || null;
 
   var h = '<div class="detail-wrap">';
   if (data.course_name) {

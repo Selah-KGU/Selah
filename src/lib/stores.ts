@@ -539,6 +539,7 @@ function saveDiskCache(key: string, data: any, ts: number) {
 
 // SWR update listeners: components subscribe to be notified when background refresh completes
 const swrListeners = new Map<string, Set<(data: any) => void>>();
+const LIVE_GENERATED_TODO_KEY = "live_generated_todo";
 
 export function onCacheUpdate<T>(key: string, cb: (data: T) => void): () => void {
   if (!swrListeners.has(key)) swrListeners.set(key, new Set());
@@ -571,16 +572,94 @@ function readAnyDiskCache<T>(key: string): { data: T; ts: number } | null {
 async function loadBackendManagedCache<T>(key: string): Promise<{ data: T; ts: number } | null> {
   try {
     if (key === "schedule_data") {
-      const data = await invoke<T>("get_schedule_snapshot");
-      return { data, ts: Date.now() };
+      const data = await invoke<any>("get_schedule_snapshot");
+      const generated = await loadLiveGeneratedTodos();
+      return { data: mergeGeneratedTodosIntoSchedule(data, generated) as T, ts: Date.now() };
     }
     const dbKey = BACKEND_CACHE_DB_KEYS[key] ?? key;
     const json = await invoke<string | null>("get_data_cache", { key: dbKey });
     if (!json) return null;
-    return { data: JSON.parse(json) as T, ts: Date.now() };
+    const parsed = JSON.parse(json);
+    if (key === "luna_todo") {
+      const generated = await loadLiveGeneratedTodos();
+      return { data: mergeGeneratedTodosIntoLunaTodos(parsed, generated) as T, ts: Date.now() };
+    }
+    return { data: parsed as T, ts: Date.now() };
   } catch {
     return null;
   }
+}
+
+async function loadLiveGeneratedTodos(): Promise<any[]> {
+  try {
+    const json = await invoke<string | null>("get_data_cache", { key: LIVE_GENERATED_TODO_KEY });
+    if (!json) return [];
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizedGeneratedTodoKey(item: { course_name?: string; title?: string; content_name?: string; deadline?: string }): string {
+  return [item.course_name, item.title ?? item.content_name, item.deadline]
+    .map((part) => String(part || "").trim().toLowerCase().replace(/\s+/g, " "))
+    .join("|");
+}
+
+function generatedTodoToLunaTodo(item: any) {
+  return {
+    course_name: item.course_name || "",
+    content_type: item.content_type || "課題",
+    content_name: item.title || "",
+    url: "",
+    deadline: item.deadline || "",
+    status: "未提出",
+    feedback: item.note ? `Liveから追加: ${item.note}` : "Liveから追加",
+  };
+}
+
+function mergeGeneratedTodosIntoLunaTodos(base: any, generated: any[]): any[] {
+  const list = Array.isArray(base) ? base : [];
+  if (!generated.length) return list;
+  const seen = new Set(list.map(normalizedGeneratedTodoKey));
+  const merged = [...list];
+  for (const item of generated) {
+    if (!item?.title) continue;
+    const key = normalizedGeneratedTodoKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(generatedTodoToLunaTodo(item));
+  }
+  return merged;
+}
+
+function generatedAssignmentLabel(item: any): string {
+  const type = item.content_type || "課題";
+  const deadline = item.deadline ? ` (締切: ${item.deadline})` : "";
+  return `Live追加 ${type}: ${item.title}${deadline}`;
+}
+
+function mergeGeneratedTodosIntoSchedule(base: any, generated: any[]): any {
+  if (!base?.ai_result || !generated.length) return base;
+  const cloned = JSON.parse(JSON.stringify(base));
+  const mergeWeek = (items: any[]) => {
+    if (!Array.isArray(items)) return;
+    for (const cell of items) {
+      for (const todo of generated) {
+        if (!todo?.title) continue;
+        const matchesCourse = todo.course_name && cell.course_name === todo.course_name;
+        const matchesSlot = todo.day > 0 && todo.period > 0 && cell.day === todo.day && cell.period === todo.period;
+        if (!matchesCourse && !matchesSlot) continue;
+        const label = generatedAssignmentLabel(todo);
+        if (!Array.isArray(cell.assignments)) cell.assignments = [];
+        if (!cell.assignments.includes(label)) cell.assignments.push(label);
+      }
+    }
+  };
+  mergeWeek(cloned.ai_result.current_week);
+  mergeWeek(cloned.ai_result.next_week);
+  return cloned;
 }
 
 function queueBackendManagedRefresh<T>(key: string, force: boolean, fallback?: T): Promise<T> {

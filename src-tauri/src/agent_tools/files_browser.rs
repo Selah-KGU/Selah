@@ -313,8 +313,7 @@ pub(super) async fn delete_downloaded_file(args: &Value) -> Result<Value, String
     if !path.is_file() {
         return Err("対象はファイルではありません".into());
     }
-    let metadata =
-        std::fs::metadata(&path).map_err(|e| format!("ファイル情報取得失敗: {}", e))?;
+    let metadata = std::fs::metadata(&path).map_err(|e| format!("ファイル情報取得失敗: {}", e))?;
     std::fs::remove_file(&path).map_err(|e| format!("ファイル削除失敗: {}", e))?;
     Ok(json!({
         "status": "deleted",
@@ -671,8 +670,7 @@ pub(super) async fn download_url(args: &Value) -> Result<Value, String> {
         .unwrap_or_else(|| filename_from_url(&parsed));
     let safe_name = sanitize_filename_basic(&filename);
 
-    let saved =
-        crate::luna_commands::save_to_downloads(&safe_name, &bytes, None)?;
+    let saved = crate::luna_commands::save_to_downloads(&safe_name, &bytes, None)?;
     Ok(json!({
         "status": "downloaded",
         "url": url,
@@ -706,12 +704,7 @@ fn filename_from_url(parsed: &url::Url) -> String {
         .and_then(|segs| segs.filter(|s| !s.is_empty()).last())
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            format!(
-                "download-{}.bin",
-                chrono::Utc::now().format("%Y%m%d%H%M%S")
-            )
-        })
+        .unwrap_or_else(|| format!("download-{}.bin", chrono::Utc::now().format("%Y%m%d%H%M%S")))
 }
 
 fn sanitize_filename_basic(name: &str) -> String {

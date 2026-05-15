@@ -16,8 +16,8 @@ import type {
   AiConfig,
   AiChatMessage,
 } from "./stores";
-import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, requestedMailMessageId } from "./stores";
+import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis, LunaTodoItem } from "./types";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshCache, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, requestedMailMessageId } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 
@@ -932,6 +932,60 @@ export async function kwicOpenDetail(item: { id: string; title: string; informat
   });
 }
 
+const LUNA_WEB_BASE = "https://luna.kwansei.ac.jp";
+
+function normalizeLunaWebUrl(path: string): string {
+  const trimmed = path.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/")) return `${LUNA_WEB_BASE}${trimmed}`;
+  return `${LUNA_WEB_BASE}/${trimmed}`;
+}
+
+export function isLunaTestTodo(item: Pick<LunaTodoItem, "content_type" | "url">): boolean {
+  const type = (item.content_type || "").trim().toLowerCase();
+  const url = (item.url || "").trim().toLowerCase();
+  return (
+    type.includes("テスト") ||
+    type.includes("小テスト") ||
+    type.includes("test") ||
+    type.includes("quiz") ||
+    type.includes("exam") ||
+    url.includes("/examination") ||
+    url.includes("/quiz")
+  );
+}
+
+export async function openLunaTodoItem(item: LunaTodoItem): Promise<void> {
+  const path = item.url || "";
+  if (!path) return;
+  const title = item.content_name || item.content_type || "TODO";
+  if (_isDemo()) return;
+  if (isLunaTestTodo(item)) {
+    await invoke<void>("open_external_url", { url: normalizeLunaWebUrl(path), title });
+    return;
+  }
+
+  const params: Record<string, unknown> = {
+    path,
+    title,
+    courseName: item.course_name || null,
+  };
+  const urlParts = new URLSearchParams(path.split("?")[1] || "");
+  const idnumber = urlParts.get("idnumber") || undefined;
+  if (path.includes("/report/submission")) {
+    params.mode = "report";
+    params.idnumber = idnumber;
+    params.infoId = urlParts.get("reportId") || undefined;
+  } else if (path.includes("/forums/themetop")) {
+    params.mode = "discussion";
+  } else if (path.includes("/forums/thread")) {
+    params.mode = "thread";
+  } else if (path.includes("/surveys/take") || path.includes("/course/surveys")) {
+    params.mode = "survey";
+  }
+  await lunaInvoke("university_open_detail_window", params);
+}
+
 // ---------- Microsoft 365 Mail API ----------
 
 interface MailSessionStatus {
@@ -1551,9 +1605,28 @@ export interface LiveSaveResult {
   path: string;
   markdown: string;
   snapshot: LiveSessionSnapshot;
+  suggested_todos?: LiveTodoSuggestion[];
+}
+
+export interface LiveTodoSuggestion {
+  title: string;
+  course_name: string;
+  content_type: string;
+  deadline: string;
+  note: string;
+  source_excerpt: string;
+  day: number;
+  period: number;
+}
+
+export interface LiveGeneratedTodo extends LiveTodoSuggestion {
+  id: string;
+  created_at: string;
+  source_path: string;
 }
 
 const DEMO_LIVE_KEY = "selah-demo-live-session";
+const LIVE_GENERATED_TODO_KEY = "live_generated_todo";
 
 function emptyDemoLiveSession(): LiveSessionSnapshot {
   return {
@@ -1720,6 +1793,123 @@ export async function liveFinishSession(): Promise<LiveSaveResult> {
     return result;
   }
   return invoke<LiveSaveResult>("live_finish_session");
+}
+
+function normalizeGeneratedTodoKey(item: Pick<LiveTodoSuggestion, "course_name" | "title" | "deadline">): string {
+  return [item.course_name, item.title, item.deadline]
+    .map((part) => (part || "").trim().toLowerCase().replace(/\s+/g, " "))
+    .join("|");
+}
+
+function liveGeneratedTodoToLunaItem(item: LiveGeneratedTodo): LunaTodoItem {
+  return {
+    course_name: item.course_name,
+    content_type: item.content_type || "課題",
+    content_name: item.title,
+    url: "",
+    deadline: item.deadline || "",
+    status: "未提出",
+    feedback: item.note ? `Liveから追加: ${item.note}` : "Liveから追加",
+  };
+}
+
+function mergeGeneratedTodosIntoLunaTodos(base: LunaTodoItem[], generated: LiveGeneratedTodo[]): LunaTodoItem[] {
+  const seen = new Set(base.map((item) => normalizeGeneratedTodoKey({
+    course_name: item.course_name,
+    title: item.content_name,
+    deadline: item.deadline,
+  })));
+  const merged = [...base];
+  for (const item of generated) {
+    const key = normalizeGeneratedTodoKey({
+      course_name: item.course_name,
+      title: item.title,
+      deadline: item.deadline,
+    });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(liveGeneratedTodoToLunaItem(item));
+  }
+  return merged;
+}
+
+function assignmentLabelFromGeneratedTodo(item: LiveGeneratedTodo): string {
+  const type = item.content_type || "課題";
+  const deadline = item.deadline ? ` (締切: ${item.deadline})` : "";
+  return `Live追加 ${type}: ${item.title}${deadline}`;
+}
+
+function mergeGeneratedTodosIntoSchedule(base: ScheduleResponse | null, generated: LiveGeneratedTodo[]): ScheduleResponse | null {
+  if (!base?.ai_result || generated.length === 0) return base;
+  const cloned: ScheduleResponse = JSON.parse(JSON.stringify(base));
+  const mergeWeek = (items: any[]) => {
+    for (const cell of items) {
+      for (const todo of generated) {
+        const matchesCourse = todo.course_name && cell.course_name === todo.course_name;
+        const matchesSlot = todo.day > 0 && todo.period > 0 && cell.day === todo.day && cell.period === todo.period;
+        if (!matchesCourse && !matchesSlot) continue;
+        const label = assignmentLabelFromGeneratedTodo(todo);
+        if (!Array.isArray(cell.assignments)) cell.assignments = [];
+        if (!cell.assignments.includes(label)) cell.assignments.push(label);
+      }
+    }
+  };
+  mergeWeek(cloned.ai_result.current_week);
+  mergeWeek(cloned.ai_result.next_week);
+  return cloned;
+}
+
+export async function getLiveGeneratedTodos(): Promise<LiveGeneratedTodo[]> {
+  if (_isDemo()) return [];
+  const json = await getDataCache(LIVE_GENERATED_TODO_KEY);
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveLiveGeneratedTodos(
+  suggestions: LiveTodoSuggestion[],
+  sourcePath: string,
+): Promise<LiveGeneratedTodo[]> {
+  if (_isDemo() || suggestions.length === 0) return [];
+  const existing = await getLiveGeneratedTodos();
+  const seen = new Set(existing.map(normalizeGeneratedTodoKey));
+  const createdAt = new Date().toISOString();
+  const additions: LiveGeneratedTodo[] = [];
+  for (const item of suggestions) {
+    const title = (item.title || "").trim();
+    if (!title) continue;
+    const normalized: LiveGeneratedTodo = {
+      id: `live-${createdAt}-${additions.length}`,
+      title,
+      course_name: (item.course_name || "").trim(),
+      content_type: (item.content_type || "課題").trim(),
+      deadline: (item.deadline || "").trim(),
+      note: (item.note || "").trim(),
+      source_excerpt: (item.source_excerpt || "").trim(),
+      day: Number(item.day) || 0,
+      period: Number(item.period) || 0,
+      created_at: createdAt,
+      source_path: sourcePath || "",
+    };
+    const key = normalizeGeneratedTodoKey(normalized);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    additions.push(normalized);
+  }
+  const next = [...existing, ...additions];
+  await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
+
+  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo") ?? [];
+  replaceCacheEntry("luna_todo", mergeGeneratedTodosIntoLunaTodos(cachedTodos, next));
+  const cachedSchedule = getCached<ScheduleResponse>("schedule_data");
+  const mergedSchedule = mergeGeneratedTodosIntoSchedule(cachedSchedule, next);
+  if (mergedSchedule) replaceCacheEntry("schedule_data", mergedSchedule);
+  return additions;
 }
 
 export async function openSettingsWindow(panel?: string): Promise<void> {

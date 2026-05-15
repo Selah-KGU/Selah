@@ -153,7 +153,15 @@ pub(super) async fn update_google_calendar_event(
     let gcal_state = app.state::<crate::GCalState>();
     let mut gcal = gcal_state.client.lock().await;
     let message = gcal
-        .update_agent_event(event_id, title, date, start_time, end_time, location, description)
+        .update_agent_event(
+            event_id,
+            title,
+            date,
+            start_time,
+            end_time,
+            location,
+            description,
+        )
         .await?;
     Ok(json!({ "message": message }))
 }

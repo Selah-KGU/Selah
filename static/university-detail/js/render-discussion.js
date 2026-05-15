@@ -2,6 +2,7 @@
 function renderDiscussion(data) {
   var c = document.getElementById('content');
   if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+  _currentCourseName = data.course_name || _currentCourseName || null;
   var params = new URLSearchParams(window.location.search);
   var discussionPath = params.get('path') || '';
   var pp = new URLSearchParams(discussionPath.split('?')[1] || '');

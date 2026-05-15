@@ -46,7 +46,9 @@ fn infer_luna_window_target(
             .filter(|s| !s.is_empty())
     };
 
-    let inferred_idnumber = explicit_idnumber.clone().or_else(|| query_param("idnumber"));
+    let inferred_idnumber = explicit_idnumber
+        .clone()
+        .or_else(|| query_param("idnumber"));
     let path_name = url.path();
 
     // Course top / attendance share the same path; the fragment disambiguates.
@@ -163,6 +165,9 @@ pub async fn university_open_detail_window(
             if let Some(info) = &info_id {
                 parts.push_str(&format!("&infoId={}", urlencoding::encode(info)));
             }
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
             parts
         }
         Some("announcement") => {
@@ -253,11 +258,15 @@ pub async fn university_open_detail_window(
             parts
         }
         Some("attendance") => {
-            format!(
+            let mut parts = format!(
                 "university-detail.html?mode=attendance&idnumber={}&title={}",
                 urlencoding::encode(idnumber.as_deref().unwrap_or("")),
                 urlencoding::encode(&title)
-            )
+            );
+            if let Some(cn) = &course_name {
+                parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
+            }
+            parts
         }
         _ => {
             let mut parts = format!(
@@ -454,8 +463,7 @@ mod tests {
             "/lms/course/inquiry/post?idnumber=2026510010040201&inquiryId=320411",
             "/lms/course/inquiry/firstSet?idnumber=2026510010040201&inquiryId=320411",
         ] {
-            let (mode, idnumber, info_id) =
-                infer_luna_window_target(path, None, None, None);
+            let (mode, idnumber, info_id) = infer_luna_window_target(path, None, None, None);
             assert_eq!(mode.as_deref(), Some("inquiry"), "{path}");
             assert_eq!(idnumber.as_deref(), Some("2026510010040201"), "{path}");
             assert_eq!(info_id.as_deref(), Some("320411"), "{path}");

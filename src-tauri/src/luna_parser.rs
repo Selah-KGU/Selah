@@ -22,9 +22,9 @@ pub use detail::{
     parse_luna_announcement_detail, parse_luna_detail_page, LunaAttachment, LunaDetailPage,
     LunaDetailSection,
 };
-pub use inquiry::{parse_luna_inquiry_detail, LunaInquiryDetail};
 #[allow(unused_imports)]
 pub use inquiry::LunaInquiryPost;
+pub use inquiry::{parse_luna_inquiry_detail, LunaInquiryDetail};
 pub use overview::*;
 
 /// Five content lists returned from the contents page (materials, reports, examinations, discussions, surveys)

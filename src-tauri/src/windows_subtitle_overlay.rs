@@ -17,9 +17,10 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW,
     EndPaint, GetDC, GetStockObject, GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect,
-    SelectObject, SetBkMode, SetDCPenColor, SetTextColor, SetWindowRgn, UpdateWindow, DEFAULT_CHARSET,
-    DEFAULT_PITCH, DEFAULT_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
-    DT_VCENTER, FF_DONTCARE, FW_BOLD, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
+    SelectObject, SetBkMode, SetDCPenColor, SetTextColor, SetWindowRgn, UpdateWindow,
+    DEFAULT_CHARSET, DEFAULT_PITCH, DEFAULT_QUALITY, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX,
+    DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_BOLD, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+    TRANSPARENT,
 };
 // Win32 stock-object identifier for the per-DC custom-color pen; no allocation needed.
 // Set the actual color via SetDCPenColor after selecting it into the DC.
@@ -29,11 +30,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetSystemMetrics, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
     SetLayeredWindowAttributes, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
-    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, LWA_ALPHA, MA_NOACTIVATE, MSG,
-    SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SW_HIDE, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, LWA_ALPHA, MA_NOACTIVATE, MSG, SM_CXSCREEN,
+    SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
+    SW_SHOWNOACTIVATE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE,
+    WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
 const SUB_H: i32 = 52;
@@ -500,9 +501,9 @@ unsafe fn paint_overlay(hwnd: HWND) {
     };
 
     // All three GDI objects are cached — no allocation per frame.
-    let brush = get_bg_brush(bg);           // thread-local; recreated only on theme change
+    let brush = get_bg_brush(bg); // thread-local; recreated only on theme change
     let pen = GetStockObject(DC_PEN_STOCK); // stock object; color set below via SetDCPenColor
-    let font = get_overlay_font();          // process-lifetime OnceLock
+    let font = get_overlay_font(); // process-lifetime OnceLock
 
     let old_brush = SelectObject(hdc, brush);
     let old_pen = SelectObject(hdc, pen);

@@ -2,6 +2,7 @@
 function renderSurveyDetail(data) {
   var c = document.getElementById('content');
   if (!data) { c.innerHTML = '<div class="error">\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093</div>'; return; }
+  _currentCourseName = data.course_name || _currentCourseName || null;
   var h = '<div class="detail-wrap">';
   if (data.title) h += '<div class="page-title">' + escapeHtml(data.title) + '</div>';
   if (data.description) h += '<div class="section"><div class="section-body rich-text">' + renderRichText(data.description) + '</div></div>';

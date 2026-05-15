@@ -616,23 +616,26 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                     .join("; ")
             }),
         "list_google_calendar_events" => {
-            parsed.get("events").and_then(|v| v.as_array()).map(|items| {
-                items
-                    .iter()
-                    .take(5)
-                    .map(|e| {
-                        format!(
-                            "cal[id={}, title={}, date={} {}-{}]",
-                            e.get("event_id").and_then(|v| v.as_str()).unwrap_or(""),
-                            e.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                            e.get("date").and_then(|v| v.as_str()).unwrap_or(""),
-                            e.get("start_time").and_then(|v| v.as_str()).unwrap_or(""),
-                            e.get("end_time").and_then(|v| v.as_str()).unwrap_or(""),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })
+            parsed
+                .get("events")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(5)
+                        .map(|e| {
+                            format!(
+                                "cal[id={}, title={}, date={} {}-{}]",
+                                e.get("event_id").and_then(|v| v.as_str()).unwrap_or(""),
+                                e.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                e.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                                e.get("start_time").and_then(|v| v.as_str()).unwrap_or(""),
+                                e.get("end_time").and_then(|v| v.as_str()).unwrap_or(""),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
         }
         "create_google_calendar_event"
         | "delete_google_calendar_event"
@@ -689,11 +692,7 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                 .unwrap_or_default();
             let deficit_count = items
                 .iter()
-                .filter(|c| {
-                    c.get("deficit")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                })
+                .filter(|c| c.get("deficit").and_then(|v| v.as_bool()).unwrap_or(false))
                 .count();
             Some(format!(
                 "grades[categories={}, deficits={}]",
@@ -702,10 +701,7 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
             ))
         }
         "get_luna_activity_detail" => {
-            let title = parsed
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let deadline = parsed
                 .get("deadline")
                 .or_else(|| parsed.get("period"))
@@ -727,32 +723,28 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                 title, deadline, attachment_count, body_preview
             ))
         }
-        "list_luna_announcements" => parsed
-            .get("announcements")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .take(5)
-                    .map(|a| {
-                        format!(
-                            "announce[course={}, title={}]",
-                            a.get("course").and_then(|v| v.as_str()).unwrap_or(""),
-                            a.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            }),
+        "list_luna_announcements" => {
+            parsed
+                .get("announcements")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(5)
+                        .map(|a| {
+                            format!(
+                                "announce[course={}, title={}]",
+                                a.get("course").and_then(|v| v.as_str()).unwrap_or(""),
+                                a.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+        }
         "get_notification_detail" => {
-            let title = parsed
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let source = parsed
-                .get("source")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let title = parsed.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let source = parsed.get("source").and_then(|v| v.as_str()).unwrap_or("");
             let body_preview = parsed
                 .get("body")
                 .or_else(|| parsed.get("body_html"))
@@ -786,30 +778,41 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
         "get_student_profile" => {
             let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let faculty = parsed.get("faculty").and_then(|v| v.as_str()).unwrap_or("");
-            let dept = parsed.get("department").and_then(|v| v.as_str()).unwrap_or("");
-            Some(format!("profile[name={}, faculty={}, dept={}]", name, faculty, dept))
+            let dept = parsed
+                .get("department")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Some(format!(
+                "profile[name={}, faculty={}, dept={}]",
+                name, faculty, dept
+            ))
         }
         "get_mail_profile" => {
-            let name = parsed.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
+            let name = parsed
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let mail = parsed.get("mail").and_then(|v| v.as_str()).unwrap_or("");
             Some(format!("mail_profile[name={}, mail={}]", name, mail))
         }
-        "list_syllabus_favorites" => parsed
-            .get("favorites")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .take(3)
-                    .map(|f| {
-                        format!(
-                            "syllabus[{}]",
-                            f.get("course_title").and_then(|v| v.as_str()).unwrap_or("")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            }),
+        "list_syllabus_favorites" => {
+            parsed
+                .get("favorites")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(3)
+                        .map(|f| {
+                            format!(
+                                "syllabus[{}]",
+                                f.get("course_title").and_then(|v| v.as_str()).unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+        }
         "list_today_classes" | "list_week_classes" => parsed
             .get("classes")
             .and_then(|v| v.as_array())
@@ -833,42 +836,46 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                     .join("");
                 format!("classes[{}] {}", label, classes)
             }),
-        "get_cancellations" => parsed
-            .get("cancellations")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                let entries: String = items
-                    .iter()
-                    .take(3)
-                    .map(|c| {
-                        format!(
-                            "[{} {}]",
-                            c.get("date").and_then(|v| v.as_str()).unwrap_or(""),
-                            c.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                format!("cancellations[{}] {}", items.len(), entries)
-            }),
-        "get_makeup_classes" => parsed
-            .get("makeup_classes")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                let entries: String = items
-                    .iter()
-                    .take(3)
-                    .map(|c| {
-                        format!(
-                            "[{} {}]",
-                            c.get("date").and_then(|v| v.as_str()).unwrap_or(""),
-                            c.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                format!("makeup_classes[{}] {}", items.len(), entries)
-            }),
+        "get_cancellations" => {
+            parsed
+                .get("cancellations")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    let entries: String = items
+                        .iter()
+                        .take(3)
+                        .map(|c| {
+                            format!(
+                                "[{} {}]",
+                                c.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                                c.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    format!("cancellations[{}] {}", items.len(), entries)
+                })
+        }
+        "get_makeup_classes" => {
+            parsed
+                .get("makeup_classes")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    let entries: String = items
+                        .iter()
+                        .take(3)
+                        .map(|c| {
+                            format!(
+                                "[{} {}]",
+                                c.get("date").and_then(|v| v.as_str()).unwrap_or(""),
+                                c.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    format!("makeup_classes[{}] {}", items.len(), entries)
+                })
+        }
         "get_room_changes" => parsed
             .get("room_changes")
             .and_then(|v| v.as_array())
@@ -888,32 +895,35 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                     .join("");
                 format!("room_changes[{}] {}", items.len(), entries)
             }),
-        "get_exam_timetable" => parsed
-            .get("exams")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                let entries: String = items
-                    .iter()
-                    .take(4)
-                    .map(|e| {
-                        format!(
-                            "[{} {}]",
-                            e.get("day").and_then(|v| v.as_str()).unwrap_or(""),
-                            e.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                format!("exams[{}] {}", items.len(), entries)
-            }),
+        "get_exam_timetable" => parsed.get("exams").and_then(|v| v.as_array()).map(|items| {
+            let entries: String = items
+                .iter()
+                .take(4)
+                .map(|e| {
+                    format!(
+                        "[{} {}]",
+                        e.get("day").and_then(|v| v.as_str()).unwrap_or(""),
+                        e.get("course_name").and_then(|v| v.as_str()).unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            format!("exams[{}] {}", items.len(), entries)
+        }),
         "get_registration" => {
-            let year = parsed.get("year_semester").and_then(|v| v.as_str()).unwrap_or("");
+            let year = parsed
+                .get("year_semester")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let course_count = parsed
                 .get("courses")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            Some(format!("registration[semester={}, courses={}]", year, course_count))
+            Some(format!(
+                "registration[semester={}, courses={}]",
+                year, course_count
+            ))
         }
         "get_todo_guide" => {
             let age = parsed
@@ -926,7 +936,10 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                 .and_then(|v| v.as_str())
                 .map(|s| s.chars().take(80).collect::<String>())
                 .unwrap_or_default();
-            Some(format!("todo_guide[generated={}, priority={}]", age, priority))
+            Some(format!(
+                "todo_guide[generated={}, priority={}]",
+                age, priority
+            ))
         }
         "refresh_data" => {
             let refreshed = parsed
@@ -953,13 +966,19 @@ fn summarize_plan_tool_result(name: &str, json: &str) -> String {
                     .join("; ")
             }),
         "get_course_detail" => {
-            let code = parsed.get("kgc_code").and_then(|v| v.as_str()).unwrap_or("");
+            let code = parsed
+                .get("kgc_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let plan_count = parsed
                 .get("session_plan")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            Some(format!("course_detail[code={}, plan_sessions={}]", code, plan_count))
+            Some(format!(
+                "course_detail[code={}, plan_sessions={}]",
+                code, plan_count
+            ))
         }
         _ => None,
     };
@@ -1033,17 +1052,15 @@ async fn execute_tools(
             serde_json::to_string(&call.args).unwrap_or_default()
         );
         let timeout = timeout_for(&call.name);
-        let result = match tokio::time::timeout(
-            timeout,
-            agent_tools::dispatch(app, &call.name, &call.args),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => json!({
-                "error": format!("tool timed out after {}s", timeout.as_secs()),
-            }),
-        };
+        let result =
+            match tokio::time::timeout(timeout, agent_tools::dispatch(app, &call.name, &call.args))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => json!({
+                    "error": format!("tool timed out after {}s", timeout.as_secs()),
+                }),
+            };
         let ok = result.get("error").is_none();
         let preview = preview_of(&result);
         log::debug!(
@@ -2031,9 +2048,9 @@ fn is_follow_up_with_context(history: &[crate::db::AgentMessageRow], norm: &str)
         // Note: "好", "行", "加", "要", "可以" are intentionally excluded because
         // they frequently serve as directives ("好，加进日历") that should still
         // trigger tool calls.
-        "嗯",      // uh-huh / mm-hmm (Chinese)
+        "嗯",         // uh-huh / mm-hmm (Chinese)
         "そうですか", // I see / is that so (Japanese)
-        "そうか",   // I see (Japanese)
+        "そうか",     // I see (Japanese)
     ];
     norm.chars().count() <= 24 && contains_any(norm, ACK_MARKERS)
 }
@@ -2164,10 +2181,10 @@ fn extract_kgc_code(text: &str) -> Option<String> {
 /// which fit the structural pattern of letters+digits — from being
 /// dispatched as syllabus lookups.
 const KGC_PREFIX_WHITELIST: &[&str] = &[
-    "AB", "AE", "AL", "AS", "BL", "BU", "CO", "CS", "DC", "EC", "ED", "EN", "FD", "GE", "GS",
-    "HS", "HU", "IB", "IC", "IS", "JP", "LA", "LB", "LE", "LI", "LR", "LS", "MA", "MD", "ME",
-    "MM", "MS", "NS", "PA", "PE", "PH", "PL", "PO", "PS", "RC", "RE", "SC", "SD", "SO", "SP",
-    "ST", "TA", "TC", "TH", "TM", "TS", "UC",
+    "AB", "AE", "AL", "AS", "BL", "BU", "CO", "CS", "DC", "EC", "ED", "EN", "FD", "GE", "GS", "HS",
+    "HU", "IB", "IC", "IS", "JP", "LA", "LB", "LE", "LI", "LR", "LS", "MA", "MD", "ME", "MM", "MS",
+    "NS", "PA", "PE", "PH", "PL", "PO", "PS", "RC", "RE", "SC", "SD", "SO", "SP", "ST", "TA", "TC",
+    "TH", "TM", "TS", "UC",
 ];
 
 fn looks_like_kgc_code(token: &str) -> bool {
@@ -2466,16 +2483,16 @@ mod tests {
         // PDF12345 fits the structural pattern but isn't a real KGC prefix.
         assert_eq!(extract_kgc_code("PDF12345 syllabus"), None);
         // AB12345 should still be picked up.
-        assert_eq!(
-            extract_kgc_code("AB12345 syllabus"),
-            Some("AB12345".into())
-        );
+        assert_eq!(extract_kgc_code("AB12345 syllabus"), Some("AB12345".into()));
     }
 
     #[test]
     fn opinion_short_skips_smalltalk_but_long_does_not() {
         assert!(should_skip_tools(&[], "どう思う？"));
-        assert!(!should_skip_tools(&[], "経済学が好きだから経済学の授業教えて"));
+        assert!(!should_skip_tools(
+            &[],
+            "経済学が好きだから経済学の授業教えて"
+        ));
     }
 
     #[test]
@@ -2501,7 +2518,10 @@ mod tests {
     fn sanitize_get_notification_detail_args() {
         let args = serde_json::json!({"title": "  休講のお知らせ  "});
         let cleaned = agent_tools::sanitize_tool_args("get_notification_detail", &args).unwrap();
-        assert_eq!(cleaned.get("title").and_then(|v| v.as_str()), Some("休講のお知らせ"));
+        assert_eq!(
+            cleaned.get("title").and_then(|v| v.as_str()),
+            Some("休講のお知らせ")
+        );
 
         let empty = serde_json::json!({});
         assert!(agent_tools::sanitize_tool_args("get_notification_detail", &empty).is_none());

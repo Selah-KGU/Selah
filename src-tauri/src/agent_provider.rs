@@ -447,12 +447,7 @@ impl<F: FnMut(&str, bool) + Send + 'static> ThinkFilter<F> {
     /// Returns `(feed, flush)`. `feed(chunk, is_think)` ingests a chunk;
     /// `flush()` drains any buffered tail (call it once the upstream stream
     /// has ended so a trailing partial `<think>` block is not silently lost).
-    fn wrap_with_flush(
-        inner: F,
-    ) -> (
-        Box<dyn FnMut(&str, bool) + Send>,
-        Box<dyn FnMut() + Send>,
-    ) {
+    fn wrap_with_flush(inner: F) -> (Box<dyn FnMut(&str, bool) + Send>, Box<dyn FnMut() + Send>) {
         let state = std::sync::Arc::new(std::sync::Mutex::new(ThinkFilter {
             inner,
             buf: String::new(),
@@ -479,7 +474,6 @@ impl<F: FnMut(&str, bool) + Send + 'static> ThinkFilter<F> {
         });
         (feed, flush)
     }
-
 
     fn drain(&mut self, flush: bool) {
         loop {

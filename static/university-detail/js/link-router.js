@@ -282,7 +282,8 @@ async function resolveUniversityLinkTarget(href, anchorText) {
         return {
           action: 'luna_attendance',
           idnumber: idnumber,
-          title: anchorText || '出席'
+          title: anchorText || '出席',
+          course_name: currentCourseName
         };
       }
       if (!idnumber) {
@@ -296,6 +297,7 @@ async function resolveUniversityLinkTarget(href, anchorText) {
         action: 'luna_course',
         idnumber: idnumber,
         title: anchorText || currentCourseName || '授業',
+        course_name: currentCourseName,
         kgc_path: await findKgcPathByCourseName(currentCourseName)
       };
     }
@@ -328,7 +330,8 @@ async function resolveUniversityLinkTarget(href, anchorText) {
       return {
         action: 'luna_discussion',
         path: courseMatch.item.url || (url.pathname + url.search),
-        title: courseMatch.item.title || anchorText || '掲示板'
+        title: courseMatch.item.title || anchorText || '掲示板',
+        course_name: courseMatch.course_name || currentCourseName
       };
     }
 
@@ -336,7 +339,8 @@ async function resolveUniversityLinkTarget(href, anchorText) {
       return {
         action: 'luna_thread',
         path: courseMatch.item.url || (url.pathname + url.search),
-        title: courseMatch.item.title || anchorText || '掲示板スレッド'
+        title: courseMatch.item.title || anchorText || '掲示板スレッド',
+        course_name: courseMatch.course_name || currentCourseName
       };
     }
 
@@ -384,7 +388,8 @@ async function resolveUniversityLinkTarget(href, anchorText) {
       return {
         action: 'luna_thread',
         path: url.pathname + url.search,
-        title: anchorText || '掲示板スレッド'
+        title: anchorText || '掲示板スレッド',
+        course_name: currentCourseName
       };
     }
 
@@ -392,7 +397,8 @@ async function resolveUniversityLinkTarget(href, anchorText) {
       return {
         action: 'luna_discussion',
         path: url.pathname + url.search,
-        title: anchorText || '掲示板'
+        title: anchorText || '掲示板',
+        course_name: currentCourseName
       };
     }
 
@@ -444,7 +450,8 @@ async function openResolvedUniversityLink(target) {
       title: target.title,
       mode: 'course',
       idnumber: target.idnumber,
-      kgcPath: target.kgc_path || null
+      kgcPath: target.kgc_path || null,
+      courseName: target.course_name || null
     });
     return true;
   }
@@ -454,7 +461,8 @@ async function openResolvedUniversityLink(target) {
       path: '',
       title: target.title,
       mode: 'attendance',
-      idnumber: target.idnumber
+      idnumber: target.idnumber,
+      courseName: target.course_name || null
     });
     return true;
   }
@@ -487,7 +495,8 @@ async function openResolvedUniversityLink(target) {
     await invoke('university_open_detail_window', {
       path: target.path,
       title: target.title,
-      mode: 'discussion'
+      mode: 'discussion',
+      courseName: target.course_name || null
     });
     return true;
   }
@@ -496,7 +505,8 @@ async function openResolvedUniversityLink(target) {
     await invoke('university_open_detail_window', {
       path: target.path,
       title: target.title,
-      mode: 'thread'
+      mode: 'thread',
+      courseName: target.course_name || null
     });
     return true;
   }

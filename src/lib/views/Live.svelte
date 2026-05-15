@@ -22,9 +22,11 @@
     openSettingsWindow,
     openSubtitleOverlay,
     closeSubtitleOverlay,
+    saveLiveGeneratedTodos,
     type LiveCourseInfo,
     type LiveSaveResult,
     type LiveSessionSnapshot,
+    type LiveTodoSuggestion,
   } from "../api";
   import type { ScheduleResponse } from "../types";
   import { DAY_NUM_LABELS, PERIOD_TIMES } from "../types";
@@ -40,6 +42,7 @@
     source: NoticeSource;
     action?: NoticeAction;
   } | null;
+  type LiveTodoDraft = LiveTodoSuggestion & { selected: boolean };
 
   let scheduleData = $state<ScheduleResponse | null>(null);
   let allCourseOptions = $state<CourseSlot[]>([]);
@@ -63,6 +66,9 @@
   let lastSaved = $state<LiveSaveResult | null>(null);
   let showSaveNotif = $state(false);
   let saveProgress = $state("");
+  let todoDrafts = $state<LiveTodoDraft[]>([]);
+  let todoDraftSourcePath = $state("");
+  let todoDraftSaving = $state(false);
   let summaryViewIndex = $state(-1); // -1 = auto (latest)
   let summaryExpanded = $state(false);
   let flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -820,6 +826,10 @@
       saveProgress = "ファイルに書き出し中…";
       const saved = await liveFinishSession();
       lastSaved = saved.saved ? saved : null;
+      if (saved.saved && saved.suggested_todos?.length) {
+        todoDrafts = saved.suggested_todos.map((item) => ({ ...item, selected: true }));
+        todoDraftSourcePath = saved.path;
+      }
       snapshot = await liveGetSession();
       stopFlushTimer();
       clearLiveAutoLifecycle();
@@ -838,6 +848,35 @@
       setMessage("error", e?.message || String(e));
     } finally {
       busy = false;
+    }
+  }
+
+  function toggleTodoDraft(index: number) {
+    todoDrafts = todoDrafts.map((item, i) => i === index ? { ...item, selected: !item.selected } : item);
+  }
+
+  function closeTodoDrafts() {
+    if (todoDraftSaving) return;
+    todoDrafts = [];
+    todoDraftSourcePath = "";
+  }
+
+  async function confirmTodoDrafts() {
+    const selected = todoDrafts.filter((item) => item.selected);
+    if (selected.length === 0) {
+      closeTodoDrafts();
+      return;
+    }
+    todoDraftSaving = true;
+    try {
+      const added = await saveLiveGeneratedTodos(selected, todoDraftSourcePath);
+      setMessage("success", added.length > 0 ? `${added.length}件のTODOを追加しました` : "既存のTODOと重複していたため追加はありません");
+      todoDrafts = [];
+      todoDraftSourcePath = "";
+    } catch (e: any) {
+      setMessage("error", e?.message || String(e));
+    } finally {
+      todoDraftSaving = false;
     }
   }
 
@@ -1307,6 +1346,47 @@
       最新へ
     </button>
   {/if}
+
+  {#if todoDrafts.length > 0}
+    <div class="todo-confirm-shell" role="presentation">
+      <div class="todo-confirm-card" role="dialog" aria-modal="true" aria-labelledby="live-todo-confirm-title">
+        <div class="todo-confirm-head">
+          <div>
+            <div id="live-todo-confirm-title" class="todo-confirm-title">LiveからTODO候補を追加</div>
+            <div class="todo-confirm-sub">講義中に指示された可能性がある課題だけを選んで追加できます</div>
+          </div>
+          <button class="todo-confirm-close" onclick={closeTodoDrafts} disabled={todoDraftSaving} aria-label="閉じる">×</button>
+        </div>
+        <div class="todo-draft-list">
+          {#each todoDrafts as item, idx}
+            <label class="todo-draft-row" class:selected={item.selected}>
+              <input type="checkbox" checked={item.selected} onchange={() => toggleTodoDraft(idx)} disabled={todoDraftSaving} />
+              <span class="todo-draft-main">
+                <span class="todo-draft-title">{item.title}</span>
+                <span class="todo-draft-meta">
+                  {item.course_name}
+                  {#if item.content_type} · {item.content_type}{/if}
+                  {#if item.deadline} · 締切 {item.deadline}{/if}
+                </span>
+                {#if item.note}
+                  <span class="todo-draft-note">{item.note}</span>
+                {/if}
+                {#if item.source_excerpt}
+                  <span class="todo-draft-source">“{item.source_excerpt}”</span>
+                {/if}
+              </span>
+            </label>
+          {/each}
+        </div>
+        <div class="todo-confirm-actions">
+          <button class="todo-confirm-btn secondary" onclick={closeTodoDrafts} disabled={todoDraftSaving}>追加しない</button>
+          <button class="todo-confirm-btn primary" onclick={confirmTodoDrafts} disabled={todoDraftSaving}>
+            {todoDraftSaving ? "追加中…" : "選択したTODOを追加"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1322,6 +1402,150 @@
     width: 100%;
     position: relative;
     overflow: hidden;
+  }
+
+  .todo-confirm-shell {
+    position: absolute;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(0, 0, 0, 0.22);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  .todo-confirm-card {
+    width: min(520px, 100%);
+    max-height: min(680px, calc(100% - 28px));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+  }
+
+  .todo-confirm-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .todo-confirm-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .todo-confirm-sub {
+    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+  }
+
+  .todo-confirm-close {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .todo-draft-list {
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-right: 2px;
+  }
+
+  .todo-draft-row {
+    display: grid;
+    grid-template-columns: 18px 1fr;
+    gap: 10px;
+    padding: 11px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    cursor: pointer;
+  }
+
+  .todo-draft-row.selected {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+  }
+
+  .todo-draft-row input {
+    margin-top: 2px;
+    accent-color: var(--accent);
+  }
+
+  .todo-draft-main {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .todo-draft-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .todo-draft-meta,
+  .todo-draft-note,
+  .todo-draft-source {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+  }
+
+  .todo-draft-source {
+    color: var(--text-tertiary);
+    word-break: break-word;
+  }
+
+  .todo-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .todo-confirm-btn {
+    border: none;
+    border-radius: 999px;
+    padding: 8px 13px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .todo-confirm-btn.secondary {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+
+  .todo-confirm-btn.primary {
+    background: var(--accent);
+    color: white;
+  }
+
+  .todo-confirm-btn:disabled,
+  .todo-confirm-close:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   /* ── Floating Top Capsule ── */

@@ -198,11 +198,17 @@ pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, Str
             "urgency": urgency,
         }));
     }
-    deadlines.sort_by_key(|v| match v.get("urgency").and_then(|u| u.as_str()).unwrap_or("normal") {
-        "overdue" => 0,
-        "critical" => 1,
-        "soon" => 2,
-        _ => 3,
+    deadlines.sort_by_key(|v| {
+        match v
+            .get("urgency")
+            .and_then(|u| u.as_str())
+            .unwrap_or("normal")
+        {
+            "overdue" => 0,
+            "critical" => 1,
+            "soon" => 2,
+            _ => 3,
+        }
     });
     deadlines.truncate(5);
 

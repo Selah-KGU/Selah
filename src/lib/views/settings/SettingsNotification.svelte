@@ -43,7 +43,7 @@
       return;
     }
     try {
-      const granted = await invoke<boolean>("plugin:notification|is_permission_granted");
+      const granted = await invoke<boolean>("native_notification_permission_granted");
       permState = granted ? "ok" : "ng";
       permLabel = granted ? "許可済" : "未許可";
     } catch {
