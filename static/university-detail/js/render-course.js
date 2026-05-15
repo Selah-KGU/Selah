@@ -401,7 +401,7 @@ function renderCourseDetail(data, idnumber, kgcPath) {
       if (!item || !item.url) return;
       var up = new URLSearchParams(item.url.split('?')[1] || '');
       var reportId = up.get('reportId') || '';
-      invoke('university_open_detail_window', { path: item.url, title: item.title, mode: 'report', idnumber: idnumber || null, infoId: reportId || null, courseName: _currentCourseName || null });
+      invoke('university_open_detail_window', { path: item.url, title: item.title, mode: 'report', period: item.period || null, idnumber: idnumber || null, infoId: reportId || null, courseName: _currentCourseName || null });
     });
   });
 

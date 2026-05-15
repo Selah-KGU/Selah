@@ -2,8 +2,31 @@ async function mountReportSubmitForm(invoke, params, path) {
   // Detect submission type by fetching the actual submission page
   var repIdnumber = params.get('idnumber'), repReportId = params.get('reportId');
   if (repIdnumber && repReportId) {
+    var reportPeriod = params.get('period') || '';
+    var precheckMessage = reportSubmissionPeriodMessage(reportPeriod, true);
+    if (precheckMessage) {
+      var submitWrapPrecheck = document.createElement('div');
+      submitWrapPrecheck.className = 'report-submit-section';
+      var precheckBox = document.createElement('div');
+      precheckBox.className = 'report-submit-unavailable';
+      precheckBox.textContent = precheckMessage;
+      submitWrapPrecheck.appendChild(precheckBox);
+      document.getElementById('content').appendChild(submitWrapPrecheck);
+      return;
+    }
     var reportType = 'file';
-    try { reportType = await invoke('luna_check_report_type', { idnumber: repIdnumber, reportId: repReportId }); } catch(e) {}
+    try {
+      reportType = await invoke('luna_check_report_type', { idnumber: repIdnumber, reportId: repReportId, period: reportPeriod || null });
+    } catch(e) {
+      var submitWrapUnavailable = document.createElement('div');
+      submitWrapUnavailable.className = 'report-submit-section';
+      var unavailableBox = document.createElement('div');
+      unavailableBox.className = 'report-submit-unavailable';
+      unavailableBox.textContent = reportSubmissionPeriodMessage(reportPeriod) || String(e || 'この課題は現在提出できません。');
+      submitWrapUnavailable.appendChild(unavailableBox);
+      document.getElementById('content').appendChild(submitWrapUnavailable);
+      return;
+    }
     var allowFile = reportType === 'file' || reportType === 'both';
     var allowText = reportType === 'text' || reportType === 'both';
 
@@ -138,6 +161,7 @@ async function mountReportSubmitForm(invoke, params, path) {
           var result = await invoke('luna_submit_report', {
             idnumber: repIdnumber,
             reportId: repReportId,
+            period: reportPeriod || null,
             fileName: selectedFile.name,
             fileBase64: btoa(binary)
           });
@@ -153,6 +177,7 @@ async function mountReportSubmitForm(invoke, params, path) {
           var result = await invoke('luna_submit_report_text', {
             idnumber: repIdnumber,
             reportId: repReportId,
+            period: reportPeriod || null,
             submissionText: textInput.value.trim()
           });
           clearDraftValue(reportTextDraftKey);
@@ -171,4 +196,37 @@ async function mountReportSubmitForm(invoke, params, path) {
       }
     });
   }
+}
+
+function parseReportDateTime(value) {
+  var m = String(value || '').trim().match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})\s+(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  var y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]), h = Number(m[4]), mi = Number(m[5]);
+  if (!y || !mo || !d || h > 24 || mi > 59 || (h === 24 && mi !== 0)) return null;
+  var dt = new Date(y, mo - 1, d, h === 24 ? 0 : h, mi, 0, 0);
+  if (h === 24) dt.setDate(dt.getDate() + 1);
+  return dt;
+}
+
+function parseReportPeriod(period) {
+  var parts = String(period || '').split(/[~\uff5e]/).map(function(s) { return s.trim(); }).filter(Boolean);
+  if (parts.length < 2) return null;
+  var start = parseReportDateTime(parts[0]);
+  var end = parseReportDateTime(parts[1]);
+  if (!start || !end) return null;
+  return { start: start, end: end, rawStart: parts[0], rawEnd: parts[1] };
+}
+
+function reportSubmissionPeriodMessage(period, beforeStartOnly) {
+  var parsed = parseReportPeriod(period);
+  if (!parsed) return '';
+  var now = new Date();
+  if (now < parsed.start) {
+    return '提出開始前です。提出期間: ' + parsed.rawStart + ' ～ ' + parsed.rawEnd;
+  }
+  if (beforeStartOnly) return '';
+  if (now > parsed.end) {
+    return '提出期間が終了しています。提出期間: ' + parsed.rawStart + ' ～ ' + parsed.rawEnd;
+  }
+  return '';
 }

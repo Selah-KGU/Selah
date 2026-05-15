@@ -322,6 +322,7 @@ async function resolveUniversityLinkTarget(href, anchorText) {
         idnumber: idnumber,
         report_id: url.searchParams.get('reportId') || '',
         title: courseMatch.item.title || anchorText || '課題',
+        period: courseMatch.item.period || '',
         course_name: courseMatch.course_name || currentCourseName
       };
     }
@@ -380,6 +381,7 @@ async function resolveUniversityLinkTarget(href, anchorText) {
         idnumber: idnumber,
         report_id: url.searchParams.get('reportId') || '',
         title: (todoMatch && todoMatch.content_name) || anchorText || '課題',
+        period: (todoMatch && todoMatch.deadline) || '',
         course_name: (todoMatch && todoMatch.course_name) || currentCourseName
       };
     }
@@ -486,6 +488,7 @@ async function openResolvedUniversityLink(target) {
       mode: 'report',
       idnumber: target.idnumber || null,
       infoId: target.report_id || null,
+      period: target.period || null,
       courseName: target.course_name || null
     });
     return true;

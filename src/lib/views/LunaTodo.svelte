@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { aiAnalyzeTodo, openLunaTodoItem } from "../api";
+  import { aiAnalyzeTodo, completeLiveGeneratedTodo, deleteLiveGeneratedTodo, openLunaTodoItem } from "../api";
   import { cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
@@ -11,6 +11,7 @@
   let todoItems = $state<LunaTodoItem[]>([]);
   let selectedCourse = $state("all");
   let hideOverdue = $state(true);
+  let localTodoBusyId = $state("");
 
   // AI state
   let aiResult = $state<AiTodoAnalysis | null>(null);
@@ -21,7 +22,7 @@
   // always disallows submission, so they only clutter the list and counts.
   const STALE_OVERDUE_MS = 7 * 86400_000;
   let pending = $derived(todoItems.filter(t => {
-    if (t.status.includes("提出済")) return false;
+    if (/提出済|提出済み|完了|採点済|受験済/.test(t.status)) return false;
     if (!t.deadline) return true;
     const overdueBy = Date.now() - parseDeadline(t.deadline);
     return overdueBy < STALE_OVERDUE_MS;
@@ -101,10 +102,55 @@
   }
 
   async function openTodo(item: LunaTodoItem) {
+    if (isLiveTodo(item)) return;
     try {
       await openLunaTodoItem(item);
     } catch (e: any) {
       console.error("Failed to open TODO item:", e);
+    }
+  }
+
+  function isLiveTodo(item: LunaTodoItem): boolean {
+    return item.source === "live" || item.url?.startsWith("live-generated://") || item.feedback?.startsWith("Liveから追加");
+  }
+
+  function liveTodoId(item: LunaTodoItem): string {
+    if (item.local_id) return item.local_id;
+    if (item.url?.startsWith("live-generated://")) {
+      try {
+        return decodeURIComponent(item.url.replace("live-generated://", ""));
+      } catch {
+        return item.url.replace("live-generated://", "");
+      }
+    }
+    return "";
+  }
+
+  async function completeLocalTodo(item: LunaTodoItem) {
+    const id = liveTodoId(item);
+    if (!id || localTodoBusyId) return;
+    localTodoBusyId = id;
+    error = "";
+    try {
+      await completeLiveGeneratedTodo(id);
+    } catch (e: any) {
+      error = e?.message || String(e);
+    } finally {
+      localTodoBusyId = "";
+    }
+  }
+
+  async function removeLocalTodo(item: LunaTodoItem) {
+    const id = liveTodoId(item);
+    if (!id || localTodoBusyId) return;
+    localTodoBusyId = id;
+    error = "";
+    try {
+      await deleteLiveGeneratedTodo(id);
+    } catch (e: any) {
+      error = e?.message || String(e);
+    } finally {
+      localTodoBusyId = "";
     }
   }
 
@@ -223,19 +269,35 @@
             {@const urg = urgency(item.deadline)}
             {@const pct = urgencyPct(item.deadline)}
             {@const remaining = remainingLabel(item.deadline)}
-            <button
+            {@const local = isLiveTodo(item)}
+            {@const localId = liveTodoId(item)}
+            <div
               class="task"
+              class:local
               class:overdue={urg === "overdue"}
               class:critical={urg === "critical"}
               class:soon={urg === "soon"}
               style="--delay: {Math.min(i * 0.05, 0.5)}s"
+              role="button"
+              tabindex="0"
               onclick={() => openTodo(item)}
+              onkeydown={(e) => {
+                if (!local && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  openTodo(item);
+                }
+              }}
             >
               <div class="urgency-bar" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>
                 <div class="urgency-fill" style="height: {Math.max(pct * 100, 6)}%"></div>
               </div>
               <div class="task-body">
-                <div class="task-name">{item.content_name}</div>
+                <div class="task-name">
+                  {#if local}
+                    <span class="live-task-badge">Live</span>
+                  {/if}
+                  {item.content_name}
+                </div>
                 <div class="task-sub">
                   <span class="task-course">{item.course_name}</span>
                   <span class="task-sep"></span>
@@ -249,13 +311,24 @@
                   <div class="task-feedback">{item.feedback}</div>
                 {/if}
               </div>
-              {#if remaining}
+              {#if local}
+                <div class="task-actions">
+                  <button class="task-action done" onclick={(e) => { e.stopPropagation(); completeLocalTodo(item); }} disabled={localTodoBusyId === localId}>
+                    {localTodoBusyId === localId ? "処理中…" : "完了"}
+                  </button>
+                  <button class="task-action danger" onclick={(e) => { e.stopPropagation(); removeLocalTodo(item); }} disabled={localTodoBusyId === localId}>
+                    削除
+                  </button>
+                </div>
+              {:else if remaining}
                 <span class="remaining" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>{remaining}</span>
               {/if}
-              <svg class="task-arrow" width="7" height="12" viewBox="0 0 7 12" fill="none">
-                <path d="M1 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
+              {#if !local}
+                <svg class="task-arrow" width="7" height="12" viewBox="0 0 7 12" fill="none">
+                  <path d="M1 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              {/if}
+            </div>
           {/each}
         </div>
       {/if}
@@ -413,6 +486,14 @@
   .task:hover {
     background: var(--bg-hover);
   }
+  .task.local {
+    cursor: default;
+    border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+    background: color-mix(in srgb, var(--accent) 4%, var(--bg-card));
+  }
+  .task.local:hover {
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
+  }
   .task:active {
     transform: scale(0.99);
     transition-duration: 0.08s;
@@ -508,6 +589,18 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
   }
+  .live-task-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 6px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    vertical-align: 1px;
+  }
   .task-sub {
     display: flex;
     align-items: center;
@@ -542,6 +635,40 @@
     font-size: 12px;
     color: var(--text-tertiary);
     font-style: italic;
+  }
+
+  .task-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .task-action {
+    border: none;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+  }
+  .task-action:hover {
+    transform: translateY(-1px);
+  }
+  .task-action:disabled {
+    opacity: 0.55;
+    cursor: default;
+    transform: none;
+  }
+  .task-action.done {
+    color: #fff;
+    background: var(--accent);
+  }
+  .task-action.danger {
+    color: var(--red);
+    background: color-mix(in srgb, var(--red) 10%, transparent);
   }
 
   /* ── Arrow ── */

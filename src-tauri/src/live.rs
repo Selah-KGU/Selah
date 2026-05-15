@@ -1,9 +1,9 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 const CACHE_DEBOUNCE: Duration = Duration::from_secs(30);
 const MIN_AI_SUMMARIZATION_DURATION_SECS: i64 = 120;
@@ -42,11 +42,21 @@ pub struct LiveTranscriptLine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveTermExplanation {
+    pub term: String,
+    pub explanation: String,
+    #[serde(default)]
+    pub source_excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveSummaryChunk {
     pub title: String,
     pub range_label: String,
     pub body: String,
     pub line_count: usize,
+    #[serde(default)]
+    pub terms: Vec<LiveTermExplanation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +116,11 @@ struct LiveSession {
     /// (either in the main cache snapshot or appended to the deltas log).
     /// Drives the incremental day-cache write.
     persisted_line_count: usize,
+}
+
+struct LiveChunkAiResult {
+    body: String,
+    terms: Vec<LiveTermExplanation>,
 }
 
 impl LiveSession {
@@ -553,7 +568,7 @@ async fn summarize_chunk(
     course: &LiveCourseInfo,
     lines: &[LiveTranscriptLine],
     recent_summaries: &[LiveSummaryChunk],
-) -> Result<String, String> {
+) -> Result<LiveChunkAiResult, String> {
     let cfg = live_ai_config()?;
     let language_hint = crate::ai::reply_language_hint(
         &cfg.reply_language,
@@ -571,7 +586,7 @@ async fn summarize_chunk(
         crate::ai::ChatMessage {
             role: "system".into(),
             content: format!(
-                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（Markdownのみ、厳守）:\n\n- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）\n\nルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。{}",
+                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約し、同じ区間で出た重要な名詞・専門用語を短く注釈してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:\n{{\"summary_markdown\":\"- 重点1（1行、名詞句または短文）\\n- 重点2\\n- 重点3\\n\\n---\\n\\n**重点1**: 補足説明（1〜2文で具体的に）\\n\\n**重点2**: 補足説明（1〜2文で具体的に）\\n\\n**重点3**: 補足説明（1〜2文で具体的に）\",\"terms\":[{{\"term\":\"重要名詞\",\"explanation\":\"講義文脈での意味を1文で説明\",\"source_excerpt\":\"根拠になる短い発話断片\"}}]}}\n\nsummary_markdown のルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。\n\nterms のルール:\n- 今回の区間で出た重要な名詞・専門用語・固有概念だけを最大5件。\n- 学生がその場で理解しやすい注釈として、1項目1文で短く説明する。\n- transcriptに根拠がある語だけを採用し、一般常識や外部知識で勝手に増やさない。\n- 雑談語、教室運営語、あまり重要でない普通名詞は除外する。\n- 該当語が少ない場合は terms を空配列にする。{}",
                 language_hint
             ),
             images: Vec::new(),
@@ -601,7 +616,7 @@ async fn summarize_chunk(
         },
     ];
     let raw = crate::ai::chat_completion_public(&cfg, messages).await?;
-    Ok(sanitize_model_output(&raw))
+    Ok(parse_chunk_ai_result(&raw))
 }
 
 async fn summarize_overall(
@@ -703,10 +718,68 @@ fn value_to_trimmed_string(value: Option<&serde_json::Value>) -> String {
     }
 }
 
+fn clamp_chars(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out = trimmed.chars().take(max_chars).collect::<String>();
+    out.push('…');
+    out
+}
+
+fn parse_chunk_ai_result(raw: &str) -> LiveChunkAiResult {
+    let sanitized = sanitize_model_output(raw);
+    let Some(json_text) = extract_json_object(&sanitized) else {
+        return LiveChunkAiResult {
+            body: sanitized,
+            terms: Vec::new(),
+        };
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_text) else {
+        return LiveChunkAiResult {
+            body: sanitized,
+            terms: Vec::new(),
+        };
+    };
+
+    let body = value_to_trimmed_string(
+        value
+            .get("summary_markdown")
+            .or_else(|| value.get("summary"))
+            .or_else(|| value.get("body")),
+    );
+    let mut terms = Vec::new();
+    if let Some(items) = value.get("terms").and_then(|v| v.as_array()) {
+        for item in items.iter().take(5) {
+            let term = clamp_chars(&value_to_trimmed_string(item.get("term")), 40);
+            let explanation = clamp_chars(&value_to_trimmed_string(item.get("explanation")), 120);
+            if term.is_empty() || explanation.is_empty() {
+                continue;
+            }
+            terms.push(LiveTermExplanation {
+                term,
+                explanation,
+                source_excerpt: clamp_chars(
+                    &value_to_trimmed_string(item.get("source_excerpt")),
+                    80,
+                ),
+            });
+        }
+    }
+
+    LiveChunkAiResult {
+        body: if body.is_empty() { sanitized } else { body },
+        terms,
+    }
+}
+
 async fn extract_todo_suggestions(
+    app: &tauri::AppHandle,
     course: &LiveCourseInfo,
     summaries: &[LiveSummaryChunk],
     transcript_lines: &[LiveTranscriptLine],
+    ended_at: DateTime<Local>,
 ) -> Vec<LiveTodoSuggestion> {
     if course.is_free_note || transcript_lines.is_empty() {
         return Vec::new();
@@ -730,21 +803,23 @@ async fn extract_todo_suggestions(
         .map(|line| format!("- [{}] {}", line.at, line.text))
         .collect::<Vec<_>>()
         .join("\n");
+    let course_plan_context = live_todo_course_plan_context(app, course, ended_at);
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: "あなたは大学講義ノートから学生のTODO候補だけを抽出するアシスタントです。先生が明確に課題、提出物、宿題、レポート、事前準備、復習タスク、小テスト準備として指示したものだけを抽出してください。講義内容そのもの、一般的な学習アドバイス、AIが勝手に作った復習案は含めません。締切が明示されない場合は deadline を空文字にします。出力はJSONのみで、説明文やMarkdownを付けないでください。形式: {\"todos\":[{\"title\":\"課題名\",\"content_type\":\"課題|レポート|予習|復習|テスト準備|その他\",\"deadline\":\"YYYY-MM-DD HH:mm または 空文字\",\"note\":\"学生が次にすることを短く\",\"source_excerpt\":\"根拠になる発話を短く\"}]}。候補がなければ {\"todos\":[]}。".into(),
+            content: "あなたは大学講義ノートから学生のTODO候補だけを抽出するアシスタントです。先生が明確に課題、提出物、宿題、レポート、事前準備、復習タスク、小テスト準備として指示したものだけを抽出してください。講義内容そのもの、一般的な学習アドバイス、AIが勝手に作った復習案は含めません。締切は発話中の具体日付/時刻を最優先し、「次回まで」「来週の授業まで」「授業計画の該当回まで」など相対的に判断できる場合は、現在日時・次回授業候補・授業計画から YYYY-MM-DD HH:mm 形式で推定してください。推定した場合は note に根拠を短く含めてください。どうしても判断できない場合だけ deadline を空文字にします。出力はJSONのみで、説明文やMarkdownを付けないでください。形式: {\"todos\":[{\"title\":\"課題名\",\"content_type\":\"課題|レポート|予習|復習|テスト準備|その他\",\"deadline\":\"YYYY-MM-DD HH:mm または 空文字\",\"note\":\"学生が次にすることを短く。締切推定時は根拠も短く\",\"source_excerpt\":\"根拠になる発話を短く\"}]}。候補がなければ {\"todos\":[]}。".into(),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
             role: "user".into(),
             content: format!(
-                "講義: {}\n授業コード: {}\n曜日/時限: {} {}\n教員: {}\n\nAIレポート/分割要約:\n{}\n\n文字起こし（終盤中心）:\n{}\n\nこの講義内で明確に指示されたTODO/課題候補だけを抽出してください。",
+                "講義: {}\n授業コード: {}\n曜日/時限: {} {}\n教員: {}\n\n締切推定の参考情報:\n{}\n\nAIレポート/分割要約:\n{}\n\n文字起こし（終盤中心）:\n{}\n\nこの講義内で明確に指示されたTODO/課題候補だけを抽出し、必要なDDLをできるだけ補ってください。",
                 course.course_name,
                 course.course_code,
                 course.day,
                 course.period,
                 if course.teacher.is_empty() { "不明" } else { &course.teacher },
+                course_plan_context,
                 summary_text,
                 transcript,
             ),
@@ -788,6 +863,106 @@ async fn extract_todo_suggestions(
     out
 }
 
+fn live_todo_course_plan_context(
+    app: &tauri::AppHandle,
+    course: &LiveCourseInfo,
+    ended_at: DateTime<Local>,
+) -> String {
+    let mut lines = vec![
+        format!("現在日時: {}", ended_at.format("%Y-%m-%d %H:%M")),
+        format!(
+            "次回授業候補: {}",
+            next_course_meeting_hint(course, ended_at).unwrap_or_else(|| "不明".to_string())
+        ),
+    ];
+    let course_code = course.course_code.trim();
+    if course_code.is_empty() {
+        lines.push("授業計画: 授業コードなし".to_string());
+        return lines.join("\n");
+    }
+
+    let db = app.state::<crate::db::Database>();
+    match db.get_all_session_plans() {
+        Ok(plans) => {
+            if let Some((_, course_plans)) =
+                plans.iter().find(|(code, _)| code.trim() == course_code)
+            {
+                lines.push("授業計画:".to_string());
+                for plan in course_plans.iter().take(18) {
+                    let mut parts = Vec::new();
+                    if !plan.th_header.trim().is_empty() {
+                        parts.push(clamp_chars(&plan.th_header, 80));
+                    }
+                    if !plan.topic.trim().is_empty() {
+                        parts.push(clamp_chars(&plan.topic, 160));
+                    }
+                    if !plan.study_outside.trim().is_empty() {
+                        parts.push(format!(
+                            "授業外学修: {}",
+                            clamp_chars(&plan.study_outside, 180)
+                        ));
+                    }
+                    if !parts.is_empty() {
+                        lines.push(format!("第{}回: {}", plan.session_num, parts.join(" / ")));
+                    }
+                }
+            } else {
+                lines.push("授業計画: キャッシュなし".to_string());
+            }
+        }
+        Err(_) => lines.push("授業計画: 読み込み失敗".to_string()),
+    }
+
+    if let Ok(Some(detail)) = db.get_kgc_course_detail(course_code) {
+        let detail_lines = detail
+            .fields
+            .iter()
+            .filter(|(label, value)| {
+                let label = label.as_str();
+                !value.trim().is_empty()
+                    && (label.contains("授業外")
+                        || label.contains("課題")
+                        || label.contains("評価")
+                        || label.contains("試験"))
+            })
+            .take(4)
+            .map(|(label, value)| format!("{}: {}", label, clamp_chars(value, 160)))
+            .collect::<Vec<_>>();
+        if !detail_lines.is_empty() {
+            lines.push("シラバス補足:".to_string());
+            lines.extend(detail_lines);
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn next_course_meeting_hint(course: &LiveCourseInfo, ended_at: DateTime<Local>) -> Option<String> {
+    if !(1..=7).contains(&course.day) {
+        return None;
+    }
+    let today = ended_at.weekday().number_from_monday() as i32;
+    let mut days_until = (course.day - today + 7) % 7;
+    if days_until == 0 {
+        days_until = 7;
+    }
+    let date = ended_at.date_naive() + ChronoDuration::days(days_until as i64);
+    let time = course_period_start_time(course.period);
+    Some(match time {
+        Some((hour, minute)) => format!("{} {:02}:{:02}", date.format("%Y-%m-%d"), hour, minute),
+        None => date.format("%Y-%m-%d").to_string(),
+    })
+}
+
+fn course_period_start_time(period: i32) -> Option<(u32, u32)> {
+    if period < 1 {
+        return None;
+    }
+    crate::config::PERIOD_TIMES
+        .get((period - 1) as usize)
+        .map(|(start_h, start_m, _, _)| (*start_h, *start_m))
+}
+
 fn build_chunk_title(index: usize, start: DateTime<Local>, end: DateTime<Local>) -> String {
     format!(
         "Chunk {:02} | {}-{}",
@@ -795,6 +970,27 @@ fn build_chunk_title(index: usize, start: DateTime<Local>, end: DateTime<Local>)
         format_time(start),
         format_time(end)
     )
+}
+
+fn format_terms_markdown(terms: &[LiveTermExplanation]) -> String {
+    if terms.is_empty() {
+        return String::new();
+    }
+    let lines = terms
+        .iter()
+        .map(|term| {
+            if term.source_excerpt.is_empty() {
+                format!("- **{}**: {}", term.term, term.explanation)
+            } else {
+                format!(
+                    "- **{}**: {}（根拠: {}）",
+                    term.term, term.explanation, term.source_excerpt
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("\n\n### 名詞注釈\n{}", lines)
 }
 
 async fn flush_session_summary(
@@ -844,7 +1040,7 @@ async fn flush_session_summary(
         )
     };
 
-    let body = summarize_chunk(&course, &lines, &recent_summaries).await?;
+    let chunk_ai = summarize_chunk(&course, &lines, &recent_summaries).await?;
     let mut guard = state
         .0
         .lock()
@@ -861,8 +1057,9 @@ async fn flush_session_summary(
     let summary = LiveSummaryChunk {
         title: build_chunk_title(chunk_index, range_start, range_end),
         range_label: format!("{}-{}", format_time(range_start), format_time(range_end)),
-        body,
+        body: chunk_ai.body,
         line_count: lines.len(),
+        terms: chunk_ai.terms,
     };
     Arc::make_mut(&mut session.summaries).push(summary);
     Arc::make_mut(&mut session.pending_lines).clear();
@@ -887,8 +1084,11 @@ fn build_markdown(
         .iter()
         .map(|chunk| {
             format!(
-                "## {}\n{}\n\n{}",
-                chunk.title, chunk.range_label, chunk.body
+                "## {}\n{}\n\n{}{}",
+                chunk.title,
+                chunk.range_label,
+                chunk.body,
+                format_terms_markdown(&chunk.terms)
             )
         })
         .collect::<Vec<_>>()
@@ -1239,7 +1439,7 @@ pub async fn live_finish_session(
     let suggested_todos = if should_skip_ai_summarization(started_at, ended_at) {
         Vec::new()
     } else {
-        extract_todo_suggestions(&course, &summaries, &transcript_lines).await
+        extract_todo_suggestions(&app, &course, &summaries, &transcript_lines, ended_at).await
     };
 
     let dir = live_storage_dir(&course);
@@ -1303,6 +1503,31 @@ mod tests {
             now - chrono::Duration::seconds(120),
             now
         ));
+    }
+
+    #[test]
+    fn parse_chunk_ai_result_extracts_terms() {
+        let raw = r#"{
+          "summary_markdown": "- MVC\n\n---\n\n**MVC**: 画面と処理を分ける考え方。",
+          "terms": [
+            {
+              "term": "MVC",
+              "explanation": "Model、View、Controllerに責務を分ける設計パターン。",
+              "source_excerpt": "MVCという設計"
+            }
+          ]
+        }"#;
+        let parsed = parse_chunk_ai_result(raw);
+        assert!(parsed.body.contains("MVC"));
+        assert_eq!(parsed.terms.len(), 1);
+        assert_eq!(parsed.terms[0].term, "MVC");
+    }
+
+    #[test]
+    fn parse_chunk_ai_result_falls_back_to_markdown() {
+        let parsed = parse_chunk_ai_result("- 重点\n\n---\n\n**重点**: 説明");
+        assert!(parsed.body.starts_with("- 重点"));
+        assert!(parsed.terms.is_empty());
     }
 
     fn fixture_cache(transcript: Vec<(&str, &str)>) -> LiveDayCache {

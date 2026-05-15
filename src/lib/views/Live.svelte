@@ -75,6 +75,7 @@
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
   let scheduleFocusTimer: ReturnType<typeof setInterval> | null = null;
   let liveSummaryIntervalMinutes = $state(5);
+  let aiReplyLanguage = $state("ja");
   let timeTimer: ReturnType<typeof setInterval> | null = null;
   let now = $state(new Date());
   let scrollEl: HTMLElement | null = null;
@@ -166,6 +167,24 @@
       ? snapshot.summaries.length - 1
       : summaryViewIndex
   );
+  const activeSummaryTerms = $derived.by(() => {
+    const chunk = snapshot.summaries[activeSummaryIdx];
+    return (chunk?.terms ?? []).filter((term) => term.term?.trim() && term.explanation?.trim());
+  });
+  const termFloatLabels = $derived.by(() => {
+    switch ((aiReplyLanguage || "ja").toLowerCase()) {
+      case "zh":
+      case "zh-cn":
+      case "cn":
+        return { title: "智能名词解释", empty: "本段没有需要解释的名词", source: "出处" };
+      case "en":
+        return { title: "Key Terms", empty: "No terms for this segment", source: "Source" };
+      case "ko":
+        return { title: "핵심 용어", empty: "이 구간의 용어 설명이 없습니다", source: "근거" };
+      default:
+        return { title: "名詞注釈", empty: "この区間の注釈はありません", source: "根拠" };
+    }
+  });
 
   let unlistenPartial: (() => void) | null = null;
   let unlistenFinal: (() => void) | null = null;
@@ -180,6 +199,8 @@
   let unlistenWinBlur: (() => void) | null = null;
 
   const hasContent = $derived(snapshot.transcript_lines.length > 0 || partialText.trim().length > 0);
+  const selectedTodoDraftCount = $derived(todoDrafts.filter((item) => item.selected).length);
+  const todoDraftsWithDeadlineCount = $derived(todoDrafts.filter((item) => item.deadline.trim()).length);
   const sttBooting = $derived(
     sttPhase === "checking" || sttPhase === "starting" || sttPhase === "initializing"
   );
@@ -590,6 +611,7 @@
 
   async function refreshReadiness() {
     const cfg = await getAiConfig();
+    aiReplyLanguage = cfg.reply_language || "ja";
     liveSummaryIntervalMinutes = Math.min(30, Math.max(5, cfg.live_summary_interval_minutes ?? 5));
     const ready = await isAiReady();
     liveReady = ready;
@@ -823,7 +845,9 @@
         const flushed = await liveFlushSummary(true);
         snapshot = flushed;
       }
-      saveProgress = "ファイルに書き出し中…";
+      saveProgress = snapshot.course?.is_free_note || skipAiSummarization
+        ? "ファイルに書き出し中…"
+        : "TODO候補とDDLを判定中…";
       const saved = await liveFinishSession();
       lastSaved = saved.saved ? saved : null;
       if (saved.saved && saved.suggested_todos?.length) {
@@ -868,6 +892,7 @@
       return;
     }
     todoDraftSaving = true;
+    saveProgress = "TODOを追加中…";
     try {
       const added = await saveLiveGeneratedTodos(selected, todoDraftSourcePath);
       setMessage("success", added.length > 0 ? `${added.length}件のTODOを追加しました` : "既存のTODOと重複していたため追加はありません");
@@ -877,6 +902,7 @@
       setMessage("error", e?.message || String(e));
     } finally {
       todoDraftSaving = false;
+      saveProgress = "";
     }
   }
 
@@ -1155,6 +1181,9 @@
             {/each}
           {/if}
         </select>
+        {#if saveProgress}
+          <span class="capsule-progress">{saveProgress}</span>
+        {/if}
       {/if}
 
       <div class="capsule-actions">
@@ -1291,6 +1320,55 @@
                   <span class="save-capsule-spinner"></span>
                   <span class="save-capsule-text">{saveProgress}</span>
                 </div>
+              {:else if todoDrafts.length > 0}
+                <div class="save-capsule done">
+                  <svg class="save-capsule-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="url(#notif-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <defs><linearGradient id="notif-grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#c480e8"/><stop offset="100%" stop-color="#6bacf0"/></linearGradient></defs>
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+                  </svg>
+                  <span class="save-capsule-text">保存完了・TODO候補あり</span>
+                </div>
+                {#if lastSaved}
+                  <div class="save-summary md">{@html renderMd(extractOverallSummary(lastSaved.markdown))}</div>
+                {/if}
+                <section class="todo-confirm-card inline" aria-labelledby="live-todo-confirm-title">
+                  <div class="todo-confirm-head">
+                    <div>
+                      <div id="live-todo-confirm-title" class="todo-confirm-title">LiveからTODO候補を追加</div>
+                      <div class="todo-confirm-sub">
+                        {todoDrafts.length}件中 {todoDraftsWithDeadlineCount}件にDDLあり。必要なものだけ選んで追加できます。
+                      </div>
+                    </div>
+                    <button class="todo-confirm-close" onclick={closeTodoDrafts} disabled={todoDraftSaving} aria-label="閉じる">×</button>
+                  </div>
+                  <div class="todo-draft-list">
+                    {#each todoDrafts as item, idx}
+                      <label class="todo-draft-row" class:selected={item.selected}>
+                        <input type="checkbox" checked={item.selected} onchange={() => toggleTodoDraft(idx)} disabled={todoDraftSaving} />
+                        <span class="todo-draft-main">
+                          <span class="todo-draft-title">{item.title}</span>
+                          <span class="todo-draft-meta">
+                            <span>{item.course_name}</span>
+                            {#if item.content_type}<span>{item.content_type}</span>{/if}
+                            <span class:missing={!item.deadline}>{item.deadline ? `DDL ${item.deadline}` : "DDL未判定"}</span>
+                          </span>
+                          {#if item.note}
+                            <span class="todo-draft-note">{item.note}</span>
+                          {/if}
+                          {#if item.source_excerpt}
+                            <span class="todo-draft-source">“{item.source_excerpt}”</span>
+                          {/if}
+                        </span>
+                      </label>
+                    {/each}
+                  </div>
+                  <div class="todo-confirm-actions">
+                    <button class="todo-confirm-btn secondary" onclick={closeTodoDrafts} disabled={todoDraftSaving}>追加しない</button>
+                    <button class="todo-confirm-btn primary" onclick={confirmTodoDrafts} disabled={todoDraftSaving || selectedTodoDraftCount === 0}>
+                      {todoDraftSaving ? "追加中…" : `選択した${selectedTodoDraftCount}件を追加`}
+                    </button>
+                  </div>
+                </section>
               {:else if showSaveNotif && lastSaved}
                 <div class="save-capsule done">
                   <svg class="save-capsule-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="url(#notif-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1347,46 +1425,29 @@
     </button>
   {/if}
 
-  {#if todoDrafts.length > 0}
-    <div class="todo-confirm-shell" role="presentation">
-      <div class="todo-confirm-card" role="dialog" aria-modal="true" aria-labelledby="live-todo-confirm-title">
-        <div class="todo-confirm-head">
-          <div>
-            <div id="live-todo-confirm-title" class="todo-confirm-title">LiveからTODO候補を追加</div>
-            <div class="todo-confirm-sub">講義中に指示された可能性がある課題だけを選んで追加できます</div>
-          </div>
-          <button class="todo-confirm-close" onclick={closeTodoDrafts} disabled={todoDraftSaving} aria-label="閉じる">×</button>
-        </div>
-        <div class="todo-draft-list">
-          {#each todoDrafts as item, idx}
-            <label class="todo-draft-row" class:selected={item.selected}>
-              <input type="checkbox" checked={item.selected} onchange={() => toggleTodoDraft(idx)} disabled={todoDraftSaving} />
-              <span class="todo-draft-main">
-                <span class="todo-draft-title">{item.title}</span>
-                <span class="todo-draft-meta">
-                  {item.course_name}
-                  {#if item.content_type} · {item.content_type}{/if}
-                  {#if item.deadline} · 締切 {item.deadline}{/if}
-                </span>
-                {#if item.note}
-                  <span class="todo-draft-note">{item.note}</span>
-                {/if}
-                {#if item.source_excerpt}
-                  <span class="todo-draft-source">“{item.source_excerpt}”</span>
-                {/if}
-              </span>
-            </label>
-          {/each}
-        </div>
-        <div class="todo-confirm-actions">
-          <button class="todo-confirm-btn secondary" onclick={closeTodoDrafts} disabled={todoDraftSaving}>追加しない</button>
-          <button class="todo-confirm-btn primary" onclick={confirmTodoDrafts} disabled={todoDraftSaving}>
-            {todoDraftSaving ? "追加中…" : "選択したTODOを追加"}
-          </button>
-        </div>
+  {#if activeSummaryTerms.length > 0}
+    <aside class="term-float" aria-label={termFloatLabels.title}>
+      <div class="term-float-head">
+        <span class="term-float-icon">※</span>
+        <span class="term-float-title">{termFloatLabels.title}</span>
+        {#if snapshot.summaries[activeSummaryIdx]?.range_label}
+          <span class="term-float-range">{snapshot.summaries[activeSummaryIdx].range_label}</span>
+        {/if}
       </div>
-    </div>
+      <div class="term-float-list">
+        {#each activeSummaryTerms as item}
+          <div class="term-note">
+            <div class="term-note-term">{item.term}</div>
+            <div class="term-note-body">{item.explanation}</div>
+            {#if item.source_excerpt}
+              <div class="term-note-source">{termFloatLabels.source}: {item.source_excerpt}</div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </aside>
   {/if}
+
 </div>
 
 <style>
@@ -1404,22 +1465,9 @@
     overflow: hidden;
   }
 
-  .todo-confirm-shell {
-    position: absolute;
-    inset: 0;
-    z-index: 80;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 18px;
-    background: rgba(0, 0, 0, 0.22);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-  }
-
   .todo-confirm-card {
-    width: min(520px, 100%);
-    max-height: min(680px, calc(100% - 28px));
+    width: min(620px, calc(100vw - 36px));
+    max-height: min(520px, 58vh);
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -1427,7 +1475,13 @@
     border-radius: 12px;
     background: var(--bg-primary);
     border: 1px solid var(--border);
-    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+    box-shadow: var(--shadow-sm);
+    text-align: left;
+  }
+
+  .todo-confirm-card.inline {
+    margin-top: 14px;
+    align-self: center;
   }
 
   .todo-confirm-head {
@@ -1510,6 +1564,23 @@
     font-size: 11px;
     line-height: 1.45;
     color: var(--text-secondary);
+  }
+
+  .todo-draft-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .todo-draft-meta span {
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+  }
+
+  .todo-draft-meta span.missing {
+    color: var(--orange);
+    background: color-mix(in srgb, var(--orange) 12%, transparent);
   }
 
   .todo-draft-source {
@@ -2414,6 +2485,121 @@
   }
   .scroll-to-bottom:active {
     transform: scale(0.97);
+  }
+
+  .term-float {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    z-index: 34;
+    width: min(320px, calc(100% - 32px));
+    max-height: min(42vh, 360px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 12px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
+    background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+    backdrop-filter: blur(18px) saturate(1.25);
+    -webkit-backdrop-filter: blur(18px) saturate(1.25);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16), 0 2px 10px rgba(0, 0, 0, 0.08);
+    animation: term-float-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .term-float-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 12px 8px;
+    border-bottom: 0.5px solid color-mix(in srgb, var(--text-primary) 8%, transparent);
+  }
+
+  .term-float-icon {
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .term-float-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--text-primary);
+  }
+
+  .term-float-range {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .term-float-list {
+    overflow: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    scrollbar-width: none;
+  }
+  .term-float-list::-webkit-scrollbar { display: none; }
+
+  .term-note {
+    padding: 9px 10px;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+    border-left: 3px solid color-mix(in srgb, var(--accent) 54%, transparent);
+  }
+
+  .term-note-term {
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--text-primary);
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
+  .term-note-body {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    word-break: break-word;
+  }
+
+  .term-note-source {
+    margin-top: 5px;
+    font-size: 10.5px;
+    line-height: 1.45;
+    color: var(--text-tertiary);
+    word-break: break-word;
+  }
+
+  @keyframes term-float-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  @media (max-width: 700px) {
+    .term-float {
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      width: auto;
+      max-height: 34vh;
+    }
   }
 
   /* ── Clear Confirm Dialog ── */

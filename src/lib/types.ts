@@ -9,6 +9,10 @@ export interface LunaTodoItem {
   deadline: string;
   status: string;
   feedback: string;
+  source?: string;
+  local_id?: string;
+  source_path?: string;
+  source_excerpt?: string;
 }
 
 export interface LunaNotification {

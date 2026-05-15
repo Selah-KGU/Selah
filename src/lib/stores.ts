@@ -578,12 +578,14 @@ async function loadBackendManagedCache<T>(key: string): Promise<{ data: T; ts: n
     }
     const dbKey = BACKEND_CACHE_DB_KEYS[key] ?? key;
     const json = await invoke<string | null>("get_data_cache", { key: dbKey });
-    if (!json) return null;
-    const parsed = JSON.parse(json);
     if (key === "luna_todo") {
       const generated = await loadLiveGeneratedTodos();
+      if (!json && generated.length === 0) return null;
+      const parsed = json ? JSON.parse(json) : [];
       return { data: mergeGeneratedTodosIntoLunaTodos(parsed, generated) as T, ts: Date.now() };
     }
+    if (!json) return null;
+    const parsed = JSON.parse(json);
     return { data: parsed as T, ts: Date.now() };
   } catch {
     return null;
@@ -612,20 +614,26 @@ function generatedTodoToLunaTodo(item: any) {
     course_name: item.course_name || "",
     content_type: item.content_type || "課題",
     content_name: item.title || "",
-    url: "",
+    url: `live-generated://${encodeURIComponent(item.id || "")}`,
     deadline: item.deadline || "",
     status: "未提出",
     feedback: item.note ? `Liveから追加: ${item.note}` : "Liveから追加",
+    source: "live",
+    local_id: item.id || "",
+    source_path: item.source_path || "",
+    source_excerpt: item.source_excerpt || "",
   };
 }
 
 function mergeGeneratedTodosIntoLunaTodos(base: any, generated: any[]): any[] {
-  const list = Array.isArray(base) ? base : [];
-  if (!generated.length) return list;
+  const list = Array.isArray(base)
+    ? base.filter((item) => item?.source !== "live" && !String(item?.url || "").startsWith("live-generated://") && !String(item?.feedback || "").startsWith("Liveから追加"))
+    : [];
   const seen = new Set(list.map(normalizedGeneratedTodoKey));
   const merged = [...list];
   for (const item of generated) {
     if (!item?.title) continue;
+    if (item.completed_at || item.archived_at) continue;
     const key = normalizedGeneratedTodoKey(item);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -641,13 +649,17 @@ function generatedAssignmentLabel(item: any): string {
 }
 
 function mergeGeneratedTodosIntoSchedule(base: any, generated: any[]): any {
-  if (!base?.ai_result || !generated.length) return base;
+  if (!base?.ai_result) return base;
   const cloned = JSON.parse(JSON.stringify(base));
   const mergeWeek = (items: any[]) => {
     if (!Array.isArray(items)) return;
     for (const cell of items) {
+      if (Array.isArray(cell.assignments)) {
+        cell.assignments = cell.assignments.filter((label: unknown) => !String(label).startsWith("Live追加 "));
+      }
       for (const todo of generated) {
         if (!todo?.title) continue;
+        if (todo.completed_at || todo.archived_at) continue;
         const matchesCourse = todo.course_name && cell.course_name === todo.course_name;
         const matchesSlot = todo.day > 0 && todo.period > 0 && cell.day === todo.day && cell.period === todo.period;
         if (!matchesCourse && !matchesSlot) continue;

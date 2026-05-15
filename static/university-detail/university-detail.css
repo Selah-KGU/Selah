@@ -351,6 +351,7 @@
 
   /* Report Submit */
   .report-submit-section { padding:0 24px 24px; }
+  .report-submit-unavailable { padding:12px 14px; border-radius:10px; background:var(--yellow-bg, rgba(255, 193, 7, .14)); color:var(--yellow, #a66a00); font-size:13px; line-height:1.5; font-weight:600; }
   .report-file-zone { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:28px 16px; border:2px dashed var(--border-strong); border-radius:12px; cursor:pointer; transition:border-color .15s,background .15s; }
   .report-file-zone:hover, .report-file-zone.dragover { border-color:var(--accent); background:var(--accent-bg); }
   .report-file-icon { margin-bottom:8px; opacity:0.5; }
@@ -630,4 +631,3 @@
     transition: opacity 0.15s;
   }
   .rich-text img:hover { opacity: 0.88; }
-

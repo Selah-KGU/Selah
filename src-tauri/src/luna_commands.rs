@@ -3,6 +3,7 @@ use crate::config;
 use crate::luna_client;
 use crate::luna_parser;
 use crate::LunaState;
+use chrono::TimeZone;
 use serde::Deserialize;
 use std::sync::atomic::AtomicU32;
 use std::sync::LazyLock;
@@ -1637,6 +1638,7 @@ pub async fn luna_check_report_type(
     state: State<'_, LunaState>,
     idnumber: String,
     report_id: String,
+    period: Option<String>,
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
     let url = format!(
@@ -1652,6 +1654,12 @@ pub async fn luna_check_report_type(
         || html.contains("name=\"uploadFile\"")
         || html.contains("type=\"file\"")
         || html.contains("dragAndDrop");
+
+    if !has_textarea && !has_file {
+        if let Some(message) = report_submission_unavailable_message(&html, period.as_deref()) {
+            return Err(message);
+        }
+    }
 
     let result = match (has_textarea, has_file) {
         (true, true) => "both",
@@ -1679,6 +1687,7 @@ pub async fn luna_submit_report(
     state: State<'_, LunaState>,
     idnumber: String,
     report_id: String,
+    period: Option<String>,
     file_name: String,
     file_base64: String,
 ) -> Result<String, String> {
@@ -1705,8 +1714,8 @@ pub async fn luna_submit_report(
     );
     let page_html = luna_get(&http, &submission_url).await?;
 
-    let cid = extract_input_value(&page_html, "_cid").ok_or("_cid トークンが見つかりません")?;
-    let csrf = extract_input_value(&page_html, "_csrf").ok_or("_csrf トークンが見つかりません")?;
+    let cid = extract_report_token(&page_html, "_cid", period.as_deref())?;
+    let csrf = extract_report_token(&page_html, "_csrf", period.as_deref())?;
 
     log::info!(
         "Report tokens: _cid={}..., _csrf={}...",
@@ -2064,6 +2073,7 @@ pub async fn luna_submit_report_text(
     state: State<'_, LunaState>,
     idnumber: String,
     report_id: String,
+    period: Option<String>,
     submission_text: String,
 ) -> Result<String, String> {
     let http = luna_http(&state).await?;
@@ -2086,8 +2096,8 @@ pub async fn luna_submit_report_text(
     );
     let page_html = luna_get(&http, &submission_url).await?;
 
-    let cid = extract_input_value(&page_html, "_cid").ok_or("_cid トークンが見つかりません")?;
-    let csrf = extract_input_value(&page_html, "_csrf").ok_or("_csrf トークンが見つかりません")?;
+    let cid = extract_report_token(&page_html, "_cid", period.as_deref())?;
+    let csrf = extract_report_token(&page_html, "_csrf", period.as_deref())?;
 
     log::info!(
         "Text report tokens: _cid={}..., _csrf={}...",
@@ -2661,6 +2671,124 @@ fn extract_url_param(url: &str, key: &str) -> Option<String> {
     None
 }
 
+const REPORT_SUBMISSION_NOT_OPEN_MESSAGE: &str =
+    "提出期間外のため、現在は提出できません。提出期間を確認してから再度お試しください。";
+
+fn normalize_html_text(html: &str) -> String {
+    let doc = scraper::Html::parse_document(html);
+    doc.root_element()
+        .text()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_luna_report_datetime(value: &str) -> Option<chrono::DateTime<chrono::Local>> {
+    static REPORT_DATETIME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^\s*(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s+(\d{1,2}):(\d{2})\s*$")
+            .expect("valid report datetime regex")
+    });
+    let captures = REPORT_DATETIME_RE.captures(value)?;
+    let year = captures.get(1)?.as_str().parse::<i32>().ok()?;
+    let month = captures.get(2)?.as_str().parse::<u32>().ok()?;
+    let day = captures.get(3)?.as_str().parse::<u32>().ok()?;
+    let hour = captures.get(4)?.as_str().parse::<u32>().ok()?;
+    let minute = captures.get(5)?.as_str().parse::<u32>().ok()?;
+    if hour > 24 || minute > 59 || (hour == 24 && minute != 0) {
+        return None;
+    }
+
+    let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+    let (date, hour) = if hour == 24 {
+        (date.succ_opt()?, 0)
+    } else {
+        (date, hour)
+    };
+    let naive = date.and_hms_opt(hour, minute, 0)?;
+    chrono::Local.from_local_datetime(&naive).single()
+}
+
+fn parse_luna_report_period(
+    period: &str,
+) -> Option<(
+    chrono::DateTime<chrono::Local>,
+    chrono::DateTime<chrono::Local>,
+    String,
+    String,
+)> {
+    let parts: Vec<_> = period
+        .split(|c| c == '~' || c == '～')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let start = parse_luna_report_datetime(parts[0])?;
+    let end = parse_luna_report_datetime(parts[1])?;
+    Some((start, end, parts[0].to_string(), parts[1].to_string()))
+}
+
+fn report_period_unavailable_message(period: Option<&str>) -> Option<String> {
+    let (start, end, raw_start, raw_end) = parse_luna_report_period(period?)?;
+    let now = chrono::Local::now();
+    if now < start {
+        Some(format!(
+            "提出開始前です。提出期間: {} ～ {}",
+            raw_start, raw_end
+        ))
+    } else if now > end {
+        Some(format!(
+            "提出期間が終了しています。提出期間: {} ～ {}",
+            raw_start, raw_end
+        ))
+    } else {
+        None
+    }
+}
+
+fn extract_report_period_from_html(html: &str) -> Option<String> {
+    static REPORT_PERIOD_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2})\s*[~～]\s*(\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2})",
+        )
+        .expect("valid report period regex")
+    });
+    let text = normalize_html_text(html);
+    let captures = REPORT_PERIOD_RE.captures(&text)?;
+    let start = captures.get(1)?.as_str();
+    let end = captures.get(2)?.as_str();
+    Some(format!("{} ～ {}", start, end))
+}
+
+fn report_submission_unavailable_message(html: &str, period: Option<&str>) -> Option<String> {
+    if let Some(message) = report_period_unavailable_message(period).or_else(|| {
+        extract_report_period_from_html(html)
+            .and_then(|p| report_period_unavailable_message(Some(&p)))
+    }) {
+        return Some(message);
+    }
+
+    let text = normalize_html_text(html);
+    if text.contains("提出期間外のため、提出できません")
+        || text.contains("提出期間外のため、提出できません。")
+        || text.contains("提出期間外")
+            && (text.contains("提出できません") || text.contains("提出不可"))
+    {
+        return Some(REPORT_SUBMISSION_NOT_OPEN_MESSAGE.to_string());
+    }
+    None
+}
+
+fn extract_report_token(html: &str, name: &str, period: Option<&str>) -> Result<String, String> {
+    extract_input_value(html, name).ok_or_else(|| {
+        report_submission_unavailable_message(html, period)
+            .unwrap_or_else(|| format!("{} トークンが見つかりません", name))
+    })
+}
+
 /// Extract a hidden input value from HTML by name
 fn extract_input_value(html: &str, name: &str) -> Option<String> {
     // Use scraper for reliable extraction
@@ -2776,4 +2904,46 @@ fn field_value<'a>(fields: &'a [(String, String)], key: &str) -> Option<&'a str>
     fields
         .iter()
         .find_map(|(k, v)| if k == key { Some(v.as_str()) } else { None })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_luna_report_period_with_24_hour_deadline() {
+        let (_start, end, raw_start, raw_end) =
+            parse_luna_report_period("2026/04/22 17:00 ～ 2026/04/29 24:00").unwrap();
+
+        assert_eq!(raw_start, "2026/04/22 17:00");
+        assert_eq!(raw_end, "2026/04/29 24:00");
+        assert_eq!(end.format("%Y/%m/%d %H:%M").to_string(), "2026/04/30 00:00");
+    }
+
+    #[test]
+    fn extracts_luna_report_period_from_html_text() {
+        let html = r#"
+            <div class="contents-detail contents-vertical">
+              <div class="contents-header contents-header-txt"><span>提出期間</span></div>
+              <div class="contents-input-area">
+                <span>2999/04/22 17:00</span><span>～</span><span>2999/04/29 24:00</span>
+              </div>
+            </div>
+        "#;
+
+        assert_eq!(
+            extract_report_period_from_html(html).as_deref(),
+            Some("2999/04/22 17:00 ～ 2999/04/29 24:00")
+        );
+    }
+
+    #[test]
+    fn reports_future_luna_period_as_before_start() {
+        let message =
+            report_period_unavailable_message(Some("2999/04/22 17:00 ～ 2999/04/29 24:00"))
+                .unwrap();
+
+        assert!(message.contains("提出開始前です"));
+        assert!(message.contains("2999/04/22 17:00 ～ 2999/04/29 24:00"));
+    }
 }

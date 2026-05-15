@@ -958,6 +958,7 @@ export function isLunaTestTodo(item: Pick<LunaTodoItem, "content_type" | "url">)
 export async function openLunaTodoItem(item: LunaTodoItem): Promise<void> {
   const path = item.url || "";
   if (!path) return;
+  if (item.source === "live" || path.startsWith("live-generated://")) return;
   const title = item.content_name || item.content_type || "TODO";
   if (_isDemo()) return;
   if (isLunaTestTodo(item)) {
@@ -1584,11 +1585,18 @@ export interface LiveTranscriptLine {
   at: string;
 }
 
+export interface LiveTermExplanation {
+  term: string;
+  explanation: string;
+  source_excerpt?: string;
+}
+
 export interface LiveSummaryChunk {
   title: string;
   range_label: string;
   body: string;
   line_count: number;
+  terms?: LiveTermExplanation[];
 }
 
 export interface LiveSessionSnapshot {
@@ -1623,6 +1631,8 @@ export interface LiveGeneratedTodo extends LiveTodoSuggestion {
   id: string;
   created_at: string;
   source_path: string;
+  completed_at?: string;
+  archived_at?: string;
 }
 
 const DEMO_LIVE_KEY = "selah-demo-live-session";
@@ -1801,26 +1811,43 @@ function normalizeGeneratedTodoKey(item: Pick<LiveTodoSuggestion, "course_name" 
     .join("|");
 }
 
+function isActiveGeneratedTodo(item: LiveGeneratedTodo): boolean {
+  return !item.completed_at && !item.archived_at;
+}
+
+function isGeneratedLunaTodoItem(item: LunaTodoItem): boolean {
+  return (
+    item.source === "live" ||
+    item.url?.startsWith("live-generated://") ||
+    item.feedback?.startsWith("Liveから追加")
+  );
+}
+
 function liveGeneratedTodoToLunaItem(item: LiveGeneratedTodo): LunaTodoItem {
   return {
     course_name: item.course_name,
     content_type: item.content_type || "課題",
     content_name: item.title,
-    url: "",
+    url: `live-generated://${encodeURIComponent(item.id)}`,
     deadline: item.deadline || "",
     status: "未提出",
     feedback: item.note ? `Liveから追加: ${item.note}` : "Liveから追加",
+    source: "live",
+    local_id: item.id,
+    source_path: item.source_path,
+    source_excerpt: item.source_excerpt,
   };
 }
 
 function mergeGeneratedTodosIntoLunaTodos(base: LunaTodoItem[], generated: LiveGeneratedTodo[]): LunaTodoItem[] {
-  const seen = new Set(base.map((item) => normalizeGeneratedTodoKey({
+  const baseWithoutGenerated = base.filter((item) => !isGeneratedLunaTodoItem(item));
+  const seen = new Set(baseWithoutGenerated.map((item) => normalizeGeneratedTodoKey({
     course_name: item.course_name,
     title: item.content_name,
     deadline: item.deadline,
   })));
-  const merged = [...base];
-  for (const item of generated) {
+  const merged = [...baseWithoutGenerated];
+  for (const item of generated.filter(isActiveGeneratedTodo)) {
     const key = normalizeGeneratedTodoKey({
       course_name: item.course_name,
       title: item.title,
@@ -1840,11 +1867,15 @@ function assignmentLabelFromGeneratedTodo(item: LiveGeneratedTodo): string {
 }
 
 function mergeGeneratedTodosIntoSchedule(base: ScheduleResponse | null, generated: LiveGeneratedTodo[]): ScheduleResponse | null {
-  if (!base?.ai_result || generated.length === 0) return base;
+  if (!base?.ai_result) return base;
   const cloned: ScheduleResponse = JSON.parse(JSON.stringify(base));
+  const activeGenerated = generated.filter(isActiveGeneratedTodo);
   const mergeWeek = (items: any[]) => {
     for (const cell of items) {
-      for (const todo of generated) {
+      if (Array.isArray(cell.assignments)) {
+        cell.assignments = cell.assignments.filter((label: unknown) => !String(label).startsWith("Live追加 "));
+      }
+      for (const todo of activeGenerated) {
         const matchesCourse = todo.course_name && cell.course_name === todo.course_name;
         const matchesSlot = todo.day > 0 && todo.period > 0 && cell.day === todo.day && cell.period === todo.period;
         if (!matchesCourse && !matchesSlot) continue;
@@ -1857,6 +1888,14 @@ function mergeGeneratedTodosIntoSchedule(base: ScheduleResponse | null, generate
   mergeWeek(cloned.ai_result.current_week);
   mergeWeek(cloned.ai_result.next_week);
   return cloned;
+}
+
+function refreshLiveGeneratedTodoCaches(next: LiveGeneratedTodo[]) {
+  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo") ?? [];
+  replaceCacheEntry("luna_todo", mergeGeneratedTodosIntoLunaTodos(cachedTodos, next));
+  const cachedSchedule = getCached<ScheduleResponse>("schedule_data");
+  const mergedSchedule = mergeGeneratedTodosIntoSchedule(cachedSchedule, next);
+  if (mergedSchedule) replaceCacheEntry("schedule_data", mergedSchedule);
 }
 
 export async function getLiveGeneratedTodos(): Promise<LiveGeneratedTodo[]> {
@@ -1903,13 +1942,32 @@ export async function saveLiveGeneratedTodos(
   }
   const next = [...existing, ...additions];
   await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
-
-  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo") ?? [];
-  replaceCacheEntry("luna_todo", mergeGeneratedTodosIntoLunaTodos(cachedTodos, next));
-  const cachedSchedule = getCached<ScheduleResponse>("schedule_data");
-  const mergedSchedule = mergeGeneratedTodosIntoSchedule(cachedSchedule, next);
-  if (mergedSchedule) replaceCacheEntry("schedule_data", mergedSchedule);
+  refreshLiveGeneratedTodoCaches(next);
   return additions;
+}
+
+export async function completeLiveGeneratedTodo(id: string): Promise<void> {
+  if (_isDemo()) return;
+  const target = id.trim();
+  if (!target) return;
+  const todos = await getLiveGeneratedTodos();
+  const completedAt = new Date().toISOString();
+  const next = todos.map((item) => (
+    item.id === target
+      ? { ...item, completed_at: item.completed_at || completedAt, archived_at: undefined }
+      : item
+  ));
+  await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
+  refreshLiveGeneratedTodoCaches(next);
+}
+
+export async function deleteLiveGeneratedTodo(id: string): Promise<void> {
+  if (_isDemo()) return;
+  const target = id.trim();
+  if (!target) return;
+  const next = (await getLiveGeneratedTodos()).filter((item) => item.id !== target);
+  await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
+  refreshLiveGeneratedTodoCaches(next);
 }
 
 export async function openSettingsWindow(panel?: string): Promise<void> {

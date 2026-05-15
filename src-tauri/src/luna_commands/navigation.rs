@@ -216,6 +216,9 @@ pub async fn university_open_detail_window(
             if let Some(info) = &info_id {
                 parts.push_str(&format!("&reportId={}", urlencoding::encode(info)));
             }
+            if let Some(p) = &period {
+                parts.push_str(&format!("&period={}", urlencoding::encode(p)));
+            }
             if let Some(cn) = &course_name {
                 parts.push_str(&format!("&courseName={}", urlencoding::encode(cn)));
             }
