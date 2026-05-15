@@ -327,6 +327,29 @@ async fn luna_post(
     .await
 }
 
+/// Luna POST with a page Referer. Some Luna form endpoints reject otherwise-valid
+/// CSRF submissions when the request does not come from the form page.
+async fn luna_post_with_referer(
+    http: &reqwest::Client,
+    path: &str,
+    referer_path: &str,
+    params: &[(String, String)],
+) -> Result<String, String> {
+    let url = format!("{}{}", config::LUNA_BASE, path);
+    let referer = format!("{}{}", config::LUNA_BASE, referer_path);
+    let headers = [("Referer", referer.as_str())];
+    client::post_form_with_redirect(
+        http,
+        &url,
+        config::LUNA_BASE,
+        luna_client::LUNA_SESSION_EXPIRED_MSG,
+        luna_client::is_luna_session_expired,
+        params.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        &headers,
+    )
+    .await
+}
+
 /// Luna multipart POST: submit a multipart form without holding the lock.
 async fn luna_post_multipart(
     http: &reqwest::Client,
@@ -1278,6 +1301,8 @@ pub async fn luna_submit_survey(
     state: State<'_, LunaState>,
     form_fields: Vec<(String, String)>,
     answers: std::collections::HashMap<String, serde_json::Value>,
+    submit_path: Option<String>,
+    referer_path: Option<String>,
 ) -> Result<(), String> {
     // Build the full POST params: hidden fields + user answers
     let mut params: Vec<(String, String)> = Vec::new();
@@ -1311,13 +1336,45 @@ pub async fn luna_submit_survey(
     }
 
     let http = luna_http(&state).await?;
-    let response = luna_post(&http, "/lms/course/surveys/take", &params).await?;
+    let submit_path = normalize_luna_relative_path(
+        submit_path
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("/lms/course/surveys/take"),
+    )?;
+    let referer_path = normalize_luna_relative_path(
+        referer_path
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&submit_path),
+    )?;
+    log::debug!(
+        "luna_submit_survey: posting to {} with referer {} ({} fields)",
+        client::safe_truncate(&submit_path, 120),
+        client::safe_truncate(&referer_path, 120),
+        params.len()
+    );
+    let response = luna_post_with_referer(&http, &submit_path, &referer_path, &params).await?;
 
     if let Some(error) = detect_survey_submit_error(&response) {
         return Err(error);
     }
 
     Ok(())
+}
+
+fn normalize_luna_relative_path(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let path = if let Some(rest) = trimmed.strip_prefix(config::LUNA_BASE) {
+        rest
+    } else {
+        trimmed
+    };
+    if path.contains("://") || path.contains('\n') || path.contains('\r') || !path.starts_with('/')
+    {
+        return Err("許可されていないパスです".into());
+    }
+    Ok(path.to_string())
 }
 
 fn detect_survey_submit_error(response: &str) -> Option<String> {
@@ -3072,6 +3129,20 @@ mod tests {
         assert_eq!(
             survey_answer_field_name("answer[3].answerItem[0].answer", 3, 1),
             "answer[3].answerItem[1].answer"
+        );
+    }
+
+    #[test]
+    fn normalizes_luna_relative_submit_paths() {
+        assert_eq!(
+            normalize_luna_relative_path(
+                "https://luna.kwansei.ac.jp/lms/course/surveys/take?_cid=abc"
+            )
+            .unwrap(),
+            "/lms/course/surveys/take?_cid=abc"
+        );
+        assert!(
+            normalize_luna_relative_path("https://example.com/lms/course/surveys/take").is_err()
         );
     }
 }

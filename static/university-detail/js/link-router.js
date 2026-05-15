@@ -183,8 +183,10 @@ function looksLikeRawLinkLabel(text, href) {
 async function hydrateInternalLinkLabels(root) {
   var scope = root || document;
   var anchors = Array.from(scope.querySelectorAll('a[href]'));
+  var touched = 0;
   for (var i = 0; i < anchors.length; i++) {
     var a = anchors[i];
+    if (!document.documentElement.contains(a)) continue;
     var href = a.getAttribute('href') || '';
     if (!href || !looksLikeRawLinkLabel(a.textContent, href)) continue;
     try {
@@ -196,6 +198,8 @@ async function hydrateInternalLinkLabels(root) {
         a.setAttribute('title', full ? full.toString() : href);
       }
       a.textContent = label;
+      touched++;
+      if (touched % 4 === 0) await delay(0);
     } catch (e) {}
   }
 }

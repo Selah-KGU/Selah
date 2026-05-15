@@ -403,6 +403,7 @@
   var tocVisible = false;
   var tocHeadings = []; // [{ id, level, text, el }]
   var activeTocId = null;
+  var lastPayloadKey = '';
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -579,6 +580,18 @@
     buildToc();
   }
 
+  function renderAfterFirstPaint(markdown, done) {
+    var run = function () {
+      render(markdown);
+      if (done) done();
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function () { requestAnimationFrame(run); });
+    } else {
+      setTimeout(run, 0);
+    }
+  }
+
   function showError(msg) {
     $('doc').innerHTML = '<div class="error">' + escapeHtml(msg) + '</div>';
     tocHeadings = [];
@@ -677,6 +690,17 @@
 
   function applyPayload(payload) {
     if (!payload) return;
+    var payloadMarkdown = String(payload.markdown || '');
+    var payloadKey = [
+      payload.path || '',
+      payload.filename || '',
+      payload.error || '',
+      payloadMarkdown.length,
+      payloadMarkdown.slice(0, 96),
+      payloadMarkdown.slice(-96)
+    ].join('\x1f');
+    if (payloadKey === lastPayloadKey) return;
+    lastPayloadKey = payloadKey;
     currentPath = payload.path || currentPath;
     setTitleText(payload.filename || '');
     if (payload.error) {
@@ -686,19 +710,20 @@
       $('shareBtn').disabled = true;
       return;
     }
-    savedMarkdown = payload.markdown || '';
-    render(savedMarkdown);
+    savedMarkdown = payloadMarkdown;
     $('shareBtn').disabled = !currentPath;
-    if (editing) {
-      toast('ファイルが更新されました');
-    } else {
-      $('editToggleBtn').disabled = false;
-    }
-    // Restore previously-chosen TOC visibility once headings are available.
-    try {
-      var pref = localStorage.getItem(TOC_KEY);
-      if (pref === '1' && tocHeadings.length > 0 && !tocVisible) setTocVisible(true);
-    } catch (e) {}
+    renderAfterFirstPaint(savedMarkdown, function () {
+      if (editing) {
+        toast('ファイルが更新されました');
+      } else {
+        $('editToggleBtn').disabled = false;
+      }
+      // Restore previously-chosen TOC visibility once headings are available.
+      try {
+        var pref = localStorage.getItem(TOC_KEY);
+        if (pref === '1' && tocHeadings.length > 0 && !tocVisible) setTocVisible(true);
+      } catch (e) {}
+    });
   }
 
   // ── Wiring ──

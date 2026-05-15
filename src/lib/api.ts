@@ -960,8 +960,21 @@ export async function openLunaTodoItem(item: LunaTodoItem): Promise<void> {
   if (item.source === "detail" || path.startsWith("detail-generated://")) {
     path = item.source_path || "";
   }
+  if (item.source === "live" || path.startsWith("live-generated://")) {
+    const livePath = item.source_path || "";
+    if (!livePath) return;
+    if (_isDemo()) return;
+    await invoke<void>("open_markdown_file_window", { path: livePath });
+    return;
+  }
+  if (path.startsWith("mail://")) {
+    const mailId = decodeURIComponent(path.slice("mail://".length));
+    if (!mailId) return;
+    activeTab.set("mail");
+    requestedMailMessageId.set(mailId);
+    return;
+  }
   if (!path) return;
-  if (item.source === "live" || path.startsWith("live-generated://")) return;
   const title = item.content_name || item.content_type || "TODO";
   if (_isDemo()) return;
   if (isLunaTestTodo(item)) {
@@ -1009,6 +1022,7 @@ export interface MailMessage {
   id: string;
   subject: string | null;
   bodyPreview: string | null;
+  body?: { contentType: string | null; content: string | null } | null;
   from: { emailAddress: { name: string | null; address: string | null } } | null;
   receivedDateTime: string | null;
   isRead: boolean | null;
@@ -1176,10 +1190,27 @@ const BACKEND_CACHE_DB_KEY: Record<string, string> = {
 async function loadBackendManagedCache(key: string): Promise<any | null> {
   if (_isDemo()) return null;
   if (key === "schedule_data") {
-    return getScheduleSnapshot();
+    const base = await getScheduleSnapshot();
+    const generated = await getLiveGeneratedTodos();
+    return mergeGeneratedTodosIntoSchedule(base, generated) ?? base;
   }
   const dbKey = BACKEND_CACHE_DB_KEY[key] ?? key;
   const json = await getDataCache(dbKey);
+  if (key === "luna_todo") {
+    const generated = await getLiveGeneratedTodos();
+    const detail = await getDetailGeneratedTodos();
+    if (!json && generated.length === 0 && detail.length === 0) return null;
+    let parsed: LunaTodoItem[] = [];
+    if (json) {
+      try {
+        parsed = JSON.parse(json);
+      } catch (e) {
+        console.warn(`[Selah] backend cache parse failed for "${key}" from "${dbKey}":`, e);
+      }
+    }
+    const withLive = mergeGeneratedTodosIntoLunaTodos(Array.isArray(parsed) ? parsed : [], generated);
+    return mergeDetailTodosIntoLunaTodos(withLive, detail);
+  }
   if (!json) return null;
   try {
     return JSON.parse(json);
@@ -1903,17 +1934,27 @@ function mergeGeneratedTodosIntoSchedule(base: ScheduleResponse | null, generate
       }
     }
   };
-  mergeWeek(cloned.ai_result.current_week);
-  mergeWeek(cloned.ai_result.next_week);
+  const aiResult = cloned.ai_result;
+  if (!aiResult) return cloned;
+  mergeWeek(aiResult.current_week);
+  mergeWeek(aiResult.next_week);
   return cloned;
 }
 
-function refreshLiveGeneratedTodoCaches(next: LiveGeneratedTodo[]) {
-  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo") ?? [];
-  replaceCacheEntry("luna_todo", mergeGeneratedTodosIntoLunaTodos(cachedTodos, next));
+async function refreshLiveGeneratedTodoCaches(next: LiveGeneratedTodo[]) {
+  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo");
+  if (cachedTodos) {
+    replaceCacheEntry("luna_todo", mergeGeneratedTodosIntoLunaTodos(cachedTodos, next));
+  } else {
+    // No memory cache: do a full load+merge so we don't blow away Luna/detail TODOs sitting on disk.
+    const loaded = await loadBackendManagedCache("luna_todo");
+    if (loaded) replaceCacheEntry("luna_todo", loaded);
+  }
   const cachedSchedule = getCached<ScheduleResponse>("schedule_data");
-  const mergedSchedule = mergeGeneratedTodosIntoSchedule(cachedSchedule, next);
-  if (mergedSchedule) replaceCacheEntry("schedule_data", mergedSchedule);
+  if (cachedSchedule) {
+    const mergedSchedule = mergeGeneratedTodosIntoSchedule(cachedSchedule, next);
+    if (mergedSchedule) replaceCacheEntry("schedule_data", mergedSchedule);
+  }
 }
 
 export async function getLiveGeneratedTodos(): Promise<LiveGeneratedTodo[]> {
@@ -1960,7 +2001,7 @@ export async function saveLiveGeneratedTodos(
   }
   const next = [...existing, ...additions];
   await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
-  refreshLiveGeneratedTodoCaches(next);
+  await refreshLiveGeneratedTodoCaches(next);
   return additions;
 }
 
@@ -1976,7 +2017,7 @@ export async function completeLiveGeneratedTodo(id: string): Promise<void> {
       : item
   ));
   await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
-  refreshLiveGeneratedTodoCaches(next);
+  await refreshLiveGeneratedTodoCaches(next);
 }
 
 export async function deleteLiveGeneratedTodo(id: string): Promise<void> {
@@ -1985,7 +2026,7 @@ export async function deleteLiveGeneratedTodo(id: string): Promise<void> {
   if (!target) return;
   const next = (await getLiveGeneratedTodos()).filter((item) => item.id !== target);
   await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
-  refreshLiveGeneratedTodoCaches(next);
+  await refreshLiveGeneratedTodoCaches(next);
 }
 
 // ── 詳細TODO (AI extracted from Luna 消息/課題/通知) ────────────────────────
@@ -2021,7 +2062,7 @@ function detailGeneratedTodoToLunaItem(item: DetailGeneratedTodo): LunaTodoItem 
     url: `detail-generated://${encodeURIComponent(item.id)}`,
     deadline: item.deadline || "",
     status: "未提出",
-    feedback: item.note ? `詳細から追加: ${item.note}` : "詳細から追加",
+    feedback: item.note ? `マグネット: ${item.note}` : "マグネットで追加",
     source: "detail",
     local_id: item.id,
     source_path: item.source_url,
@@ -2050,9 +2091,14 @@ function mergeDetailTodosIntoLunaTodos(base: LunaTodoItem[], generated: DetailGe
   return merged;
 }
 
-function refreshDetailGeneratedTodoCaches(next: DetailGeneratedTodo[]) {
-  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo") ?? [];
-  replaceCacheEntry("luna_todo", mergeDetailTodosIntoLunaTodos(cachedTodos, next));
+async function refreshDetailGeneratedTodoCaches(next: DetailGeneratedTodo[]) {
+  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo");
+  if (cachedTodos) {
+    replaceCacheEntry("luna_todo", mergeDetailTodosIntoLunaTodos(cachedTodos, next));
+  } else {
+    const loaded = await loadBackendManagedCache("luna_todo");
+    if (loaded) replaceCacheEntry("luna_todo", loaded);
+  }
 }
 
 export async function getDetailGeneratedTodos(): Promise<DetailGeneratedTodo[]> {
@@ -2096,7 +2142,7 @@ export async function saveDetailGeneratedTodos(
   }
   const next = [...existing, ...additions];
   await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
-  refreshDetailGeneratedTodoCaches(next);
+  await refreshDetailGeneratedTodoCaches(next);
   return additions;
 }
 
@@ -2112,7 +2158,7 @@ export async function completeDetailGeneratedTodo(id: string): Promise<void> {
       : item
   ));
   await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
-  refreshDetailGeneratedTodoCaches(next);
+  await refreshDetailGeneratedTodoCaches(next);
 }
 
 export async function deleteDetailGeneratedTodo(id: string): Promise<void> {
@@ -2121,7 +2167,7 @@ export async function deleteDetailGeneratedTodo(id: string): Promise<void> {
   if (!target) return;
   const next = (await getDetailGeneratedTodos()).filter((item) => item.id !== target);
   await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
-  refreshDetailGeneratedTodoCaches(next);
+  await refreshDetailGeneratedTodoCaches(next);
 }
 
 export async function openSettingsWindow(panel?: string): Promise<void> {

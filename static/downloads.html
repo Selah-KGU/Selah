@@ -736,6 +736,11 @@
   var currentFilteredRecords = [];
   var bulkDeleteArmed = false;
   var previewCache = new Map();
+  var previewObserver = null;
+  var previewQueue = [];
+  var previewActive = 0;
+  var previewQueuedPaths = new Set();
+  var MAX_PREVIEW_JOBS = 4;
 
   // ── Persistence ──
   function loadPrefs() {
@@ -849,7 +854,7 @@
   async function loadDownloads() {
     if (!invoke) return;
     try {
-      allRecords = await invoke('scan_download_dir');
+      allRecords = await invoke('list_downloads');
     } catch(e) {
       console.error('Failed to load downloads:', e);
       allRecords = [];
@@ -1304,8 +1309,8 @@
   }
 
   function applyPreview(el, preview) {
-    if (!preview) return;
     el.classList.remove('pending');
+    if (!preview) return;
     var dataUrl = preview.data_url || preview.dataUrl || '';
     if (preview.kind === 'image' && dataUrl) {
       el.innerHTML = '<img src="' + escapeHtml(dataUrl) + '" alt="">';
@@ -1315,22 +1320,73 @@
   }
 
   function loadVisiblePreviews() {
+    if (previewObserver) {
+      previewObserver.disconnect();
+      previewObserver = null;
+    }
+    previewQueue = [];
+    previewQueuedPaths.clear();
     if (viewMode !== 'icons' || !invoke) return;
-    document.querySelectorAll('[data-preview-path]').forEach(function(el) {
-      var path = el.getAttribute('data-preview-path');
-      if (!path) return;
+
+    var previewEls = Array.prototype.slice.call(document.querySelectorAll('[data-preview-path]'));
+    if ('IntersectionObserver' in window) {
+      previewObserver = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+          if (!entry.isIntersecting) return;
+          previewObserver.unobserve(entry.target);
+          enqueuePreview(entry.target);
+        });
+      }, { root: document.getElementById('fileList'), rootMargin: '160px' });
+      previewEls.forEach(function(el) { previewObserver.observe(el); });
+    } else {
+      previewEls.slice(0, 24).forEach(enqueuePreview);
+    }
+  }
+
+  function enqueuePreview(el) {
+    if (!el || !document.documentElement.contains(el)) return;
+    var path = el.getAttribute('data-preview-path');
+    if (!path) return;
+    if (previewCache.has(path)) {
+      applyPreview(el, previewCache.get(path));
+      return;
+    }
+    if (previewQueuedPaths.has(path)) return;
+    previewQueuedPaths.add(path);
+    previewQueue.push({ el: el, path: path });
+    pumpPreviewQueue();
+  }
+
+  function pumpPreviewQueue() {
+    if (!invoke) return;
+    while (previewActive < MAX_PREVIEW_JOBS && previewQueue.length) {
+      var job = previewQueue.shift();
+      previewActive++;
+      fetchPreview(job).finally(function() {
+        previewActive--;
+        pumpPreviewQueue();
+      });
+    }
+  }
+
+  async function fetchPreview(job) {
+    var el = job.el;
+    var path = job.path;
+    try {
+      if (!document.documentElement.contains(el)) return;
       if (previewCache.has(path)) {
         applyPreview(el, previewCache.get(path));
         return;
       }
-      invoke('get_download_preview', { path: path }).then(function(preview) {
-        previewCache.set(path, preview || null);
-        applyPreview(el, preview);
-      }).catch(function() {
-        previewCache.set(path, null);
-        el.classList.remove('pending');
-      });
-    });
+      var preview = await invoke('get_download_preview', { path: path });
+      previewCache.set(path, preview || null);
+      if (document.documentElement.contains(el)) applyPreview(el, preview);
+    } catch(_) {
+      previewCache.set(path, null);
+      if (document.documentElement.contains(el)) el.classList.remove('pending');
+    } finally {
+      previewQueuedPaths.delete(path);
+    }
   }
 
   function recordById(id) {
@@ -1474,7 +1530,7 @@
     btn.textContent = '削除中…';
     try {
       var result = await invoke('delete_downloaded_files', { paths: paths });
-      allRecords = await invoke('scan_download_dir');
+      allRecords = await invoke('list_downloads');
       selectedIds.clear();
       rebuild();
       var deleted = result.deleted_count ?? result.deletedCount ?? 0;
@@ -1656,7 +1712,7 @@
     btn.textContent = '削除中…';
     try {
       var result = await invoke('cleanup_duplicate_downloads', { paths: paths });
-      allRecords = await invoke('scan_download_dir');
+      allRecords = await invoke('list_downloads');
       rebuild();
       duplicateGroups = await invoke('scan_duplicate_downloads');
       renderDuplicateModal(false);

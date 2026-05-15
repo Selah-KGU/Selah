@@ -41,9 +41,7 @@ function detailRendererScriptsForMode(mode) {
 
 async function ensureDetailRenderer(mode) {
   var scripts = detailRendererScriptsForMode(mode);
-  for (var i = 0; i < scripts.length; i++) {
-    await loadDetailScript(scripts[i]);
-  }
+  await Promise.all(scripts.map(loadDetailScript));
 }
 
 function renderLoadError(err) {

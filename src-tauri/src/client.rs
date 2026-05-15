@@ -274,6 +274,9 @@ pub(crate) async fn send_and_follow_redirect(
         }
     }
     if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(500).collect();
+        log::debug!("HTTP {} body (first 500 chars): {}", status, preview);
         return Err(format!("HTTP {}", status));
     }
     let text = resp

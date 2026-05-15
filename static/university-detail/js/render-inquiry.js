@@ -83,6 +83,7 @@ function renderInquiryDetail(data) {
   c.innerHTML = h;
 
   // Wire attachment downloads.
+  var downloadChecks = [];
   c.querySelectorAll('.post-attachment').forEach(function(btn) {
     var pidx = parseInt(btn.dataset.postIdx);
     var aidx = parseInt(btn.dataset.attIdx);
@@ -91,8 +92,9 @@ function renderInquiryDetail(data) {
       if (e.target && e.target.classList && e.target.classList.contains('att-redownload')) return;
       downloadAttachment(att, btn);
     });
-    checkAndMarkDownloaded(att, btn);
+    downloadChecks.push({ att: att, btn: btn });
   });
+  checkAndMarkDownloadedBatch(downloadChecks);
 
   if (canReply) wireInquiryReplyForm(c, data);
 }

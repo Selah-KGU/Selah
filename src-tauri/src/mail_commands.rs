@@ -297,10 +297,17 @@ async fn fetch_inbox_impl(
 
     // Phase 2: lock-free network I/O
     let url = format!(
-        "{}/me/mailFolders/inbox/messages?$top={}&$skip={}&$orderby=receivedDateTime desc&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments",
+        "{}/me/mailFolders/inbox/messages?$top={}&$skip={}&$orderby=receivedDateTime desc&$select=id,subject,bodyPreview,body,from,receivedDateTime,isRead,hasAttachments",
         config::GRAPH_BASE, top_val, skip_val,
     );
-    let body = match mail::graph_get_lockfree(&http, &url, &token).await {
+    let body = match mail::graph_get_lockfree_with_headers(
+        &http,
+        &url,
+        &token,
+        &[("Prefer", "outlook.body-content-type=\"text\"")],
+    )
+    .await
+    {
         Ok(body) => body,
         Err((_, true)) => {
             let mut mail = state.client.lock().await;

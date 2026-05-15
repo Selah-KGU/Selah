@@ -442,6 +442,7 @@ pub fn run() {
             commands::cleanup_duplicate_downloads,
             commands::delete_downloaded_files,
             commands::check_file_downloaded,
+            commands::check_files_downloaded,
             commands::open_downloaded_file,
             commands::open_downloaded_file_external,
             commands::share_downloaded_file_native,

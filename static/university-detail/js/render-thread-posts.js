@@ -163,6 +163,7 @@ function renderThreadPosts(container, threadData, threadUrl) {
   }
   h += '</div>';
   container.innerHTML = h;
+  var downloadChecks = [];
   container.querySelectorAll('.post-attachment').forEach(function(btn) {
     var pidx = parseInt(btn.dataset.postIdx);
     var aidx = parseInt(btn.dataset.attIdx);
@@ -171,8 +172,9 @@ function renderThreadPosts(container, threadData, threadUrl) {
       if (e.target && e.target.classList && e.target.classList.contains('att-redownload')) return;
       downloadAttachment(att, btn);
     });
-    checkAndMarkDownloaded(att, btn);
+    downloadChecks.push({ att: att, btn: btn });
   });
+  checkAndMarkDownloadedBatch(downloadChecks);
   if (threadUrl) {
     container.querySelectorAll('.post-reply-btn').forEach(function(btn) {
       btn.addEventListener('click', function(e) {

@@ -33,6 +33,31 @@ async function checkAndMarkDownloaded(att, btn) {
     }
   } catch(e) { /* ignore */ }
 }
+async function checkAndMarkDownloadedBatch(items) {
+  var invoke = window.__TAURI__?.core?.invoke; if (!invoke || !items || !items.length) return;
+  var names = [];
+  var seen = {};
+  items.forEach(function(item) {
+    var name = item && item.att ? (item.att.name || item.att.file_name || '') : '';
+    if (!name || seen[name]) return;
+    seen[name] = true;
+    names.push(name);
+  });
+  if (!names.length) return;
+  try {
+    var found = await invoke('check_files_downloaded', { filenames: names, courseName: _currentCourseName || null });
+    if (!found) return;
+    items.forEach(function(item) {
+      var name = item && item.att ? (item.att.name || item.att.file_name || '') : '';
+      var rec = found[name] || found[String(name).toLowerCase()];
+      if (rec && rec.file_exists) markAsDownloaded(item.btn, name, rec.path, item.att);
+    });
+  } catch(e) {
+    items.forEach(function(item) {
+      checkAndMarkDownloaded(item.att, item.btn);
+    });
+  }
+}
 async function downloadAttachment(att, btn) {
   var invoke = window.__TAURI__?.core?.invoke; if (!invoke) return;
   var name = att.name || att.file_name || '';
@@ -139,7 +164,7 @@ async function loadCourseLiveNotes(courseName) {
   var invoke = window.__TAURI__?.core?.invoke;
   if (!invoke) return;
   try {
-    var records = await invoke('scan_download_dir');
+    var records = await invoke('list_downloads');
     var target = normalizeCourseName(courseName);
     var targetSimple = normalizeCourseName(simplifyCourseName(courseName));
     var notes = (records || []).filter(function(rec) {

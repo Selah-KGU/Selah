@@ -63,7 +63,8 @@ function renderDetail(data) {
     h += '<div class="card-empty" style="padding:40px 0">\u8a73\u7d30\u60c5\u5831\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f</div>';
   h += '</div>';
   c.innerHTML = h;
-  hydrateInternalLinkLabels(c);
+  afterFirstPaint(function() { hydrateInternalLinkLabels(c); });
+  var downloadChecks = [];
   c.querySelectorAll('.attachment').forEach(function(b) {
     var type = b.dataset.type || 'file';
     var att = _detailAttachments[parseInt(b.dataset.attIdx)] || {};
@@ -72,9 +73,10 @@ function renderDetail(data) {
         if (e.target && e.target.classList && e.target.classList.contains('att-redownload')) return;
         downloadAttachment(att, b);
       });
-      checkAndMarkDownloaded(att, b);
+      downloadChecks.push({ att: att, btn: b });
     } else {
       b.addEventListener('click', function() { openExternalLink(att.url || '', att.name || ''); });
     }
   });
+  checkAndMarkDownloadedBatch(downloadChecks);
 }

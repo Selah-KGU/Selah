@@ -540,12 +540,38 @@ pub fn check_file_downloaded(
     course_name: Option<String>,
 ) -> Option<DownloadRecord> {
     let records = load_download_history();
+    find_downloaded_record(&records, &filename, course_name.as_deref())
+}
+
+#[tauri::command]
+pub fn check_files_downloaded(
+    filenames: Vec<String>,
+    course_name: Option<String>,
+) -> HashMap<String, DownloadRecord> {
+    let records = load_download_history();
+    let mut found = HashMap::new();
+    for filename in filenames {
+        if filename.trim().is_empty() {
+            continue;
+        }
+        if let Some(record) = find_downloaded_record(&records, &filename, course_name.as_deref()) {
+            found.insert(filename.clone(), record.clone());
+            found.insert(filename.to_lowercase(), record);
+        }
+    }
+    found
+}
+
+fn find_downloaded_record(
+    records: &[DownloadRecord],
+    filename: &str,
+    course_name: Option<&str>,
+) -> Option<DownloadRecord> {
     let target = filename.to_lowercase();
     // Compare via the simplified/canonical course name. The caller usually
     // passes the full course title (with dept code and term suffix), but
     // stored records hold the simplified form after normalization.
     let query_course = course_name
-        .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|c| sanitize_path_component(&simplify_course_name(c)));
@@ -778,10 +804,66 @@ fn markdown_window_label(canonical: &std::path::Path) -> String {
     format!("md-reader-{:x}", hasher.finish())
 }
 
+fn markdown_payload_for_file(canonical: &std::path::Path, filename: &str) -> serde_json::Value {
+    let path_str = canonical.to_string_lossy().to_string();
+    match std::fs::read(canonical) {
+        Ok(bytes) => serde_json::json!({
+            "path": path_str,
+            "filename": filename,
+            "markdown": String::from_utf8_lossy(&bytes).to_string(),
+            "error": serde_json::Value::Null,
+        }),
+        Err(e) => serde_json::json!({
+            "path": path_str,
+            "filename": filename,
+            "markdown": "",
+            "error": format!("読み込み失敗: {}", e),
+        }),
+    }
+}
+
+fn queue_markdown_payload_emit(
+    win: tauri::WebviewWindow,
+    label: String,
+    canonical: std::path::PathBuf,
+    filename: String,
+) {
+    use tauri::Emitter;
+    tauri::async_runtime::spawn(async move {
+        let error_path = canonical.to_string_lossy().to_string();
+        let error_filename = filename.clone();
+        let payload = match tokio::task::spawn_blocking(move || {
+            markdown_payload_for_file(&canonical, &filename)
+        })
+        .await
+        {
+            Ok(payload) => payload,
+            Err(e) => serde_json::json!({
+                "path": error_path,
+                "filename": error_filename,
+                "markdown": "",
+                "error": format!("読み込み失敗: {}", e),
+            }),
+        };
+        if let Ok(mut map) = PENDING_MARKDOWN_PAYLOADS.lock() {
+            map.insert(label.clone(), payload.clone());
+        }
+        let _ = win.emit_to(&label, "markdown-content", &payload);
+
+        let payload_clone = payload.clone();
+        let label_clone = label.clone();
+        let win_clone = win.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            let _ = win_clone.emit_to(&label_clone, "markdown-content", &payload_clone);
+        });
+    });
+}
+
 /// Open (or focus) the in-app Markdown reader window for the given file.
 #[tauri::command]
 pub async fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    use tauri::{Emitter, Manager};
+    use tauri::Manager;
     let canonical = validate_downloads_path(&path)?;
     let meta = std::fs::metadata(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
     if meta.len() > MARKDOWN_MAX_BYTES {
@@ -789,29 +871,16 @@ pub async fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> R
         // still get to them.
         return open_downloaded_file_external(app, canonical.to_string_lossy().to_string());
     }
-    let bytes = std::fs::read(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
-    let markdown = String::from_utf8_lossy(&bytes).to_string();
     let filename = canonical
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Markdown")
         .to_string();
-    let path_str = canonical.to_string_lossy().to_string();
     let label = markdown_window_label(&canonical);
-    let payload = serde_json::json!({
-        "path": path_str,
-        "filename": filename.clone(),
-        "markdown": markdown,
-        "error": serde_json::Value::Null,
-    });
-
-    if let Ok(mut map) = PENDING_MARKDOWN_PAYLOADS.lock() {
-        map.insert(label.clone(), payload.clone());
-    }
 
     if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.emit_to(&label, "markdown-content", &payload);
         let _ = win.set_focus();
+        queue_markdown_payload_emit(win, label, canonical, filename);
         return Ok(());
     }
 
@@ -827,17 +896,9 @@ pub async fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> R
     .build()
     .map_err(|e| format!("ウィンドウ作成失敗: {}", e))?;
 
-    // Backup emit after the page has had time to attach its listener. The page
-    // also pulls via `get_pending_markdown_payload`, so whichever path lands
-    // first wins. Use a longer delay on all platforms to account for slower
-    // WebView2 initialisation on Windows.
-    let payload_clone = payload.clone();
-    let label_clone = label.clone();
-    let win_clone = win.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-        let _ = win_clone.emit_to(&label_clone, "markdown-content", &payload_clone);
-    });
+    // Read and parse the file payload after the window is created so opening a
+    // large-but-supported note does not block the native window from appearing.
+    queue_markdown_payload_emit(win, label, canonical, filename);
 
     Ok(())
 }

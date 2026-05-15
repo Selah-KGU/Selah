@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn test_parse_survey_text_questions() {
         let html = r#"
-            <form id="surveysTakeForm">
+            <form id="surveysTakeForm" action="/lms/course/surveys/take?_cid=abc">
               <input type="hidden" name="_csrf" value="token">
               <input type="hidden" name="answer[0].surveyNo" value="1">
               <input type="hidden" name="answer[1].answerItem[0].answer" value="">
@@ -930,6 +930,7 @@ mod tests {
         "#;
 
         let result = parse_luna_survey_detail(html);
+        assert_eq!(result.form_action, "/lms/course/surveys/take?_cid=abc");
         assert_eq!(result.questions.len(), 3);
         assert_eq!(result.questions[0].answer_type, "textarea");
         assert_eq!(result.questions[0].answer_name, "answer[0].commentText");

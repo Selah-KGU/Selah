@@ -73,6 +73,7 @@ function renderSurveyDetail(data) {
   h += '</div>';
   c.innerHTML = h;
   // Attachment download
+  var downloadChecks = [];
   c.querySelectorAll('.survey-att').forEach(function(b) {
     var sa = data.attachments[parseInt(b.dataset.survAttIdx)];
     if (!sa) return;
@@ -81,8 +82,9 @@ function renderSurveyDetail(data) {
       if (e.target && e.target.classList && e.target.classList.contains('att-redownload')) return;
       downloadAttachment(attObj, b);
     });
-    checkAndMarkDownloaded(attObj, b);
+    downloadChecks.push({ att: attObj, btn: b });
   });
+  checkAndMarkDownloadedBatch(downloadChecks);
   var surveyTextDraftKeys = [];
   if (data.questions && data.questions.length) {
     for (var qi = 0; qi < data.questions.length; qi++) {
@@ -131,7 +133,12 @@ function renderSurveyDetail(data) {
       statusEl.textContent = '';
       statusEl.style.color = '';
       try {
-        await inv('luna_submit_survey', { formFields: data.form_fields, answers: answers });
+        await inv('luna_submit_survey', {
+          formFields: data.form_fields,
+          answers: answers,
+          submitPath: data.form_action || '/lms/course/surveys/take',
+          refererPath: _currentPagePath || data.form_action || '/lms/course/surveys/take'
+        });
         clearDraftValues(surveyTextDraftKeys);
         submitBtn.textContent = '\u63d0\u51fa\u5b8c\u4e86';
         statusEl.textContent = '\u56de\u7b54\u304c\u63d0\u51fa\u3055\u308c\u307e\u3057\u305f';

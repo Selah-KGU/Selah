@@ -626,7 +626,7 @@ function detailGeneratedTodoToLunaTodo(item: any) {
     url: `detail-generated://${encodeURIComponent(item.id || "")}`,
     deadline: item.deadline || "",
     status: "未提出",
-    feedback: item.note ? `詳細から追加: ${item.note}` : "詳細から追加",
+    feedback: item.note ? `マグネット: ${item.note}` : "マグネットで追加",
     source: "detail",
     local_id: item.id || "",
     source_path: item.source_url || "",

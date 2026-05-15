@@ -111,6 +111,8 @@ pub struct LunaSurveyDetail {
     /// and per-question answer[N].surveyNo / answer[N].surveyNoSub)
     #[serde(default)]
     pub form_fields: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub form_action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1056,8 +1058,10 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
 
     // Extract hidden form fields from #surveysTakeForm for submission
     let mut form_fields: Vec<(String, String)> = Vec::new();
+    let mut form_action = String::new();
     let form_sel = Selector::parse("#surveysTakeForm").unwrap();
     if let Some(form) = doc.select(&form_sel).next() {
+        form_action = form.value().attr("action").unwrap_or_default().to_string();
         for input in form.select(&SEL_HIDDEN_INPUT) {
             let name = input.value().attr("name").unwrap_or_default();
             let value = input.value().attr("value").unwrap_or_default();
@@ -1116,6 +1120,7 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
         attachments,
         questions,
         form_fields,
+        form_action,
     }
 }
 

@@ -15,6 +15,7 @@
   import { cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
+  import TodoDraftCard from "../TodoDraftCard.svelte";
   import type { LunaTodoItem, AiTodoAnalysis } from "../types";
 
   let loading = $state(true);
@@ -35,7 +36,6 @@
   let detailExtracting = $state(false);
   let detailSaving = $state(false);
   let detailError = $state("");
-  let detailSelectedCount = $derived(detailDrafts.filter(d => d.selected).length);
 
   // Drop tasks that are more than 7 days overdue — at that point Luna almost
   // always disallows submission, so they only clutter the list and counts.
@@ -121,8 +121,7 @@
   }
 
   async function openTodo(item: LunaTodoItem) {
-    if (isLiveTodo(item)) return;
-    if (isDetailTodo(item) && !item.source_path) return;
+    if ((isLiveTodo(item) || isDetailTodo(item)) && !item.source_path) return;
     try {
       await openLunaTodoItem(item);
     } catch (e: any) {
@@ -211,8 +210,8 @@
       detailDrafts = fresh.map((s) => ({ ...s, selected: true }));
       if (detailDrafts.length === 0) {
         detailError = suggestions.length > 0
-          ? "新しい詳細TODOはありません（既に追加済み）"
-          : "新しい詳細TODOは見つかりませんでした";
+          ? "新しいマグネットTODOはありません（既に追加済み）"
+          : "新しいマグネットTODOは見つかりませんでした";
       }
     } catch (e: any) {
       detailError = e?.message || String(e);
@@ -315,7 +314,7 @@
     </div>
     <div class="title-actions">
       <button class="extract-btn" onclick={extractDetailTodos} disabled={detailExtracting || !$aiReady}
-        title={!$aiReady ? 'AI 利用不可（設定で有効化）' : 'Lunaのお知らせ・課題・掲示板から詳細TODOを抽出'}>
+        title={!$aiReady ? 'AI 利用不可（設定で有効化）' : 'Luna通知とメールからAIで TODO を磁石のように吸い寄せる'}>
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" class:spin={detailExtracting}>
           {#if detailExtracting}
             <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="28 10" stroke-linecap="round"/>
@@ -324,7 +323,7 @@
             <circle cx="13" cy="12" r="2" stroke="currentColor" stroke-width="1.5" fill="none"/>
           {/if}
         </svg>
-        <span>詳細抽出</span>
+        <span>マグネット</span>
       </button>
       {#if pending.length > 0}
         <button class="ai-pill" onclick={enterAiMode} disabled={!$aiReady || (aiLoading && !aiResult)}
@@ -369,39 +368,17 @@
   {/if}
 
   {#if detailDrafts.length > 0}
-    <section class="detail-confirm" aria-labelledby="detail-confirm-title">
-      <div class="detail-confirm-head">
-        <div>
-          <div id="detail-confirm-title" class="detail-confirm-title">Luna から詳細TODO候補を抽出</div>
-          <div class="detail-confirm-sub">{detailDrafts.length}件見つかりました。必要なものを選んで追加してください。</div>
-        </div>
-        <button class="detail-confirm-close" onclick={closeDetailDrafts} disabled={detailSaving} aria-label="閉じる">×</button>
-      </div>
-      <div class="detail-draft-list">
-        {#each detailDrafts as draft, idx}
-          <label class="detail-draft-row" class:selected={draft.selected}>
-            <input type="checkbox" checked={draft.selected} onchange={() => toggleDetailDraft(idx)} disabled={detailSaving} />
-            <div class="detail-draft-main">
-              <div class="detail-draft-title">{draft.title}</div>
-              <div class="detail-draft-meta">
-                <span>{draft.course_name || "(コース不明)"}</span>
-                {#if draft.content_type}<span>{draft.content_type}</span>{/if}
-                <span class:missing={!draft.deadline}>{draft.deadline ? `DDL ${draft.deadline}` : "DDL未判定"}</span>
-              </div>
-              {#if draft.note}<div class="detail-draft-note">{draft.note}</div>{/if}
-              {#if draft.source_excerpt}<div class="detail-draft-source">“{draft.source_excerpt}”</div>{/if}
-            </div>
-          </label>
-        {/each}
-      </div>
-      {#if detailError}<div class="detail-error inline">{detailError}</div>{/if}
-      <div class="detail-confirm-actions">
-        <button class="detail-confirm-btn secondary" onclick={closeDetailDrafts} disabled={detailSaving}>追加しない</button>
-        <button class="detail-confirm-btn primary" onclick={confirmDetailDrafts} disabled={detailSaving || detailSelectedCount === 0}>
-          {detailSaving ? "追加中…" : `選択した${detailSelectedCount}件を追加`}
-        </button>
-      </div>
-    </section>
+    <TodoDraftCard
+      title="マグネットでTODO候補を吸着"
+      subtitle={`${detailDrafts.length}件見つかりました。必要なものを選んで追加してください。`}
+      drafts={detailDrafts}
+      saving={detailSaving}
+      courseFallback="(コース不明)"
+      errorMessage={detailError}
+      onToggle={toggleDetailDraft}
+      onClose={closeDetailDrafts}
+      onConfirm={confirmDetailDrafts}
+    />
   {/if}
 
   <ViewLoader {loading} {error} empty={pending.length === 0 && !loading} emptyMessage="すべて完了しました">
@@ -420,11 +397,10 @@
             {@const detail = isDetailTodo(item)}
             {@const localId = live ? liveTodoId(item) : detailTodoId(item)}
             {@const hasActions = live || detail}
-            {@const clickable = !live}
+            {@const clickable = !live && !detail ? true : !!item.source_path}
             <div
               class="task"
-              class:local={live}
-              class:detail
+              class:non-clickable={!clickable}
               class:overdue={urg === "overdue"}
               class:critical={urg === "critical"}
               class:soon={urg === "soon"}
@@ -445,9 +421,9 @@
               <div class="task-body">
                 <div class="task-name">
                   {#if live}
-                    <span class="live-task-badge">Live</span>
+                    <span class="task-badge task-badge-live">Live</span>
                   {:else if detail}
-                    <span class="detail-task-badge">詳細</span>
+                    <span class="task-badge task-badge-detail">MAGNET</span>
                   {/if}
                   {item.content_name}
                 </div>
@@ -464,17 +440,34 @@
                   <div class="task-feedback">{item.feedback}</div>
                 {/if}
               </div>
+              {#if remaining}
+                <span class="remaining" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>{remaining}</span>
+              {/if}
               {#if hasActions}
                 <div class="task-actions">
-                  <button class="task-action done" onclick={(e) => { e.stopPropagation(); completeLocalTodo(item); }} disabled={localTodoBusyId === localId}>
-                    {localTodoBusyId === localId ? "処理中…" : "完了"}
+                  <button
+                    class="task-action done"
+                    onclick={(e) => { e.stopPropagation(); completeLocalTodo(item); }}
+                    disabled={localTodoBusyId === localId}
+                    aria-label="完了"
+                    title={localTodoBusyId === localId ? "処理中…" : "完了"}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M3 8.5l3.2 3.2L13 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
                   </button>
-                  <button class="task-action danger" onclick={(e) => { e.stopPropagation(); removeLocalTodo(item); }} disabled={localTodoBusyId === localId}>
-                    削除
+                  <button
+                    class="task-action danger"
+                    onclick={(e) => { e.stopPropagation(); removeLocalTodo(item); }}
+                    disabled={localTodoBusyId === localId}
+                    aria-label="削除"
+                    title="削除"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M3 4h10M6 4V2.5h4V4M5 4l.6 9.2a1 1 0 0 0 1 .8h2.8a1 1 0 0 0 1-.8L11 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
                   </button>
                 </div>
-              {:else if remaining}
-                <span class="remaining" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>{remaining}</span>
               {/if}
               {#if clickable}
                 <svg class="task-arrow" width="7" height="12" viewBox="0 0 7 12" fill="none">
@@ -639,13 +632,8 @@
   .task:hover {
     background: var(--bg-hover);
   }
-  .task.local {
+  .task.non-clickable {
     cursor: default;
-    border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
-    background: color-mix(in srgb, var(--accent) 4%, var(--bg-card));
-  }
-  .task.local:hover {
-    background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
   }
   .task:active {
     transform: scale(0.99);
@@ -742,7 +730,7 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
   }
-  .live-task-badge {
+  .task-badge {
     display: inline-flex;
     align-items: center;
     margin-right: 6px;
@@ -750,9 +738,15 @@
     border-radius: 999px;
     font-size: 10px;
     font-weight: 700;
+    vertical-align: 1px;
+  }
+  .task-badge-live {
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 11%, transparent);
-    vertical-align: 1px;
+  }
+  .task-badge-detail {
+    color: #b8900a;
+    background: rgba(245, 197, 66, 0.18);
   }
   .task-sub {
     display: flex;
@@ -798,12 +792,14 @@
   }
 
   .task-action {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: none;
-    border-radius: 999px;
-    padding: 5px 10px;
-    font-size: 11px;
-    font-weight: 700;
-    font-family: inherit;
+    border-radius: 50%;
+    padding: 0;
     cursor: pointer;
     transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease;
   }
@@ -816,12 +812,18 @@
     transform: none;
   }
   .task-action.done {
-    color: #fff;
-    background: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .task-action.done:hover {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
   }
   .task-action.danger {
     color: var(--red);
     background: color-mix(in srgb, var(--red) 10%, transparent);
+  }
+  .task-action.danger:hover {
+    background: color-mix(in srgb, var(--red) 16%, transparent);
   }
 
   /* ── Arrow ── */
@@ -914,153 +916,6 @@
   .extract-btn:disabled { opacity: 0.5; cursor: default; }
   .extract-btn svg { flex-shrink: 0; }
 
-  /* ── 詳細TODO badge & task tint ── */
-  .detail-task-badge {
-    display: inline-flex;
-    align-items: center;
-    margin-right: 6px;
-    padding: 2px 6px;
-    border-radius: 999px;
-    font-size: 10px;
-    font-weight: 700;
-    color: #b8900a;
-    background: rgba(245, 197, 66, 0.18);
-    vertical-align: 1px;
-  }
-  .task.detail {
-    border-color: color-mix(in srgb, #e6b800 22%, var(--border));
-    background: color-mix(in srgb, #e6b800 4%, var(--bg-card));
-  }
-  .task.detail:hover {
-    background: color-mix(in srgb, #e6b800 7%, var(--bg-card));
-  }
-
-  /* ── Detail-extraction confirm card ── */
-  .detail-confirm {
-    margin-bottom: 12px;
-    padding: 12px 14px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(245, 197, 66, 0.06), rgba(0, 122, 255, 0.04));
-    border: 0.5px solid rgba(245, 197, 66, 0.25);
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .detail-confirm-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .detail-confirm-title {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--text-primary);
-  }
-  .detail-confirm-sub {
-    margin-top: 2px;
-    font-size: 11px;
-    color: var(--text-tertiary);
-  }
-  .detail-confirm-close {
-    width: 22px;
-    height: 22px;
-    border: none;
-    background: transparent;
-    color: var(--text-tertiary);
-    font-size: 18px;
-    line-height: 1;
-    cursor: pointer;
-    border-radius: 6px;
-  }
-  .detail-confirm-close:hover { background: var(--bg-hover); color: var(--text-primary); }
-  .detail-confirm-close:disabled { opacity: 0.4; cursor: default; }
-
-  .detail-draft-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    max-height: 320px;
-    overflow-y: auto;
-  }
-  .detail-draft-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 8px 10px;
-    border-radius: 10px;
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-  .detail-draft-row:hover { background: var(--bg-hover); }
-  .detail-draft-row.selected {
-    border-color: rgba(245, 197, 66, 0.4);
-    background: color-mix(in srgb, #e6b800 5%, var(--bg-card));
-  }
-  .detail-draft-row input { margin-top: 3px; flex-shrink: 0; }
-  .detail-draft-main {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  .detail-draft-title {
-    font-size: 12.5px;
-    font-weight: 600;
-    color: var(--text-primary);
-    line-height: 1.4;
-  }
-  .detail-draft-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--text-tertiary);
-  }
-  .detail-draft-meta .missing { color: var(--orange); }
-  .detail-draft-note {
-    font-size: 11px;
-    color: var(--text-secondary);
-    font-style: italic;
-  }
-  .detail-draft-source {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    line-height: 1.45;
-    border-left: 2px solid rgba(245, 197, 66, 0.4);
-    padding-left: 8px;
-  }
-
-  .detail-confirm-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-  }
-  .detail-confirm-btn {
-    padding: 6px 14px;
-    border-radius: 8px;
-    font-size: 12px;
-    font-weight: 600;
-    font-family: inherit;
-    cursor: pointer;
-    border: none;
-    transition: all 0.15s;
-  }
-  .detail-confirm-btn.secondary {
-    background: var(--bg-card);
-    border: 0.5px solid var(--border);
-    color: var(--text-secondary);
-  }
-  .detail-confirm-btn.secondary:hover { background: var(--bg-hover); }
-  .detail-confirm-btn.primary {
-    background: linear-gradient(135deg, #e6b800, #d4a017);
-    color: #fff;
-  }
-  .detail-confirm-btn.primary:disabled { opacity: 0.5; cursor: default; }
-
   .detail-error {
     margin-bottom: 10px;
     padding: 8px 12px;
@@ -1069,5 +924,4 @@
     color: var(--red);
     font-size: 12px;
   }
-  .detail-error.inline { margin-bottom: 0; }
 </style>

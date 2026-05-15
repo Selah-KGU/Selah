@@ -82,6 +82,10 @@ pub struct MailMessage {
     pub received_date_time: Option<String>,
     pub is_read: Option<bool>,
     pub has_attachments: Option<bool>,
+    /// Plain-text body. Populated by fetch_inbox via Graph `body` field +
+    /// `Prefer: outlook.body-content-type="text"`. None for legacy cache entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<MailBody>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,12 +388,23 @@ impl MailClient {
 
     /// GET request to Graph API with auto-refresh
     async fn graph_get(&mut self, url: &str) -> Result<serde_json::Value, String> {
+        self.graph_get_with_headers(url, &[]).await
+    }
+
+    /// Like [`graph_get`] but allows extra request headers
+    /// (e.g. `Prefer: outlook.body-content-type="text"`).
+    async fn graph_get_with_headers(
+        &mut self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<serde_json::Value, String> {
         let access_token = self.ensure_token().await?;
 
-        let resp = self
-            .http
-            .get(url)
-            .bearer_auth(&access_token)
+        let mut req = self.http.get(url).bearer_auth(&access_token);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
@@ -404,10 +419,11 @@ impl MailClient {
                 .ok_or("token lost after refresh")?
                 .access_token
                 .clone();
-            let resp2 = self
-                .http
-                .get(url)
-                .bearer_auth(&new_token)
+            let mut req2 = self.http.get(url).bearer_auth(&new_token);
+            for (k, v) in headers {
+                req2 = req2.header(*k, *v);
+            }
+            let resp2 = req2
                 .send()
                 .await
                 .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
@@ -445,10 +461,12 @@ impl MailClient {
     /// Fetch inbox messages
     pub async fn fetch_inbox(&mut self, top: u32, skip: u32) -> Result<Vec<MailMessage>, String> {
         let url = format!(
-            "{}/me/mailFolders/inbox/messages?$top={}&$skip={}&$orderby=receivedDateTime desc&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments",
+            "{}/me/mailFolders/inbox/messages?$top={}&$skip={}&$orderby=receivedDateTime desc&$select=id,subject,bodyPreview,body,from,receivedDateTime,isRead,hasAttachments",
             config::GRAPH_BASE, top, skip,
         );
-        let body = self.graph_get(&url).await?;
+        let body = self
+            .graph_get_with_headers(&url, &[("Prefer", "outlook.body-content-type=\"text\"")])
+            .await?;
         let resp: GraphListResponse<MailMessage> =
             serde_json::from_value(body).map_err(|e| format!("メール解析失敗: {}", e))?;
         Ok(resp.value)
@@ -617,9 +635,22 @@ pub async fn graph_get_lockfree(
     url: &str,
     token: &str,
 ) -> Result<serde_json::Value, (String, bool)> {
-    let resp = http
-        .get(url)
-        .bearer_auth(token)
+    graph_get_lockfree_with_headers(http, url, token, &[]).await
+}
+
+/// Same as [`graph_get_lockfree`] but allows passing extra request headers
+/// (e.g. `Prefer: outlook.body-content-type="text"` to fetch plain-text bodies).
+pub async fn graph_get_lockfree_with_headers(
+    http: &Client,
+    url: &str,
+    token: &str,
+    headers: &[(&str, &str)],
+) -> Result<serde_json::Value, (String, bool)> {
+    let mut req = http.get(url).bearer_auth(token);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| (format!("Graph APIリクエスト失敗: {}", e), false))?;

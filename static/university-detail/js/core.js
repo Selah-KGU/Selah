@@ -19,6 +19,20 @@ function isLunaTransientDetailError(err) {
 function delay(ms) {
   return new Promise(function(resolve) { setTimeout(resolve, ms); });
 }
+function afterFirstPaint(callback, timeout) {
+  var run = function() {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(callback, { timeout: timeout || 1200 });
+    } else {
+      setTimeout(callback, timeout || 120);
+    }
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(function() { requestAnimationFrame(run); });
+  } else {
+    setTimeout(run, 0);
+  }
+}
 async function invokeLunaDetailWithRetry(command, payload, attempt) {
   var inv = window.__TAURI__?.core?.invoke;
   if (!inv) throw new Error('Tauri IPC が利用できません');

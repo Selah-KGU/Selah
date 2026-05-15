@@ -316,7 +316,9 @@ function renderCourseDetail(data, idnumber, kgcPath) {
       invoke('open_downloads_window', { focusCourse: b.dataset.materialsCourse || null });
     });
   });
-  loadCourseLiveNotes(_currentCourseName || data.course_name || '');
+  afterFirstPaint(function() {
+    loadCourseLiveNotes(_currentCourseName || data.course_name || '');
+  });
 
   // Announcements
   c.querySelectorAll('[data-ann-id]').forEach(function(b) {
@@ -452,7 +454,7 @@ function renderCourseDetail(data, idnumber, kgcPath) {
   }
 
   // Auto-load textbook info from cached syllabus data
-  (async function() {
+  afterFirstPaint(function() { (async function() {
     try {
       // Extract kgc_code from luna idnumber: e.g. "2026340010010201" → "34001001"
       var kgcCode = idnumber.length >= 12 ? idnumber.substring(4, 12) : idnumber;
@@ -520,5 +522,5 @@ function renderCourseDetail(data, idnumber, kgcPath) {
       sec.style.display = '';
       if (matSec) matSec.style.display = '';
     } catch(e) { console.warn('textbook load:', e); }
-  })();
+  })(); }, 1000);
 }
