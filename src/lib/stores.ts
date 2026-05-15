@@ -540,6 +540,7 @@ function saveDiskCache(key: string, data: any, ts: number) {
 // SWR update listeners: components subscribe to be notified when background refresh completes
 const swrListeners = new Map<string, Set<(data: any) => void>>();
 const LIVE_GENERATED_TODO_KEY = "live_generated_todo";
+const DETAIL_GENERATED_TODO_KEY = "detail_generated_todo";
 
 export function onCacheUpdate<T>(key: string, cb: (data: T) => void): () => void {
   if (!swrListeners.has(key)) swrListeners.set(key, new Set());
@@ -580,9 +581,12 @@ async function loadBackendManagedCache<T>(key: string): Promise<{ data: T; ts: n
     const json = await invoke<string | null>("get_data_cache", { key: dbKey });
     if (key === "luna_todo") {
       const generated = await loadLiveGeneratedTodos();
-      if (!json && generated.length === 0) return null;
+      const detail = await loadDetailGeneratedTodos();
+      if (!json && generated.length === 0 && detail.length === 0) return null;
       const parsed = json ? JSON.parse(json) : [];
-      return { data: mergeGeneratedTodosIntoLunaTodos(parsed, generated) as T, ts: Date.now() };
+      const withLive = mergeGeneratedTodosIntoLunaTodos(parsed, generated);
+      const withDetail = mergeDetailTodosIntoLunaTodos(withLive, detail);
+      return { data: withDetail as T, ts: Date.now() };
     }
     if (!json) return null;
     const parsed = JSON.parse(json);
@@ -601,6 +605,50 @@ async function loadLiveGeneratedTodos(): Promise<any[]> {
   } catch {
     return [];
   }
+}
+
+async function loadDetailGeneratedTodos(): Promise<any[]> {
+  try {
+    const json = await invoke<string | null>("get_data_cache", { key: DETAIL_GENERATED_TODO_KEY });
+    if (!json) return [];
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function detailGeneratedTodoToLunaTodo(item: any) {
+  return {
+    course_name: item.course_name || "",
+    content_type: item.content_type || "課題",
+    content_name: item.title || "",
+    url: `detail-generated://${encodeURIComponent(item.id || "")}`,
+    deadline: item.deadline || "",
+    status: "未提出",
+    feedback: item.note ? `詳細から追加: ${item.note}` : "詳細から追加",
+    source: "detail",
+    local_id: item.id || "",
+    source_path: item.source_url || "",
+    source_excerpt: item.source_excerpt || "",
+  };
+}
+
+function mergeDetailTodosIntoLunaTodos(base: any, generated: any[]): any[] {
+  const list = Array.isArray(base)
+    ? base.filter((item) => item?.source !== "detail" && !String(item?.url || "").startsWith("detail-generated://"))
+    : [];
+  const seen = new Set(list.map(normalizedGeneratedTodoKey));
+  const merged = [...list];
+  for (const item of generated) {
+    if (!item?.title) continue;
+    if (item.completed_at || item.archived_at) continue;
+    const key = normalizedGeneratedTodoKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(detailGeneratedTodoToLunaTodo(item));
+  }
+  return merged;
 }
 
 function normalizedGeneratedTodoKey(item: { course_name?: string; title?: string; content_name?: string; deadline?: string }): string {

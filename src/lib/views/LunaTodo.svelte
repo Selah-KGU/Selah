@@ -1,6 +1,17 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { aiAnalyzeTodo, completeLiveGeneratedTodo, deleteLiveGeneratedTodo, openLunaTodoItem } from "../api";
+  import {
+    aiAnalyzeTodo,
+    aiExtractDetailTodos,
+    completeLiveGeneratedTodo,
+    deleteLiveGeneratedTodo,
+    completeDetailGeneratedTodo,
+    deleteDetailGeneratedTodo,
+    getDetailGeneratedTodos,
+    saveDetailGeneratedTodos,
+    openLunaTodoItem,
+  } from "../api";
+  import type { DetailTodoSuggestion } from "../api";
   import { cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
@@ -17,6 +28,14 @@
   let aiResult = $state<AiTodoAnalysis | null>(null);
   let aiLoading = $state(false);
   let showAiPage = $state(false);
+
+  // Detail-extraction state
+  type DetailDraft = DetailTodoSuggestion & { selected: boolean };
+  let detailDrafts = $state<DetailDraft[]>([]);
+  let detailExtracting = $state(false);
+  let detailSaving = $state(false);
+  let detailError = $state("");
+  let detailSelectedCount = $derived(detailDrafts.filter(d => d.selected).length);
 
   // Drop tasks that are more than 7 days overdue — at that point Luna almost
   // always disallows submission, so they only clutter the list and counts.
@@ -103,6 +122,7 @@
 
   async function openTodo(item: LunaTodoItem) {
     if (isLiveTodo(item)) return;
+    if (isDetailTodo(item) && !item.source_path) return;
     try {
       await openLunaTodoItem(item);
     } catch (e: any) {
@@ -112,6 +132,10 @@
 
   function isLiveTodo(item: LunaTodoItem): boolean {
     return item.source === "live" || item.url?.startsWith("live-generated://") || item.feedback?.startsWith("Liveから追加");
+  }
+
+  function isDetailTodo(item: LunaTodoItem): boolean {
+    return item.source === "detail" || item.url?.startsWith("detail-generated://");
   }
 
   function liveTodoId(item: LunaTodoItem): string {
@@ -126,13 +150,27 @@
     return "";
   }
 
+  function detailTodoId(item: LunaTodoItem): string {
+    if (item.local_id) return item.local_id;
+    if (item.url?.startsWith("detail-generated://")) {
+      try {
+        return decodeURIComponent(item.url.replace("detail-generated://", ""));
+      } catch {
+        return item.url.replace("detail-generated://", "");
+      }
+    }
+    return "";
+  }
+
   async function completeLocalTodo(item: LunaTodoItem) {
-    const id = liveTodoId(item);
+    const isDetail = isDetailTodo(item);
+    const id = isDetail ? detailTodoId(item) : liveTodoId(item);
     if (!id || localTodoBusyId) return;
     localTodoBusyId = id;
     error = "";
     try {
-      await completeLiveGeneratedTodo(id);
+      if (isDetail) await completeDetailGeneratedTodo(id);
+      else await completeLiveGeneratedTodo(id);
     } catch (e: any) {
       error = e?.message || String(e);
     } finally {
@@ -141,16 +179,73 @@
   }
 
   async function removeLocalTodo(item: LunaTodoItem) {
-    const id = liveTodoId(item);
+    const isDetail = isDetailTodo(item);
+    const id = isDetail ? detailTodoId(item) : liveTodoId(item);
     if (!id || localTodoBusyId) return;
     localTodoBusyId = id;
     error = "";
     try {
-      await deleteLiveGeneratedTodo(id);
+      if (isDetail) await deleteDetailGeneratedTodo(id);
+      else await deleteLiveGeneratedTodo(id);
     } catch (e: any) {
       error = e?.message || String(e);
     } finally {
       localTodoBusyId = "";
+    }
+  }
+
+  async function extractDetailTodos() {
+    if (detailExtracting) return;
+    detailExtracting = true;
+    detailError = "";
+    try {
+      // force=false lets the Rust-side fingerprint cache short-circuit when the
+      // underlying Luna notifications haven't changed — saves an AI round-trip
+      // (and power) on repeated clicks.
+      const [suggestions, existing] = await Promise.all([
+        aiExtractDetailTodos(false),
+        getDetailGeneratedTodos(),
+      ]);
+      const seen = new Set(existing.map((e) => `${e.course_name}|${e.title}|${e.deadline}`.toLowerCase().trim()));
+      const fresh = suggestions.filter((s) => !seen.has(`${s.course_name}|${s.title}|${s.deadline}`.toLowerCase().trim()));
+      detailDrafts = fresh.map((s) => ({ ...s, selected: true }));
+      if (detailDrafts.length === 0) {
+        detailError = suggestions.length > 0
+          ? "新しい詳細TODOはありません（既に追加済み）"
+          : "新しい詳細TODOは見つかりませんでした";
+      }
+    } catch (e: any) {
+      detailError = e?.message || String(e);
+    } finally {
+      detailExtracting = false;
+    }
+  }
+
+  function toggleDetailDraft(idx: number) {
+    detailDrafts = detailDrafts.map((d, i) => i === idx ? { ...d, selected: !d.selected } : d);
+  }
+
+  function closeDetailDrafts() {
+    if (detailSaving) return;
+    detailDrafts = [];
+    detailError = "";
+  }
+
+  async function confirmDetailDrafts() {
+    const selected = detailDrafts.filter(d => d.selected);
+    if (selected.length === 0) {
+      closeDetailDrafts();
+      return;
+    }
+    detailSaving = true;
+    detailError = "";
+    try {
+      await saveDetailGeneratedTodos(selected.map(({ selected: _s, ...rest }) => rest));
+      detailDrafts = [];
+    } catch (e: any) {
+      detailError = e?.message || String(e);
+    } finally {
+      detailSaving = false;
     }
   }
 
@@ -219,6 +314,18 @@
       {/if}
     </div>
     <div class="title-actions">
+      <button class="extract-btn" onclick={extractDetailTodos} disabled={detailExtracting || !$aiReady}
+        title={!$aiReady ? 'AI 利用不可（設定で有効化）' : 'Lunaのお知らせ・課題・掲示板から詳細TODOを抽出'}>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" class:spin={detailExtracting}>
+          {#if detailExtracting}
+            <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="28 10" stroke-linecap="round"/>
+          {:else}
+            <path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="13" cy="12" r="2" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          {/if}
+        </svg>
+        <span>詳細抽出</span>
+      </button>
       {#if pending.length > 0}
         <button class="ai-pill" onclick={enterAiMode} disabled={!$aiReady || (aiLoading && !aiResult)}
           title={!$aiReady ? 'AI 利用不可（設定で有効化）' : 'AI 輔助モード'}>
@@ -257,6 +364,46 @@
     </div>
   {/if}
 
+  {#if detailError && detailDrafts.length === 0}
+    <div class="detail-error">{detailError}</div>
+  {/if}
+
+  {#if detailDrafts.length > 0}
+    <section class="detail-confirm" aria-labelledby="detail-confirm-title">
+      <div class="detail-confirm-head">
+        <div>
+          <div id="detail-confirm-title" class="detail-confirm-title">Luna から詳細TODO候補を抽出</div>
+          <div class="detail-confirm-sub">{detailDrafts.length}件見つかりました。必要なものを選んで追加してください。</div>
+        </div>
+        <button class="detail-confirm-close" onclick={closeDetailDrafts} disabled={detailSaving} aria-label="閉じる">×</button>
+      </div>
+      <div class="detail-draft-list">
+        {#each detailDrafts as draft, idx}
+          <label class="detail-draft-row" class:selected={draft.selected}>
+            <input type="checkbox" checked={draft.selected} onchange={() => toggleDetailDraft(idx)} disabled={detailSaving} />
+            <div class="detail-draft-main">
+              <div class="detail-draft-title">{draft.title}</div>
+              <div class="detail-draft-meta">
+                <span>{draft.course_name || "(コース不明)"}</span>
+                {#if draft.content_type}<span>{draft.content_type}</span>{/if}
+                <span class:missing={!draft.deadline}>{draft.deadline ? `DDL ${draft.deadline}` : "DDL未判定"}</span>
+              </div>
+              {#if draft.note}<div class="detail-draft-note">{draft.note}</div>{/if}
+              {#if draft.source_excerpt}<div class="detail-draft-source">“{draft.source_excerpt}”</div>{/if}
+            </div>
+          </label>
+        {/each}
+      </div>
+      {#if detailError}<div class="detail-error inline">{detailError}</div>{/if}
+      <div class="detail-confirm-actions">
+        <button class="detail-confirm-btn secondary" onclick={closeDetailDrafts} disabled={detailSaving}>追加しない</button>
+        <button class="detail-confirm-btn primary" onclick={confirmDetailDrafts} disabled={detailSaving || detailSelectedCount === 0}>
+          {detailSaving ? "追加中…" : `選択した${detailSelectedCount}件を追加`}
+        </button>
+      </div>
+    </section>
+  {/if}
+
   <ViewLoader {loading} {error} empty={pending.length === 0 && !loading} emptyMessage="すべて完了しました">
     {#if !$lunaAuthState.authenticated && todoItems.length === 0 && !loading}
       <div class="empty-msg">Luna LMSに接続されていません</div>
@@ -269,11 +416,15 @@
             {@const urg = urgency(item.deadline)}
             {@const pct = urgencyPct(item.deadline)}
             {@const remaining = remainingLabel(item.deadline)}
-            {@const local = isLiveTodo(item)}
-            {@const localId = liveTodoId(item)}
+            {@const live = isLiveTodo(item)}
+            {@const detail = isDetailTodo(item)}
+            {@const localId = live ? liveTodoId(item) : detailTodoId(item)}
+            {@const hasActions = live || detail}
+            {@const clickable = !live}
             <div
               class="task"
-              class:local
+              class:local={live}
+              class:detail
               class:overdue={urg === "overdue"}
               class:critical={urg === "critical"}
               class:soon={urg === "soon"}
@@ -282,7 +433,7 @@
               tabindex="0"
               onclick={() => openTodo(item)}
               onkeydown={(e) => {
-                if (!local && (e.key === "Enter" || e.key === " ")) {
+                if (clickable && (e.key === "Enter" || e.key === " ")) {
                   e.preventDefault();
                   openTodo(item);
                 }
@@ -293,8 +444,10 @@
               </div>
               <div class="task-body">
                 <div class="task-name">
-                  {#if local}
+                  {#if live}
                     <span class="live-task-badge">Live</span>
+                  {:else if detail}
+                    <span class="detail-task-badge">詳細</span>
                   {/if}
                   {item.content_name}
                 </div>
@@ -311,7 +464,7 @@
                   <div class="task-feedback">{item.feedback}</div>
                 {/if}
               </div>
-              {#if local}
+              {#if hasActions}
                 <div class="task-actions">
                   <button class="task-action done" onclick={(e) => { e.stopPropagation(); completeLocalTodo(item); }} disabled={localTodoBusyId === localId}>
                     {localTodoBusyId === localId ? "処理中…" : "完了"}
@@ -323,7 +476,7 @@
               {:else if remaining}
                 <span class="remaining" class:overdue={urg === "overdue"} class:critical={urg === "critical"} class:soon={urg === "soon"}>{remaining}</span>
               {/if}
-              {#if !local}
+              {#if clickable}
                 <svg class="task-arrow" width="7" height="12" viewBox="0 0 7 12" fill="none">
                   <path d="M1 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
@@ -735,4 +888,186 @@
     transform: translateX(1px);
   }
 
+  /* ── 詳細抽出 button ── */
+  .extract-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    padding: 0 9px;
+    border-radius: 50px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 0.5px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    transition: all 0.18s;
+    white-space: nowrap;
+  }
+  .extract-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+  .extract-btn:active { transform: scale(0.97); }
+  .extract-btn:disabled { opacity: 0.5; cursor: default; }
+  .extract-btn svg { flex-shrink: 0; }
+
+  /* ── 詳細TODO badge & task tint ── */
+  .detail-task-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 6px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #b8900a;
+    background: rgba(245, 197, 66, 0.18);
+    vertical-align: 1px;
+  }
+  .task.detail {
+    border-color: color-mix(in srgb, #e6b800 22%, var(--border));
+    background: color-mix(in srgb, #e6b800 4%, var(--bg-card));
+  }
+  .task.detail:hover {
+    background: color-mix(in srgb, #e6b800 7%, var(--bg-card));
+  }
+
+  /* ── Detail-extraction confirm card ── */
+  .detail-confirm {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(245, 197, 66, 0.06), rgba(0, 122, 255, 0.04));
+    border: 0.5px solid rgba(245, 197, 66, 0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .detail-confirm-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .detail-confirm-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+  .detail-confirm-sub {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+  .detail-confirm-close {
+    width: 22px;
+    height: 22px;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .detail-confirm-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .detail-confirm-close:disabled { opacity: 0.4; cursor: default; }
+
+  .detail-draft-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .detail-draft-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    border: 0.5px solid var(--border);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .detail-draft-row:hover { background: var(--bg-hover); }
+  .detail-draft-row.selected {
+    border-color: rgba(245, 197, 66, 0.4);
+    background: color-mix(in srgb, #e6b800 5%, var(--bg-card));
+  }
+  .detail-draft-row input { margin-top: 3px; flex-shrink: 0; }
+  .detail-draft-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .detail-draft-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.4;
+  }
+  .detail-draft-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+  .detail-draft-meta .missing { color: var(--orange); }
+  .detail-draft-note {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-style: italic;
+  }
+  .detail-draft-source {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    line-height: 1.45;
+    border-left: 2px solid rgba(245, 197, 66, 0.4);
+    padding-left: 8px;
+  }
+
+  .detail-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .detail-confirm-btn {
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    transition: all 0.15s;
+  }
+  .detail-confirm-btn.secondary {
+    background: var(--bg-card);
+    border: 0.5px solid var(--border);
+    color: var(--text-secondary);
+  }
+  .detail-confirm-btn.secondary:hover { background: var(--bg-hover); }
+  .detail-confirm-btn.primary {
+    background: linear-gradient(135deg, #e6b800, #d4a017);
+    color: #fff;
+  }
+  .detail-confirm-btn.primary:disabled { opacity: 0.5; cursor: default; }
+
+  .detail-error {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: rgba(255, 59, 48, 0.08);
+    color: var(--red);
+    font-size: 12px;
+  }
+  .detail-error.inline { margin-bottom: 0; }
 </style>

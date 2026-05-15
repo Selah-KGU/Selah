@@ -956,7 +956,10 @@ export function isLunaTestTodo(item: Pick<LunaTodoItem, "content_type" | "url">)
 }
 
 export async function openLunaTodoItem(item: LunaTodoItem): Promise<void> {
-  const path = item.url || "";
+  let path = item.url || "";
+  if (item.source === "detail" || path.startsWith("detail-generated://")) {
+    path = item.source_path || "";
+  }
   if (!path) return;
   if (item.source === "live" || path.startsWith("live-generated://")) return;
   const title = item.content_name || item.content_type || "TODO";
@@ -1335,6 +1338,21 @@ export async function aiAnalyzeTodo(force: boolean = false): Promise<AiTodoAnaly
     return demoAiTodoAnalysis();
   }
   return invoke<AiTodoAnalysis>("ai_analyze_todo", { force });
+}
+
+export interface DetailTodoSuggestion {
+  title: string;
+  course_name: string;
+  content_type: string;
+  deadline: string;
+  source_url: string;
+  source_excerpt: string;
+  note: string;
+}
+
+export async function aiExtractDetailTodos(force: boolean = false): Promise<DetailTodoSuggestion[]> {
+  if (_isDemo()) return [];
+  return invoke<DetailTodoSuggestion[]>("ai_extract_detail_todos", { force });
 }
 
 export async function fetchGrades(): Promise<GradesData> {
@@ -1968,6 +1986,142 @@ export async function deleteLiveGeneratedTodo(id: string): Promise<void> {
   const next = (await getLiveGeneratedTodos()).filter((item) => item.id !== target);
   await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
   refreshLiveGeneratedTodoCaches(next);
+}
+
+// ── 詳細TODO (AI extracted from Luna 消息/課題/通知) ────────────────────────
+
+const DETAIL_GENERATED_TODO_KEY = "detail_generated_todo";
+
+export interface DetailGeneratedTodo extends DetailTodoSuggestion {
+  id: string;
+  created_at: string;
+  completed_at?: string;
+  archived_at?: string;
+}
+
+function normalizeDetailTodoKey(item: Pick<DetailTodoSuggestion, "course_name" | "title" | "deadline">): string {
+  return [item.course_name, item.title, item.deadline]
+    .map((part) => (part || "").trim().toLowerCase().replace(/\s+/g, " "))
+    .join("|");
+}
+
+function isActiveDetailTodo(item: DetailGeneratedTodo): boolean {
+  return !item.completed_at && !item.archived_at;
+}
+
+function isDetailLunaTodoItem(item: LunaTodoItem): boolean {
+  return item.source === "detail" || item.url?.startsWith("detail-generated://");
+}
+
+function detailGeneratedTodoToLunaItem(item: DetailGeneratedTodo): LunaTodoItem {
+  return {
+    course_name: item.course_name,
+    content_type: item.content_type || "課題",
+    content_name: item.title,
+    url: `detail-generated://${encodeURIComponent(item.id)}`,
+    deadline: item.deadline || "",
+    status: "未提出",
+    feedback: item.note ? `詳細から追加: ${item.note}` : "詳細から追加",
+    source: "detail",
+    local_id: item.id,
+    source_path: item.source_url,
+    source_excerpt: item.source_excerpt,
+  };
+}
+
+function mergeDetailTodosIntoLunaTodos(base: LunaTodoItem[], generated: DetailGeneratedTodo[]): LunaTodoItem[] {
+  const baseWithoutDetail = base.filter((item) => !isDetailLunaTodoItem(item));
+  const seen = new Set(baseWithoutDetail.map((item) => normalizeDetailTodoKey({
+    course_name: item.course_name,
+    title: item.content_name,
+    deadline: item.deadline,
+  })));
+  const merged = [...baseWithoutDetail];
+  for (const item of generated.filter(isActiveDetailTodo)) {
+    const key = normalizeDetailTodoKey({
+      course_name: item.course_name,
+      title: item.title,
+      deadline: item.deadline,
+    });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(detailGeneratedTodoToLunaItem(item));
+  }
+  return merged;
+}
+
+function refreshDetailGeneratedTodoCaches(next: DetailGeneratedTodo[]) {
+  const cachedTodos = getCached<LunaTodoItem[]>("luna_todo") ?? [];
+  replaceCacheEntry("luna_todo", mergeDetailTodosIntoLunaTodos(cachedTodos, next));
+}
+
+export async function getDetailGeneratedTodos(): Promise<DetailGeneratedTodo[]> {
+  if (_isDemo()) return [];
+  const json = await getDataCache(DETAIL_GENERATED_TODO_KEY);
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveDetailGeneratedTodos(
+  suggestions: DetailTodoSuggestion[],
+): Promise<DetailGeneratedTodo[]> {
+  if (_isDemo() || suggestions.length === 0) return [];
+  const existing = await getDetailGeneratedTodos();
+  const seen = new Set(existing.map(normalizeDetailTodoKey));
+  const createdAt = new Date().toISOString();
+  const additions: DetailGeneratedTodo[] = [];
+  for (const item of suggestions) {
+    const title = (item.title || "").trim();
+    if (!title) continue;
+    const normalized: DetailGeneratedTodo = {
+      id: `detail-${createdAt}-${additions.length}`,
+      title,
+      course_name: (item.course_name || "").trim(),
+      content_type: (item.content_type || "課題").trim(),
+      deadline: (item.deadline || "").trim(),
+      source_url: (item.source_url || "").trim(),
+      source_excerpt: (item.source_excerpt || "").trim(),
+      note: (item.note || "").trim(),
+      created_at: createdAt,
+    };
+    const key = normalizeDetailTodoKey(normalized);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    additions.push(normalized);
+  }
+  const next = [...existing, ...additions];
+  await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
+  refreshDetailGeneratedTodoCaches(next);
+  return additions;
+}
+
+export async function completeDetailGeneratedTodo(id: string): Promise<void> {
+  if (_isDemo()) return;
+  const target = id.trim();
+  if (!target) return;
+  const todos = await getDetailGeneratedTodos();
+  const completedAt = new Date().toISOString();
+  const next = todos.map((item) => (
+    item.id === target
+      ? { ...item, completed_at: item.completed_at || completedAt, archived_at: undefined }
+      : item
+  ));
+  await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
+  refreshDetailGeneratedTodoCaches(next);
+}
+
+export async function deleteDetailGeneratedTodo(id: string): Promise<void> {
+  if (_isDemo()) return;
+  const target = id.trim();
+  if (!target) return;
+  const next = (await getDetailGeneratedTodos()).filter((item) => item.id !== target);
+  await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
+  refreshDetailGeneratedTodoCaches(next);
 }
 
 export async function openSettingsWindow(panel?: string): Promise<void> {

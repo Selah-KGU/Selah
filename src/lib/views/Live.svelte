@@ -171,6 +171,36 @@
     const chunk = snapshot.summaries[activeSummaryIdx];
     return (chunk?.terms ?? []).filter((term) => term.term?.trim() && term.explanation?.trim());
   });
+
+  // Stacked-card pager state for term annotations.
+  // No wheel interception — switching is via click on a back card or the prev/next chips.
+  let termCardIdx = $state(0);
+  // activeSummaryTerms is a $derived built with .filter(), so it returns a NEW
+  // array reference every time the snapshot updates (every few hundred ms during
+  // a live session). Watching the array itself would reset termCardIdx on every
+  // transcript tick. Instead, derive a stable primitive fingerprint and only reset
+  // when the term set actually changes.
+  const termFingerprint = $derived(
+    activeSummaryTerms.map((t) => t.term).join("|")
+  );
+  $effect(() => {
+    termFingerprint;
+    // Only clamp if our current pick is now out of range (e.g. user switched
+    // segments to one with fewer terms). Don't otherwise touch termCardIdx —
+    // appending new terms shouldn't yank the user back to the first card.
+    if (termCardIdx >= activeSummaryTerms.length) {
+      termCardIdx = 0;
+    }
+  });
+  function selectTermCard(i: number) {
+    termCardIdx = Math.max(0, Math.min(activeSummaryTerms.length - 1, i));
+  }
+  function termCardPrev() {
+    if (termCardIdx > 0) termCardIdx -= 1;
+  }
+  function termCardNext() {
+    if (termCardIdx < activeSummaryTerms.length - 1) termCardIdx += 1;
+  }
   const termFloatLabels = $derived.by(() => {
     switch ((aiReplyLanguage || "ja").toLowerCase()) {
       case "zh":
@@ -1426,25 +1456,45 @@
   {/if}
 
   {#if activeSummaryTerms.length > 0}
-    <aside class="term-float" aria-label={termFloatLabels.title}>
-      <div class="term-float-head">
-        <span class="term-float-icon">※</span>
-        <span class="term-float-title">{termFloatLabels.title}</span>
-        {#if snapshot.summaries[activeSummaryIdx]?.range_label}
-          <span class="term-float-range">{snapshot.summaries[activeSummaryIdx].range_label}</span>
-        {/if}
-      </div>
-      <div class="term-float-list">
-        {#each activeSummaryTerms as item}
-          <div class="term-note">
-            <div class="term-note-term">{item.term}</div>
-            <div class="term-note-body">{item.explanation}</div>
-            {#if item.source_excerpt}
-              <div class="term-note-source">{termFloatLabels.source}: {item.source_excerpt}</div>
-            {/if}
-          </div>
-        {/each}
-      </div>
+    <aside class="term-stack" aria-label={termFloatLabels.title}>
+      {#each activeSummaryTerms as item, i (i + "-" + item.term)}
+        {@const offset = i - termCardIdx}
+        {@const visible = offset >= 0 && offset <= 2}
+        <button
+          type="button"
+          class="term-card"
+          class:active={offset === 0}
+          class:peek={offset > 0}
+          style="
+            transform: translateY({offset * 14}px) scale({1 - offset * 0.04});
+            opacity: {offset === 0 ? 1 : 0.72 - (offset - 1) * 0.22};
+            z-index: {100 - offset};
+            pointer-events: {visible ? 'auto' : 'none'};
+            visibility: {visible ? 'visible' : 'hidden'};
+            {visible ? '' : 'transition: none;'}
+          "
+          onclick={() => selectTermCard(i)}
+          aria-hidden={!visible}
+          tabindex={offset === 0 ? 0 : -1}
+        >
+          <div class="term-card-term">{item.term}</div>
+          <div class="term-card-body">{item.explanation}</div>
+          {#if item.source_excerpt}
+            <div class="term-card-source">{item.source_excerpt}</div>
+          {/if}
+        </button>
+      {/each}
+      {#if activeSummaryTerms.length > 1}
+        <div class="term-stack-nav">
+          <button class="term-stack-arrow" onclick={termCardPrev} disabled={termCardIdx === 0} aria-label="前の用語">
+            <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M7 2L3 5l4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <span class="term-stack-counter">{termCardIdx + 1}/{activeSummaryTerms.length}</span>
+          <button class="term-stack-arrow" onclick={termCardNext} disabled={termCardIdx === activeSummaryTerms.length - 1} aria-label="次の用語">
+            <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      {/if}
     </aside>
   {/if}
 
@@ -2487,118 +2537,162 @@
     transform: scale(0.97);
   }
 
-  .term-float {
+  /* ── 名詞注釈: stacked notification-style cards ────────────────── */
+  .term-stack {
     position: absolute;
     right: 16px;
     bottom: 16px;
     z-index: 34;
-    width: min(320px, calc(100% - 32px));
-    max-height: min(42vh, 360px);
+    width: min(300px, calc(100% - 32px));
+    padding: 0;
+    background: transparent;
+    border: none;
+    animation: term-stack-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .term-card {
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
-    border-radius: 12px;
+    gap: 4px;
+    width: 100%;
+    text-align: left;
+    font-family: inherit;
+    padding: 11px 13px 10px;
+    border-radius: 13px;
     border: 0.5px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
-    background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+    /* Peek cards: solid-ish background, NO backdrop-filter — they sit behind the
+       active card and only show a thin strip; running a GPU blur on them is wasted
+       power. Only the active card pays for the glass effect. */
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    overflow: hidden;
+    cursor: pointer;
+    transform-origin: 50% 0;
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.22s ease;
+  }
+  /* The active card uses normal flow so the container's height adapts to its content.
+     Peek cards (position:absolute inset:0) stretch to that same height — guarantees
+     consistent stacking regardless of each card's own content length. */
+  .term-card.active {
+    position: relative;
+    inset: auto;
+    min-height: 92px;
+    cursor: default;
+    background: color-mix(in srgb, var(--bg-primary) 90%, transparent);
     backdrop-filter: blur(18px) saturate(1.25);
     -webkit-backdrop-filter: blur(18px) saturate(1.25);
-    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16), 0 2px 10px rgba(0, 0, 0, 0.08);
-    animation: term-float-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  }
+  .term-card.peek:hover {
+    background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+  }
+  .term-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
-  .term-float-head {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    padding: 10px 12px 8px;
-    border-bottom: 0.5px solid color-mix(in srgb, var(--text-primary) 8%, transparent);
-  }
-
-  .term-float-icon {
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 800;
-  }
-
-  .term-float-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
+  .term-card-term {
+    font-size: 12.5px;
     font-weight: 800;
     color: var(--text-primary);
-  }
-
-  .term-float-range {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--text-tertiary);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .term-float-list {
-    overflow: auto;
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    scrollbar-width: none;
-  }
-  .term-float-list::-webkit-scrollbar { display: none; }
-
-  .term-note {
-    padding: 9px 10px;
-    border-radius: 9px;
-    background: color-mix(in srgb, var(--text-primary) 4%, transparent);
-    border-left: 3px solid color-mix(in srgb, var(--accent) 54%, transparent);
-  }
-
-  .term-note-term {
-    font-size: 12px;
-    font-weight: 800;
-    color: var(--text-primary);
-    line-height: 1.35;
+    line-height: 1.3;
     word-break: break-word;
+    /* Leave space for the nav chip in the top-right of the active card. */
+    padding-right: 70px;
   }
 
-  .term-note-body {
-    margin-top: 4px;
+  .term-card-body {
     font-size: 12px;
     line-height: 1.55;
     color: var(--text-secondary);
     word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
-  .term-note-source {
-    margin-top: 5px;
+  .term-card-source {
+    margin-top: 2px;
     font-size: 10.5px;
-    line-height: 1.45;
+    line-height: 1.4;
     color: var(--text-tertiary);
     word-break: break-word;
+    border-left: 1.5px solid color-mix(in srgb, var(--accent) 28%, transparent);
+    padding-left: 7px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
-  @keyframes term-float-in {
-    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  .term-stack-nav {
+    position: absolute;
+    top: 7px;
+    right: 9px;
+    z-index: 110;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 4px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+    border: 0.5px solid color-mix(in srgb, var(--accent) 22%, var(--glass-border));
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .term-stack-arrow {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    border-radius: 50%;
+    color: var(--accent);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+  }
+  .term-stack-arrow:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .term-stack-arrow:active:not(:disabled) {
+    transform: scale(0.92);
+  }
+  .term-stack-arrow:disabled {
+    color: var(--text-tertiary);
+    cursor: default;
+    opacity: 0.35;
+  }
+  .term-stack-counter {
+    padding: 0 4px;
+    color: var(--accent);
+    font-size: 10.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    min-width: 24px;
+    text-align: center;
+  }
+
+  @keyframes term-stack-in {
+    from { opacity: 0; transform: translateY(10px) scale(0.97); }
     to { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   @media (max-width: 700px) {
-    .term-float {
+    .term-stack {
       left: 12px;
       right: 12px;
       bottom: 12px;
       width: auto;
-      max-height: 34vh;
     }
   }
 
