@@ -131,6 +131,8 @@ pub struct LunaSurveyQuestion {
     pub body: String,
     pub required: bool,
     pub answer_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub answer_name: String,
     pub options: Vec<LunaSurveyOption>,
 }
 
@@ -987,6 +989,8 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
     let q_block_sel = Selector::parse("#survey_question_subblock .question_itme").unwrap();
     let q_required_sel = Selector::parse(".contents-hissu").unwrap();
     let q_branch_type_sel = Selector::parse(".branchType").unwrap();
+    let q_answer_control_sel =
+        Selector::parse("textarea[name], select[name], input[name]").unwrap();
 
     for (q_idx, q_el) in doc.select(&q_block_sel).enumerate() {
         let required = q_el.select(&q_required_sel).next().is_some();
@@ -1002,18 +1006,11 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
             .next()
             .and_then(|e| e.value().attr("value"))
             .unwrap_or_default();
-        let answer_type = match branch_type {
-            "list" => "list",
-            "radio" | "multRadio" => "radio",
-            "check" | "multCheck" => "checkbox",
-            "text" | "textArea" => "text",
-            _ => "",
-        }
-        .to_string();
+        let mut answer_type = normalize_survey_answer_type(branch_type);
 
         // Extract option labels from answerListContents_X_Y.setJsonData
         let mut options = Vec::new();
-        if answer_type != "text" {
+        if answer_type != "text" && answer_type != "textarea" {
             let mut opt_idx = 0;
             loop {
                 let var_name = format!("answerListContents_{}_{}", q_idx, opt_idx);
@@ -1028,6 +1025,22 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
                 }
             }
         }
+        let answer_name = q_el
+            .select(&q_answer_control_sel)
+            .filter_map(|e| {
+                let name = e.value().attr("name").unwrap_or_default();
+                let input_type = e.value().attr("type").unwrap_or_default();
+                if is_survey_answer_input_name(name, input_type) {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
+            .next()
+            .unwrap_or_default();
+        if answer_type.is_empty() {
+            answer_type = infer_survey_answer_type(&q_html, &answer_name);
+        }
 
         if !body.is_empty() || !options.is_empty() {
             questions.push(LunaSurveyQuestion {
@@ -1035,6 +1048,7 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
                 body,
                 required,
                 answer_type,
+                answer_name,
                 options,
             });
         }
@@ -1103,6 +1117,50 @@ pub fn parse_luna_survey_detail(html: &str) -> LunaSurveyDetail {
         questions,
         form_fields,
     }
+}
+
+fn normalize_survey_answer_type(branch_type: &str) -> String {
+    match branch_type.trim().to_ascii_lowercase().as_str() {
+        "list" => "list",
+        "radio" | "multradio" => "radio",
+        "check" | "multcheck" => "checkbox",
+        "text" => "text",
+        "textarea" => "textarea",
+        _ => "",
+    }
+    .to_string()
+}
+
+fn infer_survey_answer_type(question_html: &str, answer_name: &str) -> String {
+    let lower = question_html.to_ascii_lowercase();
+    let answer_name = answer_name.to_ascii_lowercase();
+    if answer_name.ends_with(".commenttext")
+        || lower.contains("textarea")
+        || (lower.contains("branchtype")
+            && (lower.contains("value=\"textarea\"") || lower.contains("value='textarea'")))
+    {
+        return "textarea".to_string();
+    }
+    if lower.contains("type=\"text\"")
+        || lower.contains("type='text'")
+        || lower.contains("type=text")
+        || (lower.contains("branchtype")
+            && (lower.contains("value=\"text\"") || lower.contains("value='text'")))
+    {
+        return "text".to_string();
+    }
+    String::new()
+}
+
+fn is_survey_answer_input_name(name: &str, input_type: &str) -> bool {
+    if !name.starts_with("answer[") {
+        return false;
+    }
+    let input_type = input_type.trim().to_ascii_lowercase();
+    if input_type == "hidden" || input_type == "file" || input_type == "button" {
+        return false;
+    }
+    !(name.ends_with(".surveyNo") || name.ends_with(".surveyNoSub"))
 }
 
 /// Extract a URL from onclick attributes or <a> tags within a row element

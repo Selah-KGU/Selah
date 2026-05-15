@@ -51,8 +51,14 @@ function renderSurveyDetail(data) {
         }
         h += '</div>';
       }
-      if (q.answer_type === 'text') {
-        h += '<div class="survey-q-options"><textarea class="survey-text-input" rows="3" name="sq' + qi + '" placeholder="\u81ea\u7531\u8a18\u8ff0"></textarea></div>';
+      if (q.answer_type === 'text' || q.answer_type === 'textarea') {
+        h += '<div class="survey-q-options">';
+        if (q.answer_type === 'text') {
+          h += '<input class="survey-text-input survey-line-input" type="text" name="sq' + qi + '" placeholder="\u56de\u7b54\u3092\u5165\u529b">';
+        } else {
+          h += '<textarea class="survey-text-input" rows="2" name="sq' + qi + '" placeholder="\u81ea\u7531\u8a18\u8ff0"></textarea>';
+        }
+        h += '</div>';
       }
       h += '</div>';
     }
@@ -80,7 +86,7 @@ function renderSurveyDetail(data) {
   var surveyTextDraftKeys = [];
   if (data.questions && data.questions.length) {
     for (var qi = 0; qi < data.questions.length; qi++) {
-      if (data.questions[qi].answer_type !== 'text') continue;
+      if (data.questions[qi].answer_type !== 'text' && data.questions[qi].answer_type !== 'textarea') continue;
       var textInput = c.querySelector('.survey-q-card[data-qi="' + qi + '"] .survey-text-input');
       var textDraftKey = lunaDraftKey(['survey-text', _currentPagePath || window.location.search, qi]);
       bindDraftField(textInput, textDraftKey);
@@ -90,7 +96,7 @@ function renderSurveyDetail(data) {
   // Submit handler
   var submitBtn = document.getElementById('surveySubmitBtn');
   var statusEl = document.getElementById('surveySubmitStatus');
-  if (submitBtn && data.form_fields) {
+  if (submitBtn && data.form_fields && data.form_fields.length) {
     submitBtn.addEventListener('click', async function() {
       var inv = window.__TAURI__?.core?.invoke; if (!inv) return;
       // Collect answers
@@ -103,13 +109,17 @@ function renderSurveyDetail(data) {
         var val = '';
         if (q.answer_type === 'list') {
           val = els[0] ? els[0].value : '';
-        } else if (q.answer_type === 'text') {
+        } else if (q.answer_type === 'text' || q.answer_type === 'textarea') {
           val = els[0] ? els[0].value : '';
+        } else if (q.answer_type === 'checkbox') {
+          val = [];
+          els.forEach(function(el) { if (el.checked) val.push(el.value); });
         } else {
           els.forEach(function(el) { if (el.checked) val = el.value; });
         }
-        answers[String(i)] = val;
-        if (q.required && !val) missing.push('Q' + q.number);
+        answers[String(i)] = { name: q.answer_name || '', value: val };
+        var hasAnswer = Array.isArray(val) ? val.length > 0 : !!val;
+        if (q.required && !hasAnswer) missing.push('Q' + q.number);
       }
       if (missing.length) {
         statusEl.textContent = '\u672a\u56de\u7b54: ' + missing.join(', ');
@@ -133,7 +143,7 @@ function renderSurveyDetail(data) {
         submitBtn.textContent = '\u518d\u8a66\u884c';
       }
     });
-  } else if (submitBtn && !data.form_fields) {
+  } else if (submitBtn && (!data.form_fields || !data.form_fields.length)) {
     submitBtn.disabled = true;
     submitBtn.style.opacity = '0.4';
     statusEl.textContent = '\u30d5\u30a9\u30fc\u30e0\u60c5\u5831\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f';

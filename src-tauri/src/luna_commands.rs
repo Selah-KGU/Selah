@@ -1277,7 +1277,7 @@ pub async fn luna_reply_inquiry(
 pub async fn luna_submit_survey(
     state: State<'_, LunaState>,
     form_fields: Vec<(String, String)>,
-    answers: std::collections::HashMap<String, String>,
+    answers: std::collections::HashMap<String, serde_json::Value>,
 ) -> Result<(), String> {
     // Build the full POST params: hidden fields + user answers
     let mut params: Vec<(String, String)> = Vec::new();
@@ -1288,34 +1288,123 @@ pub async fn luna_submit_survey(
         params.push((k.clone(), v.clone()));
     }
 
-    // Merge user answers: answers map is {questionIndex: selectedValue}
-    // The form field is answer[N].answerItem[0].answer = selectedValue
+    // Merge user answers: answers map is {questionIndex: selectedValue | selectedValues[]}
     for (idx_str, value) in &answers {
         let idx: usize = idx_str.parse().map_err(|_| "無効な質問インデックスです")?;
-        let field_name = format!("answer[{}].answerItem[0].answer", idx);
-        // Replace existing empty field or add new one
-        let mut found = false;
-        for p in &mut params {
-            if p.0 == field_name {
-                p.1 = value.clone();
-                found = true;
-                break;
+        let (answer_name, answer_value) = survey_answer_payload(idx, value);
+        let values = survey_answer_values(answer_value, !answer_name.is_empty());
+        for (item_idx, answer_value) in values.iter().enumerate() {
+            let field_name = survey_answer_field_name(&answer_name, idx, item_idx);
+            // Replace existing empty field or add new one
+            let mut found = false;
+            for p in &mut params {
+                if p.0 == field_name {
+                    p.1 = answer_value.clone();
+                    found = true;
+                    break;
+                }
             }
-        }
-        if !found {
-            params.push((field_name, value.clone()));
+            if !found {
+                params.push((field_name, answer_value.clone()));
+            }
         }
     }
 
     let http = luna_http(&state).await?;
     let response = luna_post(&http, "/lms/course/surveys/take", &params).await?;
 
-    // Check for error indicators in the response
-    if response.contains("エラー") && response.contains("回答期間を過ぎている") {
-        return Err("回答期間を過ぎています".into());
+    if let Some(error) = detect_survey_submit_error(&response) {
+        return Err(error);
     }
 
     Ok(())
+}
+
+fn detect_survey_submit_error(response: &str) -> Option<String> {
+    if response.contains("回答期間を過ぎている") {
+        return Some("回答期間を過ぎています".to_string());
+    }
+    if response.contains("answer-type-") && response.contains("-error") {
+        let text = html_to_compact_text(response);
+        for marker in ["入力してください", "選択してください", "文字以内", "エラー"]
+        {
+            if text.contains(marker) {
+                return Some(format!("回答を送信できませんでした: {}", marker));
+            }
+        }
+        if response.contains("回答する") && response.contains("survey_question_subblock") {
+            return Some("回答を送信できませんでした。入力内容を確認してください".to_string());
+        }
+    }
+    if response.contains("survey_question_subblock") && response.contains("answer-btn") {
+        return Some("回答が受け付けられませんでした。入力内容を確認してください".to_string());
+    }
+    None
+}
+
+fn html_to_compact_text(html: &str) -> String {
+    let mut text = String::new();
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn survey_answer_payload(idx: usize, value: &serde_json::Value) -> (String, &serde_json::Value) {
+    if let serde_json::Value::Object(obj) = value {
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("answer[{}].answerItem[0].answer", idx));
+        let answer_value = obj.get("value").unwrap_or(value);
+        return (name, answer_value);
+    }
+    (format!("answer[{}].answerItem[0].answer", idx), value)
+}
+
+fn survey_answer_values(value: &serde_json::Value, keep_empty: bool) -> Vec<String> {
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+            .filter(|s| keep_empty || !s.is_empty())
+            .collect(),
+        serde_json::Value::String(s) if keep_empty || !s.is_empty() => vec![s.clone()],
+        serde_json::Value::Number(n) => vec![n.to_string()],
+        serde_json::Value::Bool(b) => vec![b.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn survey_answer_field_name(base_name: &str, idx: usize, item_idx: usize) -> String {
+    if item_idx == 0 {
+        return base_name.to_string();
+    }
+    let marker = ".answerItem[";
+    if let Some(start) = base_name.find(marker) {
+        let after_start = start + marker.len();
+        if let Some(end_rel) = base_name[after_start..].find(']') {
+            let end = after_start + end_rel;
+            return format!(
+                "{}{}{}",
+                &base_name[..after_start],
+                item_idx,
+                &base_name[end..]
+            );
+        }
+    }
+    format!("answer[{}].answerItem[{}].answer", idx, item_idx)
 }
 
 /// Prefetch the attendance send form to extract time-window metadata
@@ -2945,5 +3034,44 @@ mod tests {
 
         assert!(message.contains("提出開始前です"));
         assert!(message.contains("2999/04/22 17:00 ～ 2999/04/29 24:00"));
+    }
+
+    #[test]
+    fn detects_survey_submit_returned_answer_form_as_error() {
+        let html = r#"
+            <div id="survey_question_subblock"></div>
+            <div class="highlight-txt answer-type-textarea-error">入力してください</div>
+            <a class="under-btn btn-txt btn-color answer-btn">回答する</a>
+        "#;
+
+        let error = detect_survey_submit_error(html).unwrap();
+        assert!(error.contains("入力してください"));
+    }
+
+    #[test]
+    fn keeps_blank_survey_comment_text_value() {
+        let value = serde_json::json!({
+            "name": "answer[0].commentText",
+            "value": ""
+        });
+
+        let (name, answer_value) = survey_answer_payload(0, &value);
+        assert_eq!(name, "answer[0].commentText");
+        assert_eq!(
+            survey_answer_values(answer_value, !name.is_empty()),
+            vec![""]
+        );
+    }
+
+    #[test]
+    fn expands_survey_checkbox_answer_item_names() {
+        assert_eq!(
+            survey_answer_field_name("answer[3].answerItem[0].answer", 3, 0),
+            "answer[3].answerItem[0].answer"
+        );
+        assert_eq!(
+            survey_answer_field_name("answer[3].answerItem[0].answer", 3, 1),
+            "answer[3].answerItem[1].answer"
+        );
     }
 }

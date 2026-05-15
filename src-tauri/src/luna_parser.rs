@@ -893,6 +893,56 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_survey_text_questions() {
+        let html = r#"
+            <form id="surveysTakeForm">
+              <input type="hidden" name="_csrf" value="token">
+              <input type="hidden" name="answer[0].surveyNo" value="1">
+              <input type="hidden" name="answer[1].answerItem[0].answer" value="">
+              <input type="hidden" name="answer[2].answerItem[0].answer" value="">
+            </form>
+            <div id="survey_question_subblock">
+              <div class="question_itme">
+                <script>
+                  _QuillUtil.surveyTakeItemText.setJsonData("{\"ops\":[{\"insert\":\"本日の活動内容\\n\"}]}", 'reference');
+                </script>
+                <textarea id="answer_comment_0" class="answerComment branch_itme textarea" name="answer[0].commentText"></textarea>
+              </div>
+              <div class="question_itme">
+                <input type="hidden" class="branchType" value="list">
+                <script>
+                  _QuillUtil.surveyTakeItemText.setJsonData("{\"ops\":[{\"insert\":\"進捗度合い\\n\"}]}", 'reference');
+                  _QuillUtil.answerListContents_1_0.setJsonData("{\"ops\":[{\"insert\":\"0%\\n\"}]}", 'reference');
+                  _QuillUtil.answerListContents_1_1.setJsonData("{\"ops\":[{\"insert\":\"10%\\n\"}]}", 'reference');
+                </script>
+                <select id="answerSelector_1" class="answer-type-list" name="answer[1].answerItem[0].answer">
+                  <option value="1">0%</option>
+                  <option value="2">10%</option>
+                </select>
+              </div>
+              <div class="question_itme">
+                <input type="hidden" class="branchType" value="text">
+                <script>
+                  _QuillUtil.surveyTakeItemText.setJsonData("{\"ops\":[{\"insert\":\"名前を入力してください\\n\"}]}", 'reference');
+                </script>
+              </div>
+            </div>
+        "#;
+
+        let result = parse_luna_survey_detail(html);
+        assert_eq!(result.questions.len(), 3);
+        assert_eq!(result.questions[0].answer_type, "textarea");
+        assert_eq!(result.questions[0].answer_name, "answer[0].commentText");
+        assert_eq!(result.questions[1].answer_type, "list");
+        assert_eq!(
+            result.questions[1].answer_name,
+            "answer[1].answerItem[0].answer"
+        );
+        assert_eq!(result.questions[1].options.len(), 2);
+        assert_eq!(result.questions[2].answer_type, "text");
+    }
+
+    #[test]
     fn test_extract_quill_delta_text() {
         let script = r#"
             _QuillUtil.materialContents_0.setJsonData("{\"ops\":[{\"insert\":\"\u51FA\u5E2D\u78BA\u8A8D\u306F\u6388\u696D\u5192\u982D\u306B\u884C\u3044\u307E\u3059\u3002\\n\"},{\"attributes\":{\"bold\":true},\"insert\":\"\u5EA7\u5E2D\u8868\u304C\u3042\u308A\u307E\u3059\u3002\"},{\"insert\":\"\\n\"}]}", 'reference');
