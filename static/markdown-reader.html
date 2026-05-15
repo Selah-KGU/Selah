@@ -355,6 +355,7 @@
   <button class="tb-btn primary hidden" id="saveBtn" type="button" disabled>保存<span class="dot hidden" id="dirtyDot"></span></button>
   <button class="tb-btn hidden" id="cancelBtn" type="button">編集を取り消す</button>
 
+  <button class="tb-btn" id="shareBtn" type="button">共有</button>
   <button class="tb-btn" id="revealBtn" type="button">Finderで表示</button>
   <button class="tb-btn" id="externalBtn" type="button">外部アプリで開く</button>
 </div>
@@ -626,7 +627,7 @@
 
   // ── Save ──
   async function save() {
-    if (!invoke || !currentPath) return;
+    if (!invoke || !currentPath) return false;
     var contents = $('editor').value;
     var btn = $('saveBtn');
     btn.disabled = true;
@@ -641,13 +642,36 @@
       setDirty(false);
       toast('保存しました');
       exitEdit();
+      return true;
     } catch (e) {
       console.error('[md-reader] save failed:', e);
       toast('保存失敗: ' + (e && e.message ? e.message : String(e)), true);
       setDirty(true);
+      return false;
     } finally {
       if (label && label.nodeType === 3) label.nodeValue = prev || '保存';
       btn.disabled = !currentEditorIsDirty();
+    }
+  }
+
+  async function shareCurrentFile() {
+    if (!invoke || !currentPath) return;
+    var btn = $('shareBtn');
+    var prev = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '共有中…';
+    try {
+      if (currentEditorIsDirty()) {
+        var saved = await save();
+        if (!saved) return;
+      }
+      await invoke('share_downloaded_file_native', { path: currentPath });
+    } catch (e) {
+      console.error('[md-reader] share failed:', e);
+      toast('共有失敗: ' + (e && e.message ? e.message : String(e)), true);
+    } finally {
+      btn.textContent = prev || '共有';
+      btn.disabled = !currentPath;
     }
   }
 
@@ -659,10 +683,12 @@
       savedMarkdown = '';
       showError(payload.error);
       $('editToggleBtn').disabled = true;
+      $('shareBtn').disabled = true;
       return;
     }
     savedMarkdown = payload.markdown || '';
     render(savedMarkdown);
+    $('shareBtn').disabled = !currentPath;
     if (editing) {
       toast('ファイルが更新されました');
     } else {
@@ -676,12 +702,14 @@
   }
 
   // ── Wiring ──
+  $('shareBtn').disabled = true;
   $('tocToggleBtn').addEventListener('click', function () { setTocVisible(!tocVisible); });
   $('fontDownBtn').addEventListener('click', function () { bumpFont(-1); });
   $('fontUpBtn').addEventListener('click', function () { bumpFont(1); });
   $('editToggleBtn').addEventListener('click', enterEdit);
   $('cancelBtn').addEventListener('click', cancelEdit);
   $('saveBtn').addEventListener('click', save);
+  $('shareBtn').addEventListener('click', shareCurrentFile);
   $('editor').addEventListener('input', function () { setDirty(currentEditorIsDirty()); });
   $('viewScroll').addEventListener('scroll', function () {
     if (!editing && tocVisible) updateActiveHeading();

@@ -728,6 +728,40 @@ pub fn open_downloaded_file_external(app: tauri::AppHandle, path: String) -> Res
     Ok(())
 }
 
+/// Share a downloaded/material file through the native OS share surface. The
+/// path is restricted to the same managed download roots used by file opening.
+#[tauri::command]
+pub fn share_downloaded_file_native(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let canonical = validate_downloads_path(&path)?;
+    let file_name = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Markdown")
+        .to_string();
+    super::app_config::share_file_path_native(&app, &canonical, &file_name)
+}
+
+#[tauri::command]
+pub fn share_downloaded_files_native(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("共有するファイルが選択されていません".into());
+    }
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let canonical = validate_downloads_path(&path)?;
+        let file_name = canonical
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        files.push((canonical, file_name));
+    }
+    super::app_config::share_file_paths_native(&app, &files)
+}
+
 /// Max size of a markdown file the in-app reader will load. Larger files are
 /// pushed to the external opener.
 const MARKDOWN_MAX_BYTES: u64 = 8 * 1024 * 1024;

@@ -21,13 +21,13 @@ use windows::ApplicationModel::DataTransfer::{
 #[cfg(target_os = "windows")]
 use windows::Foundation::TypedEventHandler;
 #[cfg(target_os = "windows")]
-use windows::Storage::StorageFile;
-#[cfg(target_os = "windows")]
-use windows::Storage::Streams::RandomAccessStreamReference;
+use windows::Storage::{IStorageItem, StorageFile};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::WinRT::{RoGetActivationFactory, RoInitialize, RO_INIT_MULTITHREADED};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::IDataTransferManagerInterop;
+#[cfg(target_os = "windows")]
+use windows_core::Interface;
 
 #[cfg(target_os = "windows")]
 struct SendSyncDtm(DataTransferManager, i64);
@@ -456,18 +456,7 @@ pub async fn share_image_native(
         .map_err(|e| format!("一時ディレクトリの作成に失敗: {}", e))?;
     let tmp_path = tmp_dir.join(&file_name);
     std::fs::write(&tmp_path, &data).map_err(|e| format!("一時ファイルの書き込みに失敗: {}", e))?;
-    #[cfg(not(target_os = "macos"))]
-    let _ = &app;
-
-    #[cfg(target_os = "macos")]
-    {
-        open_macos_share_picker(&app, &tmp_path)?;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        open_windows_share_picker(&app, &tmp_path, &file_name)?;
-    }
+    let result = share_file_path_native(&app, &tmp_path, &file_name);
 
     // Keep the file around long enough for slower share targets to read it.
     let cleanup_path = tmp_path.clone();
@@ -478,41 +467,81 @@ pub async fn share_image_native(
         let _ = std::fs::remove_dir(cleanup_path.parent().unwrap_or(std::path::Path::new("")));
     });
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        return Err("この OS では共有機能はサポートされていません".into());
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    Ok(())
+    result
 }
 
-#[cfg(target_os = "windows")]
-fn open_windows_share_picker(
+pub(crate) fn share_file_path_native(
     app: &tauri::AppHandle,
     path: &std::path::Path,
     file_name: &str,
+) -> Result<(), String> {
+    share_file_paths_native(app, &[(path.to_path_buf(), file_name.to_string())])
+}
+
+pub(crate) fn share_file_paths_native(
+    app: &tauri::AppHandle,
+    files: &[(std::path::PathBuf, String)],
+) -> Result<(), String> {
+    if files.is_empty() {
+        return Err("共有するファイルが選択されていません".into());
+    }
+    for (path, _) in files {
+        if !path.is_file() {
+            return Err("共有するファイルが見つかりません".into());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return open_macos_share_picker(app, files);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return open_windows_file_share_picker(app, files);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = app;
+        let _ = files;
+        Err("この OS では共有機能はサポートされていません".into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_file_share_picker(
+    app: &tauri::AppHandle,
+    files: &[(std::path::PathBuf, String)],
 ) -> Result<(), String> {
     use windows::Win32::Foundation::HWND;
 
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "共有元のウィンドウが見つかりません".to_string())?;
-    // Extract the raw handle as isize so the non-Send HWND / WebviewWindow
-    // are not captured by the move closure below.  isize is trivially Send.
     let hwnd_raw = window
         .hwnd()
         .map_err(|e| format!("Windows 共有ウィンドウの取得に失敗しました: {}", e))?
         .0 as isize;
     drop(window);
 
-    let path_str = path.to_string_lossy().to_string();
-    let title = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(file_name)
-        .to_string();
+    let share_files: Vec<(String, String)> = files
+        .iter()
+        .map(|(path, file_name)| {
+            let title = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(file_name)
+                .to_string();
+            (path.to_string_lossy().to_string(), title)
+        })
+        .collect();
+    let title = if share_files.len() == 1 {
+        share_files[0].1.clone()
+    } else {
+        format!("{}件のファイル", share_files.len())
+    };
     let (tx, rx) = std::sync::mpsc::channel();
 
     app.run_on_main_thread(move || {
@@ -520,23 +549,27 @@ fn open_windows_share_picker(
             let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
             let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
 
-            let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_str.as_str()))
-                .map_err(|e| format!("共有用ファイルの取得に失敗しました: {}", e))?
-                .get()
-                .map_err(|e| format!("共有用ファイルの読み込みに失敗しました: {}", e))?;
-            let bitmap = RandomAccessStreamReference::CreateFromFile(&file)
-                .map_err(|e| format!("共有画像の準備に失敗しました: {}", e))?;
             let title_for_handler = title.clone();
-            let bitmap_for_handler = bitmap.clone();
+            let files_for_handler = share_files.clone();
             let handler = TypedEventHandler::<DataTransferManager, DataRequestedEventArgs>::new(
                 move |_, args| {
                     if let Some(args) = args.as_ref() {
+                        let mut storage_items = Vec::with_capacity(files_for_handler.len());
+                        for (path, _) in &files_for_handler {
+                            let file =
+                                StorageFile::GetFileFromPathAsync(&HSTRING::from(path.as_str()))?
+                                    .get()?;
+                            let item: IStorageItem = file.cast()?;
+                            storage_items.push(Some(item));
+                        }
+                        let items: windows_collections::IIterable<IStorageItem> =
+                            storage_items.into();
                         let request = args.Request()?;
                         let data = request.Data()?;
                         let properties = data.Properties()?;
                         properties.SetTitle(&HSTRING::from(title_for_handler.as_str()))?;
-                        properties.SetDescription(&HSTRING::from("Selah timetable image"))?;
-                        data.SetBitmap(&bitmap_for_handler)?;
+                        properties.SetDescription(&HSTRING::from("Selah file"))?;
+                        data.SetStorageItems(&items, true)?;
                         data.SetRequestedOperation(DataPackageOperation::Copy)?;
                     }
                     Ok(())
@@ -576,12 +609,15 @@ fn open_windows_share_picker(
 }
 
 #[cfg(target_os = "macos")]
-fn open_macos_share_picker(app: &tauri::AppHandle, path: &std::path::Path) -> Result<(), String> {
+fn open_macos_share_picker(
+    app: &tauri::AppHandle,
+    files: &[(std::path::PathBuf, String)],
+) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "共有元のウィンドウが見つかりません".to_string())?;
     let window_for_main = window.clone();
-    let path_buf = path.to_path_buf();
+    let paths: Vec<std::path::PathBuf> = files.iter().map(|(path, _)| path.clone()).collect();
     let (tx, rx) = std::sync::mpsc::channel();
 
     window
@@ -598,10 +634,18 @@ fn open_macos_share_picker(app: &tauri::AppHandle, path: &std::path::Path) -> Re
                 }
 
                 let view = unsafe { &*(ns_view_ptr as *mut NSView) };
-                let file_url = NSURL::from_file_path(&path_buf)
-                    .ok_or_else(|| "共有用ファイル URL の作成に失敗しました".to_string())?;
-                let item = unsafe { &*(&*file_url as *const NSURL as *const AnyObject) };
-                let items = NSArray::from_slice(&[item]);
+                let file_urls = paths
+                    .iter()
+                    .map(|path| {
+                        NSURL::from_file_path(path)
+                            .ok_or_else(|| "共有用ファイル URL の作成に失敗しました".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let share_items: Vec<&AnyObject> = file_urls
+                    .iter()
+                    .map(|url| unsafe { &*(&**url as *const NSURL as *const AnyObject) })
+                    .collect();
+                let items = NSArray::from_slice(&share_items);
                 let picker = unsafe {
                     let _ = mtm;
                     NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &items)

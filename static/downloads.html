@@ -667,6 +667,7 @@
       <div class="selection-actions">
         <button class="toolbar-btn" onclick="selectAllVisible()">表示中を選択</button>
         <button class="toolbar-btn" onclick="clearSelection()">選択解除</button>
+        <button class="toolbar-btn" onclick="shareSelectedFiles()" id="shareSelectedFilesBtn">共有</button>
         <button class="toolbar-btn" onclick="deleteSelectedRecords()">履歴から削除</button>
         <button class="toolbar-btn danger" onclick="deleteSelectedFiles()" id="deleteSelectedFilesBtn">ファイルを削除</button>
       </div>
@@ -1369,11 +1370,14 @@
   function renderSelectionBar() {
     var bar = document.getElementById('selectionBar');
     var summary = document.getElementById('selectionSummary');
+    var shareBtn = document.getElementById('shareSelectedFilesBtn');
     var deleteBtn = document.getElementById('deleteSelectedFilesBtn');
     var rows = selectedRecords();
     var existing = rows.filter(function(r) { return r.file_exists !== false && r.path; });
     bar.classList.toggle('hidden', rows.length === 0);
     summary.textContent = rows.length + '件選択中';
+    shareBtn.disabled = existing.length === 0;
+    shareBtn.textContent = '共有';
     deleteBtn.disabled = existing.length === 0;
     if (!bulkDeleteArmed) deleteBtn.textContent = 'ファイルを削除';
   }
@@ -1403,6 +1407,26 @@
     if (!invoke) return;
     try { await invoke('luna_reveal_file', { path: path }); }
     catch(e) { console.error('Failed to reveal file:', e); }
+  }
+
+  async function shareSelectedFiles() {
+    if (!invoke) return;
+    var rows = selectedRecords().filter(function(r) { return r.file_exists !== false && r.path; });
+    var paths = rows.map(function(r) { return r.path; });
+    if (!paths.length) return;
+
+    var btn = document.getElementById('shareSelectedFilesBtn');
+    btn.disabled = true;
+    btn.textContent = '共有中…';
+    try {
+      await invoke('share_downloaded_files_native', { paths: paths });
+      document.getElementById('statusText').textContent = paths.length + '件を共有に送信しました';
+    } catch(e) {
+      console.error('Failed to share selected files:', e);
+      document.getElementById('statusText').textContent = '共有に失敗しました: ' + e;
+    } finally {
+      renderSelectionBar();
+    }
   }
 
   async function removeRecord(id) {

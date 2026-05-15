@@ -444,6 +444,8 @@ pub fn run() {
             commands::check_file_downloaded,
             commands::open_downloaded_file,
             commands::open_downloaded_file_external,
+            commands::share_downloaded_file_native,
+            commands::share_downloaded_files_native,
             commands::get_download_preview,
             commands::open_markdown_file_window,
             commands::get_pending_markdown_payload,
