@@ -305,14 +305,9 @@ input:focus {
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-@keyframes slide-up {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* --- Shared View Styles --- */
-.view {
-  animation: fade-in-scale 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+@keyframes dot-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-4px); }
 }
 
 .view h2 {

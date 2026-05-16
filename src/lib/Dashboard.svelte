@@ -411,5 +411,11 @@
 
   .view-panel.active {
     display: block;
+    animation: view-enter 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  @keyframes view-enter {
+    from { opacity: 0; transform: scale(0.98) translateY(6px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
   }
 </style>

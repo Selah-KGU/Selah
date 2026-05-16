@@ -1557,7 +1557,6 @@
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── Grid ── */
   .grid-wrap {
@@ -1565,14 +1564,14 @@
     overflow-x: auto;
     overflow-y: hidden;
     box-shadow: var(--shadow-md);
-    animation: fade-in 0.3s ease both;
+    animation: grid-enter 0.3s ease both;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
     cursor: grab;
   }
   .grid-wrap:active { cursor: grabbing; }
   .grid-wrap::-webkit-scrollbar { display: none; }
-  @keyframes fade-in { from { opacity: 0; transform: translateY(6px); } }
+  @keyframes grid-enter { from { opacity: 0; transform: translateY(6px); } }
 
   .timetable {
     min-width: 720px;

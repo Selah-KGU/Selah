@@ -1281,9 +1281,8 @@
     border: 1.5px solid var(--glass-border);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: agent-spin 0.8s linear infinite;
+    animation: spin 0.8s linear infinite;
   }
-  @keyframes agent-spin { to { transform: rotate(360deg); } }
 
   /* ── Status Area ── */
   .status-row .status-area {
@@ -1329,15 +1328,11 @@
     height: 5px;
     border-radius: 50%;
     background: var(--accent);
-    animation: dot-wave 1.4s ease-in-out infinite;
+    animation: dot-bounce 1.4s ease-in-out infinite;
   }
   .wait-dots span:nth-child(1) { animation-delay: 0s; }
   .wait-dots span:nth-child(2) { animation-delay: 0.2s; }
   .wait-dots span:nth-child(3) { animation-delay: 0.4s; }
-  @keyframes dot-wave {
-    0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
-    30% { transform: translateY(-4px); opacity: 1; }
-  }
 
   .think-trace {
     font-size: 11.5px;

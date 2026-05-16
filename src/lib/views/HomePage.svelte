@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import { get } from "svelte/store";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedBackendFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
   import type { NotificationsData, NotificationEntry } from "../stores";
@@ -335,7 +335,9 @@
 
   $effect(() => {
     $activeTab;
-    syncHomeUiTimers();
+    // syncHomeUiTimers → tickClock reads and writes `now` ($state).
+    // Without untrack, writing `now` would re-trigger this effect → infinite loop.
+    untrack(() => syncHomeUiTimers());
   });
 
   onMount(async () => {
@@ -1385,16 +1387,11 @@ suggestionsのルール：
     height: 4px;
     border-radius: 50%;
     background: rgba(175, 82, 222, 0.6);
-    animation: ai-dot-bounce 1.2s ease-in-out infinite;
+    animation: dot-bounce 1.2s ease-in-out infinite;
   }
 
   .ai-loading-dots span:nth-child(2) { animation-delay: 0.15s; }
   .ai-loading-dots span:nth-child(3) { animation-delay: 0.3s; }
-
-  @keyframes ai-dot-bounce {
-    0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
-    30% { opacity: 1; transform: translateY(-3px); }
-  }
 
   .ai-loading-lines {
     display: flex;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -195,7 +195,8 @@
     // Only clamp if our current pick is now out of range (e.g. user switched
     // segments to one with fewer terms). Don't otherwise touch termCardIdx —
     // appending new terms shouldn't yank the user back to the first card.
-    if (termCardIdx >= activeSummaryTerms.length) {
+    // Use untrack so writing termCardIdx does not cause this effect to re-run.
+    if (untrack(() => termCardIdx) >= activeSummaryTerms.length) {
       termCardIdx = 0;
     }
   });
@@ -345,7 +346,7 @@
     }
   });
 
-  let lastScrolledLen = $state(-1);
+  let lastScrolledLen = -1; // plain variable — not reactive; writing inside $effect must not re-trigger it
   $effect(() => {
     const len = snapshot.transcript_lines.length;
     if (!scrollEl || !autoFollow || !sttListening) return;
@@ -377,12 +378,14 @@
   // When the selected course changes (and session not active), load cached history
   $effect(() => {
     const course = selectedCourse;
-    if (snapshot.active || !course || showSaveNotif || todoDrafts.length > 0) return;
+    // Use untrack for snapshot/showSaveNotif/todoDrafts reads: writing snapshot
+    // inside the async .then() would otherwise re-trigger this effect → infinite loop.
+    if (!course || untrack(() => snapshot.active || showSaveNotif || todoDrafts.length > 0)) return;
     livePeekDayCache(toLiveCourse(course)).then((cached) => {
-      if (snapshot.active || showSaveNotif || todoDrafts.length > 0) return;
+      if (untrack(() => snapshot.active || showSaveNotif || todoDrafts.length > 0)) return;
       if (cached.transcript_lines.length > 0 || cached.summaries.length > 0) {
         snapshot = cached;
-      } else if (snapshot.course) {
+      } else if (untrack(() => snapshot.course)) {
         snapshot = { active: false, course: null, started_at: null, transcript_lines: [], pending_lines: [], summaries: [] };
       }
     }).catch(() => {});
@@ -2313,10 +2316,6 @@
       transform: scale(1) translateY(0);
     }
   }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
   /* ── Responsive ── */
   @media (max-width: 600px) {
     .capsule-course { max-width: 120px; }

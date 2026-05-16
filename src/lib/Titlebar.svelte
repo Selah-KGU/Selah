@@ -745,11 +745,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-
   @keyframes pulse-glow-blue {
     0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 20%, transparent); }
     50% { box-shadow: 0 0 8px 2px color-mix(in srgb, var(--accent) 16%, transparent); }

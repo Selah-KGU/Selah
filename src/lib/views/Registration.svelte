@@ -332,11 +332,6 @@
     font-size: 13px; padding: 40px 0;
   }
 
-  @keyframes fade-in {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
   @media (prefers-color-scheme: dark) {
     .year-badge { background: rgba(74,144,217,0.12); }
     .total-card { background: rgba(74,144,217,0.06); }

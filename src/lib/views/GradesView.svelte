@@ -191,11 +191,6 @@
     background: #34c759; border-radius: 2px;
   }
 
-  @keyframes fade-in {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
   @media (prefers-color-scheme: dark) {
     .table-row.level1 { background: rgba(74,144,217,0.06); }
     .bar-enrolled, .mini-enrolled { background: rgba(74,144,217,0.2); }

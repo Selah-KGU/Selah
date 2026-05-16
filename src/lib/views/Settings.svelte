@@ -815,7 +815,7 @@
     border: 1.5px solid var(--border-strong);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: settings-spin 0.6s linear infinite;
+    animation: spin 0.6s linear infinite;
   }
   :global(.settings-main .status-msg) {
     font-size: 11px;
@@ -824,8 +824,4 @@
   :global(.settings-main .status-msg.success) { color: var(--green, #34c759); }
   :global(.settings-main .status-msg.error) { color: var(--red); }
   :global(.settings-main .status-msg.loading) { color: var(--text-secondary); }
-
-  @keyframes settings-spin {
-    to { transform: rotate(360deg); }
-  }
 </style>
