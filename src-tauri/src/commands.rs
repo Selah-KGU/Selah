@@ -126,7 +126,9 @@ macro_rules! kgc_fetch_cached {
             Ok(html) => {
                 #[cfg(debug_assertions)]
                 {
-                    let _ = std::fs::write(std::env::temp_dir().join($dump), &html);
+                    if crate::should_dump_debug_html() {
+                        let _ = std::fs::write(std::env::temp_dir().join($dump), &html);
+                    }
                 }
                 let data = $parser(&html);
                 if let Ok(json) = serde_json::to_string(&data) {

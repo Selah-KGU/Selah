@@ -740,15 +740,17 @@ pub async fn luna_fetch_detail(
                     data = finalize_report_detail(data, expected_title);
                     #[cfg(debug_assertions)]
                     {
-                        let filename = path.replace(['/', '?', '&'], "_");
-                        let dump_path = std::env::temp_dir()
-                            .join(format!("luna_report_detail{}.html", filename));
-                        let _ = std::fs::write(&dump_path, &html);
-                        log::info!(
-                            "Luna report detail HTML dumped to {} ({} bytes)",
-                            dump_path.display(),
-                            html.len()
-                        );
+                        if crate::should_dump_debug_html() {
+                            let filename = path.replace(['/', '?', '&'], "_");
+                            let dump_path = std::env::temp_dir()
+                                .join(format!("luna_report_detail{}.html", filename));
+                            let _ = std::fs::write(&dump_path, &html);
+                            log::info!(
+                                "Luna report detail HTML dumped to {} ({} bytes)",
+                                dump_path.display(),
+                                html.len()
+                            );
+                        }
                     }
                     return Ok(data);
                 }
@@ -793,15 +795,17 @@ pub async fn luna_fetch_detail(
 
                 #[cfg(debug_assertions)]
                 {
-                    let filename = path.replace(['/', '?', '&'], "_");
-                    let dump_path =
-                        std::env::temp_dir().join(format!("luna_detail{}.html", filename));
-                    let _ = std::fs::write(&dump_path, &html);
-                    log::info!(
-                        "Luna detail HTML dumped to {} ({} bytes)",
-                        dump_path.display(),
-                        html.len()
-                    );
+                    if crate::should_dump_debug_html() {
+                        let filename = path.replace(['/', '?', '&'], "_");
+                        let dump_path =
+                            std::env::temp_dir().join(format!("luna_detail{}.html", filename));
+                        let _ = std::fs::write(&dump_path, &html);
+                        log::info!(
+                            "Luna detail HTML dumped to {} ({} bytes)",
+                            dump_path.display(),
+                            html.len()
+                        );
+                    }
                 }
                 Ok(data)
             };
@@ -917,10 +921,12 @@ pub async fn luna_fetch_announcement_detail(
 
                 #[cfg(debug_assertions)]
                 {
-                    let dump_path = std::env::temp_dir()
-                        .join(format!("luna_announcement_{}_{}.html", idnumber, info_id));
-                    let _ = std::fs::write(&dump_path, &html);
-                    log::info!("Luna announcement detail dumped ({} bytes)", html.len());
+                    if crate::should_dump_debug_html() {
+                        let dump_path = std::env::temp_dir()
+                            .join(format!("luna_announcement_{}_{}.html", idnumber, info_id));
+                        let _ = std::fs::write(&dump_path, &html);
+                        log::info!("Luna announcement detail dumped ({} bytes)", html.len());
+                    }
                 }
                 Ok(data)
             };
@@ -989,15 +995,17 @@ pub async fn luna_fetch_survey_detail(
             Ok(html) => {
                 #[cfg(debug_assertions)]
                 {
-                    let filename = path.replace(['/', '?', '&'], "_");
-                    let dump_path =
-                        std::env::temp_dir().join(format!("luna_survey{}.html", filename));
-                    let _ = std::fs::write(&dump_path, &html);
-                    log::info!(
-                        "Luna survey detail dumped to {} ({} bytes)",
-                        dump_path.display(),
-                        html.len()
-                    );
+                    if crate::should_dump_debug_html() {
+                        let filename = path.replace(['/', '?', '&'], "_");
+                        let dump_path =
+                            std::env::temp_dir().join(format!("luna_survey{}.html", filename));
+                        let _ = std::fs::write(&dump_path, &html);
+                        log::info!(
+                            "Luna survey detail dumped to {} ({} bytes)",
+                            dump_path.display(),
+                            html.len()
+                        );
+                    }
                 }
                 let data = luna_parser::parse_luna_survey_detail(&html);
                 if let Ok(json) = serde_json::to_string(&data) {
@@ -1064,15 +1072,17 @@ pub async fn luna_fetch_inquiry_detail(
                 }
                 #[cfg(debug_assertions)]
                 {
-                    let filename = path.replace(['/', '?', '&'], "_");
-                    let dump_path =
-                        std::env::temp_dir().join(format!("luna_inquiry{}.html", filename));
-                    let _ = std::fs::write(&dump_path, &html);
-                    log::info!(
-                        "Luna inquiry detail dumped to {} ({} bytes)",
-                        dump_path.display(),
-                        html.len()
-                    );
+                    if crate::should_dump_debug_html() {
+                        let filename = path.replace(['/', '?', '&'], "_");
+                        let dump_path =
+                            std::env::temp_dir().join(format!("luna_inquiry{}.html", filename));
+                        let _ = std::fs::write(&dump_path, &html);
+                        log::info!(
+                            "Luna inquiry detail dumped to {} ({} bytes)",
+                            dump_path.display(),
+                            html.len()
+                        );
+                    }
                 }
                 let data = luna_parser::parse_luna_inquiry_detail(&html);
                 if let Ok(json) = serde_json::to_string(&data) {
@@ -1716,8 +1726,11 @@ pub async fn luna_fetch_course_detail(
         );
         #[cfg(debug_assertions)]
         {
-            let dump = std::env::temp_dir().join(format!("luna_course_{}_initial.html", idnumber));
-            let _ = std::fs::write(&dump, &course_html);
+            if crate::should_dump_debug_html() {
+                let dump =
+                    std::env::temp_dir().join(format!("luna_course_{}_initial.html", idnumber));
+                let _ = std::fs::write(&dump, &course_html);
+            }
         }
         // Retry: the first request may have warmed up the Luna session/course state
         if let Ok(retry_html) = luna_get(&http, &course_path).await {
@@ -1728,15 +1741,19 @@ pub async fn luna_fetch_course_detail(
             }
             #[cfg(debug_assertions)]
             {
-                let dump = std::env::temp_dir().join(format!("luna_course_{}.html", idnumber));
-                let _ = std::fs::write(&dump, &retry_html);
+                if crate::should_dump_debug_html() {
+                    let dump = std::env::temp_dir().join(format!("luna_course_{}.html", idnumber));
+                    let _ = std::fs::write(&dump, &retry_html);
+                }
             }
         }
     } else {
         #[cfg(debug_assertions)]
         {
-            let dump = std::env::temp_dir().join(format!("luna_course_{}.html", idnumber));
-            let _ = std::fs::write(&dump, &course_html);
+            if crate::should_dump_debug_html() {
+                let dump = std::env::temp_dir().join(format!("luna_course_{}.html", idnumber));
+                let _ = std::fs::write(&dump, &course_html);
+            }
         }
     }
 
@@ -1756,8 +1773,10 @@ pub async fn luna_fetch_course_detail(
 
     #[cfg(debug_assertions)]
     {
-        let dump_path = std::env::temp_dir().join(format!("luna_contents_{}.html", idnumber));
-        let _ = std::fs::write(&dump_path, &contents_html);
+        if crate::should_dump_debug_html() {
+            let dump_path = std::env::temp_dir().join(format!("luna_contents_{}.html", idnumber));
+            let _ = std::fs::write(&dump_path, &contents_html);
+        }
     }
 
     // Merge actual content items from contents page
@@ -1999,13 +2018,15 @@ pub async fn luna_submit_report(
 
     #[cfg(debug_assertions)]
     {
-        let dump_path = std::env::temp_dir().join("luna_report_confirm.html");
-        let _ = std::fs::write(&dump_path, &confirm_html);
-        log::info!(
-            "Report confirm page dumped to {} ({} bytes)",
-            dump_path.display(),
-            confirm_html.len()
-        );
+        if crate::should_dump_debug_html() {
+            let dump_path = std::env::temp_dir().join("luna_report_confirm.html");
+            let _ = std::fs::write(&dump_path, &confirm_html);
+            log::info!(
+                "Report confirm page dumped to {} ({} bytes)",
+                dump_path.display(),
+                confirm_html.len()
+            );
+        }
     }
 
     if confirm_html.is_empty() {
@@ -2155,13 +2176,15 @@ pub async fn luna_submit_report(
 
     #[cfg(debug_assertions)]
     {
-        let dump_path2 = std::env::temp_dir().join("luna_report_register_result.html");
-        let _ = std::fs::write(&dump_path2, &register_resp);
-        log::info!(
-            "Report register response dumped to {} ({} bytes)",
-            dump_path2.display(),
-            register_resp.len()
-        );
+        if crate::should_dump_debug_html() {
+            let dump_path2 = std::env::temp_dir().join("luna_report_register_result.html");
+            let _ = std::fs::write(&dump_path2, &register_resp);
+            log::info!(
+                "Report register response dumped to {} ({} bytes)",
+                dump_path2.display(),
+                register_resp.len()
+            );
+        }
     }
 
     // Verify: the result page should show completion
@@ -2176,8 +2199,10 @@ pub async fn luna_submit_report(
         let verify_html = luna_get(&http, &submission_url).await?;
         #[cfg(debug_assertions)]
         {
-            let dump_path3 = std::env::temp_dir().join("luna_report_verify.html");
-            let _ = std::fs::write(&dump_path3, &verify_html);
+            if crate::should_dump_debug_html() {
+                let dump_path3 = std::env::temp_dir().join("luna_report_verify.html");
+                let _ = std::fs::write(&dump_path3, &verify_html);
+            }
         }
 
         // Check for "既に提出済みの成果物" section containing actual files
@@ -2308,13 +2333,15 @@ pub async fn luna_submit_report_text(
 
     #[cfg(debug_assertions)]
     {
-        let dump_path = std::env::temp_dir().join("luna_report_text_confirm.html");
-        let _ = std::fs::write(&dump_path, &confirm_html);
-        log::info!(
-            "Text report confirm page dumped to {} ({} bytes)",
-            dump_path.display(),
-            confirm_html.len()
-        );
+        if crate::should_dump_debug_html() {
+            let dump_path = std::env::temp_dir().join("luna_report_text_confirm.html");
+            let _ = std::fs::write(&dump_path, &confirm_html);
+            log::info!(
+                "Text report confirm page dumped to {} ({} bytes)",
+                dump_path.display(),
+                confirm_html.len()
+            );
+        }
     }
 
     if confirm_html.is_empty() {
@@ -2439,8 +2466,10 @@ pub async fn luna_submit_report_text(
 
     #[cfg(debug_assertions)]
     {
-        let dump_path2 = std::env::temp_dir().join("luna_report_text_result.html");
-        let _ = std::fs::write(&dump_path2, &_register_resp);
+        if crate::should_dump_debug_html() {
+            let dump_path2 = std::env::temp_dir().join("luna_report_text_result.html");
+            let _ = std::fs::write(&dump_path2, &_register_resp);
+        }
     }
 
     Ok("テキストを提出しました".into())
@@ -2472,12 +2501,14 @@ pub async fn luna_fetch_discussion_detail(
             Ok(html) => {
                 #[cfg(debug_assertions)]
                 {
-                    let dump_path = std::env::temp_dir().join(format!(
-                        "luna_discussion_{}.html",
-                        url.replace(['/', '?', '&'], "_")
-                    ));
-                    let _ = std::fs::write(&dump_path, &html);
-                    log::info!("Discussion HTML dumped ({} bytes)", html.len());
+                    if crate::should_dump_debug_html() {
+                        let dump_path = std::env::temp_dir().join(format!(
+                            "luna_discussion_{}.html",
+                            url.replace(['/', '?', '&'], "_")
+                        ));
+                        let _ = std::fs::write(&dump_path, &html);
+                        log::info!("Discussion HTML dumped ({} bytes)", html.len());
+                    }
                 }
                 if looks_like_luna_home_redirect(&html) {
                     return Err(
@@ -2766,11 +2797,13 @@ pub async fn luna_fetch_thread_posts(
             Ok(html) => {
                 #[cfg(debug_assertions)]
                 {
-                    let dump_path = std::env::temp_dir().join(format!(
-                        "luna_thread_{}.html",
-                        url.replace(['/', '?', '&'], "_")
-                    ));
-                    let _ = std::fs::write(&dump_path, &html);
+                    if crate::should_dump_debug_html() {
+                        let dump_path = std::env::temp_dir().join(format!(
+                            "luna_thread_{}.html",
+                            url.replace(['/', '?', '&'], "_")
+                        ));
+                        let _ = std::fs::write(&dump_path, &html);
+                    }
                 }
                 if looks_like_luna_home_redirect(&html) {
                     return Err(

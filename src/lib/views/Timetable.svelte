@@ -5,7 +5,7 @@
   import { toPng } from "html-to-image";
   import selahLogoUrl from "../../assets/logo.png";
   import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive, saveImageFile, copyImageToClipboard, shareImageNative } from "../api";
-  import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady, authState } from "../stores";
+  import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady, authState, activeTab } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
@@ -44,6 +44,12 @@
     5: { start: "16:50", end: "18:20" },
   };
 
+  function debugLog(...args: unknown[]) {
+    try {
+      if (localStorage.getItem("selah-debug-logs") === "1") console.log(...args);
+    } catch { /* ignore */ }
+  }
+
   // ── Derived ──
   let hasAi = $derived(!!aiResult && (aiResult.current_week.length > 0 || aiResult.next_week.length > 0));
 
@@ -74,7 +80,7 @@
       if (digits) m = digits;
     }
     if (!m) {
-      console.log("[Timetable] weekLabel no match:", JSON.stringify(raw));
+      debugLog("[Timetable] weekLabel no match:", JSON.stringify(raw));
       return raw;
     }
     const [, y1, sm1, sd1, , sm2, sd2] = m;
@@ -196,12 +202,12 @@
 
   // ── Load exam + favorites (DB cache first, then network fallback) ──
   async function loadCachedExtras() {
-    console.log("[Timetable] loadCachedExtras: start");
+    debugLog("[Timetable] loadCachedExtras: start");
 
     // Exam
     try {
       const examJson = await getDataCache("exam_timetable");
-      console.log("[Timetable] exam cache:", examJson ? `${examJson.length} chars` : "null");
+      debugLog("[Timetable] exam cache:", examJson ? `${examJson.length} chars` : "null");
       if (examJson) {
         const data: ExamTimetableData = JSON.parse(examJson);
         examEntries = data.entries || [];
@@ -209,7 +215,7 @@
         const data = await cachedBackendFetch<ExamTimetableData>("exams");
         examEntries = data.entries || [];
       }
-      console.log("[Timetable] exam entries:", examEntries.length);
+      debugLog("[Timetable] exam entries:", examEntries.length);
     } catch (e) {
       console.warn("[Timetable] exam load failed:", e);
     }
@@ -217,28 +223,28 @@
     // Favorites
     try {
       const favJson = await getDataCache("syllabus_favorites");
-      console.log("[Timetable] favorites cache:", favJson ? `${favJson.length} chars` : "null");
+      debugLog("[Timetable] favorites cache:", favJson ? `${favJson.length} chars` : "null");
       if (favJson) {
         const data: SyllabusSearchResult = JSON.parse(favJson);
         favoriteEntries = data.entries || [];
       } else {
-        console.log("[Timetable] no favorites cache, fetching...");
+        debugLog("[Timetable] no favorites cache, fetching...");
         const data = await fetchSyllabusFavorites();
         favoriteEntries = data.entries || [];
       }
-      console.log("[Timetable] favorites loaded:", favoriteEntries.length, favoriteEntries.map(f => ({ title: f.course_title, dp: f.day_period })));
+      debugLog("[Timetable] favorites loaded:", favoriteEntries.length, favoriteEntries.map(f => ({ title: f.course_title, dp: f.day_period })));
     } catch (e) {
       console.warn("[Timetable] favorites load failed:", e);
     }
 
-    console.log("[Timetable] favSlots parsed:", favSlots.length, favSlots.map(s => `${dayLabels[s.day-1]}${s.period}:${s.entry.course_title}`));
+    debugLog("[Timetable] favSlots parsed:", favSlots.length, favSlots.map(s => `${dayLabels[s.day-1]}${s.period}:${s.entry.course_title}`));
   }
 
   // ── Data loading (DB snapshot only — no network) ──
   async function loadData() {
     try {
       const data = await getScheduleSnapshot();
-      console.log("[Timetable] snapshot loaded:", {
+      debugLog("[Timetable] snapshot loaded:", {
         kgc_current: data.raw.kgc_entries_current.length,
         kgc_next: data.raw.kgc_entries_next.length,
         luna: data.raw.luna_courses.length,
@@ -253,7 +259,7 @@
       if (data.ai_stale && data.ai_result && data.raw.current_week_label) {
         isAiReady().then(async ready => {
           if (ready && !await isLocalStandard2b()) {
-            console.log("[Timetable] AI cache stale, triggering background refresh");
+            debugLog("[Timetable] AI cache stale, triggering background refresh");
             triggerAiGenerate(true);
           }
         });
@@ -328,7 +334,7 @@
     try { await saveDataCache(hashKey, newHash); } catch {}
 
     if (!changed) {
-      console.log("[Timetable] schedule unchanged, skipping auto-sync");
+      debugLog("[Timetable] schedule unchanged, skipping auto-sync");
       return;
     }
 
@@ -356,7 +362,7 @@
     error = "";
     try {
       const data = await syncScheduleData();
-      console.log("[Timetable] sync done:", {
+      debugLog("[Timetable] sync done:", {
         kgc_current: data.raw.kgc_entries_current.length,
         kgc_next: data.raw.kgc_entries_next.length,
         luna: data.raw.luna_courses.length,
@@ -389,7 +395,7 @@
     }
     aiGenerating = true;
     aiError = "";
-    console.log("[Timetable] triggerAiGenerate:", {
+    debugLog("[Timetable] triggerAiGenerate:", {
       force,
       currentWeekLabel: scheduleData.raw.current_week_label,
       nextWeekLabel: scheduleData.raw.next_week_label,
@@ -416,7 +422,7 @@
         scheduleData.raw.next_week_label,
         force,
       );
-      console.log("[Timetable] AI result:", {
+      debugLog("[Timetable] AI result:", {
         current_week: result.current_week.length,
         next_week: result.next_week.length,
         summary: result.weekly_summary?.substring(0, 80),
@@ -424,7 +430,7 @@
       aiResult = result;
       tipIndex = 0;
       tipFade = true;
-      startTipCycle();
+      syncTipCycle();
     } catch (e: any) {
       const msg = e?.message || String(e);
       console.error("[Timetable] AI generation failed:", msg);
@@ -587,6 +593,7 @@
 
   function startTipCycle() {
     stopTipCycle();
+    if (!tipSources.length) return;
     tipInterval = setInterval(() => {
       tipFade = false;
       tipTimeout = setTimeout(() => {
@@ -604,6 +611,18 @@
     if (tipInterval) {
       clearInterval(tipInterval);
       tipInterval = undefined;
+    }
+  }
+
+  function timetableTipsShouldRun() {
+    return document.visibilityState === "visible" && get(activeTab) === "timetable";
+  }
+
+  function syncTipCycle() {
+    if (timetableTipsShouldRun()) {
+      startTipCycle();
+    } else {
+      stopTipCycle();
     }
   }
 
@@ -886,7 +905,7 @@
     }).catch(() => {});
     isLocalStandard2b().then(v => { aiBlocked2b = v; }).catch(() => {});
     loadData();
-    startTipCycle();
+    syncTipCycle();
     window.addEventListener("keydown", handleKeydown);
     window.addEventListener("selah-fav-toggle", handleFavToggle as EventListener);
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -906,12 +925,18 @@
   }
 
   function handleVisibilityChange() {
+    syncTipCycle();
     if (document.visibilityState === "visible") {
       getAiConfig().then(cfg => {
         aiProvider = cfg.provider || "";
       }).catch(() => {});
     }
   }
+
+  $effect(() => {
+    $activeTab;
+    syncTipCycle();
+  });
 
   // SWR: pick up background poll refreshes
   const unsubSchedule = onCacheUpdate<ScheduleResponse>("schedule_data", (fresh) => {

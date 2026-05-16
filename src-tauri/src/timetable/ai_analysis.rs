@@ -1197,7 +1197,7 @@ fn collect_relevant_live_notes(
         return Vec::new();
     }
 
-    let records = commands::scan_download_dir();
+    let records = commands::list_downloads();
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
 

@@ -204,8 +204,12 @@ pub async fn kwic_fetch_home(
             Ok(html) => {
                 #[cfg(debug_assertions)]
                 {
-                    let _ =
-                        std::fs::write(std::env::temp_dir().join("kwic-portal-home.html"), &html);
+                    if crate::should_dump_debug_html() {
+                        let _ = std::fs::write(
+                            std::env::temp_dir().join("kwic-portal-home.html"),
+                            &html,
+                        );
+                    }
                 }
 
                 let sections = parse_portal_home(&html);
@@ -354,10 +358,12 @@ pub async fn kwic_fetch_detail(
                 Ok(detail_html) => {
                     #[cfg(debug_assertions)]
                     {
-                        let _ = std::fs::write(
-                            std::env::temp_dir().join("kwic-portal-detail.html"),
-                            &detail_html,
-                        );
+                        if crate::should_dump_debug_html() {
+                            let _ = std::fs::write(
+                                std::env::temp_dir().join("kwic-portal-detail.html"),
+                                &detail_html,
+                            );
+                        }
                     }
 
                     let data = parse_detail_html(&detail_html);
@@ -425,11 +431,13 @@ pub async fn kwic_fetch_subportal(
                 Ok(html) => {
                     #[cfg(debug_assertions)]
                     {
-                        let _ = std::fs::write(
-                            std::env::temp_dir()
-                                .join(format!("kwic-portal-subportal-{}.html", tag_cd)),
-                            &html,
-                        );
+                        if crate::should_dump_debug_html() {
+                            let _ = std::fs::write(
+                                std::env::temp_dir()
+                                    .join(format!("kwic-portal-subportal-{}.html", tag_cd)),
+                                &html,
+                            );
+                        }
                     }
 
                     let data = parse_subportal(&html);

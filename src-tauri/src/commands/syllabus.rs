@@ -4,6 +4,9 @@ use regex::Regex;
 use std::sync::LazyLock;
 use tauri::{Emitter, Manager, State};
 
+const DEFAULT_SYLLABUS_SEARCH_MAX_PAGES: usize = 3;
+const HARD_SYLLABUS_SEARCH_MAX_PAGES: usize = 20;
+
 #[tauri::command]
 pub async fn search_syllabus(
     params: crate::syllabus::SyllabusSearchParams,
@@ -82,11 +85,25 @@ pub async fn search_syllabus(
         return Ok(first_page);
     }
 
-    let mut all_entries = first_page.entries;
     let total_pages = first_page.total_pages;
+    let total_count = first_page.total_count;
+    let mut all_entries = first_page.entries;
+    let fetch_until_page = params
+        .max_pages
+        .unwrap_or(DEFAULT_SYLLABUS_SEARCH_MAX_PAGES)
+        .clamp(1, HARD_SYLLABUS_SEARCH_MAX_PAGES)
+        .min(total_pages);
+    if fetch_until_page <= 1 {
+        return Ok(crate::syllabus::SyllabusSearchResult {
+            total_count,
+            entries: all_entries,
+            current_page: 1,
+            total_pages,
+        });
+    }
     let mut current_html = html;
 
-    for page in 2..=total_pages {
+    for page in 2..=fetch_until_page {
         let mut form_params = extract_all_form_inputs(&current_html);
         form_params.retain(|(k, _)| {
             !k.starts_with("ESearch")
@@ -132,13 +149,13 @@ pub async fn search_syllabus(
     log::info!(
         "Search total: {} entries across {} pages",
         all_entries.len(),
-        total_pages
+        fetch_until_page
     );
     Ok(crate::syllabus::SyllabusSearchResult {
-        total_count: all_entries.len(),
+        total_count: total_count.max(all_entries.len()),
         entries: all_entries,
-        current_page: 1,
-        total_pages: 1,
+        current_page: fetch_until_page,
+        total_pages,
     })
 }
 

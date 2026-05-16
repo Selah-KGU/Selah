@@ -29,6 +29,8 @@ pub struct SyllabusSearchParams {
     pub keyword: String,
     pub instructor: String,
     pub language: String,
+    #[serde(default)]
+    pub max_pages: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

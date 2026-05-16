@@ -96,6 +96,12 @@
 
   const renderMdCache = new Map<string, string>();
   const RENDER_MD_CACHE_MAX = 128;
+  function debugLog(...args: unknown[]) {
+    try {
+      if (localStorage.getItem("selah-debug-logs") === "1") console.log(...args);
+    } catch { /* ignore */ }
+  }
+
   function renderMd(text: string): string {
     const cached = renderMdCache.get(text);
     if (cached !== undefined) return cached;
@@ -593,8 +599,8 @@
     courseOptions = focusedDay != null
       ? focused.filter((course) => course.day === focusedDay)
       : focused;
-    console.log("[LIVE] allCourseOptions =", allCourseOptions.map((c) => ({ day: c.day, period: c.period, name: c.name })));
-    console.log("[LIVE] focusedCourseOptions =", courseOptions.map((c) => ({ day: c.day, period: c.period, name: c.name })));
+    debugLog("[LIVE] allCourseOptions =", allCourseOptions.map((c) => ({ day: c.day, period: c.period, name: c.name })));
+    debugLog("[LIVE] focusedCourseOptions =", courseOptions.map((c) => ({ day: c.day, period: c.period, name: c.name })));
     if (snapshot.active && snapshot.course) {
       const match = courseOptions.find((course) =>
         course.name === snapshot.course?.course_name &&
@@ -990,12 +996,12 @@
   function startFlushTimer() {
     stopFlushTimer();
     const intervalMs = Math.max(30_000, liveSummaryIntervalMinutes * 60 * 1000);
-    console.log("[Live] flush timer started, interval =", intervalMs, "ms");
+    debugLog("[Live] flush timer started, interval =", intervalMs, "ms");
     flushTimer = setInterval(async () => {
-      console.log("[Live] flush timer tick");
+      debugLog("[Live] flush timer tick");
       try {
         snapshot = await liveFlushSummary(true);
-        console.log("[Live] flush done, summaries =", snapshot.summaries.length);
+        debugLog("[Live] flush done, summaries =", snapshot.summaries.length);
       } catch (e: any) {
         console.warn("[Live] flush error:", e);
         setMessage("error", e?.message || String(e));

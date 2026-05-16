@@ -30,6 +30,12 @@ export function isDemoActive(): boolean {
   return _isDemo();
 }
 
+function debugLog(...args: unknown[]): void {
+  try {
+    if (localStorage.getItem("selah-debug-logs") === "1") console.log(...args);
+  } catch { /* ignore */ }
+}
+
 const DEMO_AI_CONFIG_KEY = "selah-demo-ai-config";
 const DEMO_GCAL_CONFIG_KEY = "selah-demo-gcal-config";
 
@@ -302,7 +308,7 @@ export const serviceRegistry: Record<string, ServiceConfig> = {
       // should see the Dashboard with cached data, not the Login page.
       // Only wipe auth on explicit logout (which calls logout() directly).
       if (get(sessionExpired)) {
-        console.log("[Selah] kgc.onReset: sessionExpired=true, keeping authState for cached view");
+        debugLog("[Selah] kgc.onReset: sessionExpired=true, keeping authState for cached view");
         return;
       }
       authState.set({
@@ -318,7 +324,7 @@ function isSessionExpiredError(err: unknown): boolean {
   const msg = typeof err === "string" ? err : (err as any)?.message ?? String(err);
   for (const svc of Object.values(serviceRegistry)) {
     if (svc.expiredMarkers.some(m => msg.includes(m))) {
-      console.log("[Selah] Session expired detected:", msg);
+      debugLog("[Selah] Session expired detected:", msg);
       return true;
     }
   }
@@ -441,11 +447,11 @@ function crossRenewOtherServices(succeededService: string) {
         : get(kwicAuthState).authenticated;
 
     if (!isAlive) {
-      console.log(`[Selah] Cross-renewal: ${succeededService} alive -> trying ${svc}`);
+      debugLog(`[Selah] Cross-renewal: ${succeededService} alive -> trying ${svc}`);
       syncSession(svc).then(ok => {
         if (ok) {
           serviceRegistry[svc].onRecovered();
-          console.log(`[Selah] Cross-renewal: ${svc} recovered`);
+          debugLog(`[Selah] Cross-renewal: ${svc} recovered`);
         }
       }).catch(() => {});
     }
@@ -469,11 +475,11 @@ export function triggerRelogin(): Promise<void> {
 
   recoveryPromise = (async () => {
     // Phase 1: Headless refresh (Okta SSO may still be alive)
-    console.log("[Selah] Session expired, trying headless refresh...");
+    debugLog("[Selah] Session expired, trying headless refresh...");
     try {
       const ok = await syncSession("all");
       if (ok) {
-        console.log("[Selah] Headless refresh: at least one service recovered");
+        debugLog("[Selah] Headless refresh: at least one service recovered");
         // Verify each service individually
         const [kgcOk, lunaOk, kwicOk] = await Promise.all([
           checkSession().then(s => s.valid).catch(() => false),
@@ -488,14 +494,14 @@ export function triggerRelogin(): Promise<void> {
         // If KGC recovered, we're good — app is usable
         if (kgcOk) return;
         // KGC failed but others may be alive — still need user to re-login for KGC
-        console.log("[Selah] KGC failed but secondary services may be alive");
+        debugLog("[Selah] KGC failed but secondary services may be alive");
       }
     } catch (e) {
       console.warn("[Selah] Headless refresh error:", e);
     }
 
     // Phase 2: Okta SSO expired — mark session as expired and let user initiate re-login
-    console.log("[Selah] Okta expired, marking session as expired (user can re-verify from titlebar)");
+    debugLog("[Selah] Okta expired, marking session as expired (user can re-verify from titlebar)");
     sessionExpired.set(true);
   })().finally(() => { recoveryPromise = null; lastRecoveryTime = Date.now(); });
 
@@ -583,7 +589,7 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
 
     // Transient network errors: retry once without recovery
     if (isTransientError(msg)) {
-      console.log("[Selah] Transient error, retrying once...");
+      debugLog("[Selah] Transient error, retrying once...");
       try { return await fn(); } catch (retryErr) {
         if (!isSessionExpiredError(retryErr)) throw retryErr;
         // Fall through to recovery with the retry error
@@ -599,7 +605,7 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
       try {
         await triggerRelogin();
       } catch (recoveryErr: any) {
-        console.log("[Selah] Recovery failed:", recoveryErr);
+        debugLog("[Selah] Recovery failed:", recoveryErr);
         throw recoveryErr;
       }
       if (get(sessionExpired)) throw err;
@@ -608,14 +614,14 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
 
     // Mail expired → OAuth token revoked, no headless recovery possible
     if (expiredService === "mail") {
-      console.log("[Selah] Mail auth expired, resetting mail state");
+      debugLog("[Selah] Mail auth expired, resetting mail state");
       serviceRegistry.mail.onReset();
       throw err;
     }
 
     // Secondary service (Luna/KWIC) expired → try headless sync for just that service
     const svc = serviceRegistry[expiredService];
-    console.log(`[Selah] ${expiredService} session expired, trying targeted refresh...`);
+    debugLog(`[Selah] ${expiredService} session expired, trying targeted refresh...`);
     try {
       const ok = await syncSession(expiredService);
       if (ok) {
@@ -652,8 +658,8 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
     getSessionStates().catch(() => ({ kgc: false, luna: false, kwic: false })),
   ]);
   let status = initialStatus;
-  console.log("[Selah] restoreAllSessions: initial check_session =", JSON.stringify(status));
-  console.log("[Selah] restoreAllSessions: session states =", JSON.stringify(states));
+  debugLog("[Selah] restoreAllSessions: initial check_session =", JSON.stringify(status));
+  debugLog("[Selah] restoreAllSessions: session states =", JSON.stringify(states));
 
   // If any service has expired disk cookies, refresh all in parallel.
   // This avoids sequential 20s timeouts when Okta is expired.
@@ -679,7 +685,7 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
   }
 
   if (syncNeeded.length > 0) {
-    console.log(`[Selah] Disk sessions expired, syncing in parallel: ${syncNeeded.join(", ")}`);
+    debugLog(`[Selah] Disk sessions expired, syncing in parallel: ${syncNeeded.join(", ")}`);
     // Run all headless syncs in parallel — shares Okta SSO, so if one fails they all will
     const results = await Promise.allSettled(syncNeeded.map(svc => syncSession(svc)));
     for (let i = 0; i < syncNeeded.length; i++) {
@@ -690,7 +696,7 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
         if (ok) {
           const fresh = await checkSession().catch(() => null);
           if (fresh?.valid) status = fresh;
-          console.log("[Selah] Headless KGC refresh succeeded");
+          debugLog("[Selah] Headless KGC refresh succeeded");
         }
       } else {
         const config = serviceRegistry[svc];
@@ -707,17 +713,17 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
 
   // If KGC was not valid initially, cross-renewal from Luna/KWIC may have saved it.
   if (!status.valid) {
-    console.log("[Selah] Re-checking KGC after parallel sync...");
+    debugLog("[Selah] Re-checking KGC after parallel sync...");
     const recheck = await checkSession().catch(() => null);
     if (recheck?.valid) {
       status = recheck;
-      console.log("[Selah] KGC recovered via cross-renewal");
+      debugLog("[Selah] KGC recovered via cross-renewal");
     }
     // Keep original status (with disk user info) if re-check also failed
   }
 
   if (!status.valid) {
-    console.log("[Selah] restoreAllSessions: KGC invalid after all recovery attempts. status =", JSON.stringify(status), "states.kgc =", states.kgc);
+    debugLog("[Selah] restoreAllSessions: KGC invalid after all recovery attempts. status =", JSON.stringify(status), "states.kgc =", states.kgc);
     // KGC session is dead, but if we have disk-saved user info, show cached
     // data with a re-auth prompt instead of dumping user to the login page.
     if (status.username || status.display_name || status.student_id || states.kgc) {
@@ -739,10 +745,10 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
         try { localStorage.setItem(EVER_AUTH_KEY, "1"); } catch {}
       }
       sessionExpired.set(true);
-      console.log("[Selah] restoreAllSessions: showing cached Dashboard with re-auth badge");
+      debugLog("[Selah] restoreAllSessions: showing cached Dashboard with re-auth badge");
       return status; // non-null: App.svelte will show Dashboard
     }
-    console.log("[Selah] restoreAllSessions: no disk session, returning null -> Login page");
+    debugLog("[Selah] restoreAllSessions: no disk session, returning null -> Login page");
     return null;
   }
   setAuthFromSession(status);
@@ -1854,14 +1860,51 @@ export async function liveFinishSession(): Promise<LiveSaveResult> {
   return invoke<LiveSaveResult>("live_finish_session");
 }
 
-function normalizeGeneratedTodoKey(item: Pick<LiveTodoSuggestion, "course_name" | "title" | "deadline">): string {
+type GeneratedTodoIdentity = {
+  course_name?: string;
+  title?: string;
+  deadline?: string;
+  completed_at?: string;
+  archived_at?: string;
+};
+
+function normalizeTodoIdentityKey(item: GeneratedTodoIdentity): string {
   return [item.course_name, item.title, item.deadline]
     .map((part) => (part || "").trim().toLowerCase().replace(/\s+/g, " "))
     .join("|");
 }
 
+function normalizeGeneratedTodoKey(item: GeneratedTodoIdentity): string {
+  return normalizeTodoIdentityKey(item);
+}
+
 function isActiveGeneratedTodo(item: LiveGeneratedTodo): boolean {
+  return isActiveGeneratedTodoItem(item);
+}
+
+function isActiveGeneratedTodoItem(item: GeneratedTodoIdentity): boolean {
   return !item.completed_at && !item.archived_at;
+}
+
+async function readGeneratedTodos<T>(cacheKey: string): Promise<T[]> {
+  if (_isDemo()) return [];
+  const json = await getDataCache(cacheKey);
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeGeneratedTodos<T>(
+  cacheKey: string,
+  next: T[],
+  refreshCaches: (next: T[]) => Promise<void>,
+): Promise<void> {
+  await saveDataCache(cacheKey, JSON.stringify(next));
+  await refreshCaches(next);
 }
 
 function isGeneratedLunaTodoItem(item: LunaTodoItem): boolean {
@@ -1958,15 +2001,7 @@ async function refreshLiveGeneratedTodoCaches(next: LiveGeneratedTodo[]) {
 }
 
 export async function getLiveGeneratedTodos(): Promise<LiveGeneratedTodo[]> {
-  if (_isDemo()) return [];
-  const json = await getDataCache(LIVE_GENERATED_TODO_KEY);
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return readGeneratedTodos<LiveGeneratedTodo>(LIVE_GENERATED_TODO_KEY);
 }
 
 export async function saveLiveGeneratedTodos(
@@ -2000,8 +2035,7 @@ export async function saveLiveGeneratedTodos(
     additions.push(normalized);
   }
   const next = [...existing, ...additions];
-  await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
-  await refreshLiveGeneratedTodoCaches(next);
+  await writeGeneratedTodos(LIVE_GENERATED_TODO_KEY, next, refreshLiveGeneratedTodoCaches);
   return additions;
 }
 
@@ -2016,8 +2050,7 @@ export async function completeLiveGeneratedTodo(id: string): Promise<void> {
       ? { ...item, completed_at: item.completed_at || completedAt, archived_at: undefined }
       : item
   ));
-  await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
-  await refreshLiveGeneratedTodoCaches(next);
+  await writeGeneratedTodos(LIVE_GENERATED_TODO_KEY, next, refreshLiveGeneratedTodoCaches);
 }
 
 export async function deleteLiveGeneratedTodo(id: string): Promise<void> {
@@ -2025,8 +2058,7 @@ export async function deleteLiveGeneratedTodo(id: string): Promise<void> {
   const target = id.trim();
   if (!target) return;
   const next = (await getLiveGeneratedTodos()).filter((item) => item.id !== target);
-  await saveDataCache(LIVE_GENERATED_TODO_KEY, JSON.stringify(next));
-  await refreshLiveGeneratedTodoCaches(next);
+  await writeGeneratedTodos(LIVE_GENERATED_TODO_KEY, next, refreshLiveGeneratedTodoCaches);
 }
 
 // ── 詳細TODO (AI extracted from Luna 消息/課題/通知) ────────────────────────
@@ -2040,14 +2072,12 @@ export interface DetailGeneratedTodo extends DetailTodoSuggestion {
   archived_at?: string;
 }
 
-function normalizeDetailTodoKey(item: Pick<DetailTodoSuggestion, "course_name" | "title" | "deadline">): string {
-  return [item.course_name, item.title, item.deadline]
-    .map((part) => (part || "").trim().toLowerCase().replace(/\s+/g, " "))
-    .join("|");
+function normalizeDetailTodoKey(item: GeneratedTodoIdentity): string {
+  return normalizeTodoIdentityKey(item);
 }
 
 function isActiveDetailTodo(item: DetailGeneratedTodo): boolean {
-  return !item.completed_at && !item.archived_at;
+  return isActiveGeneratedTodoItem(item);
 }
 
 function isDetailLunaTodoItem(item: LunaTodoItem): boolean {
@@ -2102,15 +2132,7 @@ async function refreshDetailGeneratedTodoCaches(next: DetailGeneratedTodo[]) {
 }
 
 export async function getDetailGeneratedTodos(): Promise<DetailGeneratedTodo[]> {
-  if (_isDemo()) return [];
-  const json = await getDataCache(DETAIL_GENERATED_TODO_KEY);
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return readGeneratedTodos<DetailGeneratedTodo>(DETAIL_GENERATED_TODO_KEY);
 }
 
 export async function saveDetailGeneratedTodos(
@@ -2141,8 +2163,7 @@ export async function saveDetailGeneratedTodos(
     additions.push(normalized);
   }
   const next = [...existing, ...additions];
-  await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
-  await refreshDetailGeneratedTodoCaches(next);
+  await writeGeneratedTodos(DETAIL_GENERATED_TODO_KEY, next, refreshDetailGeneratedTodoCaches);
   return additions;
 }
 
@@ -2157,8 +2178,7 @@ export async function completeDetailGeneratedTodo(id: string): Promise<void> {
       ? { ...item, completed_at: item.completed_at || completedAt, archived_at: undefined }
       : item
   ));
-  await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
-  await refreshDetailGeneratedTodoCaches(next);
+  await writeGeneratedTodos(DETAIL_GENERATED_TODO_KEY, next, refreshDetailGeneratedTodoCaches);
 }
 
 export async function deleteDetailGeneratedTodo(id: string): Promise<void> {
@@ -2166,8 +2186,7 @@ export async function deleteDetailGeneratedTodo(id: string): Promise<void> {
   const target = id.trim();
   if (!target) return;
   const next = (await getDetailGeneratedTodos()).filter((item) => item.id !== target);
-  await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(next));
-  await refreshDetailGeneratedTodoCaches(next);
+  await writeGeneratedTodos(DETAIL_GENERATED_TODO_KEY, next, refreshDetailGeneratedTodoCaches);
 }
 
 export async function openSettingsWindow(panel?: string): Promise<void> {
@@ -2383,7 +2402,7 @@ async function aiSchedulerTick() {
     const intervalMs = cfg.ai_refresh_interval * 60 * 1000;
     const lastRun = getAiLastRun();
     if (Date.now() - lastRun < intervalMs) return;
-    console.log("[AI Scheduler] interval reached, running AI refresh");
+    debugLog("[AI Scheduler] interval reached, running AI refresh");
     updateTask("ai_scheduler", { running: true });
     await runAiRefresh(true);
     updateTask("ai_scheduler", { running: false, lastRunTs: Date.now(), lastOk: true });

@@ -530,11 +530,13 @@ async fn batch_fetch_syllabi(
                         );
                         #[cfg(debug_assertions)]
                         {
-                            let _ = std::fs::write(
-                                std::env::temp_dir()
-                                    .join(format!("kwic_detail_fail_{}.html", code)),
-                                &detail_html,
-                            );
+                            if crate::should_dump_debug_html() {
+                                let _ = std::fs::write(
+                                    std::env::temp_dir()
+                                        .join(format!("kwic_detail_fail_{}.html", code)),
+                                    &detail_html,
+                                );
+                            }
                         }
                         continue;
                     }

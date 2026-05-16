@@ -212,6 +212,7 @@ export interface SyllabusSearchParams {
   keyword: string;
   instructor: string;
   language: string;
+  max_pages?: number;
 }
 
 export interface SyllabusEntry {

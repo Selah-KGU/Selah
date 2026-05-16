@@ -2,14 +2,6 @@
   import { onDestroy } from "svelte";
   import { activeSettingsPanel, devModeActive } from "../stores";
   import type { SettingsPanel } from "../stores";
-  import SettingsAi from "./settings/SettingsAi.svelte";
-  import SettingsSession from "./settings/SettingsSession.svelte";
-  import SettingsMail from "./settings/SettingsMail.svelte";
-  import SettingsCalendar from "./settings/SettingsCalendar.svelte";
-  import SettingsNotification from "./settings/SettingsNotification.svelte";
-  import SettingsDownload from "./settings/SettingsDownload.svelte";
-  import SettingsAbout from "./settings/SettingsAbout.svelte";
-  import SettingsDebug from "./settings/SettingsDebug.svelte";
 
   interface NavItem {
     id: SettingsPanel;
@@ -19,6 +11,7 @@
   }
 
   type SettingSearchItem = readonly [SettingsPanel, string, string, string?, boolean?];
+  type SettingsComponentModule = { default: any };
 
   const navItems: NavItem[] = [
     { id: "ai", label: "AI 設定", icon: "sparkles" },
@@ -87,6 +80,16 @@
     ["debug", "デバッグ", "通知状態", "notification debug log", true],
   ];
   const AUTO_SAVE_DEBOUNCE_MS = 1600;
+  const panelLoaders: Record<SettingsPanel, () => Promise<SettingsComponentModule>> = {
+    ai: () => import("./settings/SettingsAi.svelte"),
+    session: () => import("./settings/SettingsSession.svelte"),
+    mail: () => import("./settings/SettingsMail.svelte"),
+    calendar: () => import("./settings/SettingsCalendar.svelte"),
+    notification: () => import("./settings/SettingsNotification.svelte"),
+    download: () => import("./settings/SettingsDownload.svelte"),
+    about: () => import("./settings/SettingsAbout.svelte"),
+    debug: () => import("./settings/SettingsDebug.svelte"),
+  };
 
   let settingSearchQuery = $state("");
   let baseNav = $derived(navItems.filter(n => !n.devOnly || $devModeActive));
@@ -115,6 +118,9 @@
   let calendarPanel = $state<any>(null);
   let notificationPanel = $state<any>(null);
   let downloadPanel = $state<any>(null);
+  let panelViews = $state<Partial<Record<SettingsPanel, any>>>({});
+  let panelErrors = $state<Partial<Record<SettingsPanel, string>>>({});
+  const loadingPanels = new Set<SettingsPanel>();
 
   const saveEnabledPanels: SettingsPanel[] = ["ai", "mail", "calendar", "notification", "download"];
   let shouldShowSaveBar = $derived(saveEnabledPanels.includes($activeSettingsPanel));
@@ -125,6 +131,28 @@
       activeSettingsPanel.set("about");
     }
   });
+
+  $effect(() => {
+    const panel = $activeSettingsPanel;
+    if (panel === "debug" && !$devModeActive) return;
+    void ensurePanelLoaded(panel);
+  });
+
+  async function ensurePanelLoaded(panel: SettingsPanel) {
+    if (panelViews[panel] || loadingPanels.has(panel)) return;
+    const loader = panelLoaders[panel];
+    if (!loader) return;
+    loadingPanels.add(panel);
+    panelErrors = { ...panelErrors, [panel]: "" };
+    try {
+      const mod = await loader();
+      panelViews = { ...panelViews, [panel]: mod.default };
+    } catch (e: any) {
+      panelErrors = { ...panelErrors, [panel]: e?.message || String(e) || "読み込みに失敗しました" };
+    } finally {
+      loadingPanels.delete(panel);
+    }
+  }
 
   async function saveCurrentPanel(panel: SettingsPanel = $activeSettingsPanel) {
     if (!saveEnabledPanels.includes(panel)) return;
@@ -296,21 +324,61 @@
             {/if}
           </div>
         {:else if $activeSettingsPanel === "ai"}
-          <SettingsAi bind:this={aiPanel} />
+          {@const SettingsAiView = panelViews.ai}
+          {#if SettingsAiView}
+            <SettingsAiView bind:this={aiPanel} />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.ai || "読み込み中..."}</div>
+          {/if}
         {:else if $activeSettingsPanel === "session"}
-          <SettingsSession />
+          {@const SettingsSessionView = panelViews.session}
+          {#if SettingsSessionView}
+            <SettingsSessionView />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.session || "読み込み中..."}</div>
+          {/if}
         {:else if $activeSettingsPanel === "mail"}
-          <SettingsMail bind:this={mailPanel} />
+          {@const SettingsMailView = panelViews.mail}
+          {#if SettingsMailView}
+            <SettingsMailView bind:this={mailPanel} />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.mail || "読み込み中..."}</div>
+          {/if}
         {:else if $activeSettingsPanel === "calendar"}
-          <SettingsCalendar bind:this={calendarPanel} />
+          {@const SettingsCalendarView = panelViews.calendar}
+          {#if SettingsCalendarView}
+            <SettingsCalendarView bind:this={calendarPanel} />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.calendar || "読み込み中..."}</div>
+          {/if}
         {:else if $activeSettingsPanel === "notification"}
-          <SettingsNotification bind:this={notificationPanel} />
+          {@const SettingsNotificationView = panelViews.notification}
+          {#if SettingsNotificationView}
+            <SettingsNotificationView bind:this={notificationPanel} />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.notification || "読み込み中..."}</div>
+          {/if}
         {:else if $activeSettingsPanel === "download"}
-          <SettingsDownload bind:this={downloadPanel} />
+          {@const SettingsDownloadView = panelViews.download}
+          {#if SettingsDownloadView}
+            <SettingsDownloadView bind:this={downloadPanel} />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.download || "読み込み中..."}</div>
+          {/if}
         {:else if $activeSettingsPanel === "about"}
-          <SettingsAbout />
+          {@const SettingsAboutView = panelViews.about}
+          {#if SettingsAboutView}
+            <SettingsAboutView />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.about || "読み込み中..."}</div>
+          {/if}
         {:else if $activeSettingsPanel === "debug" && $devModeActive}
-          <SettingsDebug />
+          {@const SettingsDebugView = panelViews.debug}
+          {#if SettingsDebugView}
+            <SettingsDebugView />
+          {:else}
+            <div class="settings-panel-loading">{panelErrors.debug || "読み込み中..."}</div>
+          {/if}
         {/if}
       </div>
 
@@ -486,6 +554,12 @@
     min-height: 0;
     overflow-y: auto;
     padding-bottom: 14px;
+  }
+
+  .settings-panel-loading {
+    padding: 16px 0;
+    font-size: 12px;
+    color: var(--text-tertiary);
   }
 
   .search-results-panel {

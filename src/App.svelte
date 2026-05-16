@@ -33,6 +33,15 @@
       return false;
     }
   }
+
+  function debugLog(...args: unknown[]): void {
+    try {
+      if (localStorage.getItem("selah-debug-logs") === "1") console.log(...args);
+    } catch {
+      // Ignore storage access failures during early app startup.
+    }
+  }
+
   let demoBootFlag = $state(readDemoBootFlag());
   let everLoggedIn = $state(readEverLoggedIn());
   let currentView = $derived(($demoMode || demoBootFlag || $authState.authenticated || $sessionExpired || everLoggedIn) ? "dashboard" : "login");
@@ -74,7 +83,7 @@
     try {
       // Restore all service sessions (KGC + Luna + future)
       const session = await restoreAllSessions();
-      console.log("[Selah] App.onMount: restoreAllSessions returned", session ? "non-null" : "null",
+      debugLog("[Selah] App.onMount: restoreAllSessions returned", session ? "non-null" : "null",
         "authState.authenticated =", get(authState).authenticated,
         "sessionExpired =", get(sessionExpired),
         "everLoggedIn =", everLoggedIn);

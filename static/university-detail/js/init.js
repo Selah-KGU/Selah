@@ -5,6 +5,7 @@ function loadDetailScript(name) {
   if (_detailScriptPromises[name]) return _detailScriptPromises[name];
   _detailScriptPromises[name] = new Promise(function(resolve, reject) {
     var script = document.createElement('script');
+    script.async = false;
     script.src = DETAIL_SCRIPT_BASE + name;
     script.onload = resolve;
     script.onerror = function() { reject(new Error('detail script load failed: ' + name)); };
@@ -18,19 +19,19 @@ function detailRendererScriptsForMode(mode) {
   if (mode === 'material') {
     scripts.push('render-material.js');
   } else if (mode === 'report') {
-    scripts.push('report-submit.js');
+    scripts.push('drafts.js', 'report-submit.js');
   } else if (mode === 'course') {
-    scripts.push('render-external.js', 'render-course.js', 'attendance-modal.js');
+    scripts.push('drafts.js', 'render-external.js', 'render-course.js', 'attendance-modal.js');
   } else if (mode === 'attendance') {
-    scripts.push('render-attendance.js', 'attendance-modal.js');
+    scripts.push('drafts.js', 'render-attendance.js', 'attendance-modal.js');
   } else if (mode === 'discussion') {
-    scripts.push('render-thread-posts.js', 'render-discussion.js');
+    scripts.push('drafts.js', 'render-thread-posts.js', 'render-discussion.js');
   } else if (mode === 'thread') {
-    scripts.push('render-thread-posts.js', 'render-thread.js');
+    scripts.push('drafts.js', 'render-thread-posts.js', 'render-thread.js');
   } else if (mode === 'survey') {
-    scripts.push('render-survey.js');
+    scripts.push('drafts.js', 'render-survey.js');
   } else if (mode === 'inquiry') {
-    scripts.push('render-inquiry.js');
+    scripts.push('drafts.js', 'render-inquiry.js');
   } else if (mode === 'kgc' || mode === 'syllabus') {
     scripts.push('render-external.js');
   } else if (mode === 'kwic') {

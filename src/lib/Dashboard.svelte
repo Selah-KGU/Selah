@@ -8,18 +8,6 @@
   import type { IconName } from "./Icon.svelte";
   import Titlebar from "./Titlebar.svelte";
   import HomePage from "./views/HomePage.svelte";
-  import Timetable from "./views/Timetable.svelte";
-  import GradesView from "./views/GradesView.svelte";
-  import Registration from "./views/Registration.svelte";
-  import Syllabus from "./views/Syllabus.svelte";
-  import LunaTodo from "./views/LunaTodo.svelte";
-  import NotificationsUnified from "./views/NotificationsUnified.svelte";
-  import ChangeInfo from "./views/ChangeInfo.svelte";
-  import MailView from "./views/MailView.svelte";
-  import IctTools from "./views/IctTools.svelte";
-  import Live from "./views/Live.svelte";
-  import AgentChat from "./views/AgentChat.svelte";
-  import Settings from "./views/Settings.svelte";
   import type { MailMessage, KwicPortalHome } from "./api";
   import { updateAiReadiness } from "./api";
   import type { LunaNotification } from "./types";
@@ -46,13 +34,51 @@
     { id: "changes", label: "変更情報", icon: "arrow.triangle.swap" },
   ];
 
+  const viewLoaders: Record<string, () => Promise<{ default: any }>> = {
+    mail: () => import("./views/MailView.svelte"),
+    "ict-tools": () => import("./views/IctTools.svelte"),
+    timetable: () => import("./views/Timetable.svelte"),
+    live: () => import("./views/Live.svelte"),
+    todo: () => import("./views/LunaTodo.svelte"),
+    grades: () => import("./views/GradesView.svelte"),
+    registration: () => import("./views/Registration.svelte"),
+    syllabus: () => import("./views/Syllabus.svelte"),
+    notifications: () => import("./views/NotificationsUnified.svelte"),
+    changes: () => import("./views/ChangeInfo.svelte"),
+    agent: () => import("./views/AgentChat.svelte"),
+    settings: () => import("./views/Settings.svelte"),
+  };
+
   // Track which tabs have been visited (lazy mount: create once, then keep alive)
   let visited = $state(new Set<string>(["home"]));
+  let lazyViews = $state<Record<string, any>>({});
+  let lazyErrors = $state<Record<string, string>>({});
+  const loadingViews = new Set<string>();
+
+  async function ensureViewLoaded(tab: string) {
+    if (tab === "home" || lazyViews[tab] || loadingViews.has(tab) || !viewLoaders[tab]) return;
+    loadingViews.add(tab);
+    try {
+      const mod = await viewLoaders[tab]();
+      lazyViews = { ...lazyViews, [tab]: mod.default };
+      if (lazyErrors[tab]) {
+        const next = { ...lazyErrors };
+        delete next[tab];
+        lazyErrors = next;
+      }
+    } catch (e) {
+      lazyErrors = { ...lazyErrors, [tab]: e instanceof Error ? e.message : String(e) };
+    } finally {
+      loadingViews.delete(tab);
+    }
+  }
+
   $effect(() => {
     const tab = $activeTab;
     if (!visited.has(tab)) {
       visited = new Set([...visited, tab]);
     }
+    void ensureViewLoaded(tab);
   });
 
   function badgeCount(tabId: string): number {
@@ -172,40 +198,76 @@
         <HomePage />
       </div>
       {#if visited.has("mail")}
-        <div class="view-panel" class:active={$activeTab === "mail"}><MailView /></div>
+        {@const MailView = lazyViews.mail}
+        <div class="view-panel" class:active={$activeTab === "mail"}>
+          {#if MailView}<MailView />{:else}<div class="lazy-view-status">{lazyErrors.mail || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("ict-tools")}
-        <div class="view-panel" class:active={$activeTab === "ict-tools"}><IctTools /></div>
+        {@const IctTools = lazyViews["ict-tools"]}
+        <div class="view-panel" class:active={$activeTab === "ict-tools"}>
+          {#if IctTools}<IctTools />{:else}<div class="lazy-view-status">{lazyErrors["ict-tools"] || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("timetable")}
-        <div class="view-panel" class:active={$activeTab === "timetable"}><Timetable /></div>
+        {@const Timetable = lazyViews.timetable}
+        <div class="view-panel" class:active={$activeTab === "timetable"}>
+          {#if Timetable}<Timetable />{:else}<div class="lazy-view-status">{lazyErrors.timetable || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("live")}
-        <div class="view-panel" class:active={$activeTab === "live"}><Live /></div>
+        {@const Live = lazyViews.live}
+        <div class="view-panel" class:active={$activeTab === "live"}>
+          {#if Live}<Live />{:else}<div class="lazy-view-status">{lazyErrors.live || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("todo")}
-        <div class="view-panel" class:active={$activeTab === "todo"}><LunaTodo /></div>
+        {@const LunaTodo = lazyViews.todo}
+        <div class="view-panel" class:active={$activeTab === "todo"}>
+          {#if LunaTodo}<LunaTodo />{:else}<div class="lazy-view-status">{lazyErrors.todo || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("grades")}
-        <div class="view-panel" class:active={$activeTab === "grades"}><GradesView /></div>
+        {@const GradesView = lazyViews.grades}
+        <div class="view-panel" class:active={$activeTab === "grades"}>
+          {#if GradesView}<GradesView />{:else}<div class="lazy-view-status">{lazyErrors.grades || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("registration")}
-        <div class="view-panel" class:active={$activeTab === "registration"}><Registration /></div>
+        {@const Registration = lazyViews.registration}
+        <div class="view-panel" class:active={$activeTab === "registration"}>
+          {#if Registration}<Registration />{:else}<div class="lazy-view-status">{lazyErrors.registration || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("syllabus")}
-        <div class="view-panel" class:active={$activeTab === "syllabus"}><Syllabus /></div>
+        {@const Syllabus = lazyViews.syllabus}
+        <div class="view-panel" class:active={$activeTab === "syllabus"}>
+          {#if Syllabus}<Syllabus />{:else}<div class="lazy-view-status">{lazyErrors.syllabus || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("notifications")}
-        <div class="view-panel" class:active={$activeTab === "notifications"}><NotificationsUnified /></div>
+        {@const NotificationsUnified = lazyViews.notifications}
+        <div class="view-panel" class:active={$activeTab === "notifications"}>
+          {#if NotificationsUnified}<NotificationsUnified />{:else}<div class="lazy-view-status">{lazyErrors.notifications || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("changes")}
-        <div class="view-panel" class:active={$activeTab === "changes"}><ChangeInfo /></div>
+        {@const ChangeInfo = lazyViews.changes}
+        <div class="view-panel" class:active={$activeTab === "changes"}>
+          {#if ChangeInfo}<ChangeInfo />{:else}<div class="lazy-view-status">{lazyErrors.changes || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("agent")}
-        <div class="view-panel" class:active={$activeTab === "agent"}><AgentChat /></div>
+        {@const AgentChat = lazyViews.agent}
+        <div class="view-panel" class:active={$activeTab === "agent"}>
+          {#if AgentChat}<AgentChat />{:else}<div class="lazy-view-status">{lazyErrors.agent || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
       {#if visited.has("settings")}
-        <div class="view-panel" class:active={$activeTab === "settings"}><Settings /></div>
+        {@const Settings = lazyViews.settings}
+        <div class="view-panel" class:active={$activeTab === "settings"}>
+          {#if Settings}<Settings />{:else}<div class="lazy-view-status">{lazyErrors.settings || "読み込み中…"}</div>{/if}
+        </div>
       {/if}
     </div>
   </div>
@@ -328,6 +390,15 @@
     overflow: hidden;
     background: transparent;
     position: relative;
+  }
+
+  .lazy-view-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-tertiary);
+    font-size: 13px;
   }
 
   .view-panel {

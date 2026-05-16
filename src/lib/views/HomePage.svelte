@@ -57,6 +57,24 @@
   let aiProvider = $state("");
   /** AI notifs are usable: enabled, ready, and not blocked by 2B */
   let aiNotifUsable = $derived(aiConfigEnabled && aiEnabled && !aiNotifBlocked2b);
+  const AI_DETAIL_FETCH_CONCURRENCY = 4;
+
+  function debugLog(...args: unknown[]) {
+    try {
+      if (localStorage.getItem("selah-debug-logs") === "1") console.log(...args);
+    } catch { /* ignore */ }
+  }
+
+  async function runLimited(tasks: Array<() => Promise<void>>, limit: number) {
+    let next = 0;
+    const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+      while (next < tasks.length) {
+        const task = tasks[next++];
+        await task();
+      }
+    });
+    await Promise.allSettled(workers);
+  }
 
   async function openSubportal(item: { url: string; title: string }) {
     // Extract tagCd from URL like /portal/subportal?tagCd=1
@@ -112,7 +130,7 @@
     weather = data;
     tomorrowWeather = data.tomorrow;
     stopWeatherCycle();
-    if (tomorrowWeather) startWeatherCycle();
+    if (tomorrowWeather && homeTimersShouldRun()) startWeatherCycle();
   }
 
   let greeting = $derived.by(() => pickStableGreeting(todayDate));
@@ -273,12 +291,31 @@
     }
   }
 
+  function homeTimersShouldRun() {
+    return document.visibilityState === "visible" && get(activeTab) === "home";
+  }
+
+  function stopHomeUiTimers() {
+    stopWeatherCycle();
+    stopSuggestionCycle();
+    stopClockTick();
+  }
+
+  function syncHomeUiTimers() {
+    if (!homeTimersShouldRun()) {
+      stopHomeUiTimers();
+      return;
+    }
+    tickClock();
+    startClockTick();
+    startWeatherCycle();
+    startSuggestionCycle();
+  }
+
   function handleHomeVisibility() {
-    if (document.visibilityState !== "visible") {
+    if (!homeTimersShouldRun()) {
       // Pause short-interval timers when hidden to save CPU/battery
-      stopWeatherCycle();
-      stopSuggestionCycle();
-      stopClockTick();
+      stopHomeUiTimers();
       return;
     }
     // Re-check AI config in case user just configured it in settings
@@ -286,12 +323,8 @@
       resetAiReady();
       checkAiConfig();
     }
-    // Immediately refresh clock so now/next updates on tab focus
-    tickClock();
-    startClockTick();
-    // Resume visual cycling
-    startWeatherCycle();
-    startSuggestionCycle();
+    // Immediately refresh clock so now/next updates on tab focus, then resume visual cycling.
+    syncHomeUiTimers();
     // Re-fetch timetable if cache is stale
     if (serverDataLoaded) {
       cachedBackendFetch<ScheduleResponse>("schedule_data")
@@ -300,8 +333,13 @@
     }
   }
 
+  $effect(() => {
+    $activeTab;
+    syncHomeUiTimers();
+  });
+
   onMount(async () => {
-    startClockTick();
+    syncHomeUiTimers();
     document.addEventListener("visibilitychange", handleHomeVisibility);
     // Restore cached data immediately so UI is never blank
     const cachedTT = getCached<ScheduleResponse>("schedule_data");
@@ -351,7 +389,7 @@
 
   // When AI scheduler signals a refresh (store set to null), re-run AI notif analysis
   const unsubAiNotif = aiNotifStore.subscribe((val) => {
-    if (val === null && aiEnabled && !aiNotifLoading && !get(sessionExpired)) {
+    if (val === null && aiEnabled && !aiNotifLoading && !get(sessionExpired) && homeTimersShouldRun()) {
       fetchAiNotifs();
     }
   });
@@ -451,7 +489,7 @@
           if (Date.now() - cache.timestamp < AI_REFRESH_MS) {
             aiNotifResult = cache.result;
             aiNotifSources = cache.sources || [];
-            startSuggestionCycle();
+            if (homeTimersShouldRun()) startSuggestionCycle();
             return;
           }
         }
@@ -536,11 +574,12 @@
         }
       }
 
-      // Parallel fetch of notification body content
+      // Fetch notification bodies with bounded concurrency so AI refresh does
+      // not fan out a burst of detail windows/network work.
       const bodyMaxLen = aiProvider === "local" ? 150 : 300;
-      const detailPromises: Promise<void>[] = [];
+      const detailTasks: Array<() => Promise<void>> = [];
       for (const { idx: i, item } of kwicItems) {
-        detailPromises.push(
+        detailTasks.push(() =>
           kwicFetchDetail(item as KwicPortalNotification)
             .then(d => {
               const body = truncate(stripHtml(d.body_html), bodyMaxLen);
@@ -555,7 +594,7 @@
         );
       }
       for (const { idx: i, url, title } of lunaItems) {
-        detailPromises.push(
+        detailTasks.push(() =>
           lunaInvoke<{ title: string; course_name: string; sections: { heading: string; body: string }[]; attachments: { name: string; url: string }[]; meta: Record<string, string> }>("luna_fetch_detail", { path: url, expectedTitle: title })
             .then(d => {
               const text = d.sections.map(s => (s.heading ? s.heading + ": " : "") + stripHtml(s.body || "")).join(" ");
@@ -565,10 +604,10 @@
             .catch(e => console.warn(`[AI] Luna detail fetch failed for idx=${i}:`, e))
         );
       }
-      if (detailPromises.length > 0) {
-        await Promise.allSettled(detailPromises);
+      if (detailTasks.length > 0) {
+        await runLimited(detailTasks, AI_DETAIL_FETCH_CONCURRENCY);
         const fetched = allNotifs.filter(n => n.body).length;
-        console.log(`[AI] Detail content fetched for ${fetched}/${kwicItems.length + lunaItems.length} notifications`);
+        debugLog(`[AI] Detail content fetched for ${fetched}/${kwicItems.length + lunaItems.length} notifications`);
       }
 
       if (allNotifs.length === 0) {
@@ -769,14 +808,14 @@ suggestionsのルール：
       const fullUserMsg = `${baseCtx}\n\n通知一覧（${allNotifs.length}件）:\n${fullNotifText}`;
 
       let result: AiNotifResult;
-      console.log("[AI] Single request: provider=%s, user msg %d chars, body-enriched %d", aiProvider, fullUserMsg.length, allNotifs.filter(n => n.body).length);
+      debugLog("[AI] Single request: provider=%s, user msg %d chars, body-enriched %d", aiProvider, fullUserMsg.length, allNotifs.filter(n => n.body).length);
       const raw = await aiChat([{ role: "system", content: systemPrompt }, { role: "user", content: fullUserMsg }]);
       result = parseAiNotifResponse(raw);
 
       aiNotifResult = result;
       localStorage.setItem(AI_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), result, sources: aiNotifSources }));
       aiNotifStore.set({ result, sources: aiNotifSources, timestamp: Date.now() });
-      startSuggestionCycle();
+      if (homeTimersShouldRun()) startSuggestionCycle();
     } catch (e: any) {
       aiNotifError = e?.message || String(e);
     } finally {

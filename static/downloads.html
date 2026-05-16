@@ -314,6 +314,7 @@
     flex: 1; overflow-y: auto; padding: 8px 12px;
   }
   .group { margin-bottom: 16px; }
+  .group-body.file-grid { margin-top: 4px; }
   .group-header {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 8px; margin-bottom: 4px;
@@ -457,6 +458,12 @@
   .empty-state {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     height: 100%; gap: 8px; color: var(--text-tertiary);
+  }
+  .render-progress {
+    color: var(--text-tertiary);
+    font-size: 11px;
+    padding: 6px 8px 16px;
+    text-align: center;
   }
   .empty-state svg { opacity: 0.3; }
   .empty-state-text { font-size: 13px; }
@@ -741,6 +748,10 @@
   var previewActive = 0;
   var previewQueuedPaths = new Set();
   var MAX_PREVIEW_JOBS = 4;
+  var filterInputTimer = null;
+  var renderToken = 0;
+  var LIST_RENDER_CHUNK = 180;
+  var GRID_RENDER_CHUNK = 72;
 
   // ── Persistence ──
   function loadPrefs() {
@@ -1016,6 +1027,10 @@
   }
 
   function applyFilters() {
+    if (filterInputTimer) {
+      clearTimeout(filterInputTimer);
+      filterInputTimer = null;
+    }
     searchQuery = (document.getElementById('searchInput').value || '').toLowerCase().trim();
     var cutoff = periodCutoff();
 
@@ -1057,6 +1072,14 @@
     updateStatus(filtered);
     syncToolbarButtons();
     document.getElementById('clearBtn').style.display = allRecords.length > 0 ? '' : 'none';
+  }
+
+  function scheduleApplyFilters() {
+    if (filterInputTimer) clearTimeout(filterInputTimer);
+    filterInputTimer = setTimeout(function() {
+      filterInputTimer = null;
+      applyFilters();
+    }, 140);
   }
 
   function sortRecords(records) {
@@ -1149,6 +1172,16 @@
   // ── Rendering ──
   function renderFiles(records) {
     var container = document.getElementById('fileList');
+    renderToken++;
+    var token = renderToken;
+    if (previewObserver) {
+      previewObserver.disconnect();
+      previewObserver = null;
+    }
+    previewQueue = [];
+    previewQueuedPaths.clear();
+    container.scrollTop = 0;
+
     if (records.length === 0) {
       if (allRecords.length === 0) {
         container.innerHTML = '<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l4 4 4-4"/><line x1="12" y1="8" x2="12" y2="16"/></svg><div class="empty-state-text">ダウンロード履歴はありません</div></div>';
@@ -1159,22 +1192,72 @@
     }
 
     var grouped = groupRecordsByContext(records);
-    var html = '';
-    grouped.forEach(function(g) {
-      html += '<div class="group">';
-      html += '<div class="group-header"><span class="group-header-name" title="' + escapeHtml(g.label) + '">' + escapeHtml(g.label) + '</span><span class="group-count">' + g.items.length + '件</span></div>';
-      if (viewMode === 'icons') {
-        html += '<div class="file-grid">';
-        g.items.forEach(function(r) { html += renderFileCard(r); });
-        html += '</div>';
+    var groupIndex = 0;
+    var itemIndex = 0;
+    var rendered = 0;
+    var chunkSize = viewMode === 'icons' ? GRID_RENDER_CHUNK : LIST_RENDER_CHUNK;
+    var currentGroupBody = null;
+    container.innerHTML = '';
+
+    function scheduleNextChunk() {
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(appendChunk, { timeout: 120 });
       } else {
-        g.items.forEach(function(r) { html += renderFileRow(r); });
+        setTimeout(appendChunk, 0);
       }
-      html += '</div>';
-    });
-    container.innerHTML = html;
-    bindSelectionCheckboxes();
-    loadVisiblePreviews();
+    }
+
+    function appendChunk() {
+      if (token !== renderToken) return;
+      var progress = document.getElementById('renderProgress');
+      if (progress) progress.remove();
+      var remaining = chunkSize;
+      while (groupIndex < grouped.length && remaining > 0) {
+        var group = grouped[groupIndex];
+        var body;
+        if (itemIndex === 0) {
+          var groupEl = document.createElement('div');
+          groupEl.className = 'group';
+          groupEl.innerHTML = '<div class="group-header"><span class="group-header-name" title="' + escapeHtml(group.label) + '">' + escapeHtml(group.label) + '</span><span class="group-count">' + group.items.length + '件</span></div>'
+            + '<div class="group-body ' + (viewMode === 'icons' ? 'file-grid' : '') + '"></div>';
+          container.appendChild(groupEl);
+          body = groupEl.querySelector('.group-body');
+          currentGroupBody = body;
+        } else {
+          body = currentGroupBody;
+        }
+        if (!body) break;
+
+        var html = '';
+        while (itemIndex < group.items.length && remaining > 0) {
+          var record = group.items[itemIndex++];
+          html += viewMode === 'icons' ? renderFileCard(record) : renderFileRow(record);
+          rendered++;
+          remaining--;
+        }
+        if (html) {
+          body.insertAdjacentHTML('beforeend', html);
+          bindSelectionCheckboxes(body);
+          loadVisiblePreviews(body);
+        }
+        if (itemIndex >= group.items.length) {
+          groupIndex++;
+          itemIndex = 0;
+          currentGroupBody = null;
+        }
+      }
+
+      if (groupIndex < grouped.length) {
+        progress = document.createElement('div');
+        progress.id = 'renderProgress';
+        progress.className = 'render-progress';
+        container.appendChild(progress);
+        progress.textContent = rendered + ' / ' + records.length + ' 件を表示中…';
+        scheduleNextChunk();
+      }
+    }
+
+    appendChunk();
   }
 
   function groupRecordsByContext(records) {
@@ -1319,24 +1402,21 @@
     }
   }
 
-  function loadVisiblePreviews() {
-    if (previewObserver) {
-      previewObserver.disconnect();
-      previewObserver = null;
-    }
-    previewQueue = [];
-    previewQueuedPaths.clear();
+  function loadVisiblePreviews(scope) {
     if (viewMode !== 'icons' || !invoke) return;
 
-    var previewEls = Array.prototype.slice.call(document.querySelectorAll('[data-preview-path]'));
+    var root = scope || document;
+    var previewEls = Array.prototype.slice.call(root.querySelectorAll('[data-preview-path]'));
     if ('IntersectionObserver' in window) {
-      previewObserver = new IntersectionObserver(function(entries) {
-        entries.forEach(function(entry) {
-          if (!entry.isIntersecting) return;
-          previewObserver.unobserve(entry.target);
-          enqueuePreview(entry.target);
-        });
-      }, { root: document.getElementById('fileList'), rootMargin: '160px' });
+      if (!previewObserver) {
+        previewObserver = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (!entry.isIntersecting) return;
+            previewObserver.unobserve(entry.target);
+            enqueuePreview(entry.target);
+          });
+        }, { root: document.getElementById('fileList'), rootMargin: '160px' });
+      }
       previewEls.forEach(function(el) { previewObserver.observe(el); });
     } else {
       previewEls.slice(0, 24).forEach(enqueuePreview);
@@ -1409,8 +1489,11 @@
     });
   }
 
-  function bindSelectionCheckboxes() {
-    document.querySelectorAll('[data-select-id]').forEach(function(input) {
+  function bindSelectionCheckboxes(scope) {
+    var root = scope || document;
+    root.querySelectorAll('[data-select-id]').forEach(function(input) {
+      if (input.dataset.boundSelect === '1') return;
+      input.dataset.boundSelect = '1';
       input.addEventListener('click', function(e) { e.stopPropagation(); });
       input.addEventListener('change', function() {
         var id = input.getAttribute('data-select-id');
@@ -1744,7 +1827,7 @@
   }
 
   // ── Event wiring ──
-  document.getElementById('searchInput').addEventListener('input', applyFilters);
+  document.getElementById('searchInput').addEventListener('input', scheduleApplyFilters);
 
   document.querySelectorAll('.period-chip').forEach(function(c) {
     c.addEventListener('click', function() {

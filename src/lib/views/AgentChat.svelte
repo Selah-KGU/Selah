@@ -73,6 +73,10 @@
 
   const renderCache = new Map<string, string>();
   const RENDER_CACHE_MAX = 256;
+  const STREAM_FLUSH_MS = 48;
+  let streamTokenBuffer = "";
+  let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
   function render(md: string): string {
     const cached = renderCache.get(md);
     if (cached !== undefined) return cached;
@@ -84,6 +88,51 @@
     }
     renderCache.set(md, out);
     return out;
+  }
+
+  function appendAssistantText(text: string) {
+    if (!text) return;
+    const last = messages[messages.length - 1];
+    if (last && last.role === "assistant" && last._streaming) {
+      messages[messages.length - 1] = { ...last, content: last.content + text };
+    } else {
+      messages = [
+        ...messages,
+        {
+          id: -Date.now(),
+          conv_id: activeConvId ?? "",
+          role: "assistant",
+          content: text,
+          created_at: Math.floor(Date.now() / 1000),
+          _streaming: true,
+        },
+      ];
+    }
+  }
+
+  function flushStreamTokens() {
+    if (streamFlushTimer) {
+      clearTimeout(streamFlushTimer);
+      streamFlushTimer = null;
+    }
+    if (!streamTokenBuffer) return;
+    const text = streamTokenBuffer;
+    streamTokenBuffer = "";
+    appendAssistantText(text);
+    scheduleScroll();
+  }
+
+  function scheduleStreamFlush() {
+    if (streamFlushTimer) return;
+    streamFlushTimer = setTimeout(flushStreamTokens, STREAM_FLUSH_MS);
+  }
+
+  function clearStreamBuffer() {
+    if (streamFlushTimer) {
+      clearTimeout(streamFlushTimer);
+      streamFlushTimer = null;
+    }
+    streamTokenBuffer = "";
   }
 
   async function refreshConfig() {
@@ -106,6 +155,7 @@
   async function selectConversation(id: string) {
     historyOpen = false;
     if (activeConvId === id) return;
+    clearStreamBuffer();
     activeConvId = id;
     agentActiveConvId.set(id);
     toolChips = [];
@@ -140,6 +190,7 @@
     try {
       await agentDeleteConversation(id);
       if (activeConvId === id) {
+        clearStreamBuffer();
         activeConvId = null;
         messages = [];
       }
@@ -226,29 +277,16 @@
         });
         break;
       case "token": {
-        const last = messages[messages.length - 1];
-        if (last && last.role === "assistant" && last._streaming) {
-          messages[messages.length - 1] = { ...last, content: last.content + ev.text };
-        } else {
-          messages = [
-            ...messages,
-            {
-              id: -Date.now(),
-              conv_id: activeConvId ?? "",
-              role: "assistant",
-              content: ev.text,
-              created_at: Math.floor(Date.now() / 1000),
-              _streaming: true,
-            },
-          ];
-        }
-        scheduleScroll();
+        streamTokenBuffer += ev.text;
+        scheduleStreamFlush();
         break;
       }
       case "done":
+        flushStreamTokens();
         finalizeTurn();
         break;
       case "error":
+        flushStreamTokens();
         finalizeTurn();
         messages = [
           ...messages,
@@ -270,6 +308,7 @@
     currentPhase = "idle";
     toolChips = [];
     thinkBuffer = "";
+    clearStreamBuffer();
     messages = messages.map((m) => (m._streaming ? { ...m, _streaming: false } : m));
     refreshConversations();
   }
@@ -514,6 +553,7 @@
 
   onDestroy(() => {
     document.removeEventListener("mousedown", onDocClick);
+    clearStreamBuffer();
     if (unlisten) unlisten();
     unlistenSttPartial?.();
     unlistenSttFinal?.();
@@ -601,7 +641,7 @@
   }
 
   async function copyMessage(m: UIMessage) {
-    const text = m.role === "assistant" ? stripHtml(render(m.content)) : m.content;
+    const text = m.role === "assistant" && !m._streaming ? stripHtml(render(m.content)) : m.content;
     await navigator.clipboard.writeText(text);
     copiedId = m.id;
     if (copiedIdTimer) clearTimeout(copiedIdTimer);
@@ -773,7 +813,11 @@
             <div class="row assistant">
               <img src={selahLogoUrl} alt="" class="avatar" />
               <div class="bubble assistant-bubble">
-                <div class="md">{@html render(m.content)}</div>
+                {#if m._streaming}
+                  <div class="md streaming-md">{m.content}</div>
+                {:else}
+                  <div class="md">{@html render(m.content)}</div>
+                {/if}
                 <div class="msg-actions">
                   <button class="msg-act-btn" title="コピー" onclick={() => copyMessage(m)}>
                     {#if copiedId === m.id}
@@ -1178,6 +1222,9 @@
   }
   .md :global(a) { color: var(--accent); text-decoration: none; }
   .md :global(a:hover) { text-decoration: underline; }
+  .streaming-md {
+    white-space: pre-wrap;
+  }
 
   .msg-actions {
     position: absolute;

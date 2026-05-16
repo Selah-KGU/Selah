@@ -19,6 +19,7 @@
   let favorites = $state<SyllabusSearchResult | null>(cachedState.favorites);
   let favLoading = $state(false);
   let favError = $state("");
+  let loadingMore = $state(false);
   let togglingSet = $state(new Set<string>());
   let showFavInTimetable = $state(localStorage.getItem("selah-fav-in-timetable") === "1");
 
@@ -148,6 +149,25 @@
     { key: "campus", label: "キャンパス", class: "col-campus" },
   ];
 
+  const INITIAL_SYLLABUS_SEARCH_PAGES = 3;
+  const SYLLABUS_SEARCH_PAGE_STEP = 3;
+
+  function buildSearchParams(maxPages: number): SyllabusSearchParams {
+    return {
+      year_from: yearFrom,
+      year_to: yearTo,
+      term,
+      campus,
+      department,
+      class_code: classCode,
+      day_period: dayPeriod,
+      keyword,
+      instructor,
+      language,
+      max_pages: maxPages,
+    };
+  }
+
   async function doSearch() {
     // Validate: at least one of term/campus/department/dayPeriod required
     if (!term && !campus && !department && !dayPeriod) {
@@ -161,19 +181,7 @@
     searched = true;
 
     try {
-      const params: SyllabusSearchParams = {
-        year_from: yearFrom,
-        year_to: yearTo,
-        term,
-        campus,
-        department,
-        class_code: classCode,
-        day_period: dayPeriod,
-        keyword,
-        instructor,
-        language,
-      };
-      result = await searchSyllabus(params);
+      result = await searchSyllabus(buildSearchParams(INITIAL_SYLLABUS_SEARCH_PAGES));
       // Collapse form and cache state after successful search
       if (result && result.entries.length > 0) {
         formCollapsed = true;
@@ -185,6 +193,21 @@
       error = e?.message || String(e);
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadMoreResults() {
+    if (!result || loadingMore || result.current_page >= result.total_pages) return;
+    loadingMore = true;
+    error = "";
+    try {
+      const maxPages = Math.min(result.total_pages, result.current_page + SYLLABUS_SEARCH_PAGE_STEP);
+      result = await searchSyllabus(buildSearchParams(maxPages));
+      saveState();
+    } catch (e: any) {
+      error = e?.message || String(e);
+    } finally {
+      loadingMore = false;
     }
   }
 
@@ -499,7 +522,11 @@
 
       {#if activeResultTab === "results"}
         <div class="result-info">
-          {result.total_count || result.entries.length}件の結果{#if result.total_pages > 1}（{result.current_page}/{result.total_pages}ページ）{/if}
+          {#if result.total_pages > 1}
+            {result.entries.length}/{result.total_count || result.entries.length}件を表示中（{result.current_page}/{result.total_pages}ページ）
+          {:else}
+            {result.total_count || result.entries.length}件の結果
+          {/if}
         </div>
         {#snippet cellSnippet({ row, col, value }: { row: any; col: any; value: any })}
           {#if col.key === "bookmark"}
@@ -527,6 +554,13 @@
           {/if}
         {/snippet}
         <DataTable data={displayEntries} {columns} {cellSnippet} onrowclick={(row: any) => handleRowClick(row)} />
+        {#if result.current_page < result.total_pages}
+          <div class="result-more">
+            <button class="load-more-results" onclick={loadMoreResults} disabled={loadingMore}>
+              {loadingMore ? "追加取得中..." : `さらに${Math.min(SYLLABUS_SEARCH_PAGE_STEP, result.total_pages - result.current_page)}ページ取得`}
+            </button>
+          </div>
+        {/if}
       {:else}
         {#if favLoading}
           <div class="loading-message"><span class="spinner"></span> お気に入りを読み込み中...</div>
@@ -785,6 +819,34 @@
     font-size: 12px;
     color: var(--text-secondary);
     margin-bottom: 8px;
+  }
+
+  .result-more {
+    display: flex;
+    justify-content: center;
+    margin: 12px 0 4px;
+  }
+
+  .load-more-results {
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .load-more-results:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
+  }
+
+  .load-more-results:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   .fav-header {

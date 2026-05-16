@@ -215,7 +215,7 @@ pub(super) async fn list_downloaded_files(args: &Value) -> Result<Value, String>
         .unwrap_or(10)
         .min(LIST_CAP as u64) as usize;
 
-    let mut records = crate::commands::scan_download_dir();
+    let mut records = crate::commands::list_downloads();
     records.retain(|r| r.file_exists);
     if !keyword_norm.is_empty() {
         records.retain(|r| {

@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: https: file:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://ipc.localhost; script-src 'self' 'unsafe-inline' https://ipc.localhost; worker-src 'self'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: https: file:">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Markdown</title>
 <style>
@@ -404,6 +404,10 @@
   var tocHeadings = []; // [{ id, level, text, el }]
   var activeTocId = null;
   var lastPayloadKey = '';
+  var renderWorker = null;
+  var renderWorkerCallbacks = {};
+  var renderRequestSeq = 0;
+  var activeRenderSeq = 0;
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -537,21 +541,75 @@
     });
   }
 
-  // ── Render markdown ──
-  function render(markdown) {
-    var html;
+  function renderMarkdownOnMain(markdown) {
     if (window.marked) {
       window.marked.setOptions({ gfm: true, breaks: false });
-      html = window.marked.parse(markdown);
-    } else {
-      html = '<pre>' + escapeHtml(markdown) + '</pre>';
+      return window.marked.parse(markdown);
     }
+    return '<pre>' + escapeHtml(markdown) + '</pre>';
+  }
+
+  function getRenderWorker() {
+    if (!('Worker' in window)) return null;
+    if (renderWorker) return renderWorker;
+    try {
+      renderWorker = new Worker('markdown-render-worker.js');
+      renderWorker.onmessage = function (ev) {
+        var data = ev.data || {};
+        var cb = renderWorkerCallbacks[data.id];
+        if (!cb) return;
+        delete renderWorkerCallbacks[data.id];
+        if (data.error) cb.reject(new Error(data.error));
+        else cb.resolve(String(data.html || ''));
+      };
+      renderWorker.onerror = function (err) {
+        var callbacks = renderWorkerCallbacks;
+        renderWorkerCallbacks = {};
+        renderWorker = null;
+        Object.keys(callbacks).forEach(function (key) {
+          callbacks[key].reject(err);
+        });
+      };
+      return renderWorker;
+    } catch (e) {
+      renderWorker = null;
+      return null;
+    }
+  }
+
+  function parseMarkdown(markdown) {
+    var worker = getRenderWorker();
+    if (!worker) return Promise.resolve(renderMarkdownOnMain(markdown));
+    var id = ++renderRequestSeq;
+    return new Promise(function (resolve, reject) {
+      renderWorkerCallbacks[id] = { resolve: resolve, reject: reject };
+      try {
+        worker.postMessage({ id: id, markdown: markdown });
+      } catch (e) {
+        delete renderWorkerCallbacks[id];
+        reject(e);
+      }
+    }).catch(function () {
+      return renderMarkdownOnMain(markdown);
+    });
+  }
+
+  function sanitizeMarkdownHtml(html) {
     if (window.DOMPurify) {
-      html = window.DOMPurify.sanitize(html, {
+      return window.DOMPurify.sanitize(html, {
         FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form'],
         FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus'],
       });
     }
+    return html;
+  }
+
+  // ── Render markdown ──
+  async function render(markdown) {
+    var renderSeq = ++activeRenderSeq;
+    var html = await parseMarkdown(markdown);
+    if (renderSeq !== activeRenderSeq) return false;
+    html = sanitizeMarkdownHtml(html);
     var doc = $('doc');
     doc.innerHTML = html;
     $('viewScroll').scrollTop = 0;
@@ -578,12 +636,17 @@
     });
 
     buildToc();
+    return true;
   }
 
   function renderAfterFirstPaint(markdown, done) {
+    $('doc').innerHTML = '<div class="loading"><span class="spinner"></span>レンダリング中…</div>';
     var run = function () {
-      render(markdown);
-      if (done) done();
+      render(markdown).then(function (applied) {
+        if (applied && done) done();
+      }).catch(function (e) {
+        showError('Markdownの表示に失敗しました: ' + (e && e.message ? e.message : String(e)));
+      });
     };
     if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(function () { requestAnimationFrame(run); });
@@ -651,7 +714,7 @@
     try {
       await invoke('write_markdown_file', { path: currentPath, contents: contents });
       savedMarkdown = contents;
-      render(savedMarkdown);
+      await render(savedMarkdown);
       setDirty(false);
       toast('保存しました');
       exitEdit();
