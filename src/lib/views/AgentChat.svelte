@@ -184,9 +184,33 @@
     }
   }
 
+  let pendingDeleteId = $state<string | null>(null);
+  let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function armDelete(id: string) {
+    pendingDeleteId = id;
+    if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+    pendingDeleteTimer = setTimeout(() => {
+      pendingDeleteId = null;
+      pendingDeleteTimer = null;
+    }, 3000);
+  }
+
+  function clearArmedDelete() {
+    if (pendingDeleteTimer) {
+      clearTimeout(pendingDeleteTimer);
+      pendingDeleteTimer = null;
+    }
+    pendingDeleteId = null;
+  }
+
   async function deleteConv(id: string, ev: MouseEvent) {
     ev.stopPropagation();
-    if (!confirm("この会話を削除しますか？")) return;
+    if (pendingDeleteId !== id) {
+      armDelete(id);
+      return;
+    }
+    clearArmedDelete();
     try {
       await agentDeleteConversation(id);
       if (activeConvId === id) {
@@ -483,6 +507,7 @@
     if (!historyOpen) return;
     if (headerMenuEl && e.target instanceof Node && !headerMenuEl.contains(e.target)) {
       historyOpen = false;
+      clearArmedDelete();
     }
   }
 
@@ -751,9 +776,10 @@
                 <span class="hd-date">{fmtDate(c.updated_at)}</span>
                 <button
                   class="hd-del"
+                  class:armed={pendingDeleteId === c.id}
                   onclick={(e) => deleteConv(c.id, e)}
-                  aria-label="削除"
-                  title="削除"
+                  aria-label={pendingDeleteId === c.id ? "削除を確定" : "削除"}
+                  title={pendingDeleteId === c.id ? "もう一度クリックで削除" : "削除"}
                 >
                   <Icon name="trash" size={12} />
                 </button>
@@ -1122,6 +1148,12 @@
   }
   .hd-item:hover .hd-del, .hd-item:focus .hd-del { opacity: 1; }
   .hd-del:hover { color: #d64545; background: color-mix(in srgb, #d64545 12%, transparent); }
+  .hd-del.armed {
+    opacity: 1;
+    color: #fff;
+    background: #d64545;
+  }
+  .hd-del.armed:hover { background: #c43838; }
 
   /* ── Chat Panel ── */
   .chat-panel {

@@ -337,6 +337,254 @@
     transform: translateX(-50%) translateY(0);
   }
   .toast.error { background: var(--red); color: #fff; }
+
+  /* ── Knowledge whiteboard (replaces ```live-whiteboard fenced blocks) ── */
+  .mdr-whiteboard {
+    position: relative;
+    margin: 14px 0 10px;
+    padding: 10px;
+    border-radius: 12px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+    background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+  }
+  .mdr-wb-canvas {
+    position: relative;
+    width: 100%;
+    height: 390px;
+    border-radius: 8px;
+    overflow: hidden;
+    background:
+      linear-gradient(color-mix(in srgb, var(--text-tertiary) 9%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--text-tertiary) 9%, transparent) 1px, transparent 1px),
+      color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+    background-size: 22px 22px;
+    cursor: grab;
+    touch-action: none;
+  }
+  .mdr-wb-canvas.dragging { cursor: grabbing; }
+  .mdr-wb-stage {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform-origin: 50% 50%;
+  }
+  .mdr-wb-zoom {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 8;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px;
+    border-radius: 999px;
+    border: 0.5px solid var(--border);
+    background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  }
+  .mdr-wb-zoom button {
+    min-width: 30px;
+    height: 28px;
+    padding: 0 8px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .mdr-wb-zoom button:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+  }
+  .mdr-whiteboard.dense .mdr-wb-canvas { height: 500px; }
+  .mdr-whiteboard.very-dense .mdr-wb-canvas { height: 560px; }
+  .mdr-wb-links {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    color: color-mix(in srgb, var(--blue) 52%, var(--text-tertiary));
+    overflow: visible;
+  }
+  .mdr-wb-links line,
+  .mdr-wb-links path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 0.75;
+    stroke-linecap: round;
+    opacity: 0.74;
+  }
+  .mdr-wb-links path.redundant {
+    stroke-dasharray: 1.6 1.4;
+    opacity: 0.42;
+  }
+  /* Click-to-focus: dim everything outside the selected node's neighbourhood. */
+  .mdr-wb-canvas.has-selection .mdr-wb-links path,
+  .mdr-wb-canvas.has-selection .mdr-wb-edge-label,
+  .mdr-wb-canvas.has-selection .mdr-wb-node {
+    transition: opacity 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  }
+  .mdr-wb-canvas.has-selection .mdr-wb-links path { opacity: 0.12; }
+  .mdr-wb-canvas.has-selection .mdr-wb-links path.is-highlighted { opacity: 0.95; stroke-width: 1.1; }
+  .mdr-wb-canvas.has-selection .mdr-wb-edge-label { opacity: 0.14; }
+  .mdr-wb-canvas.has-selection .mdr-wb-edge-label.is-highlighted { opacity: 1; }
+  .mdr-wb-canvas.has-selection .mdr-wb-node { opacity: 0.24; }
+  .mdr-wb-canvas.has-selection .mdr-wb-node.is-highlighted { opacity: 1; }
+  .mdr-wb-canvas.has-selection .mdr-wb-node.is-selected {
+    opacity: 1;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--blue) 65%, transparent),
+      0 6px 16px rgba(33, 116, 223, 0.22);
+  }
+  .mdr-wb-node { cursor: pointer; }
+  .mdr-wb-edge-label {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    transform-origin: 50% 50%;
+    z-index: 2;
+    max-width: 132px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    border: 0.5px solid color-mix(in srgb, var(--blue) 24%, transparent);
+    color: color-mix(in srgb, var(--blue) 78%, var(--text-secondary));
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1.15;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mdr-wb-node {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    width: 124px;
+    min-height: 66px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    border-radius: 8px;
+    border: 0.5px solid color-mix(in srgb, var(--blue) 24%, var(--border));
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
+    text-align: center;
+  }
+  .mdr-whiteboard.dense .mdr-wb-node {
+    width: 106px;
+    min-height: 58px;
+    padding: 6px 8px;
+  }
+  .mdr-whiteboard.very-dense .mdr-wb-node {
+    width: 94px;
+    min-height: 50px;
+    padding: 5px 6px;
+  }
+  .mdr-wb-node.role-main {
+    width: 144px;
+    min-height: 74px;
+    border-width: 1px;
+    box-shadow: 0 5px 14px rgba(33, 116, 223, 0.14);
+  }
+  .mdr-wb-node.role-branch {
+    width: 116px;
+    min-height: 62px;
+    opacity: 0.94;
+  }
+  .mdr-whiteboard.dense .mdr-wb-node.role-main {
+    width: 126px;
+    min-height: 66px;
+  }
+  .mdr-whiteboard.very-dense .mdr-wb-node.role-main {
+    width: 110px;
+    min-height: 58px;
+  }
+  .mdr-wb-node.kind-core {
+    background: color-mix(in srgb, var(--blue) 14%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--blue) 38%, var(--border));
+  }
+  .mdr-wb-node.kind-result {
+    background: color-mix(in srgb, var(--green) 13%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--green) 34%, var(--border));
+  }
+  .mdr-wb-node.kind-question {
+    background: color-mix(in srgb, var(--orange) 13%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--orange) 32%, var(--border));
+  }
+  .mdr-wb-node.external {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 52%),
+      color-mix(in srgb, var(--bg-primary) 96%, transparent);
+  }
+  .mdr-wb-source-badge {
+    position: absolute;
+    top: -7px;
+    right: -7px;
+    max-width: 44px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    color: color-mix(in srgb, var(--accent) 82%, var(--text-secondary));
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .mdr-wb-node-label {
+    max-width: 100%;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .mdr-whiteboard.dense .mdr-wb-node-label { font-size: 11px; }
+  .mdr-whiteboard.very-dense .mdr-wb-node-label { font-size: 10px; }
+  .mdr-wb-node-detail {
+    max-width: 100%;
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1.25;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .mdr-whiteboard.dense .mdr-wb-node-detail {
+    font-size: 9.5px;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+  }
+  .mdr-whiteboard.very-dense .mdr-wb-node-detail {
+    display: -webkit-box;
+    font-size: 9px;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  @media (max-width: 700px) {
+    .mdr-wb-canvas { height: 320px; }
+    .mdr-whiteboard.dense .mdr-wb-canvas { height: 400px; }
+    .mdr-whiteboard.very-dense .mdr-wb-canvas { height: 460px; }
+    .mdr-wb-node { width: 108px; min-height: 58px; }
+    .mdr-whiteboard.dense .mdr-wb-node { width: 94px; min-height: 50px; }
+  }
 </style>
 </head>
 <body>
@@ -382,6 +630,7 @@
 
 <script src="marked.umd.js"></script>
 <script src="purify.min.js"></script>
+<script src="whiteboard-layout.js"></script>
 <script>
 (function() {
   try {
@@ -635,8 +884,355 @@
       });
     });
 
+    renderWhiteboardBlocks(doc);
     buildToc();
     return true;
+  }
+
+  // ── Knowledge whiteboard rendering ──
+  // Backend emits a `live-whiteboard` fenced code block alongside the bullet
+  // list in saved Live notes. The reader swaps that block for an interactive
+  // mini-board (matching the Live view), keeping the bullet list as a textual
+  // fallback / source-of-truth for raw markdown editors.
+  var WB_MAX_NODES = 18;
+  var WB_MAX_EDGES = 24;
+
+  function renderWhiteboardBlocks(root) {
+    // Pass 1: structured JSON fence (new Live saves embed full board data).
+    root
+      .querySelectorAll('pre > code.language-live-whiteboard, pre > code[class~="language-live-whiteboard"]')
+      .forEach(function (codeEl) {
+        var pre = codeEl.parentElement;
+        if (!pre) return;
+        var data = null;
+        try { data = JSON.parse(codeEl.textContent || ''); }
+        catch (e) { console.warn('[md-reader] whiteboard JSON parse failed:', e); return; }
+        var layout = window.WhiteboardLayout && window.WhiteboardLayout.compute(data, {
+          maxNodes: WB_MAX_NODES,
+          maxEdges: WB_MAX_EDGES,
+          fallbackBoardTitle: '知識整理ボード'
+        });
+        if (!layout) return;
+        var card = buildWhiteboardCard(layout);
+        card.dataset.whiteboardSource = 'json';
+        pre.replaceWith(card);
+      });
+
+    // Pass 2: bullet-list fallback for legacy saves (no JSON fence). Detect any
+    // `### 知識整理ボード: …` heading and reconstruct nodes/edges from the
+    // following <ul> + optional "関係:" <ul>. Skip if a JSON-sourced card was
+    // already inserted into the same section.
+    var headingPattern = /^知[识識]整理ボード/;
+    root.querySelectorAll('h3').forEach(function (h) {
+      if (!headingPattern.test((h.textContent || '').trim())) return;
+      // Already rendered by pass 1?
+      var probe = h.nextElementSibling;
+      while (probe && !/^H[1-6]$/.test(probe.tagName)) {
+        if (probe.classList && probe.classList.contains('mdr-whiteboard')) return;
+        probe = probe.nextElementSibling;
+      }
+      var board = parseBoardFromBullets(h);
+      if (!board) return;
+      var layout = window.WhiteboardLayout && window.WhiteboardLayout.compute(board, {
+        maxNodes: WB_MAX_NODES,
+        maxEdges: WB_MAX_EDGES,
+        fallbackBoardTitle: '知識整理ボード'
+      });
+      if (!layout) return;
+      var card = buildWhiteboardCard(layout);
+      card.dataset.whiteboardSource = 'bullets';
+      h.parentNode.insertBefore(card, h.nextSibling);
+    });
+  }
+
+  function parseBoardFromBullets(heading) {
+    var title = (heading.textContent || '')
+      .replace(/^知[识識]整理ボード[:：]\s*/, '')
+      .trim();
+    var nodes = [];
+    var edges = [];
+    var inRelations = false;
+    var el = heading.nextElementSibling;
+    while (el && !/^H[1-6]$/.test(el.tagName)) {
+      if (el.tagName === 'P' && /関係[:：]\s*$/.test((el.textContent || '').trim())) {
+        inRelations = true;
+      } else if (el.tagName === 'UL') {
+        el.querySelectorAll(':scope > li').forEach(function (li) {
+          if (!inRelations) {
+            var strong = li.querySelector('strong');
+            if (!strong) return;
+            var label = (strong.textContent || '').trim();
+            if (!label) return;
+            var full = (li.textContent || '').trim();
+            var rest = full.slice(full.indexOf(label) + label.length).replace(/^[:：]\s*/, '');
+            var external = false, externalSource = '', sourceExcerpt = '';
+            var detail = rest;
+            var em = rest.match(/（外部補足(?:[:：]\s*([^）]+))?）/);
+            if (em) {
+              external = true;
+              externalSource = em[1] ? em[1].trim() : '';
+              detail = rest.replace(em[0], '').trim();
+            } else {
+              var lm = rest.match(/（講義内根拠[:：]\s*([^）]+)）/);
+              if (lm) {
+                sourceExcerpt = lm[1].trim();
+                detail = rest.replace(lm[0], '').trim();
+              }
+            }
+            nodes.push({
+              id: 'n' + (nodes.length + 1),
+              label: label,
+              detail: detail,
+              kind: 'support',
+              source_type: external ? 'external' : 'lecture',
+              source_excerpt: sourceExcerpt,
+              external_source: externalSource
+            });
+          } else {
+            var text = (li.textContent || '').trim();
+            var m = text.match(/^(.+?)\s+(?:→|--([^-]+)-->|-->|→)\s+(.+)$/);
+            if (!m) {
+              m = text.match(/^(.+?)\s+--(.+?)-->\s+(.+)$/);
+            }
+            if (!m) return;
+            var fromLabel = m[1].trim();
+            var edgeLabel = m[2] ? m[2].trim() : '';
+            var toLabel = m[3].trim();
+            var fromNode = nodes.find(function (n) { return n.label === fromLabel; });
+            var toNode = nodes.find(function (n) { return n.label === toLabel; });
+            if (fromNode && toNode) {
+              edges.push({ from: fromNode.id, to: toNode.id, label: edgeLabel });
+            }
+          }
+        });
+      }
+      el = el.nextElementSibling;
+    }
+    if (nodes.length < 2) return null;
+    return { title: title || '知識整理ボード', layout: 'grid', nodes: nodes, edges: edges };
+  }
+
+
+  function buildWhiteboardCard(layout) {
+    var dense = layout.nodes.length > 8;
+    var veryDense = layout.nodes.length > 14;
+    var stagePreset = whiteboardStagePreset(layout.nodes.length);
+    var card = document.createElement('div');
+    card.className = 'mdr-whiteboard';
+    if (dense) card.classList.add('dense');
+    if (veryDense) card.classList.add('very-dense');
+
+    var canvas = document.createElement('div');
+    canvas.className = 'mdr-wb-canvas';
+    var stage = document.createElement('div');
+    stage.className = 'mdr-wb-stage';
+    stage.style.width = stagePreset.width + 'px';
+    stage.style.height = stagePreset.height + 'px';
+
+    // Per-card selection state. Click a node to focus it; everything outside
+    // its 1-hop neighbourhood dims. Click the empty canvas to clear.
+    var selectedNodeId = null;
+    var edgePathById = {};
+    var edgeLabelById = {};
+    var nodeElById = {};
+    var edgesById = {};
+    layout.edges.forEach(function (e) { edgesById[e.id] = e; });
+
+    function applyHighlight() {
+      var hasSel = selectedNodeId != null;
+      canvas.classList.toggle('has-selection', hasSel);
+      var highlightNodes = {};
+      var highlightEdges = {};
+      if (hasSel) {
+        highlightNodes[selectedNodeId] = true;
+        layout.edges.forEach(function (e) {
+          if (e.from === selectedNodeId) { highlightNodes[e.to] = true; highlightEdges[e.id] = true; }
+          else if (e.to === selectedNodeId) { highlightNodes[e.from] = true; highlightEdges[e.id] = true; }
+        });
+      }
+      Object.keys(edgePathById).forEach(function (id) {
+        edgePathById[id].classList.toggle('is-highlighted', !!highlightEdges[id]);
+      });
+      Object.keys(edgeLabelById).forEach(function (id) {
+        edgeLabelById[id].classList.toggle('is-highlighted', !!highlightEdges[id]);
+      });
+      Object.keys(nodeElById).forEach(function (id) {
+        var el = nodeElById[id];
+        el.classList.toggle('is-highlighted', !!highlightNodes[id]);
+        el.classList.toggle('is-selected', id === selectedNodeId);
+      });
+    }
+
+    var svgNS = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('class', 'mdr-wb-links');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.setAttribute('aria-hidden', 'true');
+    layout.edges.forEach(function (e) {
+      var path = document.createElementNS(svgNS, 'path');
+      var cls = [];
+      if (e.trunk) cls.push('trunk');
+      if (e.redundant) cls.push('redundant');
+      if (cls.length) path.setAttribute('class', cls.join(' '));
+      var cx = (e.cx != null) ? e.cx : (e.x1 + e.x2) / 2;
+      var cy = (e.cy != null) ? e.cy : (e.y1 + e.y2) / 2;
+      path.setAttribute('d', 'M ' + e.x1 + ' ' + e.y1 + ' Q ' + cx + ' ' + cy + ' ' + e.x2 + ' ' + e.y2);
+      svg.appendChild(path);
+      edgePathById[e.id] = path;
+    });
+    stage.appendChild(svg);
+
+    layout.edges.forEach(function (e) {
+      if (!e.label) return;
+      var lab = document.createElement('span');
+      lab.className = 'mdr-wb-edge-label';
+      lab.style.left = e.lx + '%';
+      lab.style.top = e.ly + '%';
+      lab.textContent = e.label;
+      stage.appendChild(lab);
+      edgeLabelById[e.id] = lab;
+    });
+
+    layout.nodes.forEach(function (n) {
+      var isExternal = n.sourceType === 'external';
+      var node = document.createElement('div');
+      node.className = 'mdr-wb-node kind-' + n.kind + ' role-' + n.role + (isExternal ? ' external' : '');
+      node.style.left = n.x + '%';
+      node.style.top = n.y + '%';
+      if (isExternal && n.sourceLabel) {
+        node.title = '外部出典: ' + n.sourceLabel;
+      }
+      if (isExternal) {
+        var badge = document.createElement('span');
+        badge.className = 'mdr-wb-source-badge';
+        badge.textContent = '外部';
+        node.appendChild(badge);
+      }
+      var lbl = document.createElement('span');
+      lbl.className = 'mdr-wb-node-label';
+      lbl.textContent = n.label;
+      node.appendChild(lbl);
+      if (n.detail) {
+        var det = document.createElement('span');
+        det.className = 'mdr-wb-node-detail';
+        det.textContent = n.detail;
+        node.appendChild(det);
+      }
+      node.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        selectedNodeId = (selectedNodeId === n.id) ? null : n.id;
+        applyHighlight();
+      });
+      stage.appendChild(node);
+      nodeElById[n.id] = node;
+    });
+
+    // Suppress canvas-clear-on-click if the pointer dragged (panning). The
+    // viewport handler also tracks drag, but we keep our own threshold so
+    // node selection logic is self-contained.
+    var dragStartPos = null;
+    var wasDragged = false;
+    canvas.addEventListener('pointerdown', function (ev) {
+      dragStartPos = { x: ev.clientX, y: ev.clientY };
+      wasDragged = false;
+    }, true);
+    canvas.addEventListener('pointermove', function (ev) {
+      if (!dragStartPos) return;
+      if (Math.abs(ev.clientX - dragStartPos.x) > 4 || Math.abs(ev.clientY - dragStartPos.y) > 4) {
+        wasDragged = true;
+      }
+    }, true);
+    canvas.addEventListener('click', function (ev) {
+      if (wasDragged) return;
+      // Click that bubbled from a node has stopPropagation, so reaching here
+      // means an empty-area click.
+      if (selectedNodeId != null) {
+        selectedNodeId = null;
+        applyHighlight();
+      }
+    });
+
+    canvas.appendChild(stage);
+    attachWhiteboardViewport(card, canvas, stage, stagePreset);
+    card.appendChild(canvas);
+    return card;
+  }
+
+  function whiteboardStagePreset(nodeCount) {
+    if (nodeCount > 14) return { width: 1360, height: 820, zoom: 0.86 };
+    if (nodeCount > 8) return { width: 1220, height: 760, zoom: 0.9 };
+    return { width: 1040, height: 660, zoom: 0.96 };
+  }
+
+  function attachWhiteboardViewport(card, canvas, stage, preset) {
+    var zoom = preset.zoom;
+    var panX = 0;
+    var panY = 0;
+    var drag = null;
+    var controls = document.createElement('div');
+    controls.className = 'mdr-wb-zoom';
+    var outBtn = document.createElement('button');
+    var resetBtn = document.createElement('button');
+    var inBtn = document.createElement('button');
+    outBtn.type = resetBtn.type = inBtn.type = 'button';
+    outBtn.textContent = '−';
+    inBtn.textContent = '＋';
+    outBtn.title = 'Zoom out';
+    inBtn.title = 'Zoom in';
+    resetBtn.title = 'Reset zoom';
+    controls.appendChild(outBtn);
+    controls.appendChild(resetBtn);
+    controls.appendChild(inBtn);
+    card.appendChild(controls);
+
+    function clampZoom(value) {
+      return Math.min(2.8, Math.max(0.35, Math.round(value * 100) / 100));
+    }
+    function render() {
+      stage.style.transform = 'translate(-50%, -50%) translate(' + panX + 'px, ' + panY + 'px) scale(' + zoom + ')';
+      resetBtn.textContent = Math.round(zoom * 100) + '%';
+    }
+    function setZoom(value) {
+      zoom = clampZoom(value);
+      render();
+    }
+    outBtn.addEventListener('click', function () { setZoom(zoom - 0.15); });
+    inBtn.addEventListener('click', function () { setZoom(zoom + 0.15); });
+    resetBtn.addEventListener('click', function () {
+      zoom = preset.zoom;
+      panX = 0;
+      panY = 0;
+      render();
+    });
+    canvas.addEventListener('wheel', function (ev) {
+      ev.preventDefault();
+      setZoom(zoom + (ev.deltaY > 0 ? -0.08 : 0.08));
+    }, { passive: false });
+    canvas.addEventListener('pointerdown', function (ev) {
+      var target = ev.target && ev.target.closest ? ev.target : null;
+      if (ev.button !== 0 || (target && target.closest('.mdr-wb-zoom'))) return;
+      // Don't start a pan when the user is clicking a node — pointer capture
+      // would swallow the click event and break the highlight toggle.
+      if (target && target.closest('.mdr-wb-node')) return;
+      drag = { x: ev.clientX, y: ev.clientY, panX: panX, panY: panY };
+      canvas.classList.add('dragging');
+      canvas.setPointerCapture(ev.pointerId);
+    });
+    canvas.addEventListener('pointermove', function (ev) {
+      if (!drag) return;
+      panX = drag.panX + ev.clientX - drag.x;
+      panY = drag.panY + ev.clientY - drag.y;
+      render();
+    });
+    function endDrag(ev) {
+      drag = null;
+      canvas.classList.remove('dragging');
+      try { canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
+    }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    render();
   }
 
   function renderAfterFirstPaint(markdown, done) {

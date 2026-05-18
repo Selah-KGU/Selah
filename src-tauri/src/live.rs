@@ -8,6 +8,9 @@ use tauri::{Emitter, Manager};
 const CACHE_DEBOUNCE: Duration = Duration::from_secs(30);
 const MIN_AI_SUMMARIZATION_DURATION_SECS: i64 = 120;
 const MAX_LIVE_TERM_EXPLANATION_CHARS: usize = 220;
+// A safety cap for malformed/over-eager model output, not a product limit.
+const MAX_LIVE_WHITEBOARD_NODES: usize = 18;
+const MAX_LIVE_WHITEBOARD_EDGES: usize = 24;
 static LAST_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
 const FREE_NOTE_FOLDER_NAME: &str = "自由ノート";
 
@@ -53,6 +56,45 @@ pub struct LiveTermExplanation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveWhiteboardNode {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub parent_id: String,
+    #[serde(default)]
+    pub source_type: String,
+    #[serde(default)]
+    pub source_excerpt: String,
+    #[serde(default)]
+    pub external_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveWhiteboardEdge {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveWhiteboard {
+    pub title: String,
+    #[serde(default)]
+    pub layout: String,
+    #[serde(default)]
+    pub nodes: Vec<LiveWhiteboardNode>,
+    #[serde(default)]
+    pub edges: Vec<LiveWhiteboardEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveSummaryChunk {
     pub title: String,
     pub range_label: String,
@@ -60,6 +102,8 @@ pub struct LiveSummaryChunk {
     pub line_count: usize,
     #[serde(default)]
     pub terms: Vec<LiveTermExplanation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whiteboard: Option<LiveWhiteboard>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +168,7 @@ struct LiveSession {
 struct LiveChunkAiResult {
     body: String,
     terms: Vec<LiveTermExplanation>,
+    whiteboard: Option<LiveWhiteboard>,
 }
 
 impl LiveSession {
@@ -567,6 +612,129 @@ fn format_recent_summary_context(summaries: &[LiveSummaryChunk], limit: usize) -
         .join("\n\n")
 }
 
+// ── Cumulative knowledge whiteboard ─────────────────────────────────────────
+// The model is *prompted* to return the entire cumulative board with stable
+// IDs on every segment. Nothing in the API contract forces that, though, so
+// this module treats the model's output as *proposed updates* and reconciles
+// them against what we already have. The data flow per segment is:
+//
+//   summarize_chunk → chunk_ai.whiteboard : Option<LiveWhiteboard>
+//                    ↓
+//   reconcile_whiteboard(previous, model_output) → Option<LiveWhiteboard>
+//                    ↓                                    │
+//             merge_whiteboard (Some)            carry-forward (None)
+//
+// Reading order below follows that flow: latest → reconcile → merge.
+
+fn latest_whiteboard<'a>(summaries: &'a [LiveSummaryChunk]) -> Option<&'a LiveWhiteboard> {
+    summaries
+        .iter()
+        .rev()
+        .find_map(|chunk| chunk.whiteboard.as_ref())
+}
+
+fn format_latest_whiteboard_context(summaries: &[LiveSummaryChunk]) -> String {
+    latest_whiteboard(summaries)
+        .and_then(|board| serde_json::to_string(board).ok())
+        .unwrap_or_else(|| "なし".to_string())
+}
+
+/// Decide what whiteboard to persist for the current segment.
+///
+/// - `Some(new)` → merge with previous (preserve concepts the model silently
+///   dropped, up to the node cap).
+/// - `None`      → carry the previous board forward so the UI doesn't blink
+///   out an existing visualization just because this chunk's AI call happened
+///   to skip the field.
+fn reconcile_whiteboard(
+    previous: Option<&LiveWhiteboard>,
+    model_output: Option<LiveWhiteboard>,
+) -> Option<LiveWhiteboard> {
+    match model_output {
+        Some(new_board) => Some(merge_whiteboard(previous, new_board)),
+        None => {
+            if previous.is_some() {
+                eprintln!("[Live whiteboard] model returned no board; carrying previous forward");
+            }
+            previous.cloned()
+        }
+    }
+}
+
+/// Union-merge the model's proposed board into the previously accumulated one.
+///
+/// - Nodes the model re-emitted (same `id`) → model's version wins; labels,
+///   details, kinds, and source metadata can all evolve.
+/// - Nodes the model omitted → kept (oldest-first) up to the node cap;
+///   concepts only fall out when we genuinely run out of room.
+/// - Edges → union by `(from, to)`; edges whose endpoints didn't survive the
+///   node merge are dropped.
+/// - `title` and `layout` → follow the model (per-segment choices, not state).
+fn merge_whiteboard(
+    previous: Option<&LiveWhiteboard>,
+    current: LiveWhiteboard,
+) -> LiveWhiteboard {
+    let Some(prev) = previous else {
+        return current;
+    };
+
+    use std::collections::HashSet;
+    let current_ids: HashSet<String> = current.nodes.iter().map(|n| n.id.clone()).collect();
+
+    let mut nodes = current.nodes;
+    let mut preserved_nodes = 0usize;
+    for prev_node in &prev.nodes {
+        if nodes.len() >= MAX_LIVE_WHITEBOARD_NODES {
+            break;
+        }
+        if current_ids.contains(&prev_node.id) {
+            continue;
+        }
+        nodes.push(prev_node.clone());
+        preserved_nodes += 1;
+    }
+
+    let known_ids: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let mut edges = current.edges;
+    let mut seen_edges: HashSet<(String, String)> = edges
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone()))
+        .collect();
+    let mut preserved_edges = 0usize;
+    for prev_edge in &prev.edges {
+        if edges.len() >= MAX_LIVE_WHITEBOARD_EDGES {
+            break;
+        }
+        let key = (prev_edge.from.clone(), prev_edge.to.clone());
+        if seen_edges.contains(&key) {
+            continue;
+        }
+        if !known_ids.contains(&prev_edge.from) || !known_ids.contains(&prev_edge.to) {
+            continue;
+        }
+        seen_edges.insert(key);
+        edges.push(prev_edge.clone());
+        preserved_edges += 1;
+    }
+
+    if preserved_nodes > 0 || preserved_edges > 0 {
+        eprintln!(
+            "[Live whiteboard] merge: preserved {} node(s) and {} edge(s) the model omitted (now {} / {} total)",
+            preserved_nodes,
+            preserved_edges,
+            nodes.len(),
+            edges.len()
+        );
+    }
+
+    LiveWhiteboard {
+        title: current.title,
+        layout: current.layout,
+        nodes,
+        edges,
+    }
+}
+
 async fn summarize_chunk(
     course: &LiveCourseInfo,
     lines: &[LiveTranscriptLine],
@@ -585,19 +753,25 @@ async fn summarize_chunk(
         .collect::<Vec<_>>()
         .join("\n");
     let recent_summary_context = format_recent_summary_context(recent_summaries, 2);
+    let whiteboard_context = format_latest_whiteboard_context(recent_summaries);
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
             content: format!(
-                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約し、同じ区間で出た重要な専門用語・固有概念だけを注釈してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。\n- 外部知識は、用語の理解に必要な一般的背景・標準的定義・短い例を補う場合のみ使って構いません。ただし外部知識を使った場合は external_source に正確な出典名とURL、または公式文書名・書籍名など確認可能な出典を必ず書いてください。\n- 正確な出典を示せない外部知識は使わず、講義内で確認できる範囲に留めてください。\n- 講義で確認できない固有の数字・年号・人物関係・統計値などを外部知識で断定的に補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:\n{{\"summary_markdown\":\"- 重点1（1行、名詞句または短文）\\n- 重点2\\n- 重点3\\n\\n---\\n\\n**重点1**: 補足説明（1〜2文で具体的に）\\n\\n**重点2**: 補足説明（1〜2文で具体的に）\\n\\n**重点3**: 補足説明（1〜2文で具体的に）\",\"terms\":[{{\"term\":\"専門用語または固有概念\",\"explanation\":\"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。\",\"source_excerpt\":\"講義内の根拠になる短い発話断片\",\"external_source\":\"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字\"}}]}}\n\nsummary_markdown のルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。\n\nterms のルール:\n- 今回の区間で出た専門用語・理論名・手法名・制度名・固有概念・略語だけを最大5件。\n- 注釈対象は「その語を知らないと講義の理解が止まりやすいもの」に限定する。\n- 一般常識、日常語、教室運営語、授業一般の語、辞書的に自明な普通名詞は注釈しない。例: 授業、講義、先生、学生、教室、出席、課題、レポート、資料、今日、次回。\n- その科目で専門的な意味を持つ場合を除き、単に有名・一般的という理由で語を選ばない。\n- explanation は1〜2文。語の意味だけで終わらせず、講義内の論点との関係、混同しやすい点、短い例、または復習時に見る観点を1つ補う。\n- source_excerpt は必ず講義内の根拠だけを書く。external_source は外部知識を使った場合だけ書く。\n- 該当語が少ない場合は terms を空配列にする。{}",
+                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約し、同じ区間で出た重要な専門用語・固有概念だけを注釈し、講義開始から現在までの累積視覚ボードを更新してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。\n- 外部知識は、用語の理解に必要な一般的背景・標準的定義・短い例を補う場合のみ使って構いません。ただし外部知識を使った場合は external_source に正確な出典名とURL、または公式文書名・書籍名など確認可能な出典を必ず書いてください。\n- 正確な出典を示せない外部知識は使わず、講義内で確認できる範囲に留めてください。\n- 講義で確認できない固有の数字・年号・人物関係・統計値などを外部知識で断定的に補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。summary_markdown と terms は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- whiteboard だけは分段ごとの別ボードにせず、現在の累積視覚ボードを今回の内容で増分更新した完全版として返してください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:\n{{\"summary_markdown\":\"- 重点1（1行、名詞句または短文）\\n- 重点2\\n- 重点3\\n\\n---\\n\\n**重点1**: 補足説明（1〜2文で具体的に）\\n\\n**重点2**: 補足説明（1〜2文で具体的に）\\n\\n**重点3**: 補足説明（1〜2文で具体的に）\",\"terms\":[{{\"term\":\"専門用語または固有概念\",\"explanation\":\"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。\",\"source_excerpt\":\"講義内の根拠になる短い発話断片\",\"external_source\":\"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字\"}}],\"whiteboard\":{{\"title\":\"復習時に見る短いタイトル\",\"layout\":\"flow|hub|compare|cycle|grid\",\"nodes\":[{{\"id\":\"n1\",\"label\":\"3〜10字程度の概念名\",\"detail\":\"短い補足。空文字でもよい\",\"kind\":\"core|support|question|result\"}}],\"edges\":[{{\"from\":\"n1\",\"to\":\"n2\",\"label\":\"短い関係語。空文字でもよい\"}}]}}}}\n\nsummary_markdown のルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。\n\nterms のルール:\n- 今回の区間で出た専門用語・理論名・手法名・制度名・固有概念・略語だけを最大5件。\n- 注釈対象は「その語を知らないと講義の理解が止まりやすいもの」に限定する。\n- 一般常識、日常語、教室運営語、授業一般の語、辞書的に自明な普通名詞は注釈しない。例: 授業、講義、先生、学生、教室、出席、課題、レポート、資料、今日、次回。\n- その科目で専門的な意味を持つ場合を除き、単に有名・一般的という理由で語を選ばない。\n- explanation は1〜2文。語の意味だけで終わらせず、講義内の論点との関係、混同しやすい点、短い例、または復習時に見る観点を1つ補う。\n- source_excerpt は必ず講義内の根拠だけを書く。external_source は外部知識を使った場合だけ書く。\n- 該当語が少ない場合は terms を空配列にする。\n\nwhiteboard のルール:\n- 視覚ボードは本文の代替ではなく、右側で素早く復習するための概念図です。\n- whiteboard は差分ではなく、更新後の累積ボード全体を返す。現在の累積視覚ボードにある有用な nodes/edges は維持し、今回の区間で新しい概念・関係が出た場合だけ追加または統合する。\n- 既存概念の id はできるだけ変えない。重複・誤認識・細かすぎる概念は統合してよいが、前の重要概念を理由なく削除しない。\n- nodes は必要な分だけ入れる。講義内で確認できる概念・論点・手順だけを入れ、単なる全文要約リストにしない。\n- edges は因果、流れ、対比、包含など、見れば理解が早くなる関係だけを入れる。\n- label は短く、detail も1フレーズ程度にする。長文説明は summary_markdown に任せる。\n- layout は内容に合うものを1つ選ぶ。流れなら flow、中心概念から広がるなら hub、対比なら compare、循環なら cycle、独立論点なら grid。\n- 十分な構造がまだない場合では whiteboard は nodes 空配列にする。{}",
                 language_hint
             ),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
+            role: "system".into(),
+            content: "追加の whiteboard 指示: whiteboard は「復習用」ではなく、講義内容を中心に関連知識を整理する知識整理ボードとして作る。主次を必ず分け、role=\"main\" の主ノードを3〜5個以内に絞る。role=\"branch\" の分岐ノードは必ず parent_id で最も近い主ノードに接続し、主ノードなしの孤立分岐を作らない。新しい語が出ても、既存主ノードの detail や分岐に収まるなら新しい主ノードにしない。講義の大きな論点が変わった時だけ主ノードを増やす。構図は中心発散型を前提に、中心/内側に主ノード、外側に分岐が広がったときに分かりやすい粒度へ整理する。parent_id は配置上の主従であり、分岐ノードが最も強く結びつく主論点を選ぶ。強い関連を持つ概念はできるだけ同じ主ノード配下へまとめ、別主ノード配下の横断 edges は重要な因果・対比・条件・制度上の接続に限定する。A主ノード配下の分岐とB主ノード配下の分岐を接続してよいのは、その線がないと講義の論理が読み取りにくい場合だけ。弱い関連、単なる連想、知識を増やすためだけのリンクは作らず summary_markdown/terms に回す。各 node の detail は白板内だけでも最低限理解できるように、講義文脈での役割・条件・注意点を短く具体的に書く。講義内に出た概念は source_type=\"lecture\" とし、source_excerpt に根拠となる短い発話断片を書く。理解に役立つ標準的な背景知識・関連概念は必要に応じて少数追加してよいが、必ず source_type=\"external\" とし、external_source に確認可能な出典名とURL、公式文書名、書籍名などを書く。外部補足ノードは原則 branch にし、講義内事実と混同しないよう detail の末尾にも「外部補足」と分かる表現を入れる。出典を示せない外部補足、具体値や固有事実の断定、講義から離れすぎた発展は追加しない。whiteboard nodes の形式は {\"id\":\"stable-id\",\"label\":\"短い概念名\",\"detail\":\"白板内で理解できる短い説明\",\"kind\":\"core|support|question|result\",\"role\":\"main|branch\",\"parent_id\":\"branch の親 main id。main は空文字\",\"source_type\":\"lecture|external\",\"source_excerpt\":\"講義内根拠。外部なら空文字\",\"external_source\":\"外部補足の出典。講義内なら空文字\"}。title には「復習」という語を避け、知識整理・概念整理として自然な短い題名を付ける。".into(),
+            images: Vec::new(),
+        },
+        crate::ai::ChatMessage {
             role: "user".into(),
             content: format!(
-                "講義: {}\n授業コード: {}\n教員: {}\n教室: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n今回の文字起こし:\n{}\n\n注記: 文字起こしの専門用語・固有名詞は STT の誤認識が混ざる可能性があります。講義名「{}」の分野脈絡を手がかりに、明らかな誤りは自然に補正してください。",
+                "講義: {}\n授業コード: {}\n教員: {}\n教室: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n現在の累積知識整理ボード:\n{}\n\n今回の文字起こし:\n{}\n\n注記: 文字起こしの専門用語・固有名詞は STT の誤認識が混ざる可能性があります。講義名「{}」の分野脈絡を手がかりに、明らかな誤りは自然に補正してください。",
                 course.course_name,
                 course.course_code,
                 if course.teacher.is_empty() {
@@ -612,6 +786,7 @@ async fn summarize_chunk(
                 },
                 course.time_label,
                 recent_summary_context,
+                whiteboard_context,
                 transcript,
                 course.course_name,
             ),
@@ -813,12 +988,14 @@ fn parse_chunk_ai_result(raw: &str) -> LiveChunkAiResult {
         return LiveChunkAiResult {
             body: sanitized,
             terms: Vec::new(),
+            whiteboard: None,
         };
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_text) else {
         return LiveChunkAiResult {
             body: sanitized,
             terms: Vec::new(),
+            whiteboard: None,
         };
     };
 
@@ -853,11 +1030,156 @@ fn parse_chunk_ai_result(raw: &str) -> LiveChunkAiResult {
             });
         }
     }
+    let whiteboard = parse_live_whiteboard(value.get("whiteboard"));
 
     LiveChunkAiResult {
         body: if body.is_empty() { sanitized } else { body },
         terms,
+        whiteboard,
     }
+}
+
+fn normalize_live_whiteboard_layout(layout: &str) -> String {
+    match layout.trim().to_ascii_lowercase().as_str() {
+        "flow" | "hub" | "compare" | "cycle" | "grid" => layout.trim().to_ascii_lowercase(),
+        _ => "grid".to_string(),
+    }
+}
+
+fn normalize_live_whiteboard_kind(kind: &str) -> String {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "core" | "support" | "question" | "result" => kind.trim().to_ascii_lowercase(),
+        _ => "support".to_string(),
+    }
+}
+
+fn normalize_live_whiteboard_role(role: &str, kind: &str, parent_id: &str) -> String {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "main" | "primary" | "trunk" | "core" => "main".to_string(),
+        "branch" | "detail" | "leaf" | "support" => "branch".to_string(),
+        _ if kind == "core" && parent_id.trim().is_empty() => "main".to_string(),
+        _ => "branch".to_string(),
+    }
+}
+
+fn normalize_live_whiteboard_source_type(source_type: &str, external_source: &str) -> String {
+    match source_type.trim().to_ascii_lowercase().as_str() {
+        "external" | "outside" | "reference" => "external".to_string(),
+        "lecture" | "class" | "internal" => "lecture".to_string(),
+        _ if !external_source.trim().is_empty() => "external".to_string(),
+        _ => "lecture".to_string(),
+    }
+}
+
+fn normalize_live_whiteboard_id(id: &str, fallback_index: usize) -> String {
+    let mut out = id
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(24)
+        .collect::<String>();
+    if out.is_empty() {
+        out = format!("n{}", fallback_index + 1);
+    }
+    out
+}
+
+fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option<LiveWhiteboard> {
+    let board = value?.as_object()?;
+    let mut nodes = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    if let Some(items) = board.get("nodes").and_then(|v| v.as_array()) {
+        for (idx, item) in items.iter().take(MAX_LIVE_WHITEBOARD_NODES).enumerate() {
+            let label = clamp_chars(&value_to_trimmed_string(item.get("label")), 36);
+            if label.is_empty() {
+                continue;
+            }
+            let mut id =
+                normalize_live_whiteboard_id(&value_to_trimmed_string(item.get("id")), idx);
+            if seen_ids.contains(&id) {
+                id = format!("{}-{}", id, idx + 1);
+            }
+            seen_ids.insert(id.clone());
+            let parent_id =
+                normalize_live_whiteboard_id(&value_to_trimmed_string(item.get("parent_id")), idx);
+            let external_source =
+                clamp_chars(&value_to_trimmed_string(item.get("external_source")), 140);
+            let kind = normalize_live_whiteboard_kind(&value_to_trimmed_string(item.get("kind")));
+            nodes.push(LiveWhiteboardNode {
+                id,
+                label,
+                detail: clamp_chars(&value_to_trimmed_string(item.get("detail")), 120),
+                role: normalize_live_whiteboard_role(
+                    &value_to_trimmed_string(item.get("role")),
+                    &kind,
+                    &value_to_trimmed_string(item.get("parent_id")),
+                ),
+                parent_id,
+                kind,
+                source_type: normalize_live_whiteboard_source_type(
+                    &value_to_trimmed_string(item.get("source_type")),
+                    &external_source,
+                ),
+                source_excerpt: clamp_chars(
+                    &value_to_trimmed_string(item.get("source_excerpt")),
+                    80,
+                ),
+                external_source,
+            });
+        }
+    }
+    if nodes.len() < 2 {
+        return None;
+    }
+    if !nodes.iter().any(|node| node.role == "main") {
+        if let Some(first) = nodes.first_mut() {
+            first.role = "main".to_string();
+            first.parent_id.clear();
+        }
+    }
+
+    let main_ids = nodes
+        .iter()
+        .filter(|node| node.role == "main")
+        .map(|node| node.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let fallback_main = main_ids.iter().next().cloned();
+    for node in &mut nodes {
+        if node.role == "main" {
+            node.parent_id.clear();
+            continue;
+        }
+        if node.parent_id == node.id || !main_ids.contains(&node.parent_id) {
+            node.parent_id = fallback_main.clone().unwrap_or_default();
+        }
+    }
+    let known_ids = nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut edges = Vec::new();
+    if let Some(items) = board.get("edges").and_then(|v| v.as_array()) {
+        for item in items.iter().take(MAX_LIVE_WHITEBOARD_EDGES) {
+            let from = value_to_trimmed_string(item.get("from"));
+            let to = value_to_trimmed_string(item.get("to"));
+            if from == to || !known_ids.contains(from.as_str()) || !known_ids.contains(to.as_str())
+            {
+                continue;
+            }
+            edges.push(LiveWhiteboardEdge {
+                from,
+                to,
+                label: clamp_chars(&value_to_trimmed_string(item.get("label")), 32),
+            });
+        }
+    }
+
+    Some(LiveWhiteboard {
+        title: clamp_chars(&value_to_trimmed_string(board.get("title")), 40),
+        layout: normalize_live_whiteboard_layout(&value_to_trimmed_string(board.get("layout"))),
+        nodes,
+        edges,
+    })
 }
 
 async fn extract_todo_suggestions(
@@ -1079,6 +1401,77 @@ fn format_terms_markdown(terms: &[LiveTermExplanation]) -> String {
     format!("\n\n### 用語注釈\n{}", lines)
 }
 
+fn format_whiteboard_markdown(whiteboard: Option<&LiveWhiteboard>) -> String {
+    let Some(board) = whiteboard else {
+        return String::new();
+    };
+    if board.nodes.is_empty() {
+        return String::new();
+    }
+
+    let title = if board.title.trim().is_empty() {
+        "知識整理ボード"
+    } else {
+        &board.title
+    };
+    let nodes = board
+        .nodes
+        .iter()
+        .map(|node| {
+            let mut source = String::new();
+            if node.source_type == "external" {
+                source.push_str("（外部補足");
+                if !node.external_source.trim().is_empty() {
+                    source.push_str(&format!(": {}", node.external_source));
+                }
+                source.push('）');
+            } else if !node.source_excerpt.trim().is_empty() {
+                source.push_str(&format!("（講義内根拠: {}）", node.source_excerpt));
+            }
+            if node.detail.trim().is_empty() {
+                format!("- **{}**{}", node.label, source)
+            } else {
+                format!("- **{}**: {}{}", node.label, node.detail, source)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let edges = board
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            let from = board.nodes.iter().find(|node| node.id == edge.from)?;
+            let to = board.nodes.iter().find(|node| node.id == edge.to)?;
+            let label = if edge.label.trim().is_empty() {
+                "→".to_string()
+            } else {
+                format!("--{}-->", edge.label)
+            };
+            Some(format!("- {} {} {}", from.label, label, to.label))
+        })
+        .collect::<Vec<_>>();
+
+    // Structured fence: the in-app Markdown reader replaces this with an
+    // interactive whiteboard visualization. Plain markdown editors fall
+    // through to the bullet list below — same info, text-only.
+    let data_fence = match serde_json::to_string(board) {
+        Ok(json) => format!("\n\n```live-whiteboard\n{}\n```", json),
+        Err(_) => String::new(),
+    };
+
+    if edges.is_empty() {
+        format!("\n\n### 知識整理ボード: {}{}\n\n{}", title, data_fence, nodes)
+    } else {
+        format!(
+            "\n\n### 知識整理ボード: {}{}\n\n{}\n\n関係:\n{}",
+            title,
+            data_fence,
+            nodes,
+            edges.join("\n")
+        )
+    }
+}
+
 async fn flush_session_summary(
     state: &LiveState,
     force: bool,
@@ -1127,6 +1520,9 @@ async fn flush_session_summary(
     };
 
     let chunk_ai = summarize_chunk(&course, &lines, &recent_summaries).await?;
+    let reconciled_board =
+        reconcile_whiteboard(latest_whiteboard(&recent_summaries), chunk_ai.whiteboard);
+
     let mut guard = state
         .0
         .lock()
@@ -1146,6 +1542,7 @@ async fn flush_session_summary(
         body: chunk_ai.body,
         line_count: lines.len(),
         terms: chunk_ai.terms,
+        whiteboard: reconciled_board,
     };
     Arc::make_mut(&mut session.summaries).push(summary);
     Arc::make_mut(&mut session.pending_lines).clear();
@@ -1174,7 +1571,11 @@ fn build_markdown(
                 chunk.title,
                 chunk.range_label,
                 chunk.body,
-                format_terms_markdown(&chunk.terms)
+                format!(
+                    "{}{}",
+                    format_whiteboard_markdown(chunk.whiteboard.as_ref()),
+                    format_terms_markdown(&chunk.terms)
+                )
             )
         })
         .collect::<Vec<_>>()
@@ -1595,20 +1996,43 @@ mod tests {
     fn parse_chunk_ai_result_extracts_terms() {
         let raw = r#"{
           "summary_markdown": "- MVC\n\n---\n\n**MVC**: 画面と処理を分ける考え方。",
-          "terms": [
-            {
-              "term": "MVC",
-              "explanation": "Model、View、Controllerに責務を分ける設計パターン。画面変更とデータ処理の責任範囲を見直す観点になる。",
-              "source_excerpt": "MVCという設計",
-              "external_source": "MDN Web Docs: MVC architecture"
-            }
-          ]
-        }"#;
+	          "terms": [
+	            {
+	              "term": "MVC",
+	              "explanation": "Model、View、Controllerに責務を分ける設計パターン。画面変更とデータ処理の責任範囲を見直す観点になる。",
+	              "source_excerpt": "MVCという設計",
+	              "external_source": "MDN Web Docs: MVC architecture"
+	            }
+	          ],
+	          "whiteboard": {
+	            "title": "MVCの責務分離",
+	            "layout": "flow",
+	            "nodes": [
+	              { "id": "model", "label": "Model", "detail": "データ", "kind": "core" },
+	              { "id": "view", "label": "View", "detail": "表示", "kind": "support" },
+	              { "id": "controller", "label": "Controller", "detail": "制御", "kind": "result" },
+	              { "id": "observer", "label": "Observer", "detail": "変更通知の関連パターン", "kind": "support", "source_type": "external", "external_source": "Gamma et al., Design Patterns" }
+	            ],
+	            "edges": [
+	              { "from": "model", "to": "view", "label": "反映" },
+	              { "from": "view", "to": "missing", "label": "無効" }
+	            ]
+	          }
+	        }"#;
         let parsed = parse_chunk_ai_result(raw);
         assert!(parsed.body.contains("MVC"));
         assert_eq!(parsed.terms.len(), 1);
         assert_eq!(parsed.terms[0].term, "MVC");
         assert!(parsed.terms[0].external_source.contains("MDN"));
+        let board = parsed.whiteboard.expect("whiteboard should parse");
+        assert_eq!(board.title, "MVCの責務分離");
+        assert_eq!(board.layout, "flow");
+        assert_eq!(board.nodes.len(), 4);
+        assert_eq!(board.nodes[0].kind, "core");
+        assert_eq!(board.nodes[0].role, "main");
+        assert_eq!(board.nodes[3].source_type, "external");
+        assert!(board.nodes[3].external_source.contains("Design Patterns"));
+        assert_eq!(board.edges.len(), 1);
     }
 
     #[test]
@@ -1638,6 +2062,94 @@ mod tests {
         let parsed = parse_chunk_ai_result("- 重点\n\n---\n\n**重点**: 説明");
         assert!(parsed.body.starts_with("- 重点"));
         assert!(parsed.terms.is_empty());
+        assert!(parsed.whiteboard.is_none());
+    }
+
+    #[test]
+    fn latest_whiteboard_context_uses_most_recent_cumulative_board() {
+        let summaries = vec![
+            LiveSummaryChunk {
+                title: "前半".to_string(),
+                range_label: "10:00-10:05".to_string(),
+                body: "古い内容".to_string(),
+                line_count: 3,
+                terms: Vec::new(),
+                whiteboard: Some(LiveWhiteboard {
+                    title: "古いボード".to_string(),
+                    layout: "grid".to_string(),
+                    nodes: vec![
+                        LiveWhiteboardNode {
+                            id: "old".to_string(),
+                            label: "旧概念".to_string(),
+                            detail: String::new(),
+                            kind: "core".to_string(),
+                            role: "main".to_string(),
+                            parent_id: String::new(),
+                            source_type: "lecture".to_string(),
+                            source_excerpt: String::new(),
+                            external_source: String::new(),
+                        },
+                        LiveWhiteboardNode {
+                            id: "old-2".to_string(),
+                            label: "旧補足".to_string(),
+                            detail: String::new(),
+                            kind: "support".to_string(),
+                            role: "branch".to_string(),
+                            parent_id: "old".to_string(),
+                            source_type: "lecture".to_string(),
+                            source_excerpt: String::new(),
+                            external_source: String::new(),
+                        },
+                    ],
+                    edges: Vec::new(),
+                }),
+            },
+            LiveSummaryChunk {
+                title: "後半".to_string(),
+                range_label: "10:05-10:10".to_string(),
+                body: "新しい内容".to_string(),
+                line_count: 4,
+                terms: Vec::new(),
+                whiteboard: Some(LiveWhiteboard {
+                    title: "更新後ボード".to_string(),
+                    layout: "flow".to_string(),
+                    nodes: vec![
+                        LiveWhiteboardNode {
+                            id: "old".to_string(),
+                            label: "旧概念".to_string(),
+                            detail: String::new(),
+                            kind: "core".to_string(),
+                            role: "main".to_string(),
+                            parent_id: String::new(),
+                            source_type: "lecture".to_string(),
+                            source_excerpt: String::new(),
+                            external_source: String::new(),
+                        },
+                        LiveWhiteboardNode {
+                            id: "new".to_string(),
+                            label: "新概念".to_string(),
+                            detail: "追加".to_string(),
+                            kind: "result".to_string(),
+                            role: "branch".to_string(),
+                            parent_id: "old".to_string(),
+                            source_type: "lecture".to_string(),
+                            source_excerpt: String::new(),
+                            external_source: String::new(),
+                        },
+                    ],
+                    edges: vec![LiveWhiteboardEdge {
+                        from: "old".to_string(),
+                        to: "new".to_string(),
+                        label: "発展".to_string(),
+                    }],
+                }),
+            },
+        ];
+
+        let context = format_latest_whiteboard_context(&summaries);
+        assert!(context.contains("更新後ボード"));
+        assert!(context.contains("新概念"));
+        assert!(!context.contains("古いボード"));
     }
 
     fn fixture_cache(transcript: Vec<(&str, &str)>) -> LiveDayCache {

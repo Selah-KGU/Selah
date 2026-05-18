@@ -1647,12 +1647,38 @@ export interface LiveTermExplanation {
   external_source?: string;
 }
 
+export interface LiveWhiteboardNode {
+  id: string;
+  label: string;
+  detail?: string;
+  kind?: "core" | "support" | "question" | "result" | string;
+  role?: "main" | "branch" | string;
+  parent_id?: string;
+  source_type?: "lecture" | "external" | string;
+  source_excerpt?: string;
+  external_source?: string;
+}
+
+export interface LiveWhiteboardEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface LiveWhiteboard {
+  title: string;
+  layout?: "flow" | "hub" | "compare" | "cycle" | "grid" | string;
+  nodes?: LiveWhiteboardNode[];
+  edges?: LiveWhiteboardEdge[];
+}
+
 export interface LiveSummaryChunk {
   title: string;
   range_label: string;
   body: string;
   line_count: number;
   terms?: LiveTermExplanation[];
+  whiteboard?: LiveWhiteboard | null;
 }
 
 export interface LiveSessionSnapshot {
@@ -1758,6 +1784,21 @@ function buildDemoLiveSummaries(lines: LiveTranscriptLine[]): LiveSummaryChunk[]
         external_source: "Roediger, H. L. & Karpicke, J. D. (2006), Test-enhanced learning, Psychological Science",
       },
     ],
+    whiteboard: {
+      title: "知識整理の流れ",
+      layout: "flow",
+      nodes: [
+        { id: "n1", label: "キーワード", detail: "短く拾う", kind: "core", role: "main", source_type: "lecture", source_excerpt: "重要語を先に拾う" },
+        { id: "n2", label: "理解確認", detail: "説明できるか", kind: "support", role: "branch", parent_id: "n1", source_type: "lecture", source_excerpt: "自分の言葉で説明" },
+        { id: "n3", label: "想起練習", detail: "外部補足: 記憶定着の方法", kind: "support", role: "branch", parent_id: "n1", source_type: "external", external_source: "Roediger & Karpicke (2006), Psychological Science" },
+        { id: "n4", label: "課題接続", detail: "提出物へつなぐ", kind: "result", role: "main", source_type: "lecture", source_excerpt: "課題や小テストにつながるポイント" },
+      ],
+      edges: [
+        { from: "n1", to: "n2", label: "整理" },
+        { from: "n2", to: "n3", label: "補強" },
+        { from: "n3", to: "n4", label: "活用" },
+      ],
+    },
   }];
 }
 

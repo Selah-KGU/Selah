@@ -28,10 +28,12 @@
     type LiveSaveResult,
     type LiveSessionSnapshot,
     type LiveTodoSuggestion,
+    type LiveWhiteboard,
   } from "../api";
   import type { ScheduleResponse } from "../types";
   import { DAY_NUM_LABELS, PERIOD_TIMES } from "../types";
   import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
+  import { computeWhiteboardLayout } from "../whiteboardLayout";
 
   type NoticeKind = "error" | "success" | "warning";
   type NoticeSource = "general" | "readiness" | "stt";
@@ -220,20 +222,155 @@
   function toggleTermsCollapsed() {
     termsCollapsed = !termsCollapsed;
   }
+
+  let whiteboardExpanded = $state(false);
+  let whiteboardZoom = $state(0.78);
+  let whiteboardPanX = $state(0);
+  let whiteboardPanY = $state(0);
+  let whiteboardDragStart = $state<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  let whiteboardWasDragged = $state(false);
+  let selectedBoardNodeId = $state<string | null>(null);
+  $effect(() => {
+    // If the active segment has no whiteboard (e.g. user clicked a time-pill
+    // for a segment without one, or AI removed the board), drop expanded
+    // state so reopening starts from a clean slate. We deliberately do NOT
+    // close on segment-change when the new segment also has a board —
+    // swapping content in-place is less jarring than forcing a back/forth.
+    const hasBoard = !!activeWhiteboardLayout;
+    if (untrack(() => whiteboardExpanded) && !hasBoard) {
+      whiteboardExpanded = false;
+    }
+  });
+  function openWhiteboardOverlay() {
+    resetWhiteboardView();
+    whiteboardExpanded = true;
+  }
+  function closeWhiteboardOverlay() {
+    whiteboardExpanded = false;
+  }
+  function clampWhiteboardZoom(value: number): number {
+    return Math.min(2.8, Math.max(0.35, Math.round(value * 100) / 100));
+  }
+  function setWhiteboardZoom(value: number) {
+    whiteboardZoom = clampWhiteboardZoom(value);
+  }
+  function resetWhiteboardView() {
+    whiteboardZoom = getWhiteboardStagePreset(activeWhiteboardLayout?.nodes.length ?? 0).zoom;
+    whiteboardPanX = 0;
+    whiteboardPanY = 0;
+  }
+  function handleWhiteboardWheel(event: WheelEvent) {
+    event.preventDefault();
+    const delta = event.deltaY > 0 ? -0.08 : 0.08;
+    setWhiteboardZoom(whiteboardZoom + delta);
+  }
+  function handleWhiteboardPointerDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(".board-zoom-controls")) return;
+    // Clicks on nodes shouldn't start a pan — let the node's own onclick run.
+    if (target.closest(".visual-board-node")) return;
+    whiteboardWasDragged = false;
+    whiteboardDragStart = { x: event.clientX, y: event.clientY, panX: whiteboardPanX, panY: whiteboardPanY };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+  function handleWhiteboardPointerMove(event: PointerEvent) {
+    if (!whiteboardDragStart) return;
+    const dx = event.clientX - whiteboardDragStart.x;
+    const dy = event.clientY - whiteboardDragStart.y;
+    if (!whiteboardWasDragged && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) whiteboardWasDragged = true;
+    whiteboardPanX = whiteboardDragStart.panX + dx;
+    whiteboardPanY = whiteboardDragStart.panY + dy;
+  }
+  function handleWhiteboardPointerUp(event: PointerEvent) {
+    whiteboardDragStart = null;
+    try {
+      (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be released if the OS cancelled the drag.
+    }
+  }
+  function bindWhiteboardOverlayDismiss(node: HTMLElement) {
+    // Page-style overlay: no click-outside (the page fills the view).
+    // Escape returns to the Live transcript — matches OS back-gesture intent.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeWhiteboardOverlay();
+    };
+    window.addEventListener("keydown", onKey);
+    return {
+      destroy() {
+        window.removeEventListener("keydown", onKey);
+      }
+    };
+  }
   const termFloatLabels = $derived.by(() => {
     switch ((aiReplyLanguage || "ja").toLowerCase()) {
       case "zh":
       case "zh-cn":
       case "cn":
-        return { title: "用语注释", empty: "本段没有需要解释的术语", source: "课堂依据", externalSource: "外部来源", collapse: "折叠", expand: "展开", previous: "上一个术语", next: "下一个术语" };
+        return { title: "用语注释", boardTitle: "知识整理", empty: "本段没有需要解释的术语", source: "课堂依据", externalSource: "外部来源", externalNode: "外部", collapse: "折叠", expand: "展开", previous: "上一个术语", next: "下一个术语" };
       case "en":
-        return { title: "Key Terms", empty: "No terms for this segment", source: "Class source", externalSource: "External source", collapse: "Collapse", expand: "Expand", previous: "Previous term", next: "Next term" };
+        return { title: "Key Terms", boardTitle: "Knowledge Board", empty: "No terms for this segment", source: "Class source", externalSource: "External source", externalNode: "External", collapse: "Collapse", expand: "Expand", previous: "Previous term", next: "Next term" };
       case "ko":
-        return { title: "핵심 용어", empty: "이 구간의 용어 설명이 없습니다", source: "수업 근거", externalSource: "외부 출처", collapse: "접기", expand: "펼치기", previous: "이전 용어", next: "다음 용어" };
+        return { title: "핵심 용어", boardTitle: "지식 정리", empty: "이 구간의 용어 설명이 없습니다", source: "수업 근거", externalSource: "외부 출처", externalNode: "외부", collapse: "접기", expand: "펼치기", previous: "이전 용어", next: "다음 용어" };
       default:
-        return { title: "用語注釈", empty: "この区間の注釈はありません", source: "講義内根拠", externalSource: "外部出典", collapse: "折りたたむ", expand: "展開", previous: "前の用語", next: "次の用語" };
+        return { title: "用語注釈", boardTitle: "知識整理", empty: "この区間の注釈はありません", source: "講義内根拠", externalSource: "外部出典", externalNode: "外部", collapse: "折りたたむ", expand: "展開", previous: "前の用語", next: "次の用語" };
     }
   });
+
+  type WhiteboardStagePreset = { width: number; height: number; zoom: number };
+
+  const activeWhiteboardLayout = $derived.by(() =>
+    computeWhiteboardLayout(snapshot.summaries[activeSummaryIdx]?.whiteboard ?? null, {
+      fallbackBoardTitle: termFloatLabels.boardTitle,
+      externalNodeLabel: termFloatLabels.externalNode,
+    })
+  );
+  const activeWhiteboardStage = $derived(getWhiteboardStagePreset(activeWhiteboardLayout?.nodes.length ?? 0));
+
+  const boardHighlight = $derived.by(() => {
+    if (!selectedBoardNodeId || !activeWhiteboardLayout) return null;
+    const nodes = new Set<string>([selectedBoardNodeId]);
+    const edges = new Set<string>();
+    for (const e of activeWhiteboardLayout.edges) {
+      if (e.from === selectedBoardNodeId) {
+        nodes.add(e.to);
+        edges.add(e.id);
+      } else if (e.to === selectedBoardNodeId) {
+        nodes.add(e.from);
+        edges.add(e.id);
+      }
+    }
+    return { nodes, edges };
+  });
+
+  function toggleBoardNodeSelection(id: string, event: MouseEvent) {
+    event.stopPropagation();
+    selectedBoardNodeId = selectedBoardNodeId === id ? null : id;
+  }
+
+  function clearBoardSelection() {
+    // Suppress the click that fires at the end of a pan drag — only treat
+    // genuine taps on empty canvas as "deselect".
+    if (whiteboardWasDragged) return;
+    selectedBoardNodeId = null;
+  }
+
+  // Drop selection when the segment changes or the overlay closes. We track
+  // primitives (segment index, overlay flag) — NOT activeWhiteboardLayout,
+  // since live transcript updates re-derive that on every chunk and would
+  // otherwise reset the selection the instant the user clicks.
+  $effect(() => {
+    void activeSummaryIdx;
+    void whiteboardExpanded;
+    untrack(() => { selectedBoardNodeId = null; });
+  });
+
+  function getWhiteboardStagePreset(nodeCount: number): WhiteboardStagePreset {
+    if (nodeCount > 14) return { width: 1360, height: 820, zoom: 0.86 };
+    if (nodeCount > 8) return { width: 1220, height: 760, zoom: 0.9 };
+    return { width: 1040, height: 660, zoom: 0.96 };
+  }
 
   let unlistenPartial: (() => void) | null = null;
   let unlistenFinal: (() => void) | null = null;
@@ -1447,76 +1584,195 @@
     </button>
   {/if}
 
-  {#if activeSummaryTerms.length > 0}
-    <aside class="term-stack" class:collapsed={termsCollapsed} aria-label={termFloatLabels.title}>
-      {#if termsCollapsed}
-        <button
-          type="button"
-          class="term-stack-collapsed"
-          onclick={toggleTermsCollapsed}
-          aria-label={termFloatLabels.expand}
-          title={termFloatLabels.expand}
-        >
-          <span class="term-stack-preview" aria-hidden="true">
-            {#each collapsedTermPreview as item, i (i + "-" + item.term)}
-              <span class="term-stack-preview-chip">{item.term}</span>
-            {/each}
-          </span>
-          <svg class="term-stack-expand-icon" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 7.5 6 4.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-      {:else}
-        {#each activeSummaryTerms as item, i (i + "-" + item.term)}
-          {@const offset = termStackOffset(i)}
-          {@const visible = offset >= 0 && offset <= 2}
+  {#if activeWhiteboardLayout || activeSummaryTerms.length > 0}
+    <div class="right-rail">
+      {#if activeWhiteboardLayout}
+        <aside class="board-stack" aria-label={termFloatLabels.boardTitle}>
           <button
             type="button"
-            class="term-card"
-            class:active={offset === 0}
-            class:peek={offset > 0}
-            style="
-              transform: translateY({offset * 14}px) scale({1 - offset * 0.04});
-              opacity: {offset === 0 ? 1 : 0.72 - (offset - 1) * 0.22};
-              z-index: {100 - offset};
-              pointer-events: {visible ? 'auto' : 'none'};
-              visibility: {visible ? 'visible' : 'hidden'};
-              {visible ? '' : 'transition: none;'}
-            "
-            onclick={() => selectTermCard(i)}
-            aria-hidden={!visible}
-            tabindex={offset === 0 ? 0 : -1}
+            class="board-preview-card"
+            class:dense={activeWhiteboardLayout.nodes.length > 8}
+            class:very-dense={activeWhiteboardLayout.nodes.length > 14}
+            onclick={openWhiteboardOverlay}
+            aria-label={termFloatLabels.expand}
+            title={termFloatLabels.expand}
           >
-            <div class="term-card-term">{item.term}</div>
-            <div class="term-card-body">{item.explanation}</div>
-            {#if item.source_excerpt || item.external_source}
-              <div class="term-card-meta">
-                {#if item.source_excerpt}
-                  <div class="term-card-source"><span>{termFloatLabels.source}</span>{item.source_excerpt}</div>
-                {/if}
-                {#if item.external_source}
-                  <div class="term-card-source external"><span>{termFloatLabels.externalSource}</span>{item.external_source}</div>
-                {/if}
-              </div>
-            {/if}
+            <div class="board-preview-canvas">
+              <svg class="board-preview-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                {#each activeWhiteboardLayout.edges as edge (edge.id)}
+                  <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} />
+                {/each}
+              </svg>
+              {#each activeWhiteboardLayout.nodes as node (node.id)}
+                <span
+                  class="board-preview-node kind-{node.kind}"
+                  class:role-main={node.role === "main"}
+                  class:role-branch={node.role !== "main"}
+                  class:external={node.sourceType === "external"}
+                  style="left: {node.x}%; top: {node.y}%;"
+                >{node.label}</span>
+              {/each}
+            </div>
           </button>
-        {/each}
-        <div class="term-stack-nav">
-          {#if activeSummaryTerms.length > 1}
-            <button class="term-stack-arrow" onclick={termCardPrev} aria-label={termFloatLabels.previous} title={termFloatLabels.previous}>
-              <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M7 2L3 5l4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-          {/if}
-          <span class="term-stack-counter">{termCardIdx + 1}/{activeSummaryTerms.length}</span>
-          {#if activeSummaryTerms.length > 1}
-            <button class="term-stack-arrow" onclick={termCardNext} aria-label={termFloatLabels.next} title={termFloatLabels.next}>
-              <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-          {/if}
-          <button class="term-stack-arrow collapse" onclick={toggleTermsCollapsed} aria-label={termFloatLabels.collapse} title={termFloatLabels.collapse}>
-            <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 4.5 6 7.5l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-        </div>
+        </aside>
       {/if}
-    </aside>
+
+      {#if activeSummaryTerms.length > 0}
+        <aside class="term-stack" class:collapsed={termsCollapsed} aria-label={termFloatLabels.title}>
+          {#if termsCollapsed}
+            <button
+              type="button"
+              class="term-stack-collapsed"
+              onclick={toggleTermsCollapsed}
+              aria-label={termFloatLabels.expand}
+              title={termFloatLabels.expand}
+            >
+              <span class="term-stack-preview" aria-hidden="true">
+                {#each collapsedTermPreview as item, i (i + "-" + item.term)}
+                  <span class="term-stack-preview-chip">{item.term}</span>
+                {/each}
+              </span>
+              <svg class="term-stack-expand-icon" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 7.5 6 4.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          {:else}
+            {#each activeSummaryTerms as item, i (i + "-" + item.term)}
+              {@const offset = termStackOffset(i)}
+              {@const visible = offset >= 0 && offset <= 2}
+              <button
+                type="button"
+                class="term-card"
+                class:active={offset === 0}
+                class:peek={offset > 0}
+                style="
+                  transform: translateY({offset * 14}px) scale({1 - offset * 0.04});
+                  opacity: {offset === 0 ? 1 : 0.72 - (offset - 1) * 0.22};
+                  z-index: {100 - offset};
+                  pointer-events: {visible ? 'auto' : 'none'};
+                  visibility: {visible ? 'visible' : 'hidden'};
+                  {visible ? '' : 'transition: none;'}
+                "
+                onclick={() => selectTermCard(i)}
+                aria-hidden={!visible}
+                tabindex={offset === 0 ? 0 : -1}
+              >
+                <div class="term-card-term">{item.term}</div>
+                <div class="term-card-body">{item.explanation}</div>
+                {#if item.source_excerpt || item.external_source}
+                  <div class="term-card-meta">
+                    {#if item.source_excerpt}
+                      <div class="term-card-source"><span>{termFloatLabels.source}</span>{item.source_excerpt}</div>
+                    {/if}
+                    {#if item.external_source}
+                      <div class="term-card-source external"><span>{termFloatLabels.externalSource}</span>{item.external_source}</div>
+                    {/if}
+                  </div>
+                {/if}
+              </button>
+            {/each}
+            <div class="term-stack-nav">
+              {#if activeSummaryTerms.length > 1}
+                <button class="term-stack-arrow" onclick={termCardPrev} aria-label={termFloatLabels.previous} title={termFloatLabels.previous}>
+                  <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M7 2L3 5l4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              {/if}
+              <span class="term-stack-counter">{termCardIdx + 1}/{activeSummaryTerms.length}</span>
+              {#if activeSummaryTerms.length > 1}
+                <button class="term-stack-arrow" onclick={termCardNext} aria-label={termFloatLabels.next} title={termFloatLabels.next}>
+                  <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              {/if}
+              <button class="term-stack-arrow collapse" onclick={toggleTermsCollapsed} aria-label={termFloatLabels.collapse} title={termFloatLabels.collapse}>
+                <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 4.5 6 7.5l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+          {/if}
+        </aside>
+      {/if}
+    </div>
+  {/if}
+
+  {#if activeWhiteboardLayout && whiteboardExpanded}
+    <section
+      class="board-page"
+      class:dense={activeWhiteboardLayout.nodes.length > 8}
+      class:very-dense={activeWhiteboardLayout.nodes.length > 14}
+      use:bindWhiteboardOverlayDismiss
+      aria-label={termFloatLabels.boardTitle}
+    >
+      <button
+        type="button"
+        class="board-page-back"
+        onclick={closeWhiteboardOverlay}
+        aria-label={termFloatLabels.collapse}
+        title={termFloatLabels.collapse}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <div class="board-zoom-controls" aria-label={termFloatLabels.boardTitle}>
+        <button type="button" onclick={() => setWhiteboardZoom(whiteboardZoom - 0.15)} title="Zoom out" aria-label="Zoom out">−</button>
+        <button type="button" onclick={resetWhiteboardView} title="Reset zoom" aria-label="Reset zoom">{Math.round(whiteboardZoom * 100)}%</button>
+        <button type="button" onclick={() => setWhiteboardZoom(whiteboardZoom + 0.15)} title="Zoom in" aria-label="Zoom in">＋</button>
+      </div>
+      <div
+        class="visual-board-canvas"
+        class:dragging={!!whiteboardDragStart}
+        class:has-selection={selectedBoardNodeId !== null}
+        role="application"
+        aria-label={termFloatLabels.boardTitle}
+        onwheel={handleWhiteboardWheel}
+        onpointerdown={handleWhiteboardPointerDown}
+        onpointermove={handleWhiteboardPointerMove}
+        onpointerup={handleWhiteboardPointerUp}
+        onpointercancel={handleWhiteboardPointerUp}
+        onclick={clearBoardSelection}
+      >
+        <div
+          class="visual-board-stage"
+          style="width: {activeWhiteboardStage.width}px; height: {activeWhiteboardStage.height}px; transform: translate(-50%, -50%) translate({whiteboardPanX}px, {whiteboardPanY}px) scale({whiteboardZoom});"
+        >
+          <svg class="visual-board-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            {#each activeWhiteboardLayout.edges as edge (edge.id)}
+              <path
+                class:redundant={edge.redundant}
+                class:is-highlighted={boardHighlight?.edges.has(edge.id)}
+                d="M {edge.x1} {edge.y1} Q {edge.cx} {edge.cy} {edge.x2} {edge.y2}"
+              />
+            {/each}
+          </svg>
+          {#each activeWhiteboardLayout.edges as edge (edge.id + "-label")}
+            {#if edge.label}
+              <span
+                class="visual-board-edge-label"
+                class:is-highlighted={boardHighlight?.edges.has(edge.id)}
+                style="left: {edge.lx}%; top: {edge.ly}%;"
+              >{edge.label}</span>
+            {/if}
+          {/each}
+          {#each activeWhiteboardLayout.nodes as node (node.id)}
+            <div
+              class="visual-board-node kind-{node.kind} source-{node.sourceType}"
+              class:role-main={node.role === "main"}
+              class:role-branch={node.role !== "main"}
+              class:is-highlighted={boardHighlight?.nodes.has(node.id)}
+              class:is-selected={selectedBoardNodeId === node.id}
+              style="left: {node.x}%; top: {node.y}%;"
+              title={node.sourceType === "external" ? `${termFloatLabels.externalSource}: ${node.sourceLabel}` : ""}
+              onclick={(e) => toggleBoardNodeSelection(node.id, e)}
+              role="button"
+              tabindex="0"
+            >
+              {#if node.sourceType === "external"}
+                <span class="visual-board-source-badge">{termFloatLabels.externalNode}</span>
+              {/if}
+              <span class="visual-board-node-label">{node.label}</span>
+              {#if node.detail}
+                <span class="visual-board-node-detail">{node.detail}</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      </div>
+    </section>
   {/if}
 
 </div>
@@ -2400,13 +2656,438 @@
     transform: scale(0.97);
   }
 
-  /* ── 用語注釈: stacked notification-style cards ────────────────── */
-  .term-stack {
+  /* ── Visual board: compact review diagram ────────────────── */
+  /* ── 知识整理: preview card + expanded modal ──────────────────── */
+  /* Right-side rail: stacks the knowledge-board preview above the term-stack
+     with a consistent gap, regardless of how tall the active term card grows.
+     pointer-events:none on the rail (auto on children) lets clicks pass through
+     the gap between cards instead of being eaten by the empty container. */
+  .right-rail {
     position: absolute;
     right: 16px;
     bottom: 16px;
-    z-index: 34;
+    z-index: 33;
     width: min(300px, calc(100% - 32px));
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    pointer-events: none;
+  }
+  .right-rail > * {
+    pointer-events: auto;
+  }
+  .board-stack {
+    /* width comes from the rail's `align-items: stretch`. */
+    animation: term-stack-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .board-preview-card {
+    width: 100%;
+    display: block;
+    padding: 0;
+    text-align: left;
+    font-family: inherit;
+    border-radius: 13px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
+    background: color-mix(in srgb, var(--bg-primary) 90%, transparent);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    backdrop-filter: blur(18px) saturate(1.25);
+    -webkit-backdrop-filter: blur(18px) saturate(1.25);
+    cursor: pointer;
+    overflow: hidden;
+    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+                box-shadow 0.18s ease, border-color 0.18s ease;
+  }
+  .board-preview-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+    border-color: color-mix(in srgb, var(--accent) 32%, var(--glass-border));
+  }
+  .board-preview-card:active {
+    transform: translateY(0);
+  }
+  .board-preview-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .board-preview-canvas {
+    position: relative;
+    width: 100%;
+    height: 150px;
+    background:
+      linear-gradient(color-mix(in srgb, var(--text-tertiary) 7%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--text-tertiary) 7%, transparent) 1px, transparent 1px),
+      color-mix(in srgb, var(--bg-secondary) 60%, transparent);
+    background-size: 14px 14px;
+    overflow: hidden;
+  }
+  .board-preview-links {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    color: color-mix(in srgb, var(--blue) 48%, var(--text-tertiary));
+    overflow: visible;
+  }
+  .board-preview-links line {
+    stroke: currentColor;
+    stroke-width: 0.7;
+    stroke-linecap: round;
+    opacity: 0.7;
+  }
+  .board-preview-node {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    max-width: 64px;
+    padding: 2px 6px;
+    border-radius: 6px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 22%, var(--glass-border));
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    color: var(--text-primary);
+    font-size: 9.5px;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  }
+  .board-preview-card.dense .board-preview-node {
+    max-width: 52px;
+    padding: 1.5px 5px;
+    font-size: 8.5px;
+  }
+  .board-preview-card.very-dense .board-preview-node {
+    max-width: 42px;
+    padding: 1px 4px;
+    font-size: 8px;
+  }
+  .board-preview-node.kind-core {
+    background: color-mix(in srgb, var(--blue) 16%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--blue) 36%, var(--glass-border));
+  }
+  .board-preview-node.kind-result {
+    background: color-mix(in srgb, #34c759 14%, var(--bg-primary));
+    border-color: color-mix(in srgb, #34c759 34%, var(--glass-border));
+  }
+  .board-preview-node.kind-question {
+    background: color-mix(in srgb, var(--orange, #e67700) 14%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--orange, #e67700) 32%, var(--glass-border));
+  }
+  .board-preview-node.external {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--glass-border));
+  }
+
+  /* ── Expanded page (二级页面) ───────────────────────
+     Full-cover page inside .live-root (not a modal). Slides over the
+     transcript view and is dismissed by the back button or Escape. */
+  .board-page {
+    position: absolute;
+    inset: 0;
+    z-index: 60;
+    padding: 56px 24px 24px;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+    animation: board-page-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .board-page .visual-board-canvas {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    border-radius: 12px;
+  }
+  .board-page-back {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    z-index: 5;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0.5px solid var(--glass-border);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  }
+  .board-page-back:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+  }
+  .board-page-back:active {
+    transform: scale(0.94);
+  }
+  .board-zoom-controls {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 6;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px;
+    border-radius: 999px;
+    border: 0.5px solid var(--glass-border);
+    background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+  }
+  .board-zoom-controls button {
+    min-width: 30px;
+    height: 28px;
+    padding: 0 8px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .board-zoom-controls button:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+  }
+
+  @keyframes board-page-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .visual-board-canvas {
+    position: relative;
+    height: 380px;
+    border-radius: 8px;
+    overflow: hidden;
+    background:
+      linear-gradient(color-mix(in srgb, var(--text-tertiary) 9%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--text-tertiary) 9%, transparent) 1px, transparent 1px),
+      color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+    background-size: 22px 22px;
+    cursor: grab;
+    touch-action: none;
+  }
+  .visual-board-canvas.dragging {
+    cursor: grabbing;
+  }
+  .visual-board-stage {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform-origin: 50% 50%;
+  }
+  .visual-board-links {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    color: color-mix(in srgb, var(--blue) 52%, var(--text-tertiary));
+    overflow: visible;
+  }
+  .visual-board-links line,
+  .visual-board-links path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 0.75;
+    stroke-linecap: round;
+    opacity: 0.74;
+  }
+  .visual-board-links path.redundant {
+    stroke-dasharray: 1.6 1.4;
+    opacity: 0.42;
+  }
+  /* Click-to-focus: when a node is selected, dim everything not in its
+     1-hop neighbourhood. The .is-highlighted class brings selected pieces
+     back to full opacity. Transitions are short to keep the toggle feeling
+     responsive without making the user wait for the animation. */
+  .visual-board-canvas.has-selection .visual-board-links path,
+  .visual-board-canvas.has-selection .visual-board-edge-label,
+  .visual-board-canvas.has-selection .visual-board-node {
+    transition: opacity 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  }
+  .visual-board-canvas.has-selection .visual-board-links path {
+    opacity: 0.12;
+  }
+  .visual-board-canvas.has-selection .visual-board-links path.is-highlighted {
+    opacity: 0.95;
+    stroke-width: 1.1;
+  }
+  .visual-board-canvas.has-selection .visual-board-edge-label {
+    opacity: 0.14;
+  }
+  .visual-board-canvas.has-selection .visual-board-edge-label.is-highlighted {
+    opacity: 1;
+  }
+  .visual-board-canvas.has-selection .visual-board-node {
+    opacity: 0.24;
+  }
+  .visual-board-canvas.has-selection .visual-board-node.is-highlighted {
+    opacity: 1;
+  }
+  .visual-board-canvas.has-selection .visual-board-node.is-selected {
+    opacity: 1;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--blue) 65%, transparent),
+      0 6px 16px rgba(33, 116, 223, 0.22);
+  }
+  .visual-board-node {
+    cursor: pointer;
+  }
+  .visual-board-edge-label {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    transform-origin: 50% 50%;
+    z-index: 2;
+    max-width: 132px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    border: 0.5px solid color-mix(in srgb, var(--blue) 24%, transparent);
+    color: color-mix(in srgb, var(--blue) 78%, var(--text-secondary));
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1.15;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .visual-board-node {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    width: 122px;
+    min-height: 66px;
+    padding: 8px 9px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    border-radius: 8px;
+    border: 0.5px solid color-mix(in srgb, var(--blue) 22%, var(--glass-border));
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
+    text-align: center;
+  }
+  .board-page.dense .visual-board-node {
+    width: 106px;
+    min-height: 58px;
+    padding: 6px 7px;
+    gap: 2px;
+  }
+  .board-page.very-dense .visual-board-node {
+    width: 94px;
+    min-height: 50px;
+    padding: 5px 6px;
+  }
+  .visual-board-node.role-main {
+    width: 142px;
+    min-height: 74px;
+    border-width: 1px;
+    box-shadow: 0 5px 14px rgba(33, 116, 223, 0.14);
+  }
+  .visual-board-node.role-branch {
+    width: 114px;
+    min-height: 62px;
+    opacity: 0.94;
+  }
+  .board-page.dense .visual-board-node.role-main {
+    width: 124px;
+    min-height: 66px;
+  }
+  .board-page.very-dense .visual-board-node.role-main {
+    width: 110px;
+    min-height: 58px;
+  }
+  .visual-board-node.kind-core {
+    background: color-mix(in srgb, var(--blue) 14%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--blue) 38%, var(--glass-border));
+  }
+  .visual-board-node.kind-result {
+    background: color-mix(in srgb, #34c759 13%, var(--bg-primary));
+    border-color: color-mix(in srgb, #34c759 34%, var(--glass-border));
+  }
+  .visual-board-node.kind-question {
+    background: color-mix(in srgb, var(--orange, #e67700) 13%, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--orange, #e67700) 32%, var(--glass-border));
+  }
+  .visual-board-node.source-external {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--glass-border));
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 52%),
+      color-mix(in srgb, var(--bg-primary) 96%, transparent);
+  }
+  .visual-board-source-badge {
+    position: absolute;
+    top: -7px;
+    right: -7px;
+    max-width: 44px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 34%, var(--glass-border));
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    color: color-mix(in srgb, var(--accent) 82%, var(--text-secondary));
+    font-size: 8.5px;
+    font-weight: 800;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .visual-board-node-label {
+    max-width: 100%;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .board-page.dense .visual-board-node-label {
+    font-size: 10.8px;
+  }
+  .board-page.very-dense .visual-board-node-label {
+    font-size: 10px;
+  }
+  .visual-board-node-detail {
+    max-width: 100%;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.25;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .board-page.dense .visual-board-node-detail {
+    font-size: 9px;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+  }
+  .board-page.very-dense .visual-board-node-detail {
+    display: -webkit-box;
+    font-size: 8.5px;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  /* ── 用語注釈: stacked notification-style cards ────────────────── */
+  .term-stack {
+    position: relative;
+    width: 100%;
     padding: 0;
     background: transparent;
     border: none;
@@ -2414,7 +3095,8 @@
   }
   .term-stack.collapsed {
     width: fit-content;
-    max-width: calc(100% - 32px);
+    max-width: 100%;
+    align-self: flex-end;
   }
 
   .term-stack-collapsed {
@@ -2626,11 +3308,30 @@
   }
 
   @media (max-width: 700px) {
-    .term-stack {
+    .right-rail {
       left: 12px;
       right: 12px;
       bottom: 12px;
       width: auto;
+    }
+    .board-page {
+      padding: 52px 12px 12px;
+    }
+    .board-page-back {
+      top: 10px;
+      left: 10px;
+    }
+    .board-zoom-controls {
+      top: 10px;
+      right: 10px;
+    }
+    .visual-board-node {
+      width: 108px;
+      min-height: 58px;
+    }
+    .board-page.dense .visual-board-node {
+      width: 94px;
+      min-height: 50px;
     }
   }
 

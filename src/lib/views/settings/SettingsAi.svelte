@@ -466,8 +466,23 @@
     invoke("cancel_stt_model_download").catch(() => {});
   }
 
+  let pendingDeleteModelId = $state<string | null>(null);
+  let pendingDeleteSttModelId = $state<string | null>(null);
+  let pendingDeleteModelTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingDeleteSttModelTimer: ReturnType<typeof setTimeout> | null = null;
+
   async function deleteModel(modelId: string) {
-    if (!confirm("このモデルを削除しますか？")) return;
+    if (pendingDeleteModelId !== modelId) {
+      pendingDeleteModelId = modelId;
+      if (pendingDeleteModelTimer) clearTimeout(pendingDeleteModelTimer);
+      pendingDeleteModelTimer = setTimeout(() => {
+        pendingDeleteModelId = null;
+        pendingDeleteModelTimer = null;
+      }, 3000);
+      return;
+    }
+    if (pendingDeleteModelTimer) { clearTimeout(pendingDeleteModelTimer); pendingDeleteModelTimer = null; }
+    pendingDeleteModelId = null;
     try {
       if (isDemoActive()) {
         const next = modelList.map((item) => item.id === modelId ? { ...item, downloaded: false } : item);
@@ -485,7 +500,17 @@
   }
 
   async function deleteSttModel(modelId: string) {
-    if (!confirm("この STT モデルを削除しますか？")) return;
+    if (pendingDeleteSttModelId !== modelId) {
+      pendingDeleteSttModelId = modelId;
+      if (pendingDeleteSttModelTimer) clearTimeout(pendingDeleteSttModelTimer);
+      pendingDeleteSttModelTimer = setTimeout(() => {
+        pendingDeleteSttModelId = null;
+        pendingDeleteSttModelTimer = null;
+      }, 3000);
+      return;
+    }
+    if (pendingDeleteSttModelTimer) { clearTimeout(pendingDeleteSttModelTimer); pendingDeleteSttModelTimer = null; }
+    pendingDeleteSttModelId = null;
     try {
       if (isDemoActive()) {
         const next = sttModelList.map((item) => item.id === modelId ? { ...item, downloaded: false } : item);
@@ -853,7 +878,7 @@
             {#if !m.downloaded}
               <button class="btn-test" onclick={() => startDownload(m.id)} disabled={downloading}>ダウンロード</button>
             {:else}
-              <button class="btn-test danger" onclick={() => deleteModel(m.id)}>削除</button>
+              <button class="btn-test danger" class:armed={pendingDeleteModelId === m.id} onclick={() => deleteModel(m.id)}>{pendingDeleteModelId === m.id ? "本当に削除？" : "削除"}</button>
             {/if}
           </div>
         </div>
@@ -1076,7 +1101,7 @@
         {#if !m.downloaded}
           <button class="btn-test" onclick={() => startSttDownload(m.id)} disabled={sttDownloading}>ダウンロード</button>
         {:else}
-          <button class="btn-test danger" onclick={() => deleteSttModel(m.id)}>削除</button>
+          <button class="btn-test danger" class:armed={pendingDeleteSttModelId === m.id} onclick={() => deleteSttModel(m.id)}>{pendingDeleteSttModelId === m.id ? "本当に削除？" : "削除"}</button>
         {/if}
       </div>
     </div>
@@ -1156,6 +1181,11 @@
     border-color: color-mix(in srgb, var(--red) 30%, transparent);
   }
   :global(.settings-main .btn-test.danger:hover:not(:disabled)) {
+    background: var(--red);
+    color: #fff;
+    border-color: var(--red);
+  }
+  :global(.settings-main .btn-test.danger.armed) {
     background: var(--red);
     color: #fff;
     border-color: var(--red);
