@@ -7,6 +7,7 @@ use tauri::{Emitter, Manager};
 
 const CACHE_DEBOUNCE: Duration = Duration::from_secs(30);
 const MIN_AI_SUMMARIZATION_DURATION_SECS: i64 = 120;
+const MAX_LIVE_TERM_EXPLANATION_CHARS: usize = 220;
 static LAST_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
 const FREE_NOTE_FOLDER_NAME: &str = "自由ノート";
 
@@ -47,6 +48,8 @@ pub struct LiveTermExplanation {
     pub explanation: String,
     #[serde(default)]
     pub source_excerpt: String,
+    #[serde(default)]
+    pub external_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -586,7 +589,7 @@ async fn summarize_chunk(
         crate::ai::ChatMessage {
             role: "system".into(),
             content: format!(
-                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約し、同じ区間で出た重要な名詞・専門用語を短く注釈してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:\n{{\"summary_markdown\":\"- 重点1（1行、名詞句または短文）\\n- 重点2\\n- 重点3\\n\\n---\\n\\n**重点1**: 補足説明（1〜2文で具体的に）\\n\\n**重点2**: 補足説明（1〜2文で具体的に）\\n\\n**重点3**: 補足説明（1〜2文で具体的に）\",\"terms\":[{{\"term\":\"重要名詞\",\"explanation\":\"講義文脈での意味を1文で説明\",\"source_excerpt\":\"根拠になる短い発話断片\"}}]}}\n\nsummary_markdown のルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。\n\nterms のルール:\n- 今回の区間で出た重要な名詞・専門用語・固有概念だけを最大5件。\n- 学生がその場で理解しやすい注釈として、1項目1文で短く説明する。\n- transcriptに根拠がある語だけを採用し、一般常識や外部知識で勝手に増やさない。\n- 雑談語、教室運営語、あまり重要でない普通名詞は除外する。\n- 該当語が少ない場合は terms を空配列にする。{}",
+                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約し、同じ区間で出た重要な専門用語・固有概念だけを注釈してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。\n- 外部知識は、用語の理解に必要な一般的背景・標準的定義・短い例を補う場合のみ使って構いません。ただし外部知識を使った場合は external_source に正確な出典名とURL、または公式文書名・書籍名など確認可能な出典を必ず書いてください。\n- 正確な出典を示せない外部知識は使わず、講義内で確認できる範囲に留めてください。\n- 講義で確認できない固有の数字・年号・人物関係・統計値などを外部知識で断定的に補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。今回の出力は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:\n{{\"summary_markdown\":\"- 重点1（1行、名詞句または短文）\\n- 重点2\\n- 重点3\\n\\n---\\n\\n**重点1**: 補足説明（1〜2文で具体的に）\\n\\n**重点2**: 補足説明（1〜2文で具体的に）\\n\\n**重点3**: 補足説明（1〜2文で具体的に）\",\"terms\":[{{\"term\":\"専門用語または固有概念\",\"explanation\":\"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。\",\"source_excerpt\":\"講義内の根拠になる短い発話断片\",\"external_source\":\"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字\"}}]}}\n\nsummary_markdown のルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。\n\nterms のルール:\n- 今回の区間で出た専門用語・理論名・手法名・制度名・固有概念・略語だけを最大5件。\n- 注釈対象は「その語を知らないと講義の理解が止まりやすいもの」に限定する。\n- 一般常識、日常語、教室運営語、授業一般の語、辞書的に自明な普通名詞は注釈しない。例: 授業、講義、先生、学生、教室、出席、課題、レポート、資料、今日、次回。\n- その科目で専門的な意味を持つ場合を除き、単に有名・一般的という理由で語を選ばない。\n- explanation は1〜2文。語の意味だけで終わらせず、講義内の論点との関係、混同しやすい点、短い例、または復習時に見る観点を1つ補う。\n- source_excerpt は必ず講義内の根拠だけを書く。external_source は外部知識を使った場合だけ書く。\n- 該当語が少ない場合は terms を空配列にする。{}",
                 language_hint
             ),
             images: Vec::new(),
@@ -728,6 +731,82 @@ fn clamp_chars(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn is_low_value_live_term(term: &str) -> bool {
+    let normalized = term
+        .trim()
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '"' | '\''
+                    | '`'
+                    | '「'
+                    | '」'
+                    | '『'
+                    | '』'
+                    | '（'
+                    | '）'
+                    | '('
+                    | ')'
+                    | '【'
+                    | '】'
+                    | '['
+                    | ']'
+            )
+        })
+        .to_lowercase();
+    if normalized.chars().count() <= 1 {
+        return true;
+    }
+    const LOW_VALUE_TERMS: &[&str] = &[
+        "授業",
+        "講義",
+        "先生",
+        "教員",
+        "教授",
+        "学生",
+        "大学",
+        "教室",
+        "出席",
+        "欠席",
+        "課題",
+        "宿題",
+        "レポート",
+        "資料",
+        "教科書",
+        "スライド",
+        "今日",
+        "次回",
+        "明日",
+        "来週",
+        "学校",
+        "勉強",
+        "学習",
+        "考试",
+        "作业",
+        "报告",
+        "老师",
+        "学生",
+        "大学",
+        "教室",
+        "今天",
+        "下次",
+        "tomorrow",
+        "today",
+        "class",
+        "lecture",
+        "teacher",
+        "student",
+        "assignment",
+        "report",
+        "homework",
+        "textbook",
+        "slides",
+    ];
+    LOW_VALUE_TERMS
+        .iter()
+        .any(|candidate| normalized == *candidate)
+}
+
 fn parse_chunk_ai_result(raw: &str) -> LiveChunkAiResult {
     let sanitized = sanitize_model_output(raw);
     let Some(json_text) = extract_json_object(&sanitized) else {
@@ -753,8 +832,11 @@ fn parse_chunk_ai_result(raw: &str) -> LiveChunkAiResult {
     if let Some(items) = value.get("terms").and_then(|v| v.as_array()) {
         for item in items.iter().take(5) {
             let term = clamp_chars(&value_to_trimmed_string(item.get("term")), 40);
-            let explanation = clamp_chars(&value_to_trimmed_string(item.get("explanation")), 120);
-            if term.is_empty() || explanation.is_empty() {
+            let explanation = clamp_chars(
+                &value_to_trimmed_string(item.get("explanation")),
+                MAX_LIVE_TERM_EXPLANATION_CHARS,
+            );
+            if term.is_empty() || explanation.is_empty() || is_low_value_live_term(&term) {
                 continue;
             }
             terms.push(LiveTermExplanation {
@@ -763,6 +845,10 @@ fn parse_chunk_ai_result(raw: &str) -> LiveChunkAiResult {
                 source_excerpt: clamp_chars(
                     &value_to_trimmed_string(item.get("source_excerpt")),
                     80,
+                ),
+                external_source: clamp_chars(
+                    &value_to_trimmed_string(item.get("external_source")),
+                    180,
                 ),
             });
         }
@@ -979,18 +1065,18 @@ fn format_terms_markdown(terms: &[LiveTermExplanation]) -> String {
     let lines = terms
         .iter()
         .map(|term| {
-            if term.source_excerpt.is_empty() {
-                format!("- **{}**: {}", term.term, term.explanation)
-            } else {
-                format!(
-                    "- **{}**: {}（根拠: {}）",
-                    term.term, term.explanation, term.source_excerpt
-                )
+            let mut detail = String::new();
+            if !term.source_excerpt.is_empty() {
+                detail.push_str(&format!("（講義内根拠: {}）", term.source_excerpt));
             }
+            if !term.external_source.is_empty() {
+                detail.push_str(&format!("（外部出典: {}）", term.external_source));
+            }
+            format!("- **{}**: {}{}", term.term, term.explanation, detail)
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("\n\n### 名詞注釈\n{}", lines)
+    format!("\n\n### 用語注釈\n{}", lines)
 }
 
 async fn flush_session_summary(
@@ -1512,8 +1598,9 @@ mod tests {
           "terms": [
             {
               "term": "MVC",
-              "explanation": "Model、View、Controllerに責務を分ける設計パターン。",
-              "source_excerpt": "MVCという設計"
+              "explanation": "Model、View、Controllerに責務を分ける設計パターン。画面変更とデータ処理の責任範囲を見直す観点になる。",
+              "source_excerpt": "MVCという設計",
+              "external_source": "MDN Web Docs: MVC architecture"
             }
           ]
         }"#;
@@ -1521,6 +1608,29 @@ mod tests {
         assert!(parsed.body.contains("MVC"));
         assert_eq!(parsed.terms.len(), 1);
         assert_eq!(parsed.terms[0].term, "MVC");
+        assert!(parsed.terms[0].external_source.contains("MDN"));
+    }
+
+    #[test]
+    fn parse_chunk_ai_result_filters_low_value_terms() {
+        let raw = r#"{
+          "summary_markdown": "- 重点\n\n---\n\n**重点**: 説明",
+          "terms": [
+            {
+              "term": "授業",
+              "explanation": "大学で行われる講義のこと。",
+              "source_excerpt": "今日の授業"
+            },
+            {
+              "term": "認知的不協和",
+              "explanation": "矛盾する認知を同時に持つことで生じる不快感。講義では態度変容の説明に使われる。",
+              "source_excerpt": "認知的不協和が起きる"
+            }
+          ]
+        }"#;
+        let parsed = parse_chunk_ai_result(raw);
+        assert_eq!(parsed.terms.len(), 1);
+        assert_eq!(parsed.terms[0].term, "認知的不協和");
     }
 
     #[test]

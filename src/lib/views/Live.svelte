@@ -182,6 +182,7 @@
   // Stacked-card pager state for term annotations.
   // No wheel interception — switching is via click on a back card or the prev/next chips.
   let termCardIdx = $state(0);
+  let termsCollapsed = $state(false);
   // activeSummaryTerms is a $derived built with .filter(), so it returns a NEW
   // array reference every time the snapshot updates (every few hundred ms during
   // a live session). Watching the array itself would reset termCardIdx on every
@@ -190,6 +191,7 @@
   const termFingerprint = $derived(
     activeSummaryTerms.map((t) => t.term).join("|")
   );
+  const collapsedTermPreview = $derived(activeSummaryTerms.slice(0, 3));
   $effect(() => {
     termFingerprint;
     // Only clamp if our current pick is now out of range (e.g. user switched
@@ -203,24 +205,33 @@
   function selectTermCard(i: number) {
     termCardIdx = Math.max(0, Math.min(activeSummaryTerms.length - 1, i));
   }
+  function termStackOffset(i: number): number {
+    const total = activeSummaryTerms.length;
+    return total <= 0 ? 0 : (i - termCardIdx + total) % total;
+  }
   function termCardPrev() {
-    if (termCardIdx > 0) termCardIdx -= 1;
+    const total = activeSummaryTerms.length;
+    if (total > 0) termCardIdx = (termCardIdx - 1 + total) % total;
   }
   function termCardNext() {
-    if (termCardIdx < activeSummaryTerms.length - 1) termCardIdx += 1;
+    const total = activeSummaryTerms.length;
+    if (total > 0) termCardIdx = (termCardIdx + 1) % total;
+  }
+  function toggleTermsCollapsed() {
+    termsCollapsed = !termsCollapsed;
   }
   const termFloatLabels = $derived.by(() => {
     switch ((aiReplyLanguage || "ja").toLowerCase()) {
       case "zh":
       case "zh-cn":
       case "cn":
-        return { title: "智能名词解释", empty: "本段没有需要解释的名词", source: "出处" };
+        return { title: "用语注释", empty: "本段没有需要解释的术语", source: "课堂依据", externalSource: "外部来源", collapse: "折叠", expand: "展开", previous: "上一个术语", next: "下一个术语" };
       case "en":
-        return { title: "Key Terms", empty: "No terms for this segment", source: "Source" };
+        return { title: "Key Terms", empty: "No terms for this segment", source: "Class source", externalSource: "External source", collapse: "Collapse", expand: "Expand", previous: "Previous term", next: "Next term" };
       case "ko":
-        return { title: "핵심 용어", empty: "이 구간의 용어 설명이 없습니다", source: "근거" };
+        return { title: "핵심 용어", empty: "이 구간의 용어 설명이 없습니다", source: "수업 근거", externalSource: "외부 출처", collapse: "접기", expand: "펼치기", previous: "이전 용어", next: "다음 용어" };
       default:
-        return { title: "名詞注釈", empty: "この区間の注釈はありません", source: "根拠" };
+        return { title: "用語注釈", empty: "この区間の注釈はありません", source: "講義内根拠", externalSource: "外部出典", collapse: "折りたたむ", expand: "展開", previous: "前の用語", next: "次の用語" };
     }
   });
 
@@ -1437,42 +1448,71 @@
   {/if}
 
   {#if activeSummaryTerms.length > 0}
-    <aside class="term-stack" aria-label={termFloatLabels.title}>
-      {#each activeSummaryTerms as item, i (i + "-" + item.term)}
-        {@const offset = i - termCardIdx}
-        {@const visible = offset >= 0 && offset <= 2}
+    <aside class="term-stack" class:collapsed={termsCollapsed} aria-label={termFloatLabels.title}>
+      {#if termsCollapsed}
         <button
           type="button"
-          class="term-card"
-          class:active={offset === 0}
-          class:peek={offset > 0}
-          style="
-            transform: translateY({offset * 14}px) scale({1 - offset * 0.04});
-            opacity: {offset === 0 ? 1 : 0.72 - (offset - 1) * 0.22};
-            z-index: {100 - offset};
-            pointer-events: {visible ? 'auto' : 'none'};
-            visibility: {visible ? 'visible' : 'hidden'};
-            {visible ? '' : 'transition: none;'}
-          "
-          onclick={() => selectTermCard(i)}
-          aria-hidden={!visible}
-          tabindex={offset === 0 ? 0 : -1}
+          class="term-stack-collapsed"
+          onclick={toggleTermsCollapsed}
+          aria-label={termFloatLabels.expand}
+          title={termFloatLabels.expand}
         >
-          <div class="term-card-term">{item.term}</div>
-          <div class="term-card-body">{item.explanation}</div>
-          {#if item.source_excerpt}
-            <div class="term-card-source">{item.source_excerpt}</div>
-          {/if}
+          <span class="term-stack-preview" aria-hidden="true">
+            {#each collapsedTermPreview as item, i (i + "-" + item.term)}
+              <span class="term-stack-preview-chip">{item.term}</span>
+            {/each}
+          </span>
+          <svg class="term-stack-expand-icon" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 7.5 6 4.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-      {/each}
-      {#if activeSummaryTerms.length > 1}
-        <div class="term-stack-nav">
-          <button class="term-stack-arrow" onclick={termCardPrev} disabled={termCardIdx === 0} aria-label="前の用語">
-            <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M7 2L3 5l4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      {:else}
+        {#each activeSummaryTerms as item, i (i + "-" + item.term)}
+          {@const offset = termStackOffset(i)}
+          {@const visible = offset >= 0 && offset <= 2}
+          <button
+            type="button"
+            class="term-card"
+            class:active={offset === 0}
+            class:peek={offset > 0}
+            style="
+              transform: translateY({offset * 14}px) scale({1 - offset * 0.04});
+              opacity: {offset === 0 ? 1 : 0.72 - (offset - 1) * 0.22};
+              z-index: {100 - offset};
+              pointer-events: {visible ? 'auto' : 'none'};
+              visibility: {visible ? 'visible' : 'hidden'};
+              {visible ? '' : 'transition: none;'}
+            "
+            onclick={() => selectTermCard(i)}
+            aria-hidden={!visible}
+            tabindex={offset === 0 ? 0 : -1}
+          >
+            <div class="term-card-term">{item.term}</div>
+            <div class="term-card-body">{item.explanation}</div>
+            {#if item.source_excerpt || item.external_source}
+              <div class="term-card-meta">
+                {#if item.source_excerpt}
+                  <div class="term-card-source"><span>{termFloatLabels.source}</span>{item.source_excerpt}</div>
+                {/if}
+                {#if item.external_source}
+                  <div class="term-card-source external"><span>{termFloatLabels.externalSource}</span>{item.external_source}</div>
+                {/if}
+              </div>
+            {/if}
           </button>
+        {/each}
+        <div class="term-stack-nav">
+          {#if activeSummaryTerms.length > 1}
+            <button class="term-stack-arrow" onclick={termCardPrev} aria-label={termFloatLabels.previous} title={termFloatLabels.previous}>
+              <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M7 2L3 5l4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          {/if}
           <span class="term-stack-counter">{termCardIdx + 1}/{activeSummaryTerms.length}</span>
-          <button class="term-stack-arrow" onclick={termCardNext} disabled={termCardIdx === activeSummaryTerms.length - 1} aria-label="次の用語">
-            <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          {#if activeSummaryTerms.length > 1}
+            <button class="term-stack-arrow" onclick={termCardNext} aria-label={termFloatLabels.next} title={termFloatLabels.next}>
+              <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          {/if}
+          <button class="term-stack-arrow collapse" onclick={toggleTermsCollapsed} aria-label={termFloatLabels.collapse} title={termFloatLabels.collapse}>
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 4.5 6 7.5l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
       {/if}
@@ -2243,7 +2283,7 @@
   .lyrics-count {
     position: sticky;
     bottom: 8px;
-    align-self: flex-end;
+    align-self: flex-start;
     font-size: 10px;
     font-weight: 600;
     color: var(--text-tertiary);
@@ -2360,7 +2400,7 @@
     transform: scale(0.97);
   }
 
-  /* ── 名詞注釈: stacked notification-style cards ────────────────── */
+  /* ── 用語注釈: stacked notification-style cards ────────────────── */
   .term-stack {
     position: absolute;
     right: 16px;
@@ -2371,6 +2411,59 @@
     background: transparent;
     border: none;
     animation: term-stack-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .term-stack.collapsed {
+    width: fit-content;
+    max-width: calc(100% - 32px);
+  }
+
+  .term-stack-collapsed {
+    width: auto;
+    max-width: 100%;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    font-family: inherit;
+    color: var(--text-primary);
+    text-align: left;
+    border-radius: 999px;
+    border: 0.5px solid color-mix(in srgb, var(--accent) 20%, var(--glass-border));
+    background: color-mix(in srgb, var(--bg-primary) 90%, transparent);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    cursor: pointer;
+  }
+  .term-stack-collapsed:hover {
+    background: color-mix(in srgb, var(--bg-primary) 84%, transparent);
+  }
+  .term-stack-preview {
+    min-width: 0;
+    flex: 0 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .term-stack-preview-chip {
+    min-width: 18px;
+    max-width: 80px;
+    flex: 0 1 auto;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--text-primary);
+    font-size: 10.5px;
+    font-weight: 700;
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .term-stack-expand-icon {
+    flex: 0 0 auto;
+    color: var(--accent);
   }
 
   .term-card {
@@ -2439,8 +2532,14 @@
     overflow: hidden;
   }
 
-  .term-card-source {
+  .term-card-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
     margin-top: 2px;
+  }
+
+  .term-card-source {
     font-size: 10.5px;
     line-height: 1.4;
     color: var(--text-tertiary);
@@ -2452,6 +2551,18 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+  }
+  .term-card-source.external {
+    border-left-color: color-mix(in srgb, #34c759 36%, transparent);
+  }
+  .term-card-source span {
+    display: inline-block;
+    margin-right: 5px;
+    font-weight: 800;
+    color: color-mix(in srgb, var(--accent) 78%, var(--text-secondary));
+  }
+  .term-card-source.external span {
+    color: color-mix(in srgb, #34c759 78%, var(--text-secondary));
   }
 
   .term-stack-nav {
@@ -2483,6 +2594,10 @@
     align-items: center;
     justify-content: center;
     transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+  }
+  .term-stack-arrow.collapse {
+    margin-left: 2px;
+    color: var(--text-secondary);
   }
   .term-stack-arrow:hover:not(:disabled) {
     background: color-mix(in srgb, var(--accent) 14%, transparent);

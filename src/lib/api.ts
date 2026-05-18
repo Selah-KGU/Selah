@@ -1644,6 +1644,7 @@ export interface LiveTermExplanation {
   term: string;
   explanation: string;
   source_excerpt?: string;
+  external_source?: string;
 }
 
 export interface LiveSummaryChunk {
@@ -1743,6 +1744,20 @@ function buildDemoLiveSummaries(lines: LiveTranscriptLine[]): LiveSummaryChunk[]
     range_label: "最近",
     body: `### 全体要約\n${recent || "このセッションでは授業内容の要点がまとめられます。"}\n\n### 次に見るポイント\n- キーワードを 2〜3 個に絞って見返す\n- 宿題や小テストに関係する箇所を先に確認する`,
     line_count: lines.length,
+    terms: [
+      {
+        term: "メタ認知",
+        explanation: "自分の理解度や学習方法を客観的に確認する考え方。復習時は、何が分かっていて何が曖昧かを分けて見る観点になる。",
+        source_excerpt: "キーワードを短くメモし、あとで見返しやすい形に整理",
+        external_source: "Flavell, J. H. (1979), Metacognition and cognitive monitoring, American Psychologist",
+      },
+      {
+        term: "想起練習",
+        explanation: "資料を眺めるだけでなく、覚えている内容を自分で思い出す復習方法。小テスト対策では、要点を閉じた状態で説明できるかを確認する。",
+        source_excerpt: "課題や小テストにつながるポイント",
+        external_source: "Roediger, H. L. & Karpicke, J. D. (2006), Test-enhanced learning, Psychological Science",
+      },
+    ],
   }];
 }
 
