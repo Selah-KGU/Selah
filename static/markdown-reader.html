@@ -21,6 +21,11 @@
     --orange: #ff9500;
     --red: #ff3b30;
     --md-font-size: 14px;
+    --glass-bg: rgba(255, 255, 255, 0.5);
+    --glass-border: rgba(255, 255, 255, 0.5);
+    --glass-blur: blur(24px);
+    --glass-saturate: saturate(180%);
+    --shadow-glass: 0 2px 16px rgba(0, 0, 0, 0.05), 0 0 0.5px rgba(0, 0, 0, 0.08);
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
@@ -38,6 +43,11 @@
       --green: #30d158;
       --orange: #ff9f0a;
       --red: #ff453a;
+      --glass-bg: rgba(44, 44, 46, 0.45);
+      --glass-border: rgba(255, 255, 255, 0.1);
+      --glass-blur: blur(40px);
+      --glass-saturate: saturate(200%);
+      --shadow-glass: 0 2px 16px rgba(0, 0, 0, 0.2), 0 0 0.5px rgba(0, 0, 0, 0.3);
       color-scheme: dark;
     }
   }
@@ -55,6 +65,11 @@
     --green: #30d158;
     --orange: #ff9f0a;
     --red: #ff453a;
+    --glass-bg: rgba(44, 44, 46, 0.45);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-blur: blur(24px);
+    --glass-saturate: saturate(180%);
+    --shadow-glass: 0 2px 16px rgba(0, 0, 0, 0.2), 0 0 0.5px rgba(0, 0, 0, 0.3);
     color-scheme: dark;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -371,34 +386,40 @@
   }
   .mdr-wb-zoom {
     position: absolute;
-    top: 16px;
-    right: 16px;
+    top: 20px;
+    right: 20px;
     z-index: 8;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px;
-    border-radius: 999px;
-    border: 0.5px solid var(--border);
-    background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
-    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    gap: 2px;
+    padding: 4px;
+    border-radius: 14px;
+    border: 0.5px solid var(--glass-border);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    box-shadow: var(--shadow-glass), 0 4px 16px rgba(0, 0, 0, 0.06);
   }
   .mdr-wb-zoom button {
-    min-width: 30px;
-    height: 28px;
-    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    height: 30px;
+    padding: 0 10px;
     border: none;
-    border-radius: 999px;
+    border-radius: 10px;
     background: transparent;
-    color: var(--text-secondary);
+    color: var(--text-tertiary);
     font: inherit;
-    font-size: 12px;
-    font-weight: 800;
+    font-size: 13px;
+    font-weight: 700;
     cursor: pointer;
+    transition: background 0.15s, color 0.15s;
   }
   .mdr-wb-zoom button:hover {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--accent);
+    background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+    color: var(--text-primary);
   }
   .mdr-whiteboard.dense .mdr-wb-canvas { height: 500px; }
   .mdr-whiteboard.very-dense .mdr-wb-canvas { height: 560px; }

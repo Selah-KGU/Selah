@@ -230,6 +230,11 @@
   let whiteboardDragStart = $state<{ x: number; y: number; panX: number; panY: number } | null>(null);
   let whiteboardWasDragged = $state(false);
   let selectedBoardNodeId = $state<string | null>(null);
+  // Canvas dimensions are bound from the DOM; stage size adapts so the board
+  // fills the available area instead of being centered in a fixed-pixel box.
+  let boardCanvasWidth = $state(0);
+  let boardCanvasHeight = $state(0);
+  let initialFitDone = $state(false);
   $effect(() => {
     // If the active segment has no whiteboard (e.g. user clicked a time-pill
     // for a segment without one, or AI removed the board), drop expanded
@@ -242,7 +247,13 @@
     }
   });
   function openWhiteboardOverlay() {
-    resetWhiteboardView();
+    // Reset pan/zoom to preset defaults; the auto-fit effect will recalculate
+    // once the canvas dimensions are measured after the DOM renders.
+    const preset = getWhiteboardStagePreset(activeWhiteboardLayout?.nodes.length ?? 0);
+    whiteboardZoom = preset.zoom;
+    whiteboardPanX = 0;
+    whiteboardPanY = 0;
+    initialFitDone = false;
     whiteboardExpanded = true;
   }
   function closeWhiteboardOverlay() {
@@ -255,7 +266,14 @@
     whiteboardZoom = clampWhiteboardZoom(value);
   }
   function resetWhiteboardView() {
-    whiteboardZoom = getWhiteboardStagePreset(activeWhiteboardLayout?.nodes.length ?? 0).zoom;
+    const preset = getWhiteboardStagePreset(activeWhiteboardLayout?.nodes.length ?? 0);
+    if (boardCanvasWidth > 0 && boardCanvasHeight > 0) {
+      // Fit the full stage inside the measured canvas, leaving a small margin.
+      const fitZoom = Math.min(boardCanvasWidth / preset.width, boardCanvasHeight / preset.height) * 0.94;
+      whiteboardZoom = clampWhiteboardZoom(fitZoom);
+    } else {
+      whiteboardZoom = preset.zoom;
+    }
     whiteboardPanX = 0;
     whiteboardPanY = 0;
   }
@@ -364,6 +382,24 @@
     void activeSummaryIdx;
     void whiteboardExpanded;
     untrack(() => { selectedBoardNodeId = null; });
+  });
+
+  // Auto-fit: once the board-page canvas has been measured, recalculate the
+  // initial zoom so the stage fills the real available area. We only do this
+  // once per open (initialFitDone guard) to avoid fighting with user pans/zooms.
+  $effect(() => {
+    if (!whiteboardExpanded) {
+      untrack(() => { initialFitDone = false; });
+      return;
+    }
+    const w = boardCanvasWidth;
+    const h = boardCanvasHeight;
+    if (w <= 0 || h <= 0) return;
+    if (untrack(() => initialFitDone)) return;
+    untrack(() => {
+      resetWhiteboardView();
+      initialFitDone = true;
+    });
   });
 
   function getWhiteboardStagePreset(nodeCount: number): WhiteboardStagePreset {
@@ -1340,7 +1376,7 @@
   });
 </script>
 
-<div class="live-root view">
+<div class="live-root view" class:board-expanded={whiteboardExpanded}>
   <!-- ─── Floating Top Capsule ─── -->
   <header class="top-capsule">
     <div class="capsule-inner">
@@ -1719,6 +1755,8 @@
         class:has-selection={selectedBoardNodeId !== null}
         role="application"
         aria-label={termFloatLabels.boardTitle}
+        bind:clientWidth={boardCanvasWidth}
+        bind:clientHeight={boardCanvasHeight}
         onwheel={handleWhiteboardWheel}
         onpointerdown={handleWhiteboardPointerDown}
         onpointermove={handleWhiteboardPointerMove}
@@ -1790,6 +1828,15 @@
     width: 100%;
     position: relative;
     overflow: hidden;
+  }
+  /* When the whiteboard overlay is open, let .board-page bleed into the
+     view-panel padding so it fills the full .content area.
+     Only change overflow (NOT padding) to avoid any layout reflow / flash. */
+  :global(.view-panel:has(.live-root.board-expanded)) {
+    overflow: hidden;
+  }
+  .live-root.board-expanded {
+    overflow: visible;
   }
 
   /* ── Floating Top Capsule ── */
@@ -2041,7 +2088,7 @@
   .summary-card {
     position: sticky;
     top: 56px;
-    z-index: 10;
+    z-index: 35;
     margin-bottom: 14px;
     background: #f9f6fc;
     border: 0.5px solid rgba(175, 82, 222, 0.22);
@@ -2233,7 +2280,7 @@
     border: 0.5px solid rgba(175, 82, 222, 0.22);
     border-radius: 14px;
     box-shadow: 0 8px 32px rgba(175, 82, 222, 0.12), var(--shadow-md);
-    z-index: 30;
+    z-index: 70;
     cursor: pointer;
     animation: overlay-expand 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
     transform-origin: top center;
@@ -2785,9 +2832,11 @@
      transcript view and is dismissed by the back button or Escape. */
   .board-page {
     position: absolute;
-    inset: 0;
+    /* Extend -24px in every direction to counteract .view-panel's padding:24px,
+       so the board fills the full content area without any layout shift. */
+    inset: -24px;
     z-index: 60;
-    padding: 56px 24px 24px;
+    padding: 0;
     background: var(--bg-primary);
     display: flex;
     flex-direction: column;
@@ -2797,69 +2846,79 @@
     flex: 1 1 auto;
     height: auto;
     min-height: 0;
-    border-radius: 12px;
+    border-radius: 0;
   }
   .board-page-back {
     position: absolute;
-    top: 14px;
-    left: 14px;
+    top: 20px;
+    left: 20px;
     z-index: 5;
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     padding: 0;
     border: 0.5px solid var(--glass-border);
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
+    border-radius: 12px;
+    background: var(--glass-bg, rgba(255, 255, 255, 0.5));
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
     color: var(--text-secondary);
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-    transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+    box-shadow: var(--shadow-glass), 0 4px 16px rgba(0, 0, 0, 0.06);
+    transition: background 0.15s, color 0.15s, transform 0.15s;
   }
   .board-page-back:hover {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--accent);
+    background: color-mix(in srgb, var(--text-primary) 8%, var(--glass-bg, rgba(255, 255, 255, 0.5)));
+    color: var(--text-primary);
   }
   .board-page-back:active {
     transform: scale(0.94);
   }
   .board-zoom-controls {
     position: absolute;
-    top: 14px;
-    right: 14px;
+    top: 20px;
+    right: 20px;
     z-index: 6;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px;
-    border-radius: 999px;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 14px;
     border: 0.5px solid var(--glass-border);
-    background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+    background: var(--glass-bg, rgba(255, 255, 255, 0.5));
+    backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    box-shadow: var(--shadow-glass), 0 4px 16px rgba(0, 0, 0, 0.06);
   }
   .board-zoom-controls button {
-    min-width: 30px;
-    height: 28px;
-    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    height: 30px;
+    padding: 0 10px;
     border: none;
-    border-radius: 999px;
+    border-radius: 10px;
     background: transparent;
-    color: var(--text-secondary);
+    color: var(--text-tertiary);
     font: inherit;
-    font-size: 12px;
-    font-weight: 800;
+    font-size: 13px;
+    font-weight: 700;
     cursor: pointer;
+    transition: background 0.15s, color 0.15s;
   }
   .board-zoom-controls button:hover {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--accent);
+    background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+    color: var(--text-primary);
   }
 
   @keyframes board-page-in {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+    /* Transform-only: board-page is opaque from frame 1, so the layout
+       beneath it is never visible through a transparent first frame. */
+    from { transform: translateY(10px); }
+    to { transform: translateY(0); }
   }
 
   .visual-board-canvas {
