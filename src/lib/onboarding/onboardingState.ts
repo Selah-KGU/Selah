@@ -37,7 +37,7 @@ export const onboardingVisible = writable<boolean>(false);
 /** True when the Home onboarding banner should appear. Reactive — re-derives whenever record changes. */
 export const showHomeOnboardingCard = derived(onboardingRecord, (rec) => {
   if (isDemoActive()) return false;
-  return !rec.completedAt;
+  return !rec.completedAt && !rec.skippedAt;
 });
 
 export function updateRecord(patch: Partial<OnboardingRecord>) {

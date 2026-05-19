@@ -4,7 +4,6 @@
   import { devModeActive } from "../../stores";
   import { logout, isDemoActive } from "../../api";
   import { openExternalUrl } from "../../system";
-  import { reopenOnboarding } from "../../onboarding/onboardingState";
   import {
     appUpdateState,
     checkForAppUpdate,
@@ -162,19 +161,6 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <span class="link" onclick={() => openUrl("https://selah.jp/privacy.html")}>プライバシーポリシー</span>
-  </div>
-</div>
-
-<div class="card-label" style="margin-top:10px;">初期設定</div>
-<div class="card">
-  <div class="row">
-    <span class="row-label">セットアップ</span>
-    <div class="row-input">
-      <div class="update-inline">
-        <div class="hint update-manual-hint">AI と基本機能のセットアップ画面を再表示します。</div>
-        <button class="btn-test" onclick={() => reopenOnboarding()}>初期設定を開く</button>
-      </div>
-    </div>
   </div>
 </div>
 

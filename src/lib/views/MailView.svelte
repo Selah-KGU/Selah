@@ -449,7 +449,7 @@
               <div class="skeleton-line short"></div>
             </div>
           </div>
-        {:else}
+        {:else if selectedMessage}
           <div class="detail-header">
             <h3 class="detail-subject">{selectedMessage.subject || "(件名なし)"}</h3>
             <div class="detail-sender-row">

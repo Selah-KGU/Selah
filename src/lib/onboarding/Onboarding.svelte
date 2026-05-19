@@ -85,11 +85,22 @@
     // Restore purposes if returning
     const rec = $onboardingRecord;
     if (rec.purposes?.length) purposes = [...rec.purposes];
-    // If coming back from a settings detour, jump to the saved step
-    const resume = consumeResume();
-    if (resume === "checklist" || resume === "finish") {
-      next(resume);
+  });
+
+  // Re-apply resume token each time the modal becomes visible. The component
+  // stays mounted in Dashboard, so onMount alone would never re-fire after a
+  // settings detour and the sessionStorage token would leak.
+  let wasVisible = false;
+  $effect(() => {
+    const visible = $onboardingVisible;
+    if (visible && !wasVisible) {
+      const resume = consumeResume();
+      if (resume === "welcome" || resume === "purpose" || resume === "provider"
+        || resume === "apikey" || resume === "checklist" || resume === "finish") {
+        next(resume);
+      }
     }
+    wasVisible = visible;
   });
 
   function close() {
@@ -448,7 +459,7 @@
             <button class="btn-primary" onclick={() => next("apikey")}>次へ</button>
           {:else if step === "apikey"}
             <button class="btn-ghost" onclick={() => next("provider")}>戻る</button>
-            <button class="btn-ghost" onclick={() => next("checklist")}>スキップ</button>
+            <button class="btn-ghost" onclick={() => { updateRecord({ purposes }); next("checklist"); }}>スキップ</button>
             {#if testDone}
               <button class="btn-primary" onclick={() => next("checklist")}>次へ</button>
             {:else}
