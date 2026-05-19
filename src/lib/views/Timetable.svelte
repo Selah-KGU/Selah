@@ -8,6 +8,7 @@
   import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady, authState, activeTab } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
+  import FirstVisitTip from "../onboarding/FirstVisitTip.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
 
   // ── State ──
@@ -961,6 +962,11 @@
 </script>
 
 <div class="view">
+  <FirstVisitTip
+    tipKey="timetable"
+    title="時間割について"
+    body="右上のメニューから Google カレンダーに同期したり、AI で履修分析を見たりできます。"
+  />
   <!-- Header -->
   <div class="header">
     <div class="header-line1">

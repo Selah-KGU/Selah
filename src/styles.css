@@ -65,7 +65,7 @@
     --bg-sidebar: rgba(30, 30, 32, 0.55);
     --bg-titlebar: rgba(30, 30, 32, 0.5);
     --bg-hover: rgba(255, 255, 255, 0.06);
-    --bg-active: rgba(10, 132, 255, 0.18);
+    --bg-active: rgba(230, 190, 50, 0.16);
 
     --glass-bg: rgba(44, 44, 46, 0.45);
     --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
@@ -76,11 +76,11 @@
     --text-primary: #f5f5f7;
     --text-secondary: #98989d;
     --text-tertiary: #636366;
-    --text-on-accent: #ffffff;
+    --text-on-accent: #1B2D5B;
 
-    --accent: #4a90d9;
-    --accent-hover: #6aa8f0;
-    --accent-light: rgba(74, 144, 217, 0.15);
+    --accent: #E6BE32;
+    --accent-hover: #F0CD55;
+    --accent-light: rgba(230, 190, 50, 0.14);
     --kg-gold: #d4a840;
     --kg-gold-light: rgba(212, 168, 64, 0.15);
 
@@ -112,7 +112,7 @@
   --bg-sidebar: rgba(30, 30, 32, 0.55);
   --bg-titlebar: rgba(30, 30, 32, 0.5);
   --bg-hover: rgba(255, 255, 255, 0.06);
-  --bg-active: rgba(10, 132, 255, 0.18);
+  --bg-active: rgba(230, 190, 50, 0.16);
 
   --glass-bg: rgba(44, 44, 46, 0.45);
   --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
@@ -123,11 +123,11 @@
   --text-primary: #f5f5f7;
   --text-secondary: #98989d;
   --text-tertiary: #636366;
-  --text-on-accent: #ffffff;
+  --text-on-accent: #1B2D5B;
 
-  --accent: #4a90d9;
-  --accent-hover: #6aa8f0;
-  --accent-light: rgba(74, 144, 217, 0.15);
+  --accent: #E6BE32;
+  --accent-hover: #F0CD55;
+  --accent-light: rgba(230, 190, 50, 0.14);
   --kg-gold: #d4a840;
   --kg-gold-light: rgba(212, 168, 64, 0.15);
 
@@ -255,8 +255,8 @@ input {
 }
 
 input:focus {
-  border-color: var(--blue);
-  box-shadow: var(--glass-highlight), 0 0 0 3px rgba(0, 122, 255, 0.12);
+  border-color: var(--accent);
+  box-shadow: var(--glass-highlight), 0 0 0 3px var(--accent-light);
 }
 
 /* --- Scrollbar (macOS native feel) --- */

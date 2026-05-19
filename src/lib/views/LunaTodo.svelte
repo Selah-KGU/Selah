@@ -13,9 +13,12 @@
   } from "../api";
   import type { DetailTodoSuggestion } from "../api";
   import { cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, lunaAuthState, aiTodoStore, aiReady } from "../stores";
+  import { reopenOnboarding } from "../onboarding/onboardingState";
+  import { get } from "svelte/store";
   import ViewLoader from "../ViewLoader.svelte";
   import AiTodoPage from "./AiTodoPage.svelte";
   import TodoDraftCard from "../TodoDraftCard.svelte";
+  import FirstVisitTip from "../onboarding/FirstVisitTip.svelte";
   import type { LunaTodoItem, AiTodoAnalysis } from "../types";
 
   let loading = $state(true);
@@ -195,6 +198,10 @@
 
   async function extractDetailTodos() {
     if (detailExtracting) return;
+    if (!get(aiReady)) {
+      if (confirm("この機能には AI 設定が必要です。初期設定を開きますか？")) reopenOnboarding();
+      return;
+    }
     detailExtracting = true;
     detailError = "";
     try {
@@ -249,6 +256,10 @@
   }
 
   async function enterAiMode() {
+    if (!get(aiReady)) {
+      if (confirm("AI 補助モードには AI 設定が必要です。初期設定を開きますか？")) reopenOnboarding();
+      return;
+    }
     showAiPage = true;
     // Pre-load cached result if not already loaded
     if (!aiResult && !aiLoading) {
@@ -290,6 +301,11 @@
   </div>
 {:else}
 <div class="view">
+  <FirstVisitTip
+    tipKey="todo"
+    title="TODO について"
+    body="Luna の課題と、自分で追加した TODO を一元管理できます。AI 補助モードで通知やメールから自動抽出も可能です。"
+  />
   <div class="title-row">
     <div class="title-left">
       <h2>TODO</h2>
@@ -313,8 +329,8 @@
       {/if}
     </div>
     <div class="title-actions">
-      <button class="extract-btn" onclick={extractDetailTodos} disabled={detailExtracting || !$aiReady}
-        title={!$aiReady ? 'AI 利用不可（設定で有効化）' : 'Luna通知とメールからAIで TODO を磁石のように吸い寄せる'}>
+      <button class="extract-btn" onclick={extractDetailTodos} disabled={detailExtracting}
+        title={!$aiReady ? 'AI 未設定（クリックで初期設定）' : 'Luna通知とメールからAIで TODO を磁石のように吸い寄せる'}>
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" class:spin={detailExtracting}>
           {#if detailExtracting}
             <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="28 10" stroke-linecap="round"/>
@@ -326,8 +342,8 @@
         <span>マグネット</span>
       </button>
       {#if pending.length > 0}
-        <button class="ai-pill" onclick={enterAiMode} disabled={!$aiReady || (aiLoading && !aiResult)}
-          title={!$aiReady ? 'AI 利用不可（設定で有効化）' : 'AI 輔助モード'}>
+        <button class="ai-pill" onclick={enterAiMode} disabled={aiLoading && !aiResult}
+          title={!$aiReady ? 'AI 未設定（クリックで初期設定）' : 'AI 輔助モード'}>
           <svg class="ai-pill-icon" width="12" height="12" viewBox="0 0 20 20" fill="none" class:spin={aiLoading && !aiResult}>
             {#if aiLoading && !aiResult}
               <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="35 12" stroke-linecap="round"/>

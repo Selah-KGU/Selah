@@ -55,17 +55,11 @@ pub fn run_stt_decode_helper_from_args() -> Option<i32> {
     stt::run_decode_helper_from_args()
 }
 
+#[cfg(debug_assertions)]
 pub(crate) fn should_dump_debug_html() -> bool {
-    #[cfg(debug_assertions)]
-    {
-        std::env::var("SELAH_DUMP_HTML")
-            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false)
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        false
-    }
+    std::env::var("SELAH_DUMP_HTML")
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 // ── Decoupled per-service states (independent locking, zero cross-service contention) ──

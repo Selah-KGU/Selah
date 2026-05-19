@@ -3,6 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
   import { getAiConfig, isDemoActive, updateAiReadiness } from "../../api";
+  import CapabilityMatrix from "../../onboarding/CapabilityMatrix.svelte";
 
   interface LocalModel {
     id: string;
@@ -776,6 +777,8 @@
     <p class="panel-desc">AI の有効化、推論方式、モデル、応答言語、自動更新をまとめて管理します。ローカル実行と外部 API のどちらでも、時間割・課題・通知・LIVE 要約まわりの AI 機能をここで整えられます。</p>
   </div>
 </div>
+
+<CapabilityMatrix />
 
 <div class="card-label">AI アシスタント</div>
 <div class="card">

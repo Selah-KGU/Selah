@@ -10,6 +10,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { openExternalUrl } from "../system";
   import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
+  import { shouldShowHomeCard, reopenOnboarding, onboardingRecord } from "../onboarding/onboardingState";
+  import selahLogoUrl from "../../assets/logo.png";
   import {
     AI_CACHE_KEY,
     AI_REFRESH_MS,
@@ -39,6 +41,19 @@
   let todayDate = $state(new Date());
   let loading = $state(true);
   let loadInProgress = false;
+  let showOnboardingCard = $state(false);
+
+  async function refreshOnboardingCard() {
+    try { showOnboardingCard = await shouldShowHomeCard(); } catch { showOnboardingCard = false; }
+  }
+  function handleStartOnboarding() {
+    reopenOnboarding();
+  }
+  // Re-check whenever the onboarding record changes
+  $effect(() => {
+    $onboardingRecord;
+    void refreshOnboardingCard();
+  });
 
   // KWIC subportal state
   let subportalData = $state<KwicSubportalData | null>(null);
@@ -949,6 +964,17 @@ suggestionsのルール：
     </div>
   </div>
 
+  {#if showOnboardingCard}
+    <div class="ob-banner">
+      <img class="ob-banner-logo" src={selahLogoUrl} alt="" draggable="false" />
+      <div class="ob-banner-body">
+        <div class="ob-banner-title">初期設定を完了する</div>
+        <div class="ob-banner-sub">AI・メール・通知を 2 分でセットアップ</div>
+      </div>
+      <button class="ob-banner-start" onclick={handleStartOnboarding}>始める</button>
+    </div>
+  {/if}
+
   <!-- ===== NOW / NEXT — hero row ===== -->
   {#if heroClasses.length > 0}
     <section class="section hero-section">
@@ -1625,6 +1651,57 @@ suggestionsのルール：
     flex-direction: column;
     gap: 12px;
   }
+
+  .ob-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 10px 10px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--glass-border);
+    border-radius: 14px;
+    width: 50%;
+    max-width: 480px;
+  }
+  .ob-banner-logo {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+    flex-shrink: 0;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  .ob-banner-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .ob-banner-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.25;
+  }
+  .ob-banner-sub {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    line-height: 1.35;
+  }
+  .ob-banner-start {
+    flex-shrink: 0;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 7px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .ob-banner-start:hover { opacity: 0.9; }
 
   .section-head {
     display: inline-flex;

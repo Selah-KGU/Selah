@@ -338,18 +338,20 @@
     font-weight: 600;
   }
   .save-capsule.saving {
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+    border: 0.5px solid color-mix(in srgb, var(--accent) 18%, var(--glass-border));
+    color: var(--text-primary);
   }
   .save-capsule.done {
-    background: color-mix(in srgb, var(--green) 10%, transparent);
-    color: var(--green);
+    background: linear-gradient(135deg, rgba(196, 128, 232, 0.08), rgba(107, 172, 240, 0.08));
+    border: 0.5px solid rgba(175, 82, 222, 0.22);
+    color: var(--text-primary);
   }
   .save-capsule-icon {
     flex: 0 0 auto;
   }
   .save-capsule-text {
-    color: inherit;
+    color: var(--text-primary);
   }
   .save-capsule.done .save-capsule-text {
     background: linear-gradient(135deg, #c480e8, #6bacf0);
@@ -361,8 +363,8 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
-    border-top-color: currentColor;
+    border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-top-color: var(--accent);
     animation: spin 0.8s linear infinite;
   }
   .save-summary {

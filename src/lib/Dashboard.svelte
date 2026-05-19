@@ -11,6 +11,8 @@
   import type { MailMessage, KwicPortalHome } from "./api";
   import { updateAiReadiness } from "./api";
   import type { LunaNotification } from "./types";
+  import Onboarding from "./onboarding/Onboarding.svelte";
+  import { onboardingVisible, shouldAutoShow, hasResume } from "./onboarding/onboardingState";
 
   interface Tab {
     id: string;
@@ -73,12 +75,18 @@
     }
   }
 
+  let prevTab = "home";
   $effect(() => {
     const tab = $activeTab;
     if (!visited.has(tab)) {
       visited = new Set([...visited, tab]);
     }
     void ensureViewLoaded(tab);
+    // Resume onboarding when leaving Settings with a pending resume token
+    if (prevTab === "settings" && tab !== "settings" && hasResume()) {
+      onboardingVisible.set(true);
+    }
+    prevTab = tab;
   });
 
   function badgeCount(tabId: string): number {
@@ -159,6 +167,8 @@
     });
     // Initialize AI readiness stores
     updateAiReadiness().catch(() => {});
+    // First-run onboarding gate
+    shouldAutoShow().then(show => { if (show) onboardingVisible.set(true); }).catch(() => {});
     // Re-check when AI config changes (e.g. user edits settings)
     const unlistenAiCfg = await listen('ai-config-changed', () => {
       updateAiReadiness().catch(() => {});
@@ -271,6 +281,7 @@
       {/if}
     </div>
   </div>
+  <Onboarding />
 </div>
 
 <style>

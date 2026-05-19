@@ -6,6 +6,7 @@
   import type { TaskInfo } from "../../stores";
   import { fetchPage, isDemoActive, refreshBackendTaskStatuses } from "../../api";
   import { appUpdateState, distributionChannel, updaterManagedByStore } from "../../updater";
+  import { reopenOnboarding, resetOnboarding, clearAllFirstVisitTips } from "../../onboarding/onboardingState";
 
   interface DebugInfo {
     app_version: string;
@@ -272,6 +273,19 @@
     return value ? "yes" : "no";
   }
 
+  function openOnboardingNow() {
+    reopenOnboarding();
+    addLog("info", "オンボーディングを開きました");
+  }
+  function resetOnboardingNow() {
+    resetOnboarding();
+    addLog("info", "オンボーディング状態をリセットしました（次回起動時に自動表示）");
+  }
+  function clearTipsNow() {
+    const n = clearAllFirstVisitTips();
+    addLog("info", `初回ヒント ${n} 件をリセットしました`);
+  }
+
   function formatEpoch(epoch: number | null): string {
     if (!epoch) return "-";
     return new Date(epoch * 1000).toLocaleString("ja-JP");
@@ -428,6 +442,16 @@
     <h2 class="panel-title">デバッグ</h2>
     <p class="panel-desc">アプリ情報、定期タスク、ネットワーク診断、ログを確認できます。問題のトラブルシューティングに使用します。</p>
   </div>
+</div>
+
+<div class="onboarding-debug">
+  <div class="ob-head">オンボーディング</div>
+  <div class="ob-actions">
+    <button class="tool-btn" onclick={openOnboardingNow}>初期設定を開く</button>
+    <button class="tool-btn" onclick={resetOnboardingNow}>状態をリセット</button>
+    <button class="tool-btn" onclick={clearTipsNow}>ヒントを全消去</button>
+  </div>
+  <div class="ob-hint">「リセット」で次回起動時に自動表示されるようになります。</div>
 </div>
 
 <div class="tab-bar">
@@ -711,6 +735,31 @@
 </div>
 
 <style>
+  .onboarding-debug {
+    margin: 10px 0;
+    padding: 10px 14px;
+    background: var(--bg-secondary);
+    border: 0.5px solid var(--border);
+    border-radius: 10px;
+  }
+  .ob-head {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+  }
+  .ob-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .ob-hint {
+    margin-top: 6px;
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    line-height: 1.45;
+  }
+
   .tab-bar {
     display: flex;
     gap: 4px;

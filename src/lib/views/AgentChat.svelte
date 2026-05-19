@@ -5,6 +5,7 @@
   import { marked } from "marked";
   import DOMPurify from "dompurify";
   import Icon from "../Icon.svelte";
+  import FirstVisitTip from "../onboarding/FirstVisitTip.svelte";
   import selahLogoUrl from "../../assets/logo.png";
   import {
     agentListConversations,
@@ -22,6 +23,7 @@
     type AgentStreamEvent,
   } from "../api";
   import { agentConversations, agentActiveConvId, agentReady } from "../stores";
+  import { reopenOnboarding } from "../onboarding/onboardingState";
   import { invoke } from "@tauri-apps/api/core";
   import type { AiConfig } from "../stores";
   import { externalLinkDelegate } from "../externalLinkDelegate";
@@ -350,7 +352,9 @@
       if (!activeConvId) return;
     }
     if (!await isAiReady()) {
-      alert("Agent は現在利用できません。AI設定（ローカルモデルまたはAPIキー）を確認してください。");
+      if (confirm("Agent を使うには AI 設定が必要です。初期設定を開きますか？")) {
+        reopenOnboarding();
+      }
       return;
     }
     if (quotedMessage) {
@@ -808,6 +812,13 @@
           <img src={selahLogoUrl} alt="Selah" class="hero-logo" />
           <p class="hero-text">……話しかけてくれたら、そこにいる。</p>
           <button class="primary-btn" onclick={newConversation}>新しい会話を始める</button>
+          <div class="tip-wrap">
+            <FirstVisitTip
+              tipKey="agent"
+              title="Agent について"
+              body="時間割・通知・メール・資料を読みながら回答できます。AI 設定が必要です。"
+            />
+          </div>
         </div>
       {:else if messages.length === 0}
         <div class="empty-hero subtle">
@@ -1397,6 +1408,7 @@
     padding: 20px;
   }
   .empty-hero.subtle { opacity: 0.7; }
+  .tip-wrap { width: min(420px, 90%); text-align: left; }
   .hero-logo {
     width: 72px;
     height: 72px;
