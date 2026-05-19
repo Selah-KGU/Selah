@@ -127,6 +127,7 @@
           class="visual-board-node kind-{node.kind} source-{node.sourceType}"
           class:role-main={node.role === "main"}
           class:role-branch={node.role !== "main"}
+          class:node-term={node.nodeType === "term"}
           class:is-highlighted={boardHighlight?.nodes.has(node.id)}
           class:is-selected={selectedBoardNodeId === node.id}
           style="left: {node.x}%; top: {node.y}%;"
@@ -405,6 +406,17 @@
     min-height: 62px;
     opacity: 0.94;
   }
+  .visual-board-node.node-term {
+    width: auto;
+    min-width: 64px;
+    max-width: 96px;
+    min-height: 0;
+    padding: 5px 8px;
+    gap: 0;
+    border-radius: 999px;
+    opacity: 0.86;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06);
+  }
   .board-page.dense .visual-board-node.role-main {
     width: 124px;
     min-height: 66px;
@@ -412,6 +424,12 @@
   .board-page.very-dense .visual-board-node.role-main {
     width: 110px;
     min-height: 58px;
+  }
+  .board-page.dense .visual-board-node.node-term,
+  .board-page.very-dense .visual-board-node.node-term {
+    min-width: 54px;
+    max-width: 80px;
+    padding: 4px 7px;
   }
   .visual-board-node.kind-core {
     background: color-mix(in srgb, var(--blue) 14%, var(--bg-primary));
@@ -476,6 +494,27 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
     overflow-wrap: anywhere;
+  }
+  .visual-board-node.node-term .visual-board-node-label {
+    font-size: 10.5px;
+    line-height: 1.18;
+  }
+  .visual-board-node.node-term .visual-board-node-detail {
+    display: none;
+  }
+  .visual-board-node.node-term:is(:hover, :focus-visible, .is-selected) {
+    max-width: 142px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    opacity: 0.96;
+    z-index: 5;
+  }
+  .visual-board-node.node-term:is(:hover, :focus-visible, .is-selected) .visual-board-node-detail {
+    display: -webkit-box;
+    margin-top: 3px;
+    font-size: 9px;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
   }
   .board-page.dense .visual-board-node-detail {
     font-size: 9px;

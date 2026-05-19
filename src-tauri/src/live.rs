@@ -201,16 +201,16 @@ fn format_recent_summary_context(summaries: &[LiveSummaryChunk], limit: usize) -
 fn live_whiteboard_language_instruction(reply_language: &str) -> &'static str {
     match reply_language {
         "zh" => {
-            "whiteboard 的 title、node.label、node.detail、edge.label 必须全部使用简体中文；kind、role、source_type、id、parent_id 等结构字段仍使用指定英文枚举值。关系标签要使用中文具体词，例如「具体例」「条件」「导出」「确认点」「并列」「参考」。"
+            "whiteboard 的 title、node.label、node.detail 必须全部使用简体中文；非空 edge.label 也必须使用简体中文。node_type、kind、role、source_type、id、parent_id 等结构字段仍使用指定英文枚举值。关系标签要使用中文具体词，例如「具体例」「条件」「导出」「确认点」「并列」「参考」。"
         }
         "en" => {
-            "All whiteboard title, node.label, node.detail, and edge.label values must be written in English; structural fields such as kind, role, source_type, id, and parent_id must keep the specified enum values. Edge labels should be concrete English relationship words such as \"example\", \"condition\", \"leads to\", \"check\", \"parallel\", or \"reference\"."
+            "All whiteboard title, node.label, and node.detail values must be written in English; non-empty edge.label values must also be written in English. Structural fields such as node_type, kind, role, source_type, id, and parent_id must keep the specified enum values. Edge labels should be concrete English relationship words such as \"example\", \"condition\", \"leads to\", \"check\", \"parallel\", or \"reference\"."
         }
         "ko" => {
-            "whiteboard 의 title, node.label, node.detail, edge.label 은 모두 한국어로 작성하세요. kind, role, source_type, id, parent_id 같은 구조 필드는 지정된 영어 enum 값을 유지하세요. 관계 라벨은 「구체예」「조건」「도출」「확인점」「병렬」「참고」처럼 구체적인 한국어 관계어를 사용하세요."
+            "whiteboard 의 title, node.label, node.detail 은 모두 한국어로 작성하고, 비어 있지 않은 edge.label 도 한국어로 작성하세요. node_type, kind, role, source_type, id, parent_id 같은 구조 필드는 지정된 영어 enum 값을 유지하세요. 관계 라벨은 「구체예」「조건」「도출」「확인점」「병렬」「참고」처럼 구체적인 한국어 관계어를 사용하세요."
         }
         _ => {
-            "whiteboard の title、node.label、node.detail、edge.label はすべて日本語で書く。kind、role、source_type、id、parent_id などの構造フィールドは指定された英語 enum 値のままにする。edge label は「具体例」「条件」「導く」「確認点」「並列」「参考」など、具体的な日本語の関係語にする。"
+            "whiteboard の title、node.label、node.detail はすべて日本語で書き、空でない edge.label も日本語で書く。node_type、kind、role、source_type、id、parent_id などの構造フィールドは指定された英語 enum 値のままにする。edge label は「具体例」「条件」「導く」「確認点」「並列」「参考」など、具体的な日本語の関係語にする。"
         }
     }
 }
@@ -344,7 +344,7 @@ fn live_chunk_system_prompt(language_hint: &str, is_free_note: bool) -> String {
 - 文体は、あとから見返せる録音メモのように簡潔で具体的にしてください。
 
 出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:
-{"summary_markdown":"- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）","terms":[{"term":"専門用語または固有概念","explanation":"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。","source_excerpt":"講義内の根拠になる短い発話断片","external_source":"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字"}],"whiteboard":{"title":"短い題名","layout":"flow|hub|compare|cycle|grid","nodes":[{"id":"stable-id","label":"短い概念名","detail":"白板内で理解できる短い説明","kind":"core|support|question|result","role":"main|branch","parent_id":"branch の親 main id。main は空文字","source_type":"lecture|external","source_excerpt":"講義内根拠。外部なら空文字","external_source":"外部補足の出典。講義内なら空文字"}],"edges":[{"from":"n1","to":"n2","label":"具体的な関係語"}]}}
+{"summary_markdown":"- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）","terms":[{"term":"専門用語または固有概念","explanation":"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。","source_excerpt":"講義内の根拠になる短い発話断片","external_source":"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字"}],"whiteboard":{"title":"短い題名","layout":"flow|hub|compare|cycle|grid","nodes":[{"id":"stable-id","label":"短い概念名","detail":"白板内で理解できる短い説明","node_type":"structure|term","kind":"core|support|question|result","role":"main|branch","parent_id":"branch の親 main id、または term の親 structure id。全体用語は空文字","source_type":"lecture|external","source_excerpt":"講義内根拠。外部なら空文字","external_source":"外部補足の出典。講義内なら空文字"}],"edges":[{"from":"n1","to":"n2","label":"具体的な関係語"}]}}
 
 summary_markdown のルール:
 - 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。
@@ -374,7 +374,7 @@ terms のルール:
 - 文体は、信頼できる講義ノートのように簡潔で具体的にしてください。
 
 出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:
-{"summary_markdown":"- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）","terms":[{"term":"専門用語または固有概念","explanation":"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。","source_excerpt":"講義内の根拠になる短い発話断片","external_source":"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字"}],"whiteboard":{"title":"短い題名","layout":"flow|hub|compare|cycle|grid","nodes":[{"id":"stable-id","label":"短い概念名","detail":"白板内で理解できる短い説明","kind":"core|support|question|result","role":"main|branch","parent_id":"branch の親 main id。main は空文字","source_type":"lecture|external","source_excerpt":"講義内根拠。外部なら空文字","external_source":"外部補足の出典。講義内なら空文字"}],"edges":[{"from":"n1","to":"n2","label":"具体的な関係語"}]}}
+{"summary_markdown":"- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）","terms":[{"term":"専門用語または固有概念","explanation":"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。","source_excerpt":"講義内の根拠になる短い発話断片","external_source":"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字"}],"whiteboard":{"title":"短い題名","layout":"flow|hub|compare|cycle|grid","nodes":[{"id":"stable-id","label":"短い概念名","detail":"白板内で理解できる短い説明","node_type":"structure|term","kind":"core|support|question|result","role":"main|branch","parent_id":"branch の親 main id、または term の親 structure id。全体用語は空文字","source_type":"lecture|external","source_excerpt":"講義内根拠。外部なら空文字","external_source":"外部補足の出典。講義内なら空文字"}],"edges":[{"from":"n1","to":"n2","label":"具体的な関係語"}]}}
 
 summary_markdown のルール:
 - 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。
@@ -411,34 +411,49 @@ fn live_whiteboard_system_prompt(language_instruction: &str, is_free_note: bool)
     let mut prompt = r#"whiteboard は講義内容を中心に関連知識を整理する知識整理ボードとして作る。本文の代替ではなく、右側で関係を素早く掴むための概念図です。
 
 累積更新:
-- whiteboard は差分ではなく、更新後の累積ボード全体を返す。
-- 現在の累積知識整理ボードにある有用な nodes/edges は維持し、今回の区間で新しい概念・関係が出た場合だけ追加または統合する。
-- 既存概念の id はできるだけ変えない。重複・誤認識・細かすぎる概念は統合してよいが、前の重要概念を理由なく削除しない。
+- whiteboard は差分ではなく、更新後に最も分かりやすい累積ボード全体を返す。
+- 既存ボードは固定履歴ではなく、現在の理解を清晰化するための作業対象です。今回の区間で分かった内容に合わせて、既存 nodes/edges を更新・統合・削除・降格・昇格してよい。
+- 既存概念の id は、同じ概念として残す場合だけできるだけ変えない。重複・誤認識・細かすぎる概念は統合し、現在の構造を分かりにくくする古い nodes/edges は返さない。
+- 古い edge を機械的に維持しない。新しい全体構造で本当に必要な関係だけを返す。
 - 十分な構造がまだない場合は nodes を空配列にする。
 
 ノード:
 - 主次を必ず分け、role="main" の主ノードを3〜5個以内に絞る。
 - role="branch" の分岐ノードは必ず parent_id で最も近い主ノードに接続し、主ノードなしの孤立分岐を作らない。
 - 新しい語が出ても、既存主ノードの detail や分岐に収まるなら新しい主ノードにしない。講義の大きな論点が変わった時だけ主ノードを増やす。
+- ノード数は多くてもよいが、無秩序に増やさない。大きな論点・人物・出来事・制度・因果上の転換点は構造ノードとして扱い、単なる用語や属性は必要な場合だけ小さな用語ノードにする。
+- 構造ノードか用語ノードかは次で判断する。
+  - 構造ノード: node_type="structure"。それを外すと流れ・対比・因果・制度関係・人物関係が分かりにくくなる概念。複数の関係を持つ、話題の段階を作る、論点の主語になる、結果や転換点になるもの。
+  - 用語ノード: node_type="term"。既存構造ノードを読むための短い定義・別名・属性・背景語。外しても白板の主な流れは壊れないが、知らないとラベルや発言の意味が分かりにくいもの。
+  - 判断に迷う場合、今回の区間で関係や展開を担っているなら構造ノード、名前の説明だけなら用語ノードにする。
+- 用語ノードは node_type="term"、role="branch"、kind="support" とし、最も近い構造ノード（node_type="structure"）の parent_id を持つ。用語ノードは短い定義・注意点・言い換えだけを書き、別グループにまたがる中心概念にしない。
+- 親構造ノードを明確に選べないが全体理解に必要な用語は、parent_id を空文字にした全体用語ノードにする。全体用語ノードは白板の固定端に表示され、edge は持たない。
+- 用語ノードは関係を広げるためのノードではない。edge は親構造ノードへの1本だけにし、用語ノード同士や別グループへの横断 edge は作らない。
+- 用語ノードは「知らないと理解が止まる語」「何度も出る語」「既存構造のラベル理解に必要な語」に限る。出た語をすべてノード化しない。
 - 各 node の detail は白板内だけでも最低限理解できるように、講義文脈での役割・条件・注意点を短く具体的に書く。
 - 講義内に出た概念は source_type="lecture" とし、source_excerpt に根拠となる短い発話断片を書く。
 - 理解に役立つ標準的な背景知識・関連概念は必要に応じて少数追加してよいが、必ず source_type="external" とし、external_source に確認可能な出典を書く。外部補足ノードは原則 branch にし、detail の末尾にも外部補足だと分かる表現を入れる。
 - 出典を示せない外部補足、具体値や固有事実の断定、講義から離れすぎた発展は追加しない。
 
 レイアウト:
-- layout は原則 hub。中心概念から主ノードと分岐が広がる形を優先する。
-- 明確な時系列・手順・因果の一本道がある場合だけ flow。
+- layout は内容に合わせて選ぶ。中心放射に見せるためだけに hub を選ばない。
+- 明確な時系列・手順・因果・継承・発展の流れがある場合は flow を優先する。
+- hub は、1つの中心概念を軸に複数の主ノードが放射する構造が本当に自然な場合だけ使う。
 - 二項以上の対比が講義の中心の場合だけ compare。
 - 反復循環が明示された場合だけ cycle。
 - 主ノード同士が独立した並列論点の場合だけ grid。
 - layout を変えるために無理にノードや edge を増やさない。
-- 主ノードが1〜3個で分岐が多い場合は hub を優先する。主ノードが4〜5個でも相互関係が薄い場合は grid、比較軸が明確なら compare を選ぶ。
+- nodes 配列の順序は視覚上の読解順序として扱われる。main ノードを先に、学習・叙事・因果の自然な順序で並べ、branch ノードはできるだけ所属する main の直後に置く。
+- 主ノードが4〜5個でも相互関係が薄い場合は grid、比較軸が明確なら compare を選ぶ。
 
 エッジ:
 - edges は因果、流れ、対比、包含、条件など、見れば理解が早くなる関係だけを入れる。
 - 強い関連を持つ概念はできるだけ同じ主ノード配下へまとめ、別主ノード配下の横断 edges は重要な因果・対比・条件・制度上の接続に限定する。
 - 弱い関連、単なる連想、知識を増やすためだけのリンクは作らず summary_markdown/terms に回す。
-- edge の label は空にせず、ノード種別に合う具体的な関係語を2〜8字程度で書く。単に「関連」「説明」「補足」だけにしない。
+- parent_id だけで主従関係が十分分かる場合は、同じ関係を edge で重複表現しない。
+- 用語ノードに edge を入れる場合は親構造ノードへの1本だけにし、label は空文字にする。
+- edge の label は、関係を明示した方が読みやすい場合だけ具体的な関係語を2〜8字程度で書く。構造維持用の単純な edge は label を空文字にしてよい。単に「関連」「説明」「補足」だけにしない。
+- 全 edge 数は少なめに保ち、ノード数が多い場合でも横断 edge は最大3本程度に抑える。
 - core→support は「具体例」「条件」「手順」「背景」など展開の種類を書く。
 - support→result / core→result は「導く」「結論」「効果」「適用」など結果へのつながりを書く。
 - question を含む edge は「確認点」「未解決」「答え」など疑問の扱いが分かる語を書く。
@@ -1402,6 +1417,7 @@ mod tests {
                             id: "old".to_string(),
                             label: "旧概念".to_string(),
                             detail: String::new(),
+                            node_type: "structure".to_string(),
                             kind: "core".to_string(),
                             role: "main".to_string(),
                             parent_id: String::new(),
@@ -1413,6 +1429,7 @@ mod tests {
                             id: "old-2".to_string(),
                             label: "旧補足".to_string(),
                             detail: String::new(),
+                            node_type: "structure".to_string(),
                             kind: "support".to_string(),
                             role: "branch".to_string(),
                             parent_id: "old".to_string(),
@@ -1422,6 +1439,8 @@ mod tests {
                         },
                     ],
                     edges: Vec::new(),
+                    schema_version: 0,
+                    normalized_by: String::new(),
                 }),
             },
             LiveSummaryChunk {
@@ -1438,6 +1457,7 @@ mod tests {
                             id: "old".to_string(),
                             label: "旧概念".to_string(),
                             detail: String::new(),
+                            node_type: "structure".to_string(),
                             kind: "core".to_string(),
                             role: "main".to_string(),
                             parent_id: String::new(),
@@ -1449,6 +1469,7 @@ mod tests {
                             id: "new".to_string(),
                             label: "新概念".to_string(),
                             detail: "追加".to_string(),
+                            node_type: "structure".to_string(),
                             kind: "result".to_string(),
                             role: "branch".to_string(),
                             parent_id: "old".to_string(),
@@ -1462,6 +1483,8 @@ mod tests {
                         to: "new".to_string(),
                         label: "発展".to_string(),
                     }],
+                    schema_version: 0,
+                    normalized_by: String::new(),
                 }),
             },
         ];
@@ -1479,13 +1502,22 @@ mod tests {
 
         let chunk_prompt = live_chunk_system_prompt(language_hint, false);
         assert!(chunk_prompt.contains("\"role\":\"main|branch\""));
+        assert!(chunk_prompt.contains("\"node_type\":\"structure|term\""));
         assert!(chunk_prompt.contains("\"source_type\":\"lecture|external\""));
 
         let board_prompt =
             live_whiteboard_system_prompt(live_whiteboard_language_instruction("zh"), false);
-        assert!(board_prompt.contains("layout は原則 hub"));
+        assert!(board_prompt.contains("現在の理解を清晰化"));
+        assert!(board_prompt.contains("中心放射に見せるためだけに hub を選ばない"));
+        assert!(board_prompt.contains("古い edge を機械的に維持しない"));
+        assert!(board_prompt.contains("小さな用語ノード"));
+        assert!(board_prompt.contains("node_type=\"term\""));
+        assert!(board_prompt.contains("構造ノードか用語ノードかは次で判断する"));
+        assert!(board_prompt.contains("名前の説明だけなら用語ノード"));
+        assert!(board_prompt.contains("全体用語ノード"));
+        assert!(board_prompt.contains("用語ノードに edge を入れる場合は親構造ノードへの1本だけ"));
         assert!(board_prompt.contains("result 同士"));
-        assert!(board_prompt.contains("edge.label 必须全部使用简体中文"));
+        assert!(board_prompt.contains("非空 edge.label 也必须使用简体中文"));
 
         let overall_prompt = live_overall_system_prompt("zh", language_hint, false);
         assert!(overall_prompt.contains("### 整体总结"));

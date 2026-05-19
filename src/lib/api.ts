@@ -1651,6 +1651,7 @@ export interface LiveWhiteboardNode {
   id: string;
   label: string;
   detail?: string;
+  node_type?: "structure" | "term" | string;
   kind?: "core" | "support" | "question" | "result" | string;
   role?: "main" | "branch" | string;
   parent_id?: string;
@@ -1670,6 +1671,10 @@ export interface LiveWhiteboard {
   layout?: "flow" | "hub" | "compare" | "cycle" | "grid" | string;
   nodes?: LiveWhiteboardNode[];
   edges?: LiveWhiteboardEdge[];
+  /** Protocol version. 0 = legacy, 1 = node_type + normalized_by supported. */
+  schema_version?: number;
+  /** Which layer last performed structural normalization: "backend" | "". */
+  normalized_by?: string;
 }
 
 export interface LiveSummaryChunk {
@@ -1788,15 +1793,15 @@ function buildDemoLiveSummaries(lines: LiveTranscriptLine[]): LiveSummaryChunk[]
       title: "知識整理の流れ",
       layout: "flow",
       nodes: [
-        { id: "n1", label: "キーワード", detail: "短く拾う", kind: "core", role: "main", source_type: "lecture", source_excerpt: "重要語を先に拾う" },
-        { id: "n2", label: "理解確認", detail: "説明できるか", kind: "support", role: "branch", parent_id: "n1", source_type: "lecture", source_excerpt: "自分の言葉で説明" },
-        { id: "n3", label: "想起練習", detail: "外部補足: 記憶定着の方法", kind: "support", role: "branch", parent_id: "n1", source_type: "external", external_source: "Roediger & Karpicke (2006), Psychological Science" },
-        { id: "n4", label: "課題接続", detail: "提出物へつなぐ", kind: "result", role: "main", source_type: "lecture", source_excerpt: "課題や小テストにつながるポイント" },
+        { id: "n1", label: "キーワード", detail: "短く拾う", node_type: "structure", kind: "core", role: "main", source_type: "lecture", source_excerpt: "重要語を先に拾う" },
+        { id: "n2", label: "理解確認", detail: "説明できるか", node_type: "structure", kind: "support", role: "branch", parent_id: "n1", source_type: "lecture", source_excerpt: "自分の言葉で説明" },
+        { id: "n3", label: "想起練習", detail: "外部補足: 記憶定着の方法", node_type: "term", kind: "support", role: "branch", parent_id: "n1", source_type: "external", external_source: "Roediger & Karpicke (2006), Psychological Science" },
+        { id: "n4", label: "課題接続", detail: "提出物へつなぐ", node_type: "structure", kind: "result", role: "main", source_type: "lecture", source_excerpt: "課題や小テストにつながるポイント" },
       ],
       edges: [
         { from: "n1", to: "n2", label: "整理" },
-        { from: "n2", to: "n3", label: "補強" },
-        { from: "n3", to: "n4", label: "活用" },
+        { from: "n1", to: "n3", label: "" },
+        { from: "n2", to: "n4", label: "活用" },
       ],
     },
   }];

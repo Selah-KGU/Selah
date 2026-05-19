@@ -9,6 +9,7 @@ export type WhiteboardLayoutNode = {
   id: string;
   label: string;
   detail: string;
+  nodeType: string;
   kind: string;
   role: string;
   parentId: string;

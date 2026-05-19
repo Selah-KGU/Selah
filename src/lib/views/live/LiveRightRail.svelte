@@ -64,6 +64,7 @@
                 class="board-preview-node kind-{node.kind}"
                 class:role-main={node.role === "main"}
                 class:role-branch={node.role !== "main"}
+                class:node-term={node.nodeType === "term"}
                 class:external={node.sourceType === "external"}
                 style="left: {node.x}%; top: {node.y}%;"
               >{node.label}</span>
@@ -277,6 +278,14 @@
   .board-preview-node.external {
     border-style: dashed;
     border-color: color-mix(in srgb, var(--accent) 38%, var(--glass-border));
+  }
+  .board-preview-node.node-term {
+    max-width: 46px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    font-size: 8px;
+    font-weight: 800;
+    opacity: 0.84;
   }
 
   .term-stack {

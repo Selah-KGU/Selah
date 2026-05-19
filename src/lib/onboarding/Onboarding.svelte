@@ -14,12 +14,17 @@
   import {
     getAiConfig,
     isDemoActive,
-    mailCheckSession,
-    gcalCheckSession,
     openSettingsWindow,
     updateAiReadiness,
     resetAiReady,
   } from "../api";
+  import {
+    getAiReadinessLabel,
+    isSttReady,
+    loadOnboardingChecks,
+    type OnboardingCheckRow,
+    type OnboardingStatus,
+  } from "./onboardingChecks";
   import { cacheStatus, activeTab } from "../stores";
   import { openExternalUrl } from "../system";
   import selahLogoUrl from "../../assets/logo.png";
@@ -54,12 +59,11 @@
   };
 
   // Checklist state
-  type ChecklistStatus = "loading" | "ok" | "warn" | "off";
   interface ChecklistRow {
     key: string;
     label: string;
     detail: string;
-    status: ChecklistStatus;
+    status: OnboardingStatus;
     actionLabel: string;
     action: () => void | Promise<void>;
   }
@@ -107,9 +111,10 @@
     openExternalUrl(url, { allowInDemo: true }).catch(() => {});
   }
 
-  function jumpToSettings(panel: string) {
+  function jumpToSettings(panel: string, resumeStep?: Step) {
     // Remember which onboarding step to come back to
-    if (step === "checklist" || step === "finish") markResume(step);
+    const resume = resumeStep || (step === "checklist" || step === "finish" ? step : null);
+    if (resume) markResume(resume);
     openSettingsWindow(panel).catch(() => {});
     close();
   }
@@ -170,148 +175,29 @@
   // ===== Step: checklist =====
   async function loadChecklist() {
     checklistLoading = true;
-    const rows: ChecklistRow[] = [];
-
-    // Notification
     try {
-      const granted = isDemoActive()
-        ? true
-        : await invoke<boolean>("native_notification_permission_granted");
-      rows.push({
-        key: "notif",
-        label: "通知",
-        detail: granted ? "システム通知が許可されています" : "未許可。授業・課題のお知らせを受け取れません",
-        status: granted ? "ok" : "warn",
-        actionLabel: granted ? "設定" : "許可する",
-        action: () => jumpToSettings("notification"),
-      });
-    } catch {
-      rows.push({
-        key: "notif",
-        label: "通知",
-        detail: "状態を取得できません",
-        status: "warn",
-        actionLabel: "設定",
-        action: () => jumpToSettings("notification"),
-      });
+      const rows = await loadOnboardingChecks(purposes);
+      checklistRows = rows.map(rowToChecklistAction);
+    } finally {
+      checklistLoading = false;
     }
+  }
 
-    // Mail
-    try {
-      const s = await mailCheckSession();
-      rows.push({
-        key: "mail",
-        label: "メール (Microsoft 365)",
-        detail: s.authenticated
-          ? `連携済み${s.email ? ` (${s.email})` : ""}`
-          : "未連携。学内メールの受信ができません",
-        status: s.authenticated ? "ok" : "warn",
-        actionLabel: s.authenticated ? "管理" : "連携する",
-        action: () => jumpToSettings("mail"),
-      });
-    } catch {
-      rows.push({
-        key: "mail",
-        label: "メール (Microsoft 365)",
-        detail: "状態を取得できません",
-        status: "warn",
-        actionLabel: "連携する",
-        action: () => jumpToSettings("mail"),
-      });
-    }
-
-    // Google Calendar (optional)
-    try {
-      const s = await gcalCheckSession();
-      rows.push({
-        key: "gcal",
-        label: "Google カレンダー",
-        detail: s.authenticated
-          ? `連携済み${s.synced_events != null ? ` (${s.synced_events}件同期)` : ""}`
-          : "未連携（任意）。時間割を Google カレンダーに同期できます",
-        status: s.authenticated ? "ok" : "off",
-        actionLabel: s.authenticated ? "管理" : "連携する",
-        action: () => jumpToSettings("calendar"),
-      });
-    } catch {
-      rows.push({
-        key: "gcal",
-        label: "Google カレンダー",
-        detail: "任意。連携で時間割を同期できます",
-        status: "off",
-        actionLabel: "連携する",
-        action: () => jumpToSettings("calendar"),
-      });
-    }
-
-    // Download dir
-    try {
-      const cfg = isDemoActive()
-        ? { download_dir: "" }
-        : await invoke<{ download_dir?: string; classify_by_course?: boolean }>("get_download_config");
-      const dir = cfg.download_dir || "";
-      rows.push({
-        key: "download",
-        label: "ダウンロード先",
-        detail: dir || "デフォルトの「ダウンロード」フォルダを使用します",
-        status: dir ? "ok" : "off",
-        actionLabel: dir ? "変更" : "選ぶ",
-        action: () => jumpToSettings("download"),
-      });
-    } catch {
-      rows.push({
-        key: "download",
-        label: "ダウンロード先",
-        detail: "状態を取得できません",
-        status: "warn",
-        actionLabel: "設定",
-        action: () => jumpToSettings("download"),
-      });
-    }
-
-    // STT (conditional)
-    if (purposes.includes("live") || purposes.includes("voice")) {
-      try {
-        const models: any[] = isDemoActive() ? [] : await invoke("list_stt_models");
-        const cfg: any = isDemoActive() ? { selected_model: "" } : await invoke("get_stt_config");
-        const selected = models.find((m) => m.id === cfg?.selected_model);
-        const downloaded = !!selected?.downloaded;
-        rows.push({
-          key: "stt",
-          label: "音声認識モデル (LIVE / 音声 Agent)",
-          detail: downloaded
-            ? "ダウンロード済み。LIVE で文字起こしができます"
-            : "未ダウンロード。LIVE と音声 Agent で必要です",
-          status: downloaded ? "ok" : "warn",
-          actionLabel: downloaded ? "管理" : "ダウンロード",
-          action: () => jumpToSettings("ai"),
-        });
-      } catch {
-        rows.push({
-          key: "stt",
-          label: "音声認識モデル",
-          detail: "状態を取得できません",
-          status: "warn",
-          actionLabel: "設定",
-          action: () => jumpToSettings("ai"),
-        });
-      }
-    }
-
-    checklistRows = rows;
-    checklistLoading = false;
+  function rowToChecklistAction(row: OnboardingCheckRow): ChecklistRow {
+    return {
+      ...row,
+      action: () => jumpToSettings(row.panel),
+    };
   }
 
   // ===== Step: finish capabilities =====
   async function loadCapabilities() {
     const caps: CapabilityRow[] = [];
-    let aiReady = false;
-    try {
-      const cfg = await getAiConfig();
-      aiReady = cfg.ai_enabled !== false && !!cfg.api_key?.trim();
-    } catch { /* ignore */ }
-
-    const aiNote = aiReady ? "利用可能" : "API キー未設定";
+    const [aiReadiness, sttReady] = await Promise.all([
+      getAiReadinessLabel(),
+      isSttReady(),
+    ]);
+    const { ready: aiReady, note: aiNote } = aiReadiness;
     const aiStatus: "ok" | "warn" = aiReady ? "ok" : "warn";
 
     caps.push({
@@ -349,28 +235,24 @@
       action: { label: "時間割を開く", run: () => { activeTab.set("timetable"); close(); } },
     });
 
-    // LIVE: AI + STT
-    let sttReady = false;
-    try {
-      const models: any[] = isDemoActive() ? [] : await invoke("list_stt_models");
-      const cfg: any = isDemoActive() ? null : await invoke("get_stt_config");
-      const sel = models.find((m) => m.id === cfg?.selected_model);
-      sttReady = !!sel?.downloaded;
-    } catch { /* ignore */ }
-    const liveReady = aiReady && sttReady;
+    // LIVE transcription only needs the local STT model; AI summaries are covered above.
+    const liveReady = sttReady;
     caps.push({
       key: "live",
       label: "LIVE 文字起こし",
       group: "ai",
       status: liveReady ? "ok" : "warn",
-      note: liveReady ? "利用可能" : sttReady ? "AI 未設定" : "STT モデル未ダウンロード",
+      note: liveReady ? "利用可能" : "STT モデル未ダウンロード",
       action: liveReady
         ? { label: "LIVE を開く", run: () => { activeTab.set("live"); close(); } }
         : { label: "AI 設定へ", run: () => jumpToSettings("ai") },
     });
 
     // Base features (collected from checklistRows when possible)
-    for (const row of checklistRows) {
+    const baseRows = checklistRows.length
+      ? checklistRows
+      : (await loadOnboardingChecks(purposes)).map(rowToChecklistAction);
+    for (const row of baseRows) {
       if (row.key === "stt") continue;
       caps.push({
         key: "base-" + row.key,
@@ -390,13 +272,13 @@
   }
 
   // Status pill helper
-  function pillClass(s: ChecklistStatus | "ok" | "warn" | "off") {
+  function pillClass(s: OnboardingStatus | "ok" | "warn" | "off") {
     if (s === "ok") return "pill ok";
     if (s === "warn") return "pill warn";
     if (s === "off") return "pill off";
     return "pill";
   }
-  function pillLabel(s: ChecklistStatus | "ok" | "warn" | "off") {
+  function pillLabel(s: OnboardingStatus | "ok" | "warn" | "off") {
     if (s === "ok") return "✓";
     if (s === "warn") return "!";
     if (s === "off") return "—";
@@ -484,7 +366,7 @@
               <div class="provider-desc">無料枠あり。日本語の長文要約に強い傾向があります。</div>
             </button>
           </div>
-          <button class="link-quiet" onclick={() => { close(); jumpToSettings("ai"); }}>
+          <button class="link-quiet" onclick={() => jumpToSettings("ai", "checklist")}>
             詳しい設定（ローカル AI 等）を開く →
           </button>
         {:else if step === "apikey"}
@@ -525,7 +407,7 @@
               {/each}
             </ul>
           {/if}
-          <p class="footnote">「設定する」を押すと該当の設定画面に移動します。戻ってきたら設定からいつでも初期設定をやり直せます。</p>
+          <p class="footnote">各ボタンを押すと該当の設定画面に移動します。戻ってきたら設定からいつでも初期設定をやり直せます。</p>
         {:else if step === "finish"}
           <p class="lead">これで Selah を使い始められます。下の一覧から直接機能を開けます。</p>
           {#each ["ai", "base"] as group}

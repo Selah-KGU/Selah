@@ -41,6 +41,8 @@ pub struct LiveWhiteboardNode {
     #[serde(default)]
     pub detail: String,
     #[serde(default)]
+    pub node_type: String,
+    #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub role: String,
@@ -71,6 +73,14 @@ pub struct LiveWhiteboard {
     pub nodes: Vec<LiveWhiteboardNode>,
     #[serde(default)]
     pub edges: Vec<LiveWhiteboardEdge>,
+    /// Protocol version. 0 = legacy/unset, 1 = node_type + normalized_by supported.
+    #[serde(default)]
+    pub schema_version: u8,
+    /// Which layer last performed structural normalization.
+    /// "backend"  = parse_live_whiteboard ran (canonical source).
+    /// ""         = unknown / legacy / demo board.
+    #[serde(default)]
+    pub normalized_by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

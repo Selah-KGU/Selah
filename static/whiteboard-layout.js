@@ -12,13 +12,26 @@
  *
  *   layout === null when the board is unusable (less than 2 valid nodes).
  *   layout.nodes[i] = { id, label, detail, kind, role, parentId, sourceType,
- *                       sourceLabel, x, y }
+ *                       sourceLabel, nodeType, x, y }
  *   layout.edges[i] = { id, label, colorKind, colorSourceType,
  *                       x1, y1, x2, y2, cx, cy, lx, ly,
  *                       labelWidth, trunk, redundant }
  *
  * x/y are 0..100 board coordinates. cx/cy is the quadratic Bezier control
  * point so renderers do `M x1 y1 Q cx cy x2 y2`. lx/ly are the label centre.
+ *
+ * ── Normalization contract ────────────────────────────────────────────────
+ * When board.normalized_by === 'backend' (schema_version >= 1), structural
+ * fields (node_type, role, kind, parent_id, source_type) have already been
+ * validated by parse_live_whiteboard and are passed through verbatim.
+ * This module is then responsible ONLY for:
+ *   - coordinate assignment (x/y via hierarchyPoints / relaxPoints)
+ *   - edge geometry (Bézier control points, label placement)
+ *   - visual edge supplementation (auto term-edge generation)
+ *
+ * For legacy / demo / model-raw boards (normalized_by !== 'backend'), full
+ * local normalization runs as before so heuristic defaults remain available.
+ * ─────────────────────────────────────────────────────────────────────────
  */
 (function (global) {
   'use strict';
@@ -32,6 +45,11 @@
   function normalizeKind(kind) {
     var v = String(kind || 'support').toLowerCase();
     return (v === 'core' || v === 'result' || v === 'question') ? v : 'support';
+  }
+
+  function normalizeNodeType(nodeType) {
+    var v = String(nodeType || '').toLowerCase();
+    return (v === 'term' || v === 'terminology' || v === 'keyword' || v === 'small') ? 'term' : 'structure';
   }
 
   function normalizeRole(role, kind, parentId) {
@@ -67,6 +85,15 @@
 
   function radialMainAnchors(count, layout) {
     if (count <= 0) return [];
+    if (layout === 'flow') {
+      if (count === 1) return [{ angle: 0, point: [30, 50] }];
+      var flow = [];
+      for (var f = 0; f < count; f++) {
+        var x = 14 + (f * 66) / (count - 1);
+        flow.push({ angle: 0, point: [Math.round(x * 10) / 10, 50] });
+      }
+      return flow;
+    }
     if (layout === 'compare' && count === 2) {
       return [
         { angle: Math.PI, point: [35, 48] },
@@ -400,8 +427,9 @@
           d[1] += (anchor[1] - p[1]) * 0.12;
         }
         totalMovement += Math.abs(d[0]) + Math.abs(d[1]);
+        var maxX = n.nodeType === 'term' && !n.parentId ? 94 : 84;
         points[n.id] = [
-          clampBoardPoint(p[0] + d[0], 5, 95),
+          clampBoardPoint(p[0] + d[0], 5, maxX),
           clampBoardPoint(p[1] + d[1], 6, 94)
         ];
       });
@@ -421,8 +449,48 @@
       if (mains[i]) points[mains[i].id] = anchor.point;
     });
     var branchesByParent = {};
+    var termNodes = [];
+    function clampContentX(x) {
+      return clampBoardPoint(x, 6, 84);
+    }
+    function placeGlobalTerms(targetPoints) {
+      var globalTerms = termNodes.filter(function (n) { return !points[n.parentId] && !targetPoints[n.parentId]; });
+      globalTerms.forEach(function (n, i) {
+        var y = globalTerms.length === 1 ? 50 : 18 + (i * 64) / (globalTerms.length - 1);
+        targetPoints[n.id] = [91, Math.round(y * 10) / 10];
+      });
+    }
+    function placeAttachedTerms(targetPoints) {
+      var termsByParent = {};
+      termNodes.forEach(function (n) {
+        var parent = targetPoints[n.parentId];
+        if (!parent) return;
+        if (!termsByParent[n.parentId]) termsByParent[n.parentId] = [];
+        termsByParent[n.parentId].push(n);
+      });
+      Object.keys(termsByParent).forEach(function (parentId) {
+        var parent = targetPoints[parentId];
+        var terms = termsByParent[parentId];
+        var side = parent[0] > 74 ? -1 : 1;
+        terms.forEach(function (n, i) {
+          var row = i - (terms.length - 1) / 2;
+          targetPoints[n.id] = [
+            clampContentX(parent[0] + side * 10),
+            clampBoardPoint(parent[1] + row * 8, 9, 91)
+          ];
+        });
+      });
+    }
+    function placeTerms(targetPoints) {
+      placeAttachedTerms(targetPoints);
+      placeGlobalTerms(targetPoints);
+    }
     nodes.forEach(function (n) {
       if (n.role === 'main') return;
+      if (n.nodeType === 'term') {
+        termNodes.push(n);
+        return;
+      }
       var parentId = points[n.parentId] ? n.parentId : (mains[0] && mains[0].id);
       if (!parentId) return;
       if (!branchesByParent[parentId]) branchesByParent[parentId] = [];
@@ -455,14 +523,26 @@
           ? -Math.PI / 2 + (i * Math.PI * 2) / branches.length
           : anchor.angle - sector / 2 + (branches.length === 1 ? sector / 2 : (i * sector) / (branches.length - 1));
         var deg = crossDegree[n.id] || 0;
-        var extraRing = deg === 0 ? 9 : (deg === 1 ? 4 : 0);
-        var ringOffset = (fullCircle ? 0 : (i % 3) * 7) + extraRing;
-        points[n.id] = [
-          clampBoardPoint(50 + Math.cos(angle) * (44 + ringOffset), 6, 94),
-          clampBoardPoint(50 + Math.sin(angle) * (38 + ringOffset), 7, 93)
-        ];
+        var term = n.nodeType === 'term';
+        var extraRing = term ? -12 : (deg === 0 ? 9 : (deg === 1 ? 4 : 0));
+        var ringOffset = (fullCircle || term ? 0 : (i % 3) * 7) + extraRing;
+        if (layout === 'flow') {
+          var parentPoint = points[parentId] || [50, 50];
+          var side = i % 2 === 0 ? -1 : 1;
+          var lane = Math.floor(i / 2);
+          points[n.id] = [
+            clampContentX(parentPoint[0] + (lane % 2 === 0 ? 0 : 8)),
+            clampBoardPoint(parentPoint[1] + side * (18 + lane * 7), 8, 92)
+          ];
+        } else {
+          points[n.id] = [
+            clampContentX(50 + Math.cos(angle) * (44 + ringOffset)),
+            clampBoardPoint(50 + Math.sin(angle) * (38 + ringOffset), 7, 93)
+          ];
+        }
       });
     });
+    placeTerms(points);
 
     // Trivial graphs (no edges, or fewer than 3 nodes) don't benefit from
     // relaxation — the initial radial placement is already optimal.
@@ -472,6 +552,7 @@
     var result = relaxPoints(nodes, edgeList, points, mainAnchors, mains, 50);
     rebalanceBranchesByBarycenter(branchesByParent, edgeList, result);
     result = relaxPoints(nodes, edgeList, result, mainAnchors, mains, 85);
+    placeTerms(result);
     return result;
   }
 
@@ -488,7 +569,12 @@
       .slice(0, maxNodes);
     if (rawNodes.length < 2) return null;
 
-    var hasExplicitHierarchy = rawNodes.some(function (n) {
+    // Fast-path flag: backend-normalised boards (schema_version ≥ 1) have
+    // already had structural fields validated. Skip re-normalisation and trust
+    // the values directly; only layout / geometry passes run below.
+    var backendNormalized = !!(board.normalized_by === 'backend');
+
+    var hasExplicitHierarchy = backendNormalized || rawNodes.some(function (n) {
       return (n.role && String(n.role).trim()) || (n.parent_id && String(n.parent_id).trim());
     });
 
@@ -498,33 +584,56 @@
         id: (n.id && String(n.id)) || ('n' + (i + 1)),
         label: String(n.label).trim(),
         detail: (n.detail ? String(n.detail).trim() : ''),
-        kind: normalizeKind(n.kind),
-        role: hasExplicitHierarchy ? normalizeRole(n.role, n.kind, n.parent_id) : legacyRole(n.kind),
+        nodeType: backendNormalized ? String(n.node_type || 'structure') : normalizeNodeType(n.node_type),
+        kind: backendNormalized ? String(n.kind || 'support') : normalizeKind(n.kind),
+        role: backendNormalized
+          ? String(n.role || 'branch')
+          : (hasExplicitHierarchy ? normalizeRole(n.role, n.kind, n.parent_id) : legacyRole(n.kind)),
         parentId: (n.parent_id ? String(n.parent_id).trim() : ''),
-        sourceType: normalizeSourceType(n.source_type, n.external_source),
+        sourceType: backendNormalized ? String(n.source_type || 'lecture') : normalizeSourceType(n.source_type, n.external_source),
         sourceLabel: externalSource || externalLabel
       };
     });
+    // Backend-normalised boards already have correct node_type/role/kind.
+    // For legacy / raw boards, force term nodes to the canonical sub-type values.
+    if (!backendNormalized) {
+      drafts.forEach(function (n) {
+        if (n.nodeType !== 'term') return;
+        n.kind = 'support';
+        n.role = 'branch';
+      });
+    }
 
     var points;
     if (hasExplicitHierarchy) {
-      if (!drafts.some(function (n) { return n.role === 'main'; })) {
-        drafts[0].role = 'main';
-      }
-      var mainIds = {};
-      drafts.forEach(function (n) { if (n.role === 'main') mainIds[n.id] = true; });
-      var fallbackMain = null;
-      for (var fi = 0; fi < drafts.length; fi++) {
-        if (drafts[fi].role === 'main') { fallbackMain = drafts[fi]; break; }
-      }
-      var fallbackMainId = fallbackMain ? fallbackMain.id : drafts[0].id;
-      drafts.forEach(function (n) {
-        if (n.role === 'main') {
-          n.parentId = '';
-        } else if (!mainIds[n.parentId] || n.parentId === n.id) {
-          n.parentId = fallbackMainId;
+      // For backend-normalised boards, structural constraints (main existence,
+      // parent-ID validity) are already guaranteed — skip redundant fixup passes
+      // and go straight to layout computation.
+      if (!backendNormalized) {
+        if (!drafts.some(function (n) { return n.role === 'main'; })) {
+          drafts[0].role = 'main';
         }
-      });
+        var mainIds = {};
+        drafts.forEach(function (n) { if (n.role === 'main') mainIds[n.id] = true; });
+        var structureIds = {};
+        drafts.forEach(function (n) { if (n.nodeType !== 'term') structureIds[n.id] = true; });
+        var fallbackMain = null;
+        for (var fi = 0; fi < drafts.length; fi++) {
+          if (drafts[fi].role === 'main') { fallbackMain = drafts[fi]; break; }
+        }
+        var fallbackMainId = fallbackMain ? fallbackMain.id : drafts[0].id;
+        drafts.forEach(function (n) {
+          if (n.role === 'main') {
+            n.parentId = '';
+          } else if (!mainIds[n.parentId] || n.parentId === n.id) {
+            if (n.nodeType === 'term') {
+              n.parentId = structureIds[n.parentId] && n.parentId !== n.id ? n.parentId : '';
+            } else {
+              n.parentId = fallbackMainId;
+            }
+          }
+        });
+      }
       points = hierarchyPoints(drafts, String(board.layout || 'grid').toLowerCase(), Array.isArray(board.edges) ? board.edges : []);
     } else {
       var fallbackPoints = whiteboardPoints(drafts.length, String(board.layout || 'grid').toLowerCase());
@@ -544,19 +653,35 @@
 
     var occupiedLabelRects = [];
     var nodeLabelRects = nodes.map(function (n) {
-      var halfW = n.role === 'main' ? 7.2 : 6.0;
-      var halfH = n.role === 'main' ? 5.7 : 5.0;
+      var halfW = n.nodeType === 'term' ? 4.8 : (n.role === 'main' ? 7.2 : 6.0);
+      var halfH = n.nodeType === 'term' ? 3.2 : (n.role === 'main' ? 5.7 : 5.0);
       return { x1: n.x - halfW, y1: n.y - halfH, x2: n.x + halfW, y2: n.y + halfH };
     });
 
     var rawEdges = Array.isArray(board.edges) ? board.edges.slice(0, maxEdges) : [];
     var validEdges = [];
+    var termEdgeSeen = {};
     rawEdges.forEach(function (e, i) {
       if (!e) return;
       var from = byId[e.from];
       var to = byId[e.to];
       if (!from || !to || from.id === to.id) return;
+      var term = from.nodeType === 'term' ? from : (to.nodeType === 'term' ? to : null);
+      if (term) {
+        var other = from.id === term.id ? to : from;
+        if (other.id !== term.parentId || termEdgeSeen[term.id]) return;
+        termEdgeSeen[term.id] = true;
+        validEdges.push({ raw: { from: other.id, to: term.id, label: '' }, index: i, from: other, to: term });
+        return;
+      }
       validEdges.push({ raw: e, index: i, from: from, to: to });
+    });
+    nodes.forEach(function (n, i) {
+      if (n.nodeType !== 'term' || termEdgeSeen[n.id]) return;
+      var parent = byId[n.parentId];
+      if (!parent || parent.id === n.id) return;
+      termEdgeSeen[n.id] = true;
+      validEdges.push({ raw: { from: parent.id, to: n.id, label: '' }, index: rawEdges.length + i, from: parent, to: n });
     });
     var edgeAdj = {};
     validEdges.forEach(function (ve) {
@@ -601,18 +726,18 @@
     });
     var edges = edgeGeoms.map(function (geom, gi) {
       var label = geom.raw.label ? String(geom.raw.label).trim() : '';
-      var labelWidth = clampBoardPoint(estimateLabelWidthEm(label), 5, 13.2);
+      var labelWidth = label ? clampBoardPoint(estimateLabelWidthEm(label), 5, 13.2) : 0;
       var labelHeight = 3.3;
       var otherSegs = [];
       for (var oi = 0; oi < allSegments.length; oi++) if (oi !== gi) otherSegs.push(allSegments[oi]);
-      var lp = placeEdgeLabel(
+      var lp = label ? placeEdgeLabel(
         geom.anchorX, geom.anchorY,
         { x: geom.ix1, y: geom.iy1 }, { x: geom.ix2, y: geom.iy2 },
         labelWidth, labelHeight,
         occupiedLabelRects, nodeLabelRects,
         otherSegs,
         geom.index
-      );
+      ) : { x: geom.anchorX, y: geom.anchorY };
       return {
         id: geom.from.id + '-' + geom.to.id + '-' + geom.index,
         from: geom.from.id,

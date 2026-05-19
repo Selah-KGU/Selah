@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-  import { getAiConfig, isDemoActive } from "../api";
   import { activeTab } from "../stores";
   import { reopenOnboarding } from "./onboardingState";
+  import { getAiReadinessLabel, isSttReady } from "./onboardingChecks";
   import { listen } from "@tauri-apps/api/event";
 
   type Status = "ok" | "warn";
@@ -20,28 +19,15 @@
   let unlisten: (() => void) | null = null;
 
   async function compute() {
-    let aiReady = false;
-    try {
-      const cfg = await getAiConfig();
-      aiReady = cfg.ai_enabled !== false && !!cfg.api_key?.trim();
-    } catch { /* ignore */ }
-
-    let sttReady = false;
-    try {
-      const models: any[] = isDemoActive() ? [] : await invoke("list_stt_models");
-      const cfg: any = isDemoActive() ? null : await invoke("get_stt_config");
-      const sel = models.find((m) => m.id === cfg?.selected_model);
-      sttReady = !!sel?.downloaded;
-    } catch { /* ignore */ }
-
-    const aiTitle = aiReady ? "利用可能" : "API キー未設定（クリックで初期設定）";
+    const [{ ready: aiReady, note: aiNote }, sttReady] = await Promise.all([
+      getAiReadinessLabel(),
+      isSttReady(),
+    ]);
+    const aiTitle = aiReady ? "利用可能" : `${aiNote}（クリックで初期設定）`;
     const aiStatus: Status = aiReady ? "ok" : "warn";
 
-    const liveStatus: Status = aiReady && sttReady ? "ok" : "warn";
-    const liveTitle = !aiReady && !sttReady ? "AI と STT モデルが未設定"
-      : !aiReady ? "AI 未設定"
-      : !sttReady ? "STT モデル未ダウンロード"
-      : "利用可能";
+    const liveStatus: Status = sttReady ? "ok" : "warn";
+    const liveTitle = sttReady ? "利用可能" : "STT モデル未ダウンロード";
 
     chips = [
       { key: "agent", label: "Agent", status: aiStatus, title: aiTitle,
