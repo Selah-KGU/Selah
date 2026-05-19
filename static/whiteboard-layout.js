@@ -13,7 +13,8 @@
  *   layout === null when the board is unusable (less than 2 valid nodes).
  *   layout.nodes[i] = { id, label, detail, kind, role, parentId, sourceType,
  *                       sourceLabel, x, y }
- *   layout.edges[i] = { id, label, x1, y1, x2, y2, cx, cy, lx, ly,
+ *   layout.edges[i] = { id, label, colorKind, colorSourceType,
+ *                       x1, y1, x2, y2, cx, cy, lx, ly,
  *                       labelWidth, trunk, redundant }
  *
  * x/y are 0..100 board coordinates. cx/cy is the quadratic Bezier control
@@ -49,6 +50,19 @@
     var v = String(sourceType || '').toLowerCase();
     if (v === 'external' || v === 'outside' || v === 'reference') return 'external';
     return (externalSource && String(externalSource).trim()) ? 'external' : 'lecture';
+  }
+
+  function edgeColorSourceType(from, to) {
+    return (from.sourceType === 'external' || to.sourceType === 'external') ? 'external' : 'lecture';
+  }
+
+  function edgeColorKind(from, to) {
+    var a = normalizeKind(from.kind);
+    var b = normalizeKind(to.kind);
+    if (a === b) return 'support';
+    if (a === 'question' || b === 'question') return 'question';
+    if (a === 'result' || b === 'result') return 'result';
+    return 'support';
   }
 
   function radialMainAnchors(count, layout) {
@@ -604,6 +618,8 @@
         from: geom.from.id,
         to: geom.to.id,
         label: label,
+        colorKind: edgeColorKind(geom.from, geom.to),
+        colorSourceType: edgeColorSourceType(geom.from, geom.to),
         x1: geom.ix1, y1: geom.iy1,
         x2: geom.ix2, y2: geom.iy2,
         cx: geom.cx, cy: geom.cy,

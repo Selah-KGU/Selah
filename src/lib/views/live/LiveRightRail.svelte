@@ -50,7 +50,13 @@
           <div class="board-preview-canvas">
             <svg class="board-preview-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
               {#each activeWhiteboardLayout.edges as edge (edge.id)}
-                <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} />
+                <line
+                  class="edge-kind-{edge.colorKind} edge-source-{edge.colorSourceType}"
+                  x1={edge.x1}
+                  y1={edge.y1}
+                  x2={edge.x2}
+                  y2={edge.y2}
+                />
               {/each}
             </svg>
             {#each activeWhiteboardLayout.nodes as node (node.id)}
@@ -209,10 +215,24 @@
     overflow: visible;
   }
   .board-preview-links line {
-    stroke: currentColor;
+    stroke: var(--edge-color, currentColor);
     stroke-width: 0.7;
     stroke-linecap: round;
     opacity: 0.7;
+  }
+  .board-preview-links line.edge-kind-core,
+  .board-preview-links line.edge-kind-support {
+    --edge-color: color-mix(in srgb, var(--text-tertiary) 72%, var(--text-secondary));
+  }
+  .board-preview-links line.edge-kind-result {
+    --edge-color: color-mix(in srgb, #34c759 62%, var(--text-tertiary));
+  }
+  .board-preview-links line.edge-kind-question {
+    --edge-color: color-mix(in srgb, var(--orange, #e67700) 64%, var(--text-tertiary));
+  }
+  .board-preview-links line.edge-source-external {
+    stroke-dasharray: 1.6 1.4;
+    opacity: 0.64;
   }
   .board-preview-node {
     position: absolute;

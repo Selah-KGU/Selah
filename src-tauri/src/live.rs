@@ -164,18 +164,20 @@ fn should_skip_ai_summarization(started_at: DateTime<Local>, now: DateTime<Local
     now.signed_duration_since(started_at).num_seconds() < MIN_AI_SUMMARIZATION_DURATION_SECS
 }
 
-fn short_session_overall_summary(course: &LiveCourseInfo, transcript_line_count: usize) -> String {
-    if course.is_free_note {
-        format!(
-            "### 全体要約\n2分未満の自由ノートのためAI要約は行わず、全文転写（{}行）をそのまま保存しました。",
-            transcript_line_count
-        )
-    } else {
-        format!(
-            "### 全体要約\n2分未満のLIVEのためAI要約は行わず、{}の全文転写（{}行）をそのまま保存しました。",
-            course.course_name, transcript_line_count
-        )
-    }
+fn should_run_finish_ai(
+    provider: &str,
+    started_at: DateTime<Local>,
+    ended_at: DateTime<Local>,
+) -> bool {
+    provider != "local" && !should_skip_ai_summarization(started_at, ended_at)
+}
+
+fn should_require_finish_chunk_ai(
+    started_at: DateTime<Local>,
+    ended_at: DateTime<Local>,
+    pending_line_count: usize,
+) -> bool {
+    pending_line_count > 0 && !should_skip_ai_summarization(started_at, ended_at)
 }
 
 fn format_recent_summary_context(summaries: &[LiveSummaryChunk], limit: usize) -> String {
@@ -196,18 +198,313 @@ fn format_recent_summary_context(summaries: &[LiveSummaryChunk], limit: usize) -
         .join("\n\n")
 }
 
+fn live_whiteboard_language_instruction(reply_language: &str) -> &'static str {
+    match reply_language {
+        "zh" => {
+            "whiteboard 的 title、node.label、node.detail、edge.label 必须全部使用简体中文；kind、role、source_type、id、parent_id 等结构字段仍使用指定英文枚举值。关系标签要使用中文具体词，例如「具体例」「条件」「导出」「确认点」「并列」「参考」。"
+        }
+        "en" => {
+            "All whiteboard title, node.label, node.detail, and edge.label values must be written in English; structural fields such as kind, role, source_type, id, and parent_id must keep the specified enum values. Edge labels should be concrete English relationship words such as \"example\", \"condition\", \"leads to\", \"check\", \"parallel\", or \"reference\"."
+        }
+        "ko" => {
+            "whiteboard 의 title, node.label, node.detail, edge.label 은 모두 한국어로 작성하세요. kind, role, source_type, id, parent_id 같은 구조 필드는 지정된 영어 enum 값을 유지하세요. 관계 라벨은 「구체예」「조건」「도출」「확인점」「병렬」「참고」처럼 구체적인 한국어 관계어를 사용하세요."
+        }
+        _ => {
+            "whiteboard の title、node.label、node.detail、edge.label はすべて日本語で書く。kind、role、source_type、id、parent_id などの構造フィールドは指定された英語 enum 値のままにする。edge label は「具体例」「条件」「導く」「確認点」「並列」「参考」など、具体的な日本語の関係語にする。"
+        }
+    }
+}
+
+fn live_reply_language_hint(reply_language: &str) -> &'static str {
+    crate::ai::reply_language_hint(
+        reply_language,
+        "\n\n重要: 输出全文的自然语言内容必须使用简体中文。JSON 字段名和枚举值保持指定格式。",
+        "\n\nIMPORTANT: Write all natural-language output in English. Keep JSON field names and enum values in the specified format.",
+        "\n\n중요: 자연어 출력 전체를 한국어로 작성하세요. JSON 필드명과 enum 값은 지정된 형식을 유지하세요.",
+    )
+}
+
+fn live_overall_output_format(reply_language: &str) -> &'static str {
+    match reply_language {
+        "zh" => "### 整体总结\n用1段话概括整场内容。\n### 本次论点\n- 列出3〜5个主要论点，每个论点1行",
+        "en" => "### Overall Summary\nSummarize the whole session in one paragraph.\n### Key Points\n- List 3-5 main points from the session, one per line",
+        "ko" => "### 전체 요약\n전체 내용을 1문단으로 요약한다.\n### 이번 논점\n- 주요 논점을 3〜5개, 각 1줄로 나열한다",
+        _ => "### 全体要約\n講義全体の主旨を1段落にまとめる。\n### 今回の論点\n- 講義で取り上げられた主要論点を3〜5個、各1行の箇条書きで列挙",
+    }
+}
+
+fn short_session_overall_summary(
+    course: &LiveCourseInfo,
+    transcript_line_count: usize,
+    reply_language: &str,
+) -> String {
+    let heading = match reply_language {
+        "zh" => "### 整体总结",
+        "en" => "### Overall Summary",
+        "ko" => "### 전체 요약",
+        _ => "### 全体要約",
+    };
+    match (reply_language, course.is_free_note) {
+        ("zh", true) => format!(
+            "{}\n由于自由笔记少于2分钟，未进行AI总结，已直接保存全文转写（{}行）。",
+            heading, transcript_line_count
+        ),
+        ("zh", false) => format!(
+            "{}\n由于LIVE少于2分钟，未进行AI总结，已直接保存{}的全文转写（{}行）。",
+            heading, course.course_name, transcript_line_count
+        ),
+        ("en", true) => format!(
+            "{}\nBecause this free note was under 2 minutes, AI summarization was skipped and the full transcript ({} lines) was saved as-is.",
+            heading, transcript_line_count
+        ),
+        ("en", false) => format!(
+            "{}\nBecause this LIVE session was under 2 minutes, AI summarization was skipped and the full transcript for {} ({} lines) was saved as-is.",
+            heading, course.course_name, transcript_line_count
+        ),
+        ("ko", true) => format!(
+            "{}\n자유 노트가 2분 미만이어서 AI 요약을 실행하지 않고 전체 전사({}줄)를 그대로 저장했습니다.",
+            heading, transcript_line_count
+        ),
+        ("ko", false) => format!(
+            "{}\nLIVE가 2분 미만이어서 AI 요약을 실행하지 않고 {}의 전체 전사({}줄)를 그대로 저장했습니다.",
+            heading, course.course_name, transcript_line_count
+        ),
+        (_, true) => format!(
+            "{}\n2分未満の自由ノートのためAI要約は行わず、全文転写（{}行）をそのまま保存しました。",
+            heading, transcript_line_count
+        ),
+        (_, false) => format!(
+            "{}\n2分未満のLIVEのためAI要約は行わず、{}の全文転写（{}行）をそのまま保存しました。",
+            heading, course.course_name, transcript_line_count
+        ),
+    }
+}
+
+fn fallback_overall_summary(
+    course: &LiveCourseInfo,
+    transcript_line_count: usize,
+    summary_count: usize,
+    reply_language: &str,
+) -> String {
+    let heading = match reply_language {
+        "zh" => "### 整体总结",
+        "en" => "### Overall Summary",
+        "ko" => "### 전체 요약",
+        _ => "### 全体要約",
+    };
+    match (reply_language, course.is_free_note) {
+        ("zh", true) => format!(
+            "{}\n已保存包含 {} 行转写和 {} 条分段总结的自由笔记。",
+            heading, transcript_line_count, summary_count
+        ),
+        ("zh", false) => format!(
+            "{}\n已保存 {} 的课堂笔记，包含 {} 行转写和 {} 条分段总结。",
+            heading, course.course_name, transcript_line_count, summary_count
+        ),
+        ("en", true) => format!(
+            "{}\nSaved a free note containing {} transcript lines and {} chunk summaries.",
+            heading, transcript_line_count, summary_count
+        ),
+        ("en", false) => format!(
+            "{}\nSaved lecture notes for {} with {} transcript lines and {} chunk summaries.",
+            heading, course.course_name, transcript_line_count, summary_count
+        ),
+        ("ko", true) => format!(
+            "{}\n전사 {}줄과 분할 요약 {}개를 포함한 자유 노트를 저장했습니다.",
+            heading, transcript_line_count, summary_count
+        ),
+        ("ko", false) => format!(
+            "{}\n{} 강의 메모를 저장했습니다. 전사 {}줄과 분할 요약 {}개가 포함되어 있습니다.",
+            heading, course.course_name, transcript_line_count, summary_count
+        ),
+        (_, true) => format!(
+            "{}\n{} 件の転写行と {} 件の分割要約を含む自由ノートを保存しました。",
+            heading, transcript_line_count, summary_count
+        ),
+        (_, false) => format!(
+            "{}\n{} の講義メモ。{}件の転写行と{}件の分割要約を保存しました。",
+            heading, course.course_name, transcript_line_count, summary_count
+        ),
+    }
+}
+
+fn live_chunk_system_prompt(language_hint: &str, is_free_note: bool) -> String {
+    let mut prompt = if is_free_note {
+        r#"あなたは自由ノート録音の整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の録音内容を要約し、同じ区間で出た重要な人物・概念・出来事・ルール・固有名詞だけを注釈し、録音開始から現在までの累積知識整理ボードを更新してください。
+
+共通方針:
+- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正してください。
+- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。
+- 具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合だけ書いてください。確信が弱い場合は一般化するか削除してください。
+- 外部知識は、用語理解に必要な標準的定義・短い例・一般的背景を補う場合だけ使えます。使った場合は external_source に確認可能な出典名とURL、公式文書名、書籍名などを書いてください。出典を示せない外部知識は使わないでください。
+- 自由ノートは講義とは限りません。会話、会議、メディア音声、自習メモ、アイデアメモでも、録音された内容そのものを整理対象にしてください。非学術的という理由だけで「整理対象外」にしないでください。
+- 明らかな無音・相槌・聞き取り不能な断片は省略してよいですが、会話の展開、人物関係、ゲームや作品内ルール、出来事の流れは整理対象にしてください。
+- summary_markdown と terms は今回新しく話された内容を中心にし、過去2区間を重複して要約し直さないでください。
+- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。
+- 文体は、あとから見返せる録音メモのように簡潔で具体的にしてください。
+
+出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:
+{"summary_markdown":"- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）","terms":[{"term":"専門用語または固有概念","explanation":"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。","source_excerpt":"講義内の根拠になる短い発話断片","external_source":"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字"}],"whiteboard":{"title":"短い題名","layout":"flow|hub|compare|cycle|grid","nodes":[{"id":"stable-id","label":"短い概念名","detail":"白板内で理解できる短い説明","kind":"core|support|question|result","role":"main|branch","parent_id":"branch の親 main id。main は空文字","source_type":"lecture|external","source_excerpt":"講義内根拠。外部なら空文字","external_source":"外部補足の出典。講義内なら空文字"}],"edges":[{"from":"n1","to":"n2","label":"具体的な関係語"}]}}
+
+summary_markdown のルール:
+- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。
+- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。
+- 見出し(###等)は使わない。
+- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。
+
+terms のルール:
+- 今回の区間で出た重要な人物名・作品名・ルール名・概念・出来事・固有名詞・略語だけを最大5件。
+- 注釈対象は「その語や人物・ルールを知らないと録音内容の理解が止まりやすいもの」に限定する。
+- 一般常識、日常語、単なる相槌、意味の薄い断片は注釈しない。
+- explanation は1〜2文。語の意味だけで終わらせず、録音内の話題との関係、混同しやすい点、短い例、または見返す観点を1つ補う。
+- source_excerpt は必ず録音内の根拠だけを書く。external_source は外部知識を使った場合だけ書く。
+- 該当語が少ない場合は terms を空配列にする。
+"#
+    } else {
+        r#"あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約し、同じ区間で出た重要な専門用語・固有概念だけを注釈し、講義開始から現在までの累積知識整理ボードを更新してください。
+
+共通方針:
+- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正してください。
+- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。
+- 具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合だけ書いてください。確信が弱い場合は一般化するか削除してください。
+- 外部知識は、用語理解に必要な標準的定義・短い例・一般的背景を補う場合だけ使えます。使った場合は external_source に確認可能な出典名とURL、公式文書名、書籍名などを書いてください。出典を示せない外部知識は使わないでください。
+- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。
+- summary_markdown と terms は今回新しく話された内容を中心にし、過去2区間を重複して要約し直さないでください。
+- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。
+- 文体は、信頼できる講義ノートのように簡潔で具体的にしてください。
+
+出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:
+{"summary_markdown":"- 重点1（1行、名詞句または短文）\n- 重点2\n- 重点3\n\n---\n\n**重点1**: 補足説明（1〜2文で具体的に）\n\n**重点2**: 補足説明（1〜2文で具体的に）\n\n**重点3**: 補足説明（1〜2文で具体的に）","terms":[{"term":"専門用語または固有概念","explanation":"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。","source_excerpt":"講義内の根拠になる短い発話断片","external_source":"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字"}],"whiteboard":{"title":"短い題名","layout":"flow|hub|compare|cycle|grid","nodes":[{"id":"stable-id","label":"短い概念名","detail":"白板内で理解できる短い説明","kind":"core|support|question|result","role":"main|branch","parent_id":"branch の親 main id。main は空文字","source_type":"lecture|external","source_excerpt":"講義内根拠。外部なら空文字","external_source":"外部補足の出典。講義内なら空文字"}],"edges":[{"from":"n1","to":"n2","label":"具体的な関係語"}]}}
+
+summary_markdown のルール:
+- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。
+- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。
+- 見出し(###等)は使わない。
+- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。
+
+terms のルール:
+- 今回の区間で出た専門用語・理論名・手法名・制度名・固有概念・略語だけを最大5件。
+- 注釈対象は「その語を知らないと講義の理解が止まりやすいもの」に限定する。
+- 一般常識、日常語、教室運営語、授業一般の語、辞書的に自明な普通名詞は注釈しない。例: 授業、講義、先生、学生、教室、出席、課題、レポート、資料、今日、次回。
+- その科目で専門的な意味を持つ場合を除き、単に有名・一般的という理由で語を選ばない。
+- explanation は1〜2文。語の意味だけで終わらせず、講義内の論点との関係、混同しやすい点、短い例、または復習時に見る観点を1つ補う。
+- source_excerpt は必ず講義内の根拠だけを書く。external_source は外部知識を使った場合だけ書く。
+- 該当語が少ない場合は terms を空配列にする。
+"#
+    }
+    .to_string();
+    if is_free_note {
+        prompt = prompt
+            .replace("講義文脈", "録音文脈")
+            .replace("講義内の根拠", "録音内の根拠")
+            .replace("講義内なら", "録音内なら")
+            .replace(
+                "講義の核心概念やキーワード",
+                "録音内容の中心話題やキーワード",
+            );
+    }
+    prompt.push_str(language_hint);
+    prompt
+}
+
+fn live_whiteboard_system_prompt(language_instruction: &str, is_free_note: bool) -> String {
+    let mut prompt = r#"whiteboard は講義内容を中心に関連知識を整理する知識整理ボードとして作る。本文の代替ではなく、右側で関係を素早く掴むための概念図です。
+
+累積更新:
+- whiteboard は差分ではなく、更新後の累積ボード全体を返す。
+- 現在の累積知識整理ボードにある有用な nodes/edges は維持し、今回の区間で新しい概念・関係が出た場合だけ追加または統合する。
+- 既存概念の id はできるだけ変えない。重複・誤認識・細かすぎる概念は統合してよいが、前の重要概念を理由なく削除しない。
+- 十分な構造がまだない場合は nodes を空配列にする。
+
+ノード:
+- 主次を必ず分け、role="main" の主ノードを3〜5個以内に絞る。
+- role="branch" の分岐ノードは必ず parent_id で最も近い主ノードに接続し、主ノードなしの孤立分岐を作らない。
+- 新しい語が出ても、既存主ノードの detail や分岐に収まるなら新しい主ノードにしない。講義の大きな論点が変わった時だけ主ノードを増やす。
+- 各 node の detail は白板内だけでも最低限理解できるように、講義文脈での役割・条件・注意点を短く具体的に書く。
+- 講義内に出た概念は source_type="lecture" とし、source_excerpt に根拠となる短い発話断片を書く。
+- 理解に役立つ標準的な背景知識・関連概念は必要に応じて少数追加してよいが、必ず source_type="external" とし、external_source に確認可能な出典を書く。外部補足ノードは原則 branch にし、detail の末尾にも外部補足だと分かる表現を入れる。
+- 出典を示せない外部補足、具体値や固有事実の断定、講義から離れすぎた発展は追加しない。
+
+レイアウト:
+- layout は原則 hub。中心概念から主ノードと分岐が広がる形を優先する。
+- 明確な時系列・手順・因果の一本道がある場合だけ flow。
+- 二項以上の対比が講義の中心の場合だけ compare。
+- 反復循環が明示された場合だけ cycle。
+- 主ノード同士が独立した並列論点の場合だけ grid。
+- layout を変えるために無理にノードや edge を増やさない。
+- 主ノードが1〜3個で分岐が多い場合は hub を優先する。主ノードが4〜5個でも相互関係が薄い場合は grid、比較軸が明確なら compare を選ぶ。
+
+エッジ:
+- edges は因果、流れ、対比、包含、条件など、見れば理解が早くなる関係だけを入れる。
+- 強い関連を持つ概念はできるだけ同じ主ノード配下へまとめ、別主ノード配下の横断 edges は重要な因果・対比・条件・制度上の接続に限定する。
+- 弱い関連、単なる連想、知識を増やすためだけのリンクは作らず summary_markdown/terms に回す。
+- edge の label は空にせず、ノード種別に合う具体的な関係語を2〜8字程度で書く。単に「関連」「説明」「補足」だけにしない。
+- core→support は「具体例」「条件」「手順」「背景」など展開の種類を書く。
+- support→result / core→result は「導く」「結論」「効果」「適用」など結果へのつながりを書く。
+- question を含む edge は「確認点」「未解決」「答え」など疑問の扱いが分かる語を書く。
+- result 同士は強い推論でなければ「並列」「比較」「まとめ」など中立的に書き、「導く」を安易に使わない。
+- 外部補足を含む edge は「背景」「参考」「比較」など、講義内事実と外部補足の役割差が分かる語にする。
+- title には「復習」という語を避け、知識整理・概念整理として自然な短い題名を付ける。
+
+"#
+    .to_string();
+    if is_free_note {
+        prompt = prompt
+            .replace("講義内容", "録音内容")
+            .replace("講義内", "録音内")
+            .replace("講義文脈", "録音文脈")
+            .replace("講義の大きな論点", "録音の大きな話題");
+        prompt.push_str(
+            "\n自由ノートでは source_type=\"lecture\" を「録音内に出た内容」という意味で使う。録音内容が非学術的でも、人物関係・出来事・ルール・話題の構造がある場合は whiteboard を作り、整理対象外にしない。\n",
+        );
+    }
+    prompt.push_str(language_instruction);
+    prompt
+}
+
+fn live_overall_system_prompt(
+    reply_language: &str,
+    language_hint: &str,
+    is_free_note: bool,
+) -> String {
+    let prompt = if is_free_note {
+        "あなたは自由ノート録音を仕上げるアシスタントです。分割要約と末尾の文字起こしを基に、録音全体を俯瞰する要約をMarkdownで返してください。\n\n注意事項:\n- 各分割要約を単純に繋げるのではなく、録音全体を貫く話題、出来事の流れ、人物・概念の関係を抽出してください。\n- 自由ノートは講義とは限りません。会話、会議、メディア音声、自習メモ、アイデアメモでも録音内容そのものを整理対象にし、非学術的という理由だけで除外しないでください。\n- 文字起こしには音声認識の誤りが含まれる可能性があります。文脈から意味を推測し、明らかな誤認識は自然な範囲で補正して構いません。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすく整理して構いません。\n- 具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、分割要約または文字起こしから十分に確認できる場合だけ書いてください。\n- 高リスク事実について確信が弱い場合は、一般化するか削除してください。外部知識だけで具体値や詳細を補ってはいけません。\n- 文体は、あとから見返せる録音メモのように簡潔で具体的にしてください。"
+    } else {
+        "あなたは大学講義ノートを仕上げるアシスタントです。分割要約と末尾の文字起こしを基に、講義全体を俯瞰する要約をMarkdownで返してください。\n\n注意事項:\n- 各分割要約を単純に繋げるのではなく、講義全体を貫くテーマや論理の流れを抽出してください。\n- 文字起こしには音声認識の誤りが含まれる可能性があります。文脈から意味を推測し、明らかな誤認識は自然な範囲で補正して構いません。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすく整理して構いません。\n- 具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、分割要約または文字起こしから十分に確認できる場合だけ書いてください。\n- 高リスク事実について確信が弱い場合は、一般化するか削除してください。外部知識だけで具体値や詳細を補ってはいけません。\n- 講義全体の理解を助ける整理はしてよいですが、補った背景知識を講義で明示された事実のように書いてはいけません。\n- 文体は、信頼できる講義ノートのように簡潔で具体的にしてください。"
+    };
+    format!(
+        "{}\n\n出力形式（厳守）:\n{}\n\nルール:\n- 指定形式以外のセクションや見出しを追加しない。\n- 抽象的すぎる表現を避け、{}固有の具体的概念やキーワードを含める。{}",
+        prompt,
+        live_overall_output_format(reply_language),
+        if is_free_note { "録音" } else { "講義" },
+        language_hint
+    )
+}
+
+fn live_todo_language_instruction(reply_language: &str) -> &'static str {
+    match reply_language {
+        "zh" => "title、note、source_excerpt 使用简体中文；content_type 必须保持日语枚举值。",
+        "en" => "Write title, note, and source_excerpt in English; keep content_type as one of the Japanese enum values.",
+        "ko" => "title, note, source_excerpt 는 한국어로 작성하고, content_type 은 일본어 enum 값으로 유지하세요.",
+        _ => "title、note、source_excerpt は日本語で書き、content_type は指定された日本語 enum 値を使う。",
+    }
+}
+
+fn live_todo_system_prompt(reply_language: &str) -> String {
+    format!(
+        "あなたは大学講義ノートから学生のTODO候補だけを抽出するアシスタントです。先生が明確に課題、提出物、宿題、レポート、事前準備、復習タスク、小テスト準備として指示したものだけを抽出してください。講義内容そのもの、一般的な学習アドバイス、AIが勝手に作った復習案は含めません。締切は発話中の具体日付/時刻を最優先し、「次回まで」「来週の授業まで」「授業計画の該当回まで」など相対的に判断できる場合は、現在日時・次回授業候補・授業計画から YYYY-MM-DD HH:mm 形式で推定してください。推定した場合は note に根拠を短く含めてください。どうしても判断できない場合だけ deadline を空文字にします。{}\n\n出力はJSONのみで、説明文やMarkdownを付けないでください。形式: {{\"todos\":[{{\"title\":\"課題名\",\"content_type\":\"課題|レポート|予習|復習|テスト準備|その他\",\"deadline\":\"YYYY-MM-DD HH:mm または 空文字\",\"note\":\"学生が次にすることを短く。締切推定時は根拠も短く\",\"source_excerpt\":\"根拠になる発話を短く\"}}]}}。候補がなければ {{\"todos\":[]}}。",
+        live_todo_language_instruction(reply_language)
+    )
+}
+
 async fn summarize_chunk(
     course: &LiveCourseInfo,
     lines: &[LiveTranscriptLine],
     recent_summaries: &[LiveSummaryChunk],
 ) -> Result<LiveChunkAiResult, String> {
     let cfg = live_ai_config()?;
-    let language_hint = crate::ai::reply_language_hint(
-        &cfg.reply_language,
-        "\n\n重要: 输出全文必须使用中文（简体）。标题、要点、补充说明、整体总结都使用中文。",
-        "\n\nIMPORTANT: Write the entire output in English, including headings, bullet points, and explanations.",
-        "\n\n중요: 출력 전체를 한국어로 작성하세요. 제목, 핵심 포인트, 보충 설명, 전체 요약을 모두 한국어로 작성합니다.",
-    );
+    let language_hint = live_reply_language_hint(&cfg.reply_language);
+    let whiteboard_language_instruction = live_whiteboard_language_instruction(&cfg.reply_language);
     let transcript = lines
         .iter()
         .map(|line| format!("- [{}] {}", line.at, line.text))
@@ -218,39 +515,46 @@ async fn summarize_chunk(
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: format!(
-                "あなたは大学講義メモの整理アシスタントです。音声認識（STT）による文字起こしを基に、直近の講義内容を要約し、同じ区間で出た重要な専門用語・固有概念だけを注釈し、講義開始から現在までの累積視覚ボードを更新してください。\n\n注意事項:\n- 文字起こしには誤認識（同音異義語の取り違え、聞き取り不良による文字化け）が含まれる場合があります。文脈から正しい意味を推測し、明らかな誤認識は自然な範囲で修正して、本来の講義内容を復元してください。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすい表現に補って構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、文字起こしまたは直近文脈から十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。\n- 外部知識は、用語の理解に必要な一般的背景・標準的定義・短い例を補う場合のみ使って構いません。ただし外部知識を使った場合は external_source に正確な出典名とURL、または公式文書名・書籍名など確認可能な出典を必ず書いてください。\n- 正確な出典を示せない外部知識は使わず、講義内で確認できる範囲に留めてください。\n- 講義で確認できない固有の数字・年号・人物関係・統計値などを外部知識で断定的に補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 雑談や教室管理の発言（出席確認、マイク調整等）は省略し、学術的内容に集中してください。\n- 直前までの分割要約は講義の流れを把握するための参考情報です。summary_markdown と terms は必ず「今回新しく話された内容」を中心に書き、過去2区間の内容を重複して要約し直さないでください。\n- whiteboard だけは分段ごとの別ボードにせず、現在の累積視覚ボードを今回の内容で増分更新した完全版として返してください。\n- 前区間とのつながりがある場合のみ、その接続関係を短く反映して構いません。\n- 内容が少ない区間では無理に情報量を増やさず、確認できた範囲だけを簡潔にまとめてください。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（JSONのみ、厳守。Markdownフェンスや説明文を付けない）:\n{{\"summary_markdown\":\"- 重点1（1行、名詞句または短文）\\n- 重点2\\n- 重点3\\n\\n---\\n\\n**重点1**: 補足説明（1〜2文で具体的に）\\n\\n**重点2**: 補足説明（1〜2文で具体的に）\\n\\n**重点3**: 補足説明（1〜2文で具体的に）\",\"terms\":[{{\"term\":\"専門用語または固有概念\",\"explanation\":\"講義文脈での意味に加え、論点との関係・注意点・短い例のいずれかを補う。\",\"source_excerpt\":\"講義内の根拠になる短い発話断片\",\"external_source\":\"外部知識を使った場合の正確な出典名とURL。使っていない場合は空文字\"}}],\"whiteboard\":{{\"title\":\"復習時に見る短いタイトル\",\"layout\":\"flow|hub|compare|cycle|grid\",\"nodes\":[{{\"id\":\"n1\",\"label\":\"3〜10字程度の概念名\",\"detail\":\"短い補足。空文字でもよい\",\"kind\":\"core|support|question|result\"}}],\"edges\":[{{\"from\":\"n1\",\"to\":\"n2\",\"label\":\"短い関係語。空文字でもよい\"}}]}}}}\n\nsummary_markdown のルール:\n- 上半分: 箇条書きタイトルのみ（2〜4個）。講義の核心概念やキーワードを含める。\n- 下半分(---以降): 各重点の補足を段落形式で記述。箇条書き(- )は使わない。\n- 見出し(###等)は使わない。\n- 不明瞭な部分を無理に解釈せず、確信できる情報のみ記載する。\n\nterms のルール:\n- 今回の区間で出た専門用語・理論名・手法名・制度名・固有概念・略語だけを最大5件。\n- 注釈対象は「その語を知らないと講義の理解が止まりやすいもの」に限定する。\n- 一般常識、日常語、教室運営語、授業一般の語、辞書的に自明な普通名詞は注釈しない。例: 授業、講義、先生、学生、教室、出席、課題、レポート、資料、今日、次回。\n- その科目で専門的な意味を持つ場合を除き、単に有名・一般的という理由で語を選ばない。\n- explanation は1〜2文。語の意味だけで終わらせず、講義内の論点との関係、混同しやすい点、短い例、または復習時に見る観点を1つ補う。\n- source_excerpt は必ず講義内の根拠だけを書く。external_source は外部知識を使った場合だけ書く。\n- 該当語が少ない場合は terms を空配列にする。\n\nwhiteboard のルール:\n- 視覚ボードは本文の代替ではなく、右側で素早く復習するための概念図です。\n- whiteboard は差分ではなく、更新後の累積ボード全体を返す。現在の累積視覚ボードにある有用な nodes/edges は維持し、今回の区間で新しい概念・関係が出た場合だけ追加または統合する。\n- 既存概念の id はできるだけ変えない。重複・誤認識・細かすぎる概念は統合してよいが、前の重要概念を理由なく削除しない。\n- nodes は必要な分だけ入れる。講義内で確認できる概念・論点・手順だけを入れ、単なる全文要約リストにしない。\n- edges は因果、流れ、対比、包含など、見れば理解が早くなる関係だけを入れる。\n- label は短く、detail も1フレーズ程度にする。長文説明は summary_markdown に任せる。\n- layout は内容に合うものを1つ選ぶ。流れなら flow、中心概念から広がるなら hub、対比なら compare、循環なら cycle、独立論点なら grid。\n- 十分な構造がまだない場合では whiteboard は nodes 空配列にする。{}",
-                language_hint
-            ),
+            content: live_chunk_system_prompt(language_hint, course.is_free_note),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: "追加の whiteboard 指示: whiteboard は「復習用」ではなく、講義内容を中心に関連知識を整理する知識整理ボードとして作る。主次を必ず分け、role=\"main\" の主ノードを3〜5個以内に絞る。role=\"branch\" の分岐ノードは必ず parent_id で最も近い主ノードに接続し、主ノードなしの孤立分岐を作らない。新しい語が出ても、既存主ノードの detail や分岐に収まるなら新しい主ノードにしない。講義の大きな論点が変わった時だけ主ノードを増やす。構図は中心発散型を前提に、中心/内側に主ノード、外側に分岐が広がったときに分かりやすい粒度へ整理する。parent_id は配置上の主従であり、分岐ノードが最も強く結びつく主論点を選ぶ。強い関連を持つ概念はできるだけ同じ主ノード配下へまとめ、別主ノード配下の横断 edges は重要な因果・対比・条件・制度上の接続に限定する。A主ノード配下の分岐とB主ノード配下の分岐を接続してよいのは、その線がないと講義の論理が読み取りにくい場合だけ。弱い関連、単なる連想、知識を増やすためだけのリンクは作らず summary_markdown/terms に回す。各 node の detail は白板内だけでも最低限理解できるように、講義文脈での役割・条件・注意点を短く具体的に書く。講義内に出た概念は source_type=\"lecture\" とし、source_excerpt に根拠となる短い発話断片を書く。理解に役立つ標準的な背景知識・関連概念は必要に応じて少数追加してよいが、必ず source_type=\"external\" とし、external_source に確認可能な出典名とURL、公式文書名、書籍名などを書く。外部補足ノードは原則 branch にし、講義内事実と混同しないよう detail の末尾にも「外部補足」と分かる表現を入れる。出典を示せない外部補足、具体値や固有事実の断定、講義から離れすぎた発展は追加しない。whiteboard nodes の形式は {\"id\":\"stable-id\",\"label\":\"短い概念名\",\"detail\":\"白板内で理解できる短い説明\",\"kind\":\"core|support|question|result\",\"role\":\"main|branch\",\"parent_id\":\"branch の親 main id。main は空文字\",\"source_type\":\"lecture|external\",\"source_excerpt\":\"講義内根拠。外部なら空文字\",\"external_source\":\"外部補足の出典。講義内なら空文字\"}。title には「復習」という語を避け、知識整理・概念整理として自然な短い題名を付ける。".into(),
+            content: live_whiteboard_system_prompt(
+                whiteboard_language_instruction,
+                course.is_free_note,
+            ),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
             role: "user".into(),
-            content: format!(
-                "講義: {}\n授業コード: {}\n教員: {}\n教室: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n現在の累積知識整理ボード:\n{}\n\n今回の文字起こし:\n{}\n\n注記: 文字起こしの専門用語・固有名詞は STT の誤認識が混ざる可能性があります。講義名「{}」の分野脈絡を手がかりに、明らかな誤りは自然に補正してください。",
-                course.course_name,
-                course.course_code,
-                if course.teacher.is_empty() {
-                    "不明"
-                } else {
-                    &course.teacher
-                },
-                if course.room.is_empty() {
-                    "未設定"
-                } else {
-                    &course.room
-                },
-                course.time_label,
-                recent_summary_context,
-                whiteboard_context,
-                transcript,
-                course.course_name,
-            ),
+            content: if course.is_free_note {
+                format!(
+                    "記録種別: 自由ノート\n題名: {}\n\n直前の分割要約（最大2件）:\n{}\n\n現在の累積知識整理ボード:\n{}\n\n今回の文字起こし:\n{}\n\n注記: 自由ノートは講義とは限りません。録音内容そのものを対象に、人物・出来事・ルール・話題の流れを整理してください。文字起こしの固有名詞には STT の誤認識が混ざる可能性があります。",
+                    course.course_name, recent_summary_context, whiteboard_context, transcript,
+                )
+            } else {
+                format!(
+                    "講義: {}\n授業コード: {}\n教員: {}\n教室: {}\n時間帯: {}\n\n直前の分割要約（最大2件）:\n{}\n\n現在の累積知識整理ボード:\n{}\n\n今回の文字起こし:\n{}\n\n注記: 文字起こしの専門用語・固有名詞は STT の誤認識が混ざる可能性があります。講義名「{}」の分野脈絡を手がかりに、明らかな誤りは自然に補正してください。",
+                    course.course_name,
+                    course.course_code,
+                    if course.teacher.is_empty() {
+                        "不明"
+                    } else {
+                        &course.teacher
+                    },
+                    if course.room.is_empty() {
+                        "未設定"
+                    } else {
+                        &course.room
+                    },
+                    course.time_label,
+                    recent_summary_context,
+                    whiteboard_context,
+                    transcript,
+                    course.course_name,
+                )
+            },
             images: Vec::new(),
         },
     ];
@@ -264,12 +568,7 @@ async fn summarize_overall(
     transcript_lines: &[LiveTranscriptLine],
 ) -> Result<String, String> {
     let cfg = live_ai_config()?;
-    let language_hint = crate::ai::reply_language_hint(
-        &cfg.reply_language,
-        "\n\n重要: 输出全文必须使用中文（简体）。标题、要点、补充说明、整体总结都使用中文。",
-        "\n\nIMPORTANT: Write the entire output in English, including headings, bullet points, and explanations.",
-        "\n\n중요: 출력 전체를 한국어로 작성하세요. 제목, 핵심 포인트, 보충 설명, 전체 요약을 모두 한국어로 작성합니다.",
-    );
+    let language_hint = live_reply_language_hint(&cfg.reply_language);
     let summary_text = summaries
         .iter()
         .map(|chunk| format!("## {}\n{}\n{}", chunk.title, chunk.range_label, chunk.body))
@@ -289,9 +588,10 @@ async fn summarize_overall(
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: format!(
-                "あなたは大学講義ノートを仕上げるアシスタントです。分割要約と末尾の文字起こしを基に、講義全体を俯瞰する要約をMarkdownで返してください。\n\n注意事項:\n- 各分割要約を単純に繋げるのではなく、講義全体を貫くテーマや論理の流れを抽出してください。\n- 文字起こしには音声認識の誤りが含まれる可能性があります。文脈から意味を推測し、明らかな誤認識は自然な範囲で補正して構いません。\n- 原文が断片的でも、文脈上ほぼ確実な内容は読みやすく整理して構いません。\n- ただし、具体的な数字・年号・割合・固有名詞・順位・因果関係などの高リスク事実は、分割要約または文字起こしから十分に確認できる場合に限って書いてください。\n- 高リスク事実について確信が弱い場合は、より一般化した安全な表現に言い換えてください。外部知識だけで具体値や詳細を補ってはいけません。\n- 要約を書いたあと、自分で高リスク事実を見直し、根拠が弱い箇所は削除または表現を弱めてください。\n- 講義全体の理解を助ける整理はしてよいですが、補った背景知識を講義で明示された事実のように書いてはいけません。\n- 文体は過度に書き言葉へ寄せず、信頼できる講義ノートのように簡潔で具体的にしてください。\n\n出力形式（厳守）:\n### 全体要約\n講義全体の主旨を1段落にまとめる。\n### 今回の論点\n- 講義で取り上げられた主要論点を3〜5個、各1行の箇条書きで列挙\n\nルール:\n- 指定形式以外のセクションや見出しを追加しない。\n- 抽象的すぎる表現を避け、講義固有の具体的概念やキーワードを含める。{}",
-                language_hint
+            content: live_overall_system_prompt(
+                &cfg.reply_language,
+                language_hint,
+                course.is_free_note,
             ),
             images: Vec::new(),
         },
@@ -350,7 +650,7 @@ async fn extract_todo_suggestions(
     let messages = vec![
         crate::ai::ChatMessage {
             role: "system".into(),
-            content: "あなたは大学講義ノートから学生のTODO候補だけを抽出するアシスタントです。先生が明確に課題、提出物、宿題、レポート、事前準備、復習タスク、小テスト準備として指示したものだけを抽出してください。講義内容そのもの、一般的な学習アドバイス、AIが勝手に作った復習案は含めません。締切は発話中の具体日付/時刻を最優先し、「次回まで」「来週の授業まで」「授業計画の該当回まで」など相対的に判断できる場合は、現在日時・次回授業候補・授業計画から YYYY-MM-DD HH:mm 形式で推定してください。推定した場合は note に根拠を短く含めてください。どうしても判断できない場合だけ deadline を空文字にします。出力はJSONのみで、説明文やMarkdownを付けないでください。形式: {\"todos\":[{\"title\":\"課題名\",\"content_type\":\"課題|レポート|予習|復習|テスト準備|その他\",\"deadline\":\"YYYY-MM-DD HH:mm または 空文字\",\"note\":\"学生が次にすることを短く。締切推定時は根拠も短く\",\"source_excerpt\":\"根拠になる発話を短く\"}]}。候補がなければ {\"todos\":[]}。".into(),
+            content: live_todo_system_prompt(&cfg.reply_language),
             images: Vec::new(),
         },
         crate::ai::ChatMessage {
@@ -820,8 +1120,27 @@ pub async fn live_finish_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, LiveState>,
 ) -> Result<LiveSaveResult, String> {
-    // Non-fatal: try to flush remaining pending lines, but don't abort if AI fails
-    let _ = flush_session_summary(&state, true).await;
+    let (finish_started_at, pending_line_count) = {
+        let guard = state
+            .0
+            .lock()
+            .map_err(|_| "Live state lock failed".to_string())?;
+        let Some(session) = guard.as_ref() else {
+            return Err("Liveセッションが開始されていません".to_string());
+        };
+        (session.started_at, session.pending_lines.len())
+    };
+    let finish_started_check_at = Local::now();
+    if should_require_finish_chunk_ai(
+        finish_started_at,
+        finish_started_check_at,
+        pending_line_count,
+    ) {
+        flush_session_summary(&state, true).await?;
+    } else {
+        // Non-fatal for short sessions: they intentionally skip AI and save the transcript as-is.
+        let _ = flush_session_summary(&state, true).await;
+    }
 
     let (course, started_at, transcript_lines, summaries) = {
         let guard = state
@@ -868,26 +1187,28 @@ pub async fn live_finish_session(
     };
 
     let ended_at = Local::now();
+    let ai_config = crate::ai::load_ai_config();
+    let reply_language = ai_config.reply_language.clone();
+    let should_run_finish_ai = should_run_finish_ai(&ai_config.provider, started_at, ended_at);
     let overall_summary = if should_skip_ai_summarization(started_at, ended_at) {
-        short_session_overall_summary(&course, transcript_lines.len())
+        short_session_overall_summary(&course, transcript_lines.len(), &reply_language)
+    } else if !should_run_finish_ai {
+        fallback_overall_summary(
+            &course,
+            transcript_lines.len(),
+            summaries.len(),
+            &reply_language,
+        )
     } else {
         summarize_overall(&course, &summaries, &transcript_lines)
             .await
             .unwrap_or_else(|_| {
-                if course.is_free_note {
-                    format!(
-                        "### 全体要約\n{} 件の転写行と {} 件の分割要約を含む自由ノートを保存しました。",
-                        transcript_lines.len(),
-                        summaries.len()
-                    )
-                } else {
-                    format!(
-                        "### 全体要約\n{} の講義メモ。{}件の転写行と{}件の分割要約を保存しました。",
-                        course.course_name,
-                        transcript_lines.len(),
-                        summaries.len()
-                    )
-                }
+                fallback_overall_summary(
+                    &course,
+                    transcript_lines.len(),
+                    summaries.len(),
+                    &reply_language,
+                )
             })
     };
     let markdown = build_markdown(
@@ -899,6 +1220,8 @@ pub async fn live_finish_session(
         &transcript_lines,
     );
     let suggested_todos = if should_skip_ai_summarization(started_at, ended_at) {
+        Vec::new()
+    } else if !should_run_finish_ai {
         Vec::new()
     } else {
         extract_todo_suggestions(&app, &course, &summaries, &transcript_lines, ended_at).await
@@ -965,6 +1288,28 @@ mod tests {
             now - chrono::Duration::seconds(120),
             now
         ));
+    }
+
+    #[test]
+    fn finish_ai_runs_only_for_non_local_provider_after_minimum_duration() {
+        let now = Local::now();
+        let long_session = now - chrono::Duration::seconds(120);
+        let short_session = now - chrono::Duration::seconds(119);
+
+        assert!(!should_run_finish_ai("local", long_session, now));
+        assert!(should_run_finish_ai("openai", long_session, now));
+        assert!(!should_run_finish_ai("openai", short_session, now));
+    }
+
+    #[test]
+    fn finish_requires_pending_chunk_ai_after_minimum_duration() {
+        let now = Local::now();
+        let long_session = now - chrono::Duration::seconds(120);
+        let short_session = now - chrono::Duration::seconds(119);
+
+        assert!(should_require_finish_chunk_ai(long_session, now, 3));
+        assert!(!should_require_finish_chunk_ai(long_session, now, 0));
+        assert!(!should_require_finish_chunk_ai(short_session, now, 3));
     }
 
     #[test]
@@ -1125,6 +1470,48 @@ mod tests {
         assert!(context.contains("更新後ボード"));
         assert!(context.contains("新概念"));
         assert!(!context.contains("古いボード"));
+    }
+
+    #[test]
+    fn live_prompts_keep_language_policy_consistent() {
+        let language_hint = live_reply_language_hint("zh");
+        assert!(language_hint.contains("简体中文"));
+
+        let chunk_prompt = live_chunk_system_prompt(language_hint, false);
+        assert!(chunk_prompt.contains("\"role\":\"main|branch\""));
+        assert!(chunk_prompt.contains("\"source_type\":\"lecture|external\""));
+
+        let board_prompt =
+            live_whiteboard_system_prompt(live_whiteboard_language_instruction("zh"), false);
+        assert!(board_prompt.contains("layout は原則 hub"));
+        assert!(board_prompt.contains("result 同士"));
+        assert!(board_prompt.contains("edge.label 必须全部使用简体中文"));
+
+        let overall_prompt = live_overall_system_prompt("zh", language_hint, false);
+        assert!(overall_prompt.contains("### 整体总结"));
+        assert!(overall_prompt.contains("### 本次论点"));
+
+        let todo_prompt = live_todo_system_prompt("zh");
+        assert!(todo_prompt.contains("title、note、source_excerpt 使用简体中文"));
+        assert!(todo_prompt.contains("content_type\":\"課題|レポート|予習|復習|テスト準備|その他"));
+    }
+
+    #[test]
+    fn free_note_prompts_do_not_dismiss_non_lecture_content() {
+        let language_hint = live_reply_language_hint("zh");
+        let chunk_prompt = live_chunk_system_prompt(language_hint, true);
+        assert!(chunk_prompt.contains("自由ノートは講義とは限りません"));
+        assert!(chunk_prompt.contains("非学術的という理由だけで「整理対象外」にしない"));
+        assert!(chunk_prompt.contains("人物関係"));
+
+        let board_prompt =
+            live_whiteboard_system_prompt(live_whiteboard_language_instruction("zh"), true);
+        assert!(board_prompt.contains("録音内容"));
+        assert!(board_prompt.contains("整理対象外にしない"));
+
+        let overall_prompt = live_overall_system_prompt("zh", language_hint, true);
+        assert!(overall_prompt.contains("自由ノート録音"));
+        assert!(overall_prompt.contains("非学術的という理由だけで除外しない"));
     }
 
     fn fixture_cache(transcript: Vec<(&str, &str)>) -> LiveDayCache {

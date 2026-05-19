@@ -106,6 +106,7 @@
       <svg class="visual-board-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         {#each activeWhiteboardLayout.edges as edge (edge.id)}
           <path
+            class="visual-board-edge edge-kind-{edge.colorKind} edge-source-{edge.colorSourceType}"
             class:redundant={edge.redundant}
             class:is-highlighted={boardHighlight?.edges.has(edge.id)}
             d="M {edge.x1} {edge.y1} Q {edge.cx} {edge.cy} {edge.x2} {edge.y2}"
@@ -115,7 +116,7 @@
       {#each activeWhiteboardLayout.edges as edge (edge.id + "-label")}
         {#if edge.label}
           <span
-            class="visual-board-edge-label"
+            class="visual-board-edge-label edge-kind-{edge.colorKind} edge-source-{edge.colorSourceType}"
             class:is-highlighted={boardHighlight?.edges.has(edge.id)}
             style="left: {edge.lx}%; top: {edge.ly}%;"
           >{edge.label}</span>
@@ -268,10 +269,26 @@
   }
   .visual-board-links path {
     fill: none;
-    stroke: currentColor;
+    stroke: var(--edge-color, currentColor);
     stroke-width: 0.75;
     stroke-linecap: round;
     opacity: 0.74;
+  }
+  .visual-board-links path.edge-kind-core {
+    --edge-color: color-mix(in srgb, var(--text-tertiary) 76%, var(--text-secondary));
+  }
+  .visual-board-links path.edge-kind-result {
+    --edge-color: color-mix(in srgb, #34c759 62%, var(--text-tertiary));
+  }
+  .visual-board-links path.edge-kind-question {
+    --edge-color: color-mix(in srgb, var(--orange, #e67700) 64%, var(--text-tertiary));
+  }
+  .visual-board-links path.edge-kind-support {
+    --edge-color: color-mix(in srgb, var(--text-tertiary) 76%, var(--text-secondary));
+  }
+  .visual-board-links path.edge-source-external {
+    stroke-dasharray: 3 2.2;
+    opacity: 0.64;
   }
   .visual-board-links path.redundant {
     stroke-dasharray: 1.6 1.4;
@@ -319,8 +336,8 @@
     padding: 2px 8px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
-    border: 0.5px solid color-mix(in srgb, var(--blue) 24%, transparent);
-    color: color-mix(in srgb, var(--blue) 78%, var(--text-secondary));
+    border: 0.5px solid var(--edge-label-border, color-mix(in srgb, var(--blue) 24%, transparent));
+    color: var(--edge-label-color, color-mix(in srgb, var(--blue) 78%, var(--text-secondary)));
     font-size: 10px;
     font-weight: 800;
     line-height: 1.15;
@@ -328,6 +345,25 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .visual-board-edge-label.edge-kind-core {
+    --edge-label-border: color-mix(in srgb, var(--text-tertiary) 30%, transparent);
+    --edge-label-color: color-mix(in srgb, var(--text-tertiary) 82%, var(--text-secondary));
+  }
+  .visual-board-edge-label.edge-kind-result {
+    --edge-label-border: color-mix(in srgb, #34c759 30%, transparent);
+    --edge-label-color: color-mix(in srgb, #34c759 76%, var(--text-secondary));
+  }
+  .visual-board-edge-label.edge-kind-question {
+    --edge-label-border: color-mix(in srgb, var(--orange, #e67700) 32%, transparent);
+    --edge-label-color: color-mix(in srgb, var(--orange, #e67700) 76%, var(--text-secondary));
+  }
+  .visual-board-edge-label.edge-kind-support {
+    --edge-label-border: color-mix(in srgb, var(--text-tertiary) 28%, transparent);
+    --edge-label-color: color-mix(in srgb, var(--text-tertiary) 82%, var(--text-secondary));
+  }
+  .visual-board-edge-label.edge-source-external {
+    border-style: dashed;
   }
   .visual-board-node {
     position: absolute;

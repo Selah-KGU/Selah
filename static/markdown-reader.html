@@ -433,10 +433,26 @@
   .mdr-wb-links line,
   .mdr-wb-links path {
     fill: none;
-    stroke: currentColor;
+    stroke: var(--edge-color, currentColor);
     stroke-width: 0.75;
     stroke-linecap: round;
     opacity: 0.74;
+  }
+  .mdr-wb-links path.edge-kind-core {
+    --edge-color: color-mix(in srgb, var(--text-tertiary) 76%, var(--text-secondary));
+  }
+  .mdr-wb-links path.edge-kind-result {
+    --edge-color: color-mix(in srgb, var(--green) 62%, var(--text-tertiary));
+  }
+  .mdr-wb-links path.edge-kind-question {
+    --edge-color: color-mix(in srgb, var(--orange) 64%, var(--text-tertiary));
+  }
+  .mdr-wb-links path.edge-kind-support {
+    --edge-color: color-mix(in srgb, var(--text-tertiary) 76%, var(--text-secondary));
+  }
+  .mdr-wb-links path.edge-source-external {
+    stroke-dasharray: 3 2.2;
+    opacity: 0.64;
   }
   .mdr-wb-links path.redundant {
     stroke-dasharray: 1.6 1.4;
@@ -470,8 +486,8 @@
     padding: 2px 8px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
-    border: 0.5px solid color-mix(in srgb, var(--blue) 24%, transparent);
-    color: color-mix(in srgb, var(--blue) 78%, var(--text-secondary));
+    border: 0.5px solid var(--edge-label-border, color-mix(in srgb, var(--blue) 24%, transparent));
+    color: var(--edge-label-color, color-mix(in srgb, var(--blue) 78%, var(--text-secondary)));
     font-size: 10px;
     font-weight: 800;
     line-height: 1.15;
@@ -479,6 +495,25 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .mdr-wb-edge-label.edge-kind-core {
+    --edge-label-border: color-mix(in srgb, var(--text-tertiary) 30%, transparent);
+    --edge-label-color: color-mix(in srgb, var(--text-tertiary) 82%, var(--text-secondary));
+  }
+  .mdr-wb-edge-label.edge-kind-result {
+    --edge-label-border: color-mix(in srgb, var(--green) 30%, transparent);
+    --edge-label-color: color-mix(in srgb, var(--green) 76%, var(--text-secondary));
+  }
+  .mdr-wb-edge-label.edge-kind-question {
+    --edge-label-border: color-mix(in srgb, var(--orange) 32%, transparent);
+    --edge-label-color: color-mix(in srgb, var(--orange) 76%, var(--text-secondary));
+  }
+  .mdr-wb-edge-label.edge-kind-support {
+    --edge-label-border: color-mix(in srgb, var(--text-tertiary) 28%, transparent);
+    --edge-label-color: color-mix(in srgb, var(--text-tertiary) 82%, var(--text-secondary));
+  }
+  .mdr-wb-edge-label.edge-source-external {
+    border-style: dashed;
   }
   .mdr-wb-node {
     position: absolute;
@@ -1092,10 +1127,13 @@
     svg.setAttribute('aria-hidden', 'true');
     layout.edges.forEach(function (e) {
       var path = document.createElementNS(svgNS, 'path');
-      var cls = [];
+      var cls = [
+        'edge-kind-' + (e.colorKind || 'support'),
+        'edge-source-' + (e.colorSourceType || 'lecture')
+      ];
       if (e.trunk) cls.push('trunk');
       if (e.redundant) cls.push('redundant');
-      if (cls.length) path.setAttribute('class', cls.join(' '));
+      path.setAttribute('class', cls.join(' '));
       var cx = (e.cx != null) ? e.cx : (e.x1 + e.x2) / 2;
       var cy = (e.cy != null) ? e.cy : (e.y1 + e.y2) / 2;
       path.setAttribute('d', 'M ' + e.x1 + ' ' + e.y1 + ' Q ' + cx + ' ' + cy + ' ' + e.x2 + ' ' + e.y2);
@@ -1107,7 +1145,7 @@
     layout.edges.forEach(function (e) {
       if (!e.label) return;
       var lab = document.createElement('span');
-      lab.className = 'mdr-wb-edge-label';
+      lab.className = 'mdr-wb-edge-label edge-kind-' + (e.colorKind || 'support') + ' edge-source-' + (e.colorSourceType || 'lecture');
       lab.style.left = e.lx + '%';
       lab.style.top = e.ly + '%';
       lab.textContent = e.label;

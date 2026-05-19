@@ -318,8 +318,8 @@
   .lyrics-count {
     position: sticky;
     bottom: 10px;
-    align-self: flex-end;
-    margin-right: 8px;
+    align-self: flex-start;
+    margin-left: 8px;
     font-size: 11px;
     color: var(--text-tertiary);
     background: var(--glass-bg, rgba(255,255,255,0.6));
