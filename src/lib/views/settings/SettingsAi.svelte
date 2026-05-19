@@ -54,7 +54,7 @@
 
   const MODEL_PRESETS: Record<string, string[]> = {
     openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
-    gemini: ["gemini-3.1-pro-preview", "gemini-3-flash-preview"],
+    gemini: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview"],
   };
   const PROVIDER_HINTS: Record<string, string> = {
     openai: "OpenAI API キーは platform.openai.com で取得できます。",
