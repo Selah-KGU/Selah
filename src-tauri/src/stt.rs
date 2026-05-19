@@ -682,19 +682,20 @@ fn build_vad_config(profile: &SttSensitivityProfile) -> Result<VadModelConfig, S
     if !path.exists() {
         return Err("VAD モデルがまだダウンロードされていません".into());
     }
-    let mut config = VadModelConfig::default();
-    config.sample_rate = TARGET_SAMPLE_RATE;
-    config.num_threads = 1;
-    config.provider = Some("cpu".into());
-    config.silero_vad = SileroVadModelConfig {
-        model: Some(path.to_string_lossy().into_owned()),
-        threshold: profile.vad_threshold,
-        min_silence_duration: profile.vad_min_silence,
-        min_speech_duration: profile.vad_min_speech,
-        window_size: 512,
-        max_speech_duration: 8.0,
-    };
-    Ok(config)
+    Ok(VadModelConfig {
+        sample_rate: TARGET_SAMPLE_RATE,
+        num_threads: 1,
+        provider: Some("cpu".into()),
+        silero_vad: SileroVadModelConfig {
+            model: Some(path.to_string_lossy().into_owned()),
+            threshold: profile.vad_threshold,
+            min_silence_duration: profile.vad_min_silence,
+            min_speech_duration: profile.vad_min_speech,
+            window_size: 512,
+            max_speech_duration: 8.0,
+        },
+        ..Default::default()
+    })
 }
 
 fn selected_model_from_config() -> Result<SttModelInfo, String> {

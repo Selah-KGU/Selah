@@ -1,4 +1,5 @@
-#![cfg(target_os = "macos")]
+// The `#[cfg(target_os = "macos")]` gate lives on the `mod` declaration in
+// `lib.rs`; we don't need to repeat it as an inner attribute here.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -2106,12 +2107,9 @@ fn build_markdown_attributed(text: &str, theme: Theme) -> Retained<NSMutableAttr
     let mut first_block = true;
     let mut prev_blank = false;
     for block in &blocks {
-        match block {
-            MdBlock::Blank => {
-                prev_blank = true;
-                continue;
-            }
-            _ => {}
+        if let MdBlock::Blank = block {
+            prev_blank = true;
+            continue;
         }
 
         if !first_block {

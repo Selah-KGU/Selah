@@ -258,7 +258,7 @@ pub async fn mail_fetch_inbox(
     top: Option<u32>,
     skip: Option<u32>,
 ) -> Result<Vec<MailMessage>, String> {
-    fetch_inbox_impl(&*state, &*db, top.unwrap_or(20), skip.unwrap_or(0)).await
+    fetch_inbox_impl(&state, &db, top.unwrap_or(20), skip.unwrap_or(0)).await
 }
 
 /// Agent-accessible variant: resolves state from the AppHandle.
@@ -270,7 +270,7 @@ pub async fn fetch_inbox_internal(
     use tauri::Manager;
     let state = app.state::<MailState>();
     let db = app.state::<crate::db::Database>();
-    fetch_inbox_impl(&*state, &*db, top, skip).await
+    fetch_inbox_impl(&state, &db, top, skip).await
 }
 
 async fn fetch_inbox_impl(
@@ -363,7 +363,7 @@ pub async fn mail_fetch_message(
     db: State<'_, crate::db::Database>,
     message_id: String,
 ) -> Result<MailDetail, String> {
-    fetch_message_impl(&*state, &*db, &message_id).await
+    fetch_message_impl(&state, &db, &message_id).await
 }
 
 /// Agent-accessible variant: resolves state from the AppHandle.
@@ -374,7 +374,7 @@ pub async fn fetch_message_internal(
     use tauri::Manager;
     let state = app.state::<MailState>();
     let db = app.state::<crate::db::Database>();
-    fetch_message_impl(&*state, &*db, message_id).await
+    fetch_message_impl(&state, &db, message_id).await
 }
 
 async fn fetch_message_impl(

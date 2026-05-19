@@ -1,8 +1,8 @@
-/// Minimal XOR-based obfuscation so OAuth client credentials don't appear
-/// as plain-text in the compiled binary.  This is **not** encryption — it only
-/// raises the bar above `strings(1)`.  Desktop OAuth client-ids/secrets are
-/// considered public per Google / Microsoft documentation, so this is a
-/// cosmetic measure, not a security boundary.
+//! Minimal XOR-based obfuscation so OAuth client credentials don't appear
+//! as plain-text in the compiled binary.  This is **not** encryption — it only
+//! raises the bar above `strings(1)`.  Desktop OAuth client-ids/secrets are
+//! considered public per Google / Microsoft documentation, so this is a
+//! cosmetic measure, not a security boundary.
 
 const KEY: &[u8] = b"selah-kwic-2026";
 

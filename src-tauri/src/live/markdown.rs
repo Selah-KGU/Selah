@@ -117,15 +117,12 @@ pub(super) fn build_markdown(
         .iter()
         .map(|chunk| {
             format!(
-                "## {}\n{}\n\n{}{}",
+                "## {}\n{}\n\n{}{}{}",
                 chunk.title,
                 chunk.range_label,
                 chunk.body,
-                format!(
-                    "{}{}",
-                    format_whiteboard_markdown(chunk.whiteboard.as_ref()),
-                    format_terms_markdown(&chunk.terms)
-                )
+                format_whiteboard_markdown(chunk.whiteboard.as_ref()),
+                format_terms_markdown(&chunk.terms),
             )
         })
         .collect::<Vec<_>>()

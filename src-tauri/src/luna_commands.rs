@@ -172,9 +172,7 @@ fn has_announcement_detail_structure(html: &str) -> bool {
     let doc = scraper::Html::parse_document(html);
     let has_title = doc.select(&SEL_DETAIL_TITLE).next().is_some();
     let has_detail_rows = doc.select(&SEL_DETAIL_VERT).next().is_some();
-    let has_updates = doc.select(&SEL_UPDATE_INFO_LIST).next().is_some();
-
-    has_title && has_detail_rows && !(has_updates && !has_detail_rows)
+    has_title && has_detail_rows
 }
 
 fn is_valid_generic_detail_response(
@@ -1549,14 +1547,14 @@ pub async fn luna_prefetch_attendance_form(
 
         if header_text.contains("送信可能日時") || header_text.contains("ログイン期間")
         {
-            if spans.len() >= 1 {
+            if !spans.is_empty() {
                 open_start = spans[0].clone();
             }
             if spans.len() >= 3 {
                 open_end = spans[2].clone();
             }
         } else if header_text.contains("遅刻時間") {
-            if spans.len() >= 1 {
+            if !spans.is_empty() {
                 late_start = spans[0].clone();
             }
             if spans.len() >= 3 {
@@ -2898,7 +2896,7 @@ fn parse_luna_report_period(
     String,
 )> {
     let parts: Vec<_> = period
-        .split(|c| c == '~' || c == '～')
+        .split(['~', '～'])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();

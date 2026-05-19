@@ -701,7 +701,7 @@ fn filename_from_cd(header: &str) -> Option<String> {
 fn filename_from_url(parsed: &url::Url) -> String {
     parsed
         .path_segments()
-        .and_then(|segs| segs.filter(|s| !s.is_empty()).last())
+        .and_then(|mut segs| segs.rfind(|s| !s.is_empty()))
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("download-{}.bin", chrono::Utc::now().format("%Y%m%d%H%M%S")))

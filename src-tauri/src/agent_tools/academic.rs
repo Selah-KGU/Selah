@@ -419,7 +419,7 @@ fn collect_classes(
     }
     for c in luna.iter() {
         if let Some(d) = filter_day {
-            if c.day != d as i32 {
+            if c.day != d {
                 continue;
             }
         }
@@ -611,7 +611,7 @@ pub(super) async fn get_notification_detail(
                     .collect();
                 return Ok(json!({
                     "source": "KGC",
-                    "category": detail.category.is_empty().then(|| entry.category.clone()).unwrap_or(detail.category.clone()),
+                    "category": if detail.category.is_empty() { entry.category.clone() } else { detail.category.clone() },
                     "title": if detail.title.is_empty() { entry.title.clone() } else { detail.title },
                     "date": if detail.date.is_empty() { entry.date.clone() } else { detail.date },
                     "sender": detail.sender,

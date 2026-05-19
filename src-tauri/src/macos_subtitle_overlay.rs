@@ -5,7 +5,8 @@
 //! STT / Agent とは完全に独立した機能です。
 //! また `stt-partial`（caller="live"）を監聴して発話中のリアルタイムテキストも表示します。
 
-#![cfg(target_os = "macos")]
+// The `#[cfg(target_os = "macos")]` gate lives on the `mod` declaration in
+// `lib.rs`; we don't need to repeat it as an inner attribute here.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -723,7 +724,7 @@ fn show_text(app: &AppHandle, text: String, is_final: bool) {
                 ui.borrow()
                     .panel
                     .as_ref()
-                    .map(|p| p.alphaValue() as f64)
+                    .map(|p| p.alphaValue())
                     .unwrap_or(1.0)
             });
             let _ = tx.send(a);

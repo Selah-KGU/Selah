@@ -17,9 +17,9 @@ use super::{
 //
 // Reading order below follows that flow: latest → reconcile → parse.
 
-pub(super) fn latest_whiteboard<'a>(
-    summaries: &'a [LiveSummaryChunk],
-) -> Option<&'a LiveWhiteboard> {
+pub(super) fn latest_whiteboard(
+    summaries: &[LiveSummaryChunk],
+) -> Option<&LiveWhiteboard> {
     summaries
         .iter()
         .rev()
@@ -631,10 +631,7 @@ fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option<LiveWhiteb
         return None;
     }
     if !nodes.iter().any(|node| node.role == "main") {
-        let Some(first_structure_idx) = nodes.iter().position(|node| node.node_type != "term")
-        else {
-            return None;
-        };
+        let first_structure_idx = nodes.iter().position(|node| node.node_type != "term")?;
         if let Some(first) = nodes.get_mut(first_structure_idx) {
             first.role = "main".to_string();
             first.parent_id.clear();

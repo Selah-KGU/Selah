@@ -1509,15 +1509,13 @@ pub fn parse_standard_year_range(value: &str) -> Option<(u32, u32)> {
     for ch in v.chars() {
         if ch.is_ascii_digit() {
             digits.push(ch);
-        } else {
-            if !digits.is_empty() {
-                if let Ok(n) = digits.parse::<u32>() {
-                    if (1..=10).contains(&n) {
-                        years.push(n);
-                    }
+        } else if !digits.is_empty() {
+            if let Ok(n) = digits.parse::<u32>() {
+                if (1..=10).contains(&n) {
+                    years.push(n);
                 }
-                digits.clear();
             }
+            digits.clear();
         }
     }
     if !digits.is_empty() {

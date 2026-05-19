@@ -1393,9 +1393,9 @@ pub async fn live_finish_session(
         &summaries,
         &transcript_lines,
     );
-    let suggested_todos = if should_skip_ai_summarization(started_at, ended_at) {
-        Vec::new()
-    } else if !should_run_finish_ai {
+    let suggested_todos = if should_skip_ai_summarization(started_at, ended_at)
+        || !should_run_finish_ai
+    {
         Vec::new()
     } else {
         extract_todo_suggestions(&app, &course, &summaries, &transcript_lines, ended_at).await

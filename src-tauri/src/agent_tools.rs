@@ -707,7 +707,7 @@ fn sanitize_text_arg(args: &Value, key: &str, max_len: usize) -> Option<String> 
         return None;
     }
     let mut out = value.chars().take(max_len).collect::<String>();
-    out = out.replace('\n', " ").replace('\r', " ");
+    out = out.replace(['\n', '\r'], " ");
     let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
     if out.is_empty() {
         None
@@ -769,7 +769,7 @@ fn sanitize_selector_arg(args: &Value, key: &str, max_len: usize) -> Option<Stri
     if value.is_empty() || value.len() > max_len || value.contains('\0') {
         return None;
     }
-    let value = value.replace('\n', " ").replace('\r', " ");
+    let value = value.replace(['\n', '\r'], " ");
     let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if value.is_empty() {
         None

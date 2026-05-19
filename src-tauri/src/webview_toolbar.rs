@@ -1071,9 +1071,7 @@ pub fn list_browser_windows(app: &tauri::AppHandle) -> Vec<BrowserWindowInfo> {
         .filter_map(|label| {
             let target = format!("{}-ct", &label);
             let toolbar = format!("{}-tb", &label);
-            if app.get_window(&label).is_none() {
-                return None;
-            }
+            app.get_window(&label)?;
             if app.get_webview(&target).is_none() || app.get_webview(&toolbar).is_none() {
                 return None;
             }

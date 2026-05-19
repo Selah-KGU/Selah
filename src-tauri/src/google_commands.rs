@@ -220,14 +220,10 @@ fn parse_oauth_callback(
 
     if let Some(code) = params.get("code") {
         Ok((code.clone(), stream))
-    } else if params.get("error").is_none() {
-        Err(("oauth_code_missing".into(), Some(stream)))
+    } else if let Some(err) = params.get("error") {
+        Err((err.clone(), Some(stream)))
     } else {
-        let err = params
-            .get("error")
-            .cloned()
-            .unwrap_or_else(|| "不明なエラー".into());
-        Err((err, Some(stream)))
+        Err(("oauth_code_missing".into(), Some(stream)))
     }
 }
 

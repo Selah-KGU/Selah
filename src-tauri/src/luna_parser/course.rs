@@ -655,7 +655,7 @@ fn parse_materials(doc: &Html) -> Vec<LunaContentItem> {
                     if let Some(idx) = row_html.find("http") {
                         let tail = &row_html[idx..];
                         let end = tail
-                            .find(|c: char| c == '"' || c == '\'' || c == '<' || c == ' ')
+                            .find(['"', '\'', '<', ' '])
                             .unwrap_or(tail.len());
                         let candidate = &tail[..end];
                         if candidate.len() > 10 && !candidate.contains("luna.kwansei.ac.jp") {

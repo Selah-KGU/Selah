@@ -761,6 +761,10 @@ impl GoogleCalendarClient {
     }
 
     /// Update an agent-created event. Only fields provided (Some) are changed.
+    // Each parameter represents one independently-optional field on the calendar
+    // event payload; bundling them into a struct just to satisfy clippy would
+    // add ceremony without clarity.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_agent_event(
         &mut self,
         event_id: &str,

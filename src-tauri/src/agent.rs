@@ -2127,9 +2127,7 @@ fn first_json_object(s: &str) -> Option<&str> {
                 depth += 1;
             }
             b'}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
+                depth = depth.saturating_sub(1);
                 if depth == 0 {
                     if let Some(st) = start {
                         return Some(&s[st..=i]);

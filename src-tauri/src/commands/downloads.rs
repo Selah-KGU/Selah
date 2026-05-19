@@ -1003,9 +1003,9 @@ pub fn migrate_deduplicate_by_filename() {
         let cur = &records[i];
         let prev_live = std::path::Path::new(&prev.path).exists();
         let cur_live = std::path::Path::new(&cur.path).exists();
-        if !prev_live && cur_live {
-            *entry = i;
-        } else if prev_live == cur_live && cur.downloaded_at > prev.downloaded_at {
+        let prefer_current = (!prev_live && cur_live)
+            || (prev_live == cur_live && cur.downloaded_at > prev.downloaded_at);
+        if prefer_current {
             *entry = i;
         }
     }

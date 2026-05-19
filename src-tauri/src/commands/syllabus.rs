@@ -399,7 +399,10 @@ pub async fn open_syllabus_detail(
                     }
                     Err(_) => false,
                 };
-                drop(store);
+                // The actual `MutexGuard` is `map`, which is dropped at the end
+                // of the match arm above. `store` is just a `State<..>` handle
+                // and dropping it is a no-op, so no explicit drop is needed
+                // before emitting the event.
                 if stored {
                     let _ = app_clone.emit_to(&label_clone, "syllabus-ready", &label_clone);
                 } else {

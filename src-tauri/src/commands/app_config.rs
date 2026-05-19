@@ -253,7 +253,7 @@ pub fn open_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        return crate::macos_subtitle_overlay::open_overlay(&_app);
+        crate::macos_subtitle_overlay::open_overlay(&_app)
     }
     #[cfg(target_os = "windows")]
     {
@@ -268,7 +268,7 @@ pub fn open_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
 pub fn close_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        return crate::macos_subtitle_overlay::close_overlay(&_app);
+        crate::macos_subtitle_overlay::close_overlay(&_app)
     }
     #[cfg(target_os = "windows")]
     {
@@ -283,7 +283,7 @@ pub fn close_subtitle_overlay(_app: tauri::AppHandle) -> Result<(), String> {
 pub fn subtitle_overlay_is_open() -> bool {
     #[cfg(target_os = "macos")]
     {
-        return crate::macos_subtitle_overlay::is_open();
+        crate::macos_subtitle_overlay::is_open()
     }
     #[cfg(target_os = "windows")]
     {
@@ -493,7 +493,7 @@ pub(crate) fn share_file_paths_native(
 
     #[cfg(target_os = "macos")]
     {
-        return open_macos_share_picker(app, files);
+        open_macos_share_picker(app, files)
     }
 
     #[cfg(target_os = "windows")]
