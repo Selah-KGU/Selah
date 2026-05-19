@@ -8,7 +8,7 @@ use tauri::Manager;
 /// Shared HTTP client — reuses connection pool across all AI calls.
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(90))
         .connect_timeout(Duration::from_secs(10))
         .build()
         .expect("failed to build HTTP client")
