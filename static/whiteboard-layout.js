@@ -363,9 +363,20 @@
           var dx2 = b2[0] - a2[0];
           var dy2 = b2[1] - a2[1];
           var distance2 = Math.sqrt(dx2 * dx2 + dy2 * dy2) || 0.001;
-          var minDistance = aNode.role === 'main' || bNode.role === 'main' ? 15 : 12;
+          var aTerm = aNode.nodeType === 'term';
+          var bTerm = bNode.nodeType === 'term';
+          var minDistance;
+          if (aTerm && bTerm) {
+            minDistance = 10;
+          } else if (aTerm || bTerm) {
+            minDistance = 13;
+          } else if (aNode.role === 'main' || bNode.role === 'main') {
+            minDistance = 20;
+          } else {
+            minDistance = 16;
+          }
           if (distance2 >= minDistance) continue;
-          var force2 = (minDistance - distance2) * 0.18;
+          var force2 = (minDistance - distance2) * 0.24;
           var fx2 = (dx2 / distance2) * force2;
           var fy2 = (dy2 / distance2) * force2;
           delta[aNode.id][0] -= fx2 * (aNode.role === 'main' ? 0.25 : 1);
@@ -555,6 +566,85 @@
     rebalanceBranchesByBarycenter(branchesByParent, edgeList, result);
     result = relaxPoints(nodes, edgeList, result, mainAnchors, mains, 85);
     placeTerms(result);
+
+    // ── Term-node post-placement avoidance ──────────────────────────────
+    // placeTerms uses fixed offsets with no collision awareness, so term
+    // nodes can overlap structure nodes or each other. Run a lightweight
+    // repulsion pass that nudges term nodes only, keeping them tethered
+    // to their parent position.
+    (function nudgeTermNodes() {
+      if (termNodes.length === 0) return;
+      var allNodes = nodes; // all nodes in hierarchyPoints scope
+      var termIdSet = {};
+      termNodes.forEach(function (t) { termIdSet[t.id] = true; });
+      var nonTermNodes = allNodes.filter(function (n) { return !termIdSet[n.id]; });
+      var termMinDist = 9;    // min distance between two term nodes
+      var structMinDist = 11; // min distance term ↔ structure node
+
+      for (var iter = 0; iter < 40; iter++) {
+        var moved = 0;
+        for (var ti = 0; ti < termNodes.length; ti++) {
+          var tn = termNodes[ti];
+          var tp = result[tn.id];
+          if (!tp) continue;
+          var dx = 0, dy = 0;
+
+          // Repel from structure nodes
+          for (var si = 0; si < nonTermNodes.length; si++) {
+            var sn = nonTermNodes[si];
+            var sp = result[sn.id];
+            if (!sp) continue;
+            var ddx = tp[0] - sp[0];
+            var ddy = tp[1] - sp[1];
+            var dist = Math.sqrt(ddx * ddx + ddy * ddy) || 0.001;
+            if (dist >= structMinDist) continue;
+            var push = (structMinDist - dist) * 0.25;
+            dx += (ddx / dist) * push;
+            dy += (ddy / dist) * push;
+          }
+
+          // Repel from other term nodes
+          for (var tj = 0; tj < termNodes.length; tj++) {
+            if (tj === ti) continue;
+            var tn2 = termNodes[tj];
+            var tp2 = result[tn2.id];
+            if (!tp2) continue;
+            var ddx2 = tp[0] - tp2[0];
+            var ddy2 = tp[1] - tp2[1];
+            var dist2 = Math.sqrt(ddx2 * ddx2 + ddy2 * ddy2) || 0.001;
+            if (dist2 >= termMinDist) continue;
+            var push2 = (termMinDist - dist2) * 0.22;
+            dx += (ddx2 / dist2) * push2;
+            dy += (ddy2 / dist2) * push2;
+          }
+
+          // Gentle tether back toward parent so terms don't drift too far
+          var parentPos = tn.parentId ? result[tn.parentId] : null;
+          if (parentPos) {
+            var maxDrift = 28;
+            var pdx = tp[0] - parentPos[0];
+            var pdy = tp[1] - parentPos[1];
+            var pDist = Math.sqrt(pdx * pdx + pdy * pdy) || 0.001;
+            if (pDist > maxDrift) {
+              var pull = (pDist - maxDrift) * 0.06;
+              dx -= (pdx / pDist) * pull;
+              dy -= (pdy / pDist) * pull;
+            }
+          }
+
+          if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05) {
+            result[tn.id] = [
+              clampBoardPoint(tp[0] + dx, 6, 94),
+              clampBoardPoint(tp[1] + dy, 7, 93)
+            ];
+            moved += Math.abs(dx) + Math.abs(dy);
+          }
+        }
+        // Converged — no meaningful movement
+        if (moved < termNodes.length * 0.03) break;
+      }
+    })();
+
     return result;
   }
 

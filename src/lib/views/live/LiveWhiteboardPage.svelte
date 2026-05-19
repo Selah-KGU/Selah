@@ -422,6 +422,7 @@
     border-radius: 999px;
     opacity: 0.86;
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06);
+    z-index: 4;
   }
   .board-page.dense .visual-board-node.role-main {
     width: 124px;

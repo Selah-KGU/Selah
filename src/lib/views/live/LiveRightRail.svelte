@@ -292,6 +292,7 @@
     font-size: 8px;
     font-weight: 800;
     opacity: 0.84;
+    z-index: 3;
   }
 
   .term-stack {

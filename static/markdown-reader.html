@@ -454,11 +454,6 @@
     stroke-dasharray: 3 2.2;
     opacity: 0.64;
   }
-  .mdr-wb-links path.term-edge {
-    stroke-width: 0.95;
-    opacity: 0.86;
-    stroke-dasharray: none;
-  }
   .mdr-wb-links path.redundant {
     stroke-dasharray: 1.6 1.4;
     opacity: 0.42;
@@ -1176,7 +1171,6 @@
       ];
       if (e.trunk) cls.push('trunk');
       if (e.redundant) cls.push('redundant');
-      if (e.termEdge) cls.push('term-edge');
       path.setAttribute('class', cls.join(' '));
       var cx = (e.cx != null) ? e.cx : (e.x1 + e.x2) / 2;
       var cy = (e.cy != null) ? e.cy : (e.y1 + e.y2) / 2;
