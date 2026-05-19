@@ -108,6 +108,7 @@
           <path
             class="visual-board-edge edge-kind-{edge.colorKind} edge-source-{edge.colorSourceType}"
             class:redundant={edge.redundant}
+            class:term-edge={edge.termEdge}
             class:is-highlighted={boardHighlight?.edges.has(edge.id)}
             d="M {edge.x1} {edge.y1} Q {edge.cx} {edge.cy} {edge.x2} {edge.y2}"
           />
@@ -290,6 +291,11 @@
   .visual-board-links path.edge-source-external {
     stroke-dasharray: 3 2.2;
     opacity: 0.64;
+  }
+  .visual-board-links path.term-edge {
+    stroke-width: 0.95;
+    opacity: 0.86;
+    stroke-dasharray: none;
   }
   .visual-board-links path.redundant {
     stroke-dasharray: 1.6 1.4;

@@ -474,9 +474,11 @@
         var side = parent[0] > 74 ? -1 : 1;
         terms.forEach(function (n, i) {
           var row = i - (terms.length - 1) / 2;
+          var distance = terms.length <= 2 ? 15 : 17;
+          var stagger = terms.length > 2 && i % 2 === 1 ? 4 : 0;
           targetPoints[n.id] = [
-            clampContentX(parent[0] + side * 10),
-            clampBoardPoint(parent[1] + row * 8, 9, 91)
+            clampContentX(parent[0] + side * (distance + stagger)),
+            clampBoardPoint(parent[1] + row * 13, 9, 91)
           ];
         });
       });
@@ -743,6 +745,7 @@
         from: geom.from.id,
         to: geom.to.id,
         label: label,
+        termEdge: geom.from.nodeType === 'term' || geom.to.nodeType === 'term',
         colorKind: edgeColorKind(geom.from, geom.to),
         colorSourceType: edgeColorSourceType(geom.from, geom.to),
         x1: geom.ix1, y1: geom.iy1,

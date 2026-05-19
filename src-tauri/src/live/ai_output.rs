@@ -1,7 +1,6 @@
 use super::{
     sanitize_model_output, LiveChunkAiResult, LiveSummaryChunk, LiveTermExplanation,
     LiveWhiteboard, LiveWhiteboardEdge, LiveWhiteboardNode, MAX_LIVE_TERM_EXPLANATION_CHARS,
-    MAX_LIVE_WHITEBOARD_EDGES, MAX_LIVE_WHITEBOARD_NODES,
 };
 
 // ── Cumulative knowledge whiteboard ─────────────────────────────────────────
@@ -577,7 +576,7 @@ fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option<LiveWhiteb
     let mut nodes = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
     if let Some(items) = board.get("nodes").and_then(|v| v.as_array()) {
-        for (idx, item) in items.iter().take(MAX_LIVE_WHITEBOARD_NODES).enumerate() {
+        for (idx, item) in items.iter().enumerate() {
             let label = clamp_chars(&value_to_trimmed_string(item.get("label")), 36);
             if label.is_empty() {
                 continue;
@@ -686,7 +685,7 @@ fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option<LiveWhiteb
     let mut seen_structure_pairs = std::collections::HashSet::new();
     let mut cross_structure_edges = 0usize;
     if let Some(items) = board.get("edges").and_then(|v| v.as_array()) {
-        for item in items.iter().take(MAX_LIVE_WHITEBOARD_EDGES) {
+        for item in items.iter() {
             let from = value_to_trimmed_string(item.get("from"));
             let to = value_to_trimmed_string(item.get("to"));
             if from == to || !known_ids.contains(from.as_str()) || !known_ids.contains(to.as_str())
@@ -756,6 +755,20 @@ fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option<LiveWhiteb
             }
             edges.push(LiveWhiteboardEdge { from, to, label });
         }
+    }
+    for node in &nodes {
+        if node.node_type != "term" || node.parent_id.is_empty() {
+            continue;
+        }
+        if seen_term_edges.contains(&node.id) {
+            continue;
+        }
+        edges.push(LiveWhiteboardEdge {
+            from: node.parent_id.clone(),
+            to: node.id.clone(),
+            label: String::new(),
+        });
+        seen_term_edges.insert(node.id.clone());
     }
 
     Some(LiveWhiteboard {
@@ -881,6 +894,37 @@ mod tests {
 
         assert_eq!(reconciled.title, "前回");
         assert_eq!(reconciled.nodes.len(), 6);
+    }
+
+    #[test]
+    fn reconcile_whiteboard_allows_growth_for_new_topics() {
+        let previous = board(
+            "前回",
+            vec![
+                node("prev-main-a", "旧主題A", "main", ""),
+                node("prev-main-b", "旧主題B", "main", ""),
+                node("prev-branch-a", "旧補足A", "branch", "prev-main-a"),
+                node("prev-branch-b", "旧補足B", "branch", "prev-main-b"),
+            ],
+            Vec::new(),
+        );
+        let current = board(
+            "新課題を追加",
+            vec![
+                node("new-main-a", "新課題A", "main", ""),
+                node("new-main-b", "新課題B", "main", ""),
+                node("new-main-c", "新課題C", "main", ""),
+                node("new-branch-a", "新補足A", "branch", "new-main-a"),
+                node("new-branch-b", "新補足B", "branch", "new-main-b"),
+            ],
+            Vec::new(),
+        );
+
+        let reconciled = reconcile_whiteboard(Some(&previous), Some(current)).unwrap();
+
+        assert_eq!(reconciled.title, "新課題を追加");
+        assert_eq!(reconciled.nodes.len(), 5);
+        assert!(reconciled.nodes.iter().any(|node| node.id == "new-main-c"));
     }
 
     #[test]
@@ -1061,6 +1105,44 @@ mod tests {
             .find(|edge| edge.from == "branch" && edge.to == "term")
             .expect("term edge should point from structure branch to term");
         assert!(term_edge.label.is_empty());
+    }
+
+    #[test]
+    fn parse_whiteboard_synthesizes_missing_term_parent_edge() {
+        let value = serde_json::json!({
+            "title": "用語エッジ補完テスト",
+            "layout": "flow",
+            "nodes": [
+                {
+                    "id": "main",
+                    "label": "主概念",
+                    "node_type": "structure",
+                    "kind": "core",
+                    "role": "main",
+                    "source_type": "lecture"
+                },
+                {
+                    "id": "term",
+                    "label": "用語",
+                    "node_type": "term",
+                    "kind": "support",
+                    "role": "branch",
+                    "parent_id": "main",
+                    "source_type": "lecture"
+                }
+            ],
+            "edges": []
+        });
+
+        let board = parse_live_whiteboard(Some(&value)).expect("whiteboard should parse");
+
+        let term_edges = board
+            .edges
+            .iter()
+            .filter(|edge| edge.from == "main" && edge.to == "term")
+            .collect::<Vec<_>>();
+        assert_eq!(term_edges.len(), 1);
+        assert!(term_edges[0].label.is_empty());
     }
 
     #[test]

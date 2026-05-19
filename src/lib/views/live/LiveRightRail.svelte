@@ -52,6 +52,7 @@
               {#each activeWhiteboardLayout.edges as edge (edge.id)}
                 <line
                   class="edge-kind-{edge.colorKind} edge-source-{edge.colorSourceType}"
+                  class:term-edge={edge.termEdge}
                   x1={edge.x1}
                   y1={edge.y1}
                   x2={edge.x2}
@@ -234,6 +235,11 @@
   .board-preview-links line.edge-source-external {
     stroke-dasharray: 1.6 1.4;
     opacity: 0.64;
+  }
+  .board-preview-links line.term-edge {
+    stroke-width: 0.9;
+    opacity: 0.86;
+    stroke-dasharray: none;
   }
   .board-preview-node {
     position: absolute;

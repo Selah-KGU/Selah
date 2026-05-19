@@ -24,6 +24,7 @@ export type WhiteboardLayoutEdge = {
   from: string;
   to: string;
   label: string;
+  termEdge?: boolean;
   colorKind: string;
   colorSourceType: string;
   x1: number;
