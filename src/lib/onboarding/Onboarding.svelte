@@ -34,6 +34,7 @@
   let provider = $state<Provider>("openai");
   let apiKey = $state("");
   let testing = $state(false);
+  let testDone = $state(false);
   let testMsg = $state("");
   let testOk = $state<boolean | null>(null);
 
@@ -121,6 +122,7 @@
       return;
     }
     testing = true;
+    testDone = false;
     testMsg = "接続をテスト中...";
     testOk = null;
     try {
@@ -145,9 +147,8 @@
         resetAiReady();
         await updateAiReadiness();
       }
-      updateRecord({ aiCompleted: true, purposes });
-      // Auto-advance after a brief delay so the user sees the success
-      setTimeout(() => { if (step === "apikey") next("checklist"); }, 700);
+      updateRecord({ purposes });
+      testDone = true;
     } catch (e: any) {
       testOk = false;
       testMsg = friendlyError(e);
@@ -551,7 +552,9 @@
       </div>
 
       <footer class="foot">
-        <button class="btn-ghost" onclick={skipOnboarding}>あとで</button>
+        {#if step !== "finish"}
+          <button class="btn-ghost" onclick={skipOnboarding}>あとで</button>
+        {/if}
         <div class="foot-right">
           {#if step === "welcome"}
             <button class="btn-primary" onclick={() => next("purpose")}>はじめる</button>
@@ -564,9 +567,13 @@
           {:else if step === "apikey"}
             <button class="btn-ghost" onclick={() => next("provider")}>戻る</button>
             <button class="btn-ghost" onclick={() => next("checklist")}>スキップ</button>
-            <button class="btn-primary" onclick={saveAndTest} disabled={testing}>
-              {testing ? "テスト中..." : "保存してテスト"}
-            </button>
+            {#if testDone}
+              <button class="btn-primary" onclick={() => next("checklist")}>次へ</button>
+            {:else}
+              <button class="btn-primary" onclick={saveAndTest} disabled={testing}>
+                {testing ? "テスト中..." : "保存してテスト"}
+              </button>
+            {/if}
           {:else if step === "checklist"}
             <button class="btn-primary" onclick={() => next("finish")}>次へ</button>
           {:else if step === "finish"}

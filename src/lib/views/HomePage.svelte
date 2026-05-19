@@ -10,7 +10,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { openExternalUrl } from "../system";
   import { buildCourseSlots, getHeroCourses, type CourseSlot } from "../schedule";
-  import { shouldShowHomeCard, reopenOnboarding, onboardingRecord } from "../onboarding/onboardingState";
+  import { showHomeOnboardingCard, reopenOnboarding } from "../onboarding/onboardingState";
   import selahLogoUrl from "../../assets/logo.png";
   import {
     AI_CACHE_KEY,
@@ -41,19 +41,11 @@
   let todayDate = $state(new Date());
   let loading = $state(true);
   let loadInProgress = false;
-  let showOnboardingCard = $state(false);
+  let showOnboardingCard = $derived($showHomeOnboardingCard);
 
-  async function refreshOnboardingCard() {
-    try { showOnboardingCard = await shouldShowHomeCard(); } catch { showOnboardingCard = false; }
-  }
   function handleStartOnboarding() {
     reopenOnboarding();
   }
-  // Re-check whenever the onboarding record changes
-  $effect(() => {
-    $onboardingRecord;
-    void refreshOnboardingCard();
-  });
 
   // KWIC subportal state
   let subportalData = $state<KwicSubportalData | null>(null);

@@ -1,27 +1,19 @@
-import { writable, get } from "svelte/store";
+import { writable, get, derived } from "svelte/store";
 import { getAiConfig, isDemoActive } from "../api";
 
 const STORAGE_KEY = "selah-onboarding-v1";
+const RESUME_KEY = "selah-onboarding-resume";
 
 export type OnboardingPurpose = "summary" | "agent" | "live" | "voice";
 
 export interface OnboardingRecord {
   version: 1;
   purposes: OnboardingPurpose[];
-  aiCompleted: boolean;
-  checklistCompleted: boolean;
-  sttCompleted: boolean;
   skippedAt?: string;
   completedAt?: string;
 }
 
-const EMPTY: OnboardingRecord = {
-  version: 1,
-  purposes: [],
-  aiCompleted: false,
-  checklistCompleted: false,
-  sttCompleted: false,
-};
+const EMPTY: OnboardingRecord = { version: 1, purposes: [] };
 
 function load(): OnboardingRecord {
   try {
@@ -36,13 +28,17 @@ function load(): OnboardingRecord {
 }
 
 function persist(rec: OnboardingRecord) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(rec));
-  } catch { /* ignore */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(rec)); } catch { /* ignore */ }
 }
 
 export const onboardingRecord = writable<OnboardingRecord>(load());
 export const onboardingVisible = writable<boolean>(false);
+
+/** True when the Home onboarding banner should appear. Reactive — re-derives whenever record changes. */
+export const showHomeOnboardingCard = derived(onboardingRecord, (rec) => {
+  if (isDemoActive()) return false;
+  return !rec.completedAt;
+});
 
 export function updateRecord(patch: Partial<OnboardingRecord>) {
   onboardingRecord.update((rec) => {
@@ -66,14 +62,12 @@ export function reopenOnboarding() {
   onboardingVisible.set(true);
 }
 
-const RESUME_KEY = "selah-onboarding-resume";
-
 /** Save which step to resume to after a settings detour. */
 export function markResume(step: string) {
   try { sessionStorage.setItem(RESUME_KEY, step); } catch { /* ignore */ }
 }
 
-/** Consume the resume token (one-shot). Returns the step name or null. */
+/** Consume the resume token (one-shot). */
 export function consumeResume(): string | null {
   try {
     const v = sessionStorage.getItem(RESUME_KEY);
@@ -92,24 +86,8 @@ export function hasResume(): boolean {
 export function resetOnboarding() {
   try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
   try { sessionStorage.removeItem(RESUME_KEY); } catch { /* ignore */ }
-  try { localStorage.removeItem(HOME_CARD_DISMISS_KEY); } catch { /* ignore */ }
   onboardingRecord.set({ ...EMPTY });
   onboardingVisible.set(false);
-}
-
-const HOME_CARD_DISMISS_KEY = "selah-onboarding-home-card-dismissed-v1";
-
-/** Whether the Home onboarding entry card should appear right now. */
-export async function shouldShowHomeCard(): Promise<boolean> {
-  if (isDemoActive()) return false;
-  const rec = get(onboardingRecord);
-  if (rec.completedAt) return false;
-  try { if (localStorage.getItem(HOME_CARD_DISMISS_KEY) === "1") return false; } catch { /* ignore */ }
-  return true;
-}
-
-export function dismissHomeCard() {
-  try { localStorage.setItem(HOME_CARD_DISMISS_KEY, "1"); } catch { /* ignore */ }
 }
 
 /** Clear every per-page first-visit tip dismissal. Returns count removed. */
@@ -121,20 +99,14 @@ export function clearAllFirstVisitTips(): number {
       const k = localStorage.key(i);
       if (k && k.startsWith("selah-tip-") && k.endsWith("-v1")) keys.push(k);
     }
-    for (const k of keys) {
-      localStorage.removeItem(k);
-      removed++;
-    }
+    for (const k of keys) { localStorage.removeItem(k); removed++; }
   } catch { /* ignore */ }
   return removed;
 }
 
 /**
- * Decide whether to auto-show onboarding on app boot.
- * Trigger when:
- *   - not demo mode
- *   - user has never completed or skipped
- *   - AND AI config looks unconfigured (default `local` provider with no api_key)
+ * Decide whether to auto-show onboarding modal on app boot.
+ * Trigger only when never completed/skipped AND AI looks unconfigured.
  */
 export async function shouldAutoShow(): Promise<boolean> {
   if (isDemoActive()) return false;
@@ -144,7 +116,6 @@ export async function shouldAutoShow(): Promise<boolean> {
     const cfg = await getAiConfig();
     const hasApiKey = !!cfg.api_key?.trim();
     const isDefaultLocal = cfg.provider === "local";
-    // Unconfigured = no API key AND still on default local provider
     return !hasApiKey && isDefaultLocal;
   } catch {
     return true;
