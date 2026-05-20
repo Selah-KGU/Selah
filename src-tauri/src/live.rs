@@ -28,6 +28,8 @@ pub use types::{
 
 const MIN_AI_SUMMARIZATION_DURATION_SECS: i64 = 120;
 const MAX_LIVE_TERM_EXPLANATION_CHARS: usize = 220;
+const LIVE_FLUSH_FORCE_WAIT_ATTEMPTS: usize = 1200;
+const LIVE_FLUSH_FORCE_WAIT_MS: u64 = 250;
 // Whiteboard nodes/edges are intentionally uncapped: the board must accumulate
 // the full course/recording as it grows, so a hard ceiling silently forces the
 // model to compress earlier branches. Per-field length and the relationship
@@ -45,6 +47,7 @@ struct LiveSession {
     pending_lines: Arc<Vec<LiveTranscriptLine>>,
     summaries: Arc<Vec<LiveSummaryChunk>>,
     batch_started_at: DateTime<Local>,
+    flush_in_flight: bool,
     /// True when this session began with no prior cache for today —
     /// i.e. it owns the on-disk .md/day_cache and cancel may scrub them.
     /// False when resumed from an earlier session today; cancel must leave
@@ -506,15 +509,19 @@ whiteboard は講義内容を中心に関連知識を整理する知識整理ボ
 話題境界:
 - 今回区間が既存 main クラスターの続きか、新しい話題・章・素材・動画・論点かを必ず判定してからノードを追加する。
 - 新しい話題と判断する目安: 主語・対象・人物・作品・制度・問題設定が大きく変わる、前区間との因果や説明関係が薄い、締めの発話や導入文がある、別の動画/会話/教材に切り替わった形跡がある、または用語集合がほぼ重ならない。
-- 新しい話題なら、既存ノードを残したまま新しい role="main" の topic/cluster ノードを作り、その区間の branch / term はその新 main 配下へ置く。旧 main の detail に無理に混ぜない。
+- 新しい話題なら、まずその区間内の散らばった点を束ねる合理的な上位テーマを探す。同じ動画・教材・会話単位、同じ人物/作品/制度/事例、同じ問題設定、同じ時代背景、同じ説明目的に属する点は、ばらばらの main にせず、1 つの上位 main クラスターにまとめる。
+- 新しい話題の中に細かい事実・名前・出来事・属性が多い場合、それぞれを main にしない。代表する role="main" は「何について整理しているか」を示す抽象度にし、個々の点は branch / term としてその配下に置く。
+- 発話に明示的な見出しがなくても、内容から自然に読める上位 main を合成してよい。例: 個別の団体名・年号・出来事が並ぶなら「○○における制度・勢力関係」「○○動画で紹介された主要事例」のように束ね、各団体名・年号・出来事は branch / term にする。
+- 新しい話題でも、既存ノードを残したまま上位 role="main" の topic/cluster ノードを作り、その区間の branch / term はその新 main 配下へ置く。旧 main の detail に無理に混ぜない。
 - 既存話題の続きなら、新しい main を増やさず、該当 main 配下の branch / term / edge として追加・更新する。
-- 複数話題が同じ区間に混ざる場合は、それぞれ最も近い main クラスターに振り分ける。どの既存 main にも自然に属さない内容だけ新しい main にする。
+- 複数話題が同じ区間に混ざる場合も、まず「同じ上位テーマで説明できる散点群」ごとにまとめる。それぞれ最も近い main クラスターに振り分け、どの既存 main にも自然に属さず、かつ同じ上位テーマにも束ねられない内容だけ新しい main にする。
 - 別 main クラスター間の edge は、因果・比較・前提・反論・同一人物/同一作品など、明確な意味がある場合だけ作る。単に録音内で隣り合っただけの話題を edge で結ばない。
 
 ノード:
 - 主次を必ず分ける。role="main" は講義の主要課題・章・観点を代表するノードにし、内容が増えても少数の冒頭ノードだけに固定し続けない。
 - role="branch" の分岐ノードは必ず parent_id で最も近い主ノードに接続し、主ノードなしの孤立分岐を作らない。
-- 新しい語が出ても、既存主ノードの detail や分岐に収まるなら新しい主ノードにしない。講義の大きな論点が変わった時だけ主ノードを増やす。
+- 新しい語・固有名詞・出来事・数値・属性が出ても、それだけを理由に新しい主ノードにしない。既存 main または合成した上位 main の detail や分岐に収まるなら branch / term にする。講義の大きな論点、録音内の主要な素材、説明対象そのものが変わった時だけ主ノードを増やす。
+- role="main" は branch を受け止める見出しでもある。複数の branch が同じ「何について」の答えになるなら、main はそれらを包む上位概念にし、branch は具体例・構成要素・出来事・条件・結果として並べる。
 - ノード数は固定目標で決めない。大きな論点・人物・出来事・制度・因果上の転換点は構造ノードとして扱い、単なる用語や属性は必要な場合だけ小さな用語ノードにする。
 - 構造ノードか用語ノードかは次で判断する。
   - 構造ノード: node_type="structure"。それを外すと流れ・対比・因果・制度関係・人物関係が分かりにくくなる概念。複数の関係を持つ、話題の段階を作る、論点の主語になる、結果や転換点になるもの。
@@ -717,7 +724,7 @@ async fn summarize_chunk(
         crate::ai::ChatMessage {
             role: "user".into(),
             content: format!(
-                "{}\n\nこれまでの全分割要約と用語注釈（累積素材）:\n{}\n\n現在の累積知識整理ボード:\n{}\n\n今回新しく生成された区間の要約と用語:\n{}\n\n今回の文字起こし（補助参考、必要に応じて細部を拾う。長すぎる場合は末尾のみ表示）:\n{}\n\n指示: 上記の累積素材すべてと今回区間を統合して、現在までの累積 whiteboard を JSON で返す。既存ノードは絶対に削らず、id を維持し、純増させること。追加前に今回区間が既存 main クラスターの続きか、新しい話題・章・素材・動画・論点かを判定し、新しい話題なら新しい main クラスターへ、続きなら既存 main 配下へ配置すること。",
+                "{}\n\nこれまでの全分割要約と用語注釈（累積素材）:\n{}\n\n現在の累積知識整理ボード:\n{}\n\n今回新しく生成された区間の要約と用語:\n{}\n\n今回の文字起こし（補助参考、必要に応じて細部を拾う。長すぎる場合は末尾のみ表示）:\n{}\n\n指示: 上記の累積素材すべてと今回区間を統合して、現在までの累積 whiteboard を JSON で返す。既存ノードは絶対に削らず、id を維持し、純増させること。追加前に今回区間が既存 main クラスターの続きか、新しい話題・章・素材・動画・論点かを判定すること。新しい話題でも、散らばった点が同じ動画・教材・人物・制度・事例・問題設定に属するなら、個別点を main に乱立させず、合理的な上位 main を 1 つ合成して branch / term を配下に置くこと。既存話題の続きなら既存 main 配下へ配置すること。",
                 course_block,
                 full_history,
                 whiteboard_context,
@@ -1001,52 +1008,96 @@ async fn flush_session_summary(
     state: &LiveState,
     force: bool,
 ) -> Result<LiveSessionSnapshot, String> {
-    let now = Local::now();
+    let mut wait_attempts = 0usize;
     let summary_interval_minutes = live_summary_interval_minutes();
-    let (session_id, course, lines, recent_summaries, range_start, range_end, chunk_index) = {
-        let guard = state
-            .0
-            .lock()
-            .map_err(|_| "Live state lock failed".to_string())?;
-        let session = guard
-            .as_ref()
-            .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
-        if session.pending_lines.is_empty() {
-            return Ok(session.snapshot());
+    let (session_id, course, lines, recent_summaries, range_start, range_end, chunk_index) = loop {
+        let captured = {
+            let now = Local::now();
+            let mut guard = state
+                .0
+                .lock()
+                .map_err(|_| "Live state lock failed".to_string())?;
+            let session = guard
+                .as_mut()
+                .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
+            if session.flush_in_flight {
+                let snapshot = session.snapshot();
+                if !force || wait_attempts >= LIVE_FLUSH_FORCE_WAIT_ATTEMPTS {
+                    return Ok(snapshot);
+                }
+                None
+            } else {
+                if session.pending_lines.is_empty() {
+                    return Ok(session.snapshot());
+                }
+                if should_skip_ai_summarization(session.started_at, now) {
+                    return Ok(session.snapshot());
+                }
+                if !force
+                    && now
+                        .signed_duration_since(session.batch_started_at)
+                        .num_minutes()
+                        < summary_interval_minutes
+                {
+                    return Ok(session.snapshot());
+                }
+                // Skip the scheduled summary when almost nothing has been said this
+                // interval — spending an AI call on 1-2 stray lines wastes power and
+                // yields a useless summary. We leave batch_started_at untouched, so
+                // the next check still considers this content and will fire once more
+                // lines have accumulated (or immediately if forced on stop).
+                if !force && session.pending_lines.len() < 3 {
+                    return Ok(session.snapshot());
+                }
+                session.flush_in_flight = true;
+                Some((
+                    session.session_id.clone(),
+                    session.course.clone(),
+                    session.pending_lines.clone(),
+                    session.summaries.clone(),
+                    session.batch_started_at,
+                    now,
+                    session.summaries.len() + 1,
+                ))
+            }
+        };
+        if let Some(captured) = captured {
+            break captured;
         }
-        if should_skip_ai_summarization(session.started_at, now) {
-            return Ok(session.snapshot());
-        }
-        if !force
-            && now
-                .signed_duration_since(session.batch_started_at)
-                .num_minutes()
-                < summary_interval_minutes
-        {
-            return Ok(session.snapshot());
-        }
-        // Skip the scheduled summary when almost nothing has been said this
-        // interval — spending an AI call on 1-2 stray lines wastes power and
-        // yields a useless summary. We leave batch_started_at untouched, so
-        // the next tick still considers this content and will fire once more
-        // lines have accumulated (or immediately if forced on stop).
-        if !force && session.pending_lines.len() < 3 {
-            return Ok(session.snapshot());
-        }
-        (
-            session.session_id.clone(),
-            session.course.clone(),
-            session.pending_lines.clone(),
-            session.summaries.clone(),
-            session.batch_started_at,
-            now,
-            session.summaries.len() + 1,
-        )
+        wait_attempts += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(LIVE_FLUSH_FORCE_WAIT_MS)).await;
     };
 
     let range_label = format!("{}-{}", format_time(range_start), format_time(range_end));
-    let chunk_ai =
-        summarize_chunk(&course, &lines, &recent_summaries, &range_label).await?;
+    let chunk_ai_result = summarize_chunk(&course, &lines, &recent_summaries, &range_label).await;
+    let summarized_line_count = lines.len();
+    let chunk_ai = match chunk_ai_result {
+        Ok(chunk_ai) => chunk_ai,
+        Err(err) => {
+            let mut guard = state
+                .0
+                .lock()
+                .map_err(|_| "Live state lock failed".to_string())?;
+            if let Some(session) = guard.as_mut() {
+                if session.session_id == session_id {
+                    session.flush_in_flight = false;
+                }
+            }
+            return Err(err);
+        }
+    };
+    {
+        let mut guard = state
+            .0
+            .lock()
+            .map_err(|_| "Live state lock failed".to_string())?;
+        let Some(session) = guard.as_mut() else {
+            return Ok(empty_snapshot());
+        };
+        if session.session_id != session_id {
+            return Ok(session.snapshot());
+        }
+    }
     let reconciled_board =
         reconcile_whiteboard(latest_whiteboard(&recent_summaries), chunk_ai.whiteboard);
 
@@ -1054,12 +1105,13 @@ async fn flush_session_summary(
         .0
         .lock()
         .map_err(|_| "Live state lock failed".to_string())?;
-    let session = guard
-        .as_mut()
-        .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
+    let Some(session) = guard.as_mut() else {
+        return Ok(empty_snapshot());
+    };
     if session.session_id != session_id {
         return Ok(session.snapshot());
     }
+    session.flush_in_flight = false;
     if session.pending_lines.is_empty() {
         return Ok(session.snapshot());
     }
@@ -1072,8 +1124,10 @@ async fn flush_session_summary(
         whiteboard: reconciled_board,
     };
     Arc::make_mut(&mut session.summaries).push(summary);
-    Arc::make_mut(&mut session.pending_lines).clear();
-    session.batch_started_at = now;
+    let pending = Arc::make_mut(&mut session.pending_lines);
+    let drain_count = summarized_line_count.min(pending.len());
+    pending.drain(0..drain_count);
+    session.batch_started_at = range_end;
     Ok(session.snapshot())
 }
 
@@ -1146,6 +1200,7 @@ pub fn live_start_session(
         pending_lines: Arc::new(Vec::new()),
         summaries: Arc::new(prev_summaries),
         batch_started_at: now,
+        flush_in_flight: false,
         is_fresh_start,
         persisted_line_count,
     };
@@ -1700,6 +1755,11 @@ mod tests {
         assert!(board_prompt.contains("話題境界"));
         assert!(board_prompt.contains("別の動画/会話/教材に切り替わった形跡"));
         assert!(board_prompt.contains("既存 main クラスターの続き"));
+        assert!(board_prompt.contains("散らばった点を束ねる合理的な上位テーマ"));
+        assert!(board_prompt.contains("ばらばらの main にせず"));
+        assert!(board_prompt.contains("上位 main を合成してよい"));
+        assert!(board_prompt.contains("それだけを理由に新しい主ノードにしない"));
+        assert!(board_prompt.contains("branch を受け止める見出し"));
         assert!(board_prompt.contains("中心放射に見せるためだけに hub を選ばない"));
         assert!(board_prompt.contains("小さな用語ノード"));
         assert!(board_prompt.contains("node_type=\"term\""));
