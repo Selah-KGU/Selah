@@ -233,7 +233,7 @@
     whiteboardExpanded = false;
   }
   function clampWhiteboardZoom(value: number): number {
-    return Math.min(2.8, Math.max(0.35, Math.round(value * 100) / 100));
+    return Math.max(0.05, Math.round(value * 100) / 100);
   }
   function setWhiteboardZoom(value: number) {
     whiteboardZoom = clampWhiteboardZoom(value);
@@ -374,7 +374,15 @@
   });
 
   function getWhiteboardStagePreset(nodeCount: number): WhiteboardStagePreset {
-    if (nodeCount > 14) return { width: 1360, height: 820, zoom: 0.86 };
+    if (nodeCount > 14) {
+      const extra = nodeCount - 14;
+      const spread = Math.sqrt(extra);
+      return {
+        width: Math.round(1360 + spread * 220 + extra * 16),
+        height: Math.round(820 + spread * 120 + extra * 12),
+        zoom: 0.86,
+      };
+    }
     if (nodeCount > 8) return { width: 1220, height: 760, zoom: 0.9 };
     return { width: 1040, height: 660, zoom: 0.96 };
   }

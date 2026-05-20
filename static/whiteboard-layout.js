@@ -4,8 +4,6 @@
  *
  * Usage:
  *   var layout = window.WhiteboardLayout.compute(rawBoard, {
- *     maxNodes: 18,                 // safety cap
- *     maxEdges: 24,                 // safety cap
  *     fallbackBoardTitle: 'Knowledge Board',
  *     externalNodeLabel: '外部'     // used when external_source is empty
  *   });
@@ -651,14 +649,11 @@
   function compute(board, opts) {
     if (!board || typeof board !== 'object') return null;
     opts = opts || {};
-    var maxNodes = opts.maxNodes != null ? opts.maxNodes : 18;
-    var maxEdges = opts.maxEdges != null ? opts.maxEdges : 24;
     var fallbackTitle = opts.fallbackBoardTitle || 'Knowledge Board';
     var externalLabel = opts.externalNodeLabel || '外部';
 
     var rawNodes = (Array.isArray(board.nodes) ? board.nodes : [])
-      .filter(function (n) { return n && typeof n.label === 'string' && n.label.trim(); })
-      .slice(0, maxNodes);
+      .filter(function (n) { return n && typeof n.label === 'string' && n.label.trim(); });
     if (rawNodes.length < 2) return null;
 
     // Fast-path flag: backend-normalised boards (schema_version ≥ 1) have
@@ -750,7 +745,7 @@
       return { x1: n.x - halfW, y1: n.y - halfH, x2: n.x + halfW, y2: n.y + halfH };
     });
 
-    var rawEdges = Array.isArray(board.edges) ? board.edges.slice(0, maxEdges) : [];
+    var rawEdges = Array.isArray(board.edges) ? board.edges : [];
     var validEdges = [];
     var termEdgeSeen = {};
     rawEdges.forEach(function (e, i) {

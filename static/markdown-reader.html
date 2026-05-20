@@ -988,9 +988,6 @@
   // list in saved Live notes. The reader swaps that block for an interactive
   // mini-board (matching the Live view), keeping the bullet list as a textual
   // fallback / source-of-truth for raw markdown editors.
-  var WB_MAX_NODES = 18;
-  var WB_MAX_EDGES = 24;
-
   function renderWhiteboardBlocks(root) {
     // Pass 1: structured JSON fence (new Live saves embed full board data).
     root
@@ -1002,8 +999,6 @@
         try { data = JSON.parse(codeEl.textContent || ''); }
         catch (e) { console.warn('[md-reader] whiteboard JSON parse failed:', e); return; }
         var layout = window.WhiteboardLayout && window.WhiteboardLayout.compute(data, {
-          maxNodes: WB_MAX_NODES,
-          maxEdges: WB_MAX_EDGES,
           fallbackBoardTitle: '知識整理ボード'
         });
         if (!layout) return;
@@ -1028,8 +1023,6 @@
       var board = parseBoardFromBullets(h);
       if (!board) return;
       var layout = window.WhiteboardLayout && window.WhiteboardLayout.compute(board, {
-        maxNodes: WB_MAX_NODES,
-        maxEdges: WB_MAX_EDGES,
         fallbackBoardTitle: '知識整理ボード'
       });
       if (!layout) return;
@@ -1257,7 +1250,15 @@
   }
 
   function whiteboardStagePreset(nodeCount) {
-    if (nodeCount > 14) return { width: 1360, height: 820, zoom: 0.86 };
+    if (nodeCount > 14) {
+      var extra = nodeCount - 14;
+      var spread = Math.sqrt(extra);
+      return {
+        width: Math.round(1360 + spread * 220 + extra * 16),
+        height: Math.round(820 + spread * 120 + extra * 12),
+        zoom: 0.86,
+      };
+    }
     if (nodeCount > 8) return { width: 1220, height: 760, zoom: 0.9 };
     return { width: 1040, height: 660, zoom: 0.96 };
   }
@@ -1284,7 +1285,7 @@
     card.appendChild(controls);
 
     function clampZoom(value) {
-      return Math.min(2.8, Math.max(0.35, Math.round(value * 100) / 100));
+      return Math.max(0.05, Math.round(value * 100) / 100);
     }
     function render() {
       stage.style.transform = 'translate(-50%, -50%) translate(' + panX + 'px, ' + panY + 'px) scale(' + zoom + ')';

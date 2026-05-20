@@ -680,7 +680,6 @@ fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option<LiveWhiteb
     let mut edges = Vec::new();
     let mut seen_term_edges = std::collections::HashSet::new();
     let mut seen_structure_pairs = std::collections::HashSet::new();
-    let mut cross_structure_edges = 0usize;
     if let Some(items) = board.get("edges").and_then(|v| v.as_array()) {
         for item in items.iter() {
             let from = value_to_trimmed_string(item.get("from"));
@@ -729,26 +728,6 @@ fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option<LiveWhiteb
             };
             if !seen_structure_pairs.insert(pair) {
                 continue;
-            }
-            let from_group = if from_node.role == "main" {
-                from_node.id.as_str()
-            } else {
-                from_node.parent_id.as_str()
-            };
-            let to_group = if to_node.role == "main" {
-                to_node.id.as_str()
-            } else {
-                to_node.parent_id.as_str()
-            };
-            let cross_group = !parent_link
-                && !from_group.is_empty()
-                && !to_group.is_empty()
-                && from_group != to_group;
-            if cross_group {
-                if cross_structure_edges >= 3 {
-                    continue;
-                }
-                cross_structure_edges += 1;
             }
             edges.push(LiveWhiteboardEdge { from, to, label });
         }
@@ -1143,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_whiteboard_limits_noisy_structure_edges() {
+    fn parse_whiteboard_keeps_all_valid_structure_edges() {
         let value = serde_json::json!({
             "title": "構造エッジテスト",
             "layout": "flow",
@@ -1165,7 +1144,7 @@ mod tests {
 
         let board = parse_live_whiteboard(Some(&value)).expect("whiteboard should parse");
 
-        assert_eq!(board.edges.len(), 3);
+        assert_eq!(board.edges.len(), 4);
         assert!(board
             .edges
             .iter()
@@ -1178,7 +1157,7 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.from == "a" && edge.to == "d"));
-        assert!(!board.edges.iter().any(|edge| edge.label == "関係4"));
+        assert!(board.edges.iter().any(|edge| edge.label == "関係4"));
         assert!(!board.edges.iter().any(|edge| edge.label == "重複"));
     }
 }

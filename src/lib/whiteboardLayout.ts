@@ -47,8 +47,6 @@ export type WhiteboardLayoutResult = {
 };
 
 export type WhiteboardLayoutOptions = {
-  maxNodes?: number;
-  maxEdges?: number;
   fallbackBoardTitle?: string;
   externalNodeLabel?: string;
 };
@@ -77,8 +75,6 @@ function makeOptionsKey(options?: WhiteboardLayoutOptions): string {
   // Manual concat — faster than JSON.stringify on a hot path that runs per
   // reactive read.
   return (
-    (options.maxNodes ?? "") + "|" +
-    (options.maxEdges ?? "") + "|" +
     (options.fallbackBoardTitle ?? "") + "|" +
     (options.externalNodeLabel ?? "")
   );
