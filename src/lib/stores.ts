@@ -559,6 +559,15 @@ function persistCacheValue<T>(key: string, data: T, ts: number, notify: boolean)
   if (notify) notifySwr(key, data);
 }
 
+function isEmptySchedulePayload(data: any): boolean {
+  const raw = data?.raw;
+  if (!raw) return true;
+  const kgcEmpty = !Array.isArray(raw.kgc_entries_current) || raw.kgc_entries_current.length === 0;
+  const lunaEmpty = !Array.isArray(raw.luna_courses) || raw.luna_courses.length === 0;
+  const noWeek = !String(raw.current_week_label || "").trim();
+  return kgcEmpty && lunaEmpty && noWeek;
+}
+
 function readAnyDiskCache<T>(key: string): { data: T; ts: number } | null {
   const disk = loadDiskCache(key);
   if (!disk) return null;
@@ -796,6 +805,18 @@ export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<
 
   const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
   const entry = cache.get(key);
+  if (key === "schedule_data") {
+    const loaded = await loadBackendManagedCache<T>(key);
+    if (!loaded) {
+      throw new Error("時間割スナップショットを読み込めませんでした");
+    }
+    const fresh = !!entry && Date.now() - entry.ts < effectiveTtl;
+    persistCacheValue(key, loaded.data, loaded.ts, true);
+    if (!fresh) {
+      void queueBackendManagedRefresh<T>(key, false, loaded.data);
+    }
+    return loaded.data;
+  }
   if (entry && Date.now() - entry.ts < effectiveTtl) {
     return entry.data as T;
   }
@@ -883,7 +904,7 @@ export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: num
         // Guard: don't overwrite good cache with empty schedule data
         if (key === "schedule_data") {
           const sr = data as any;
-          if (sr && sr.raw && Array.isArray(sr.raw.kgc_entries_current) && sr.raw.kgc_entries_current.length === 0 && !sr.raw.current_week_label) {
+          if (isEmptySchedulePayload(sr)) {
             console.warn(`[Selah] SWR: "${key}" returned empty data, keeping stale cache`);
             return disk.data as T;
           }

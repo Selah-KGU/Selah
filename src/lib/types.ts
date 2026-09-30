@@ -189,4 +189,5 @@ export interface ScheduleResponse {
   luna_term_options: SelectOption[];
   luna_year: string;
   luna_term: string;
+  kgc_warning?: string;
 }

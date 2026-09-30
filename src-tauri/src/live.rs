@@ -266,13 +266,13 @@ fn live_ai_config() -> Result<crate::ai::AiConfig, String> {
 
         #[cfg(target_os = "macos")]
         {
-        let model = crate::local_ai::model_catalog()
-            .iter()
-            .find(|model| model.id == cfg.local_model)
-            .ok_or_else(|| "Live要約用のローカルモデルが見つかりません".to_string())?;
-        if !crate::local_ai::is_model_downloaded(&model.file_name) {
-            return Err("Live要約用のローカルモデルを先にダウンロードしてください".into());
-        }
+            let model = crate::local_ai::model_catalog()
+                .iter()
+                .find(|model| model.id == cfg.local_model)
+                .ok_or_else(|| "Live要約用のローカルモデルが見つかりません".to_string())?;
+            if !crate::local_ai::is_model_downloaded(&model.file_name) {
+                return Err("Live要約用のローカルモデルを先にダウンロードしてください".into());
+            }
         }
     } else if cfg.api_key.is_empty() {
         // Surfaces the real cause instead of letting the request 401 silently.
@@ -1660,10 +1660,7 @@ fn start_live_flush_driver(app: tauri::AppHandle, session_id: String) {
                     // "要約を生成中…". Emit the cleared state plus an error event so
                     // Live can surface the failure instead of hanging silently.
                     emit_live_update(&app, state.inner());
-                    let _ = app.emit(
-                        "live-summary-error",
-                        serde_json::json!({ "message": err }),
-                    );
+                    let _ = app.emit("live-summary-error", serde_json::json!({ "message": err }));
                     tokio::time::sleep(std::time::Duration::from_secs(
                         LIVE_FLUSH_DRIVER_IDLE_SLEEP_SECS,
                     ))

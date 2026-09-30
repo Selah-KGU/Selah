@@ -390,6 +390,9 @@ impl Database {
     }
 
     fn query_kgc_courses(conn: &Connection, week_label: &str) -> Result<Vec<KgcCourseRow>, String> {
+        if week_label.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         let mut stmt = conn.prepare(
             "SELECT id, kgc_code, name, day, period, room, detail_path, is_cancelled, is_makeup, is_room_changed, week_label
              FROM kgc_courses WHERE week_label = ?1 ORDER BY day, period"
@@ -465,6 +468,7 @@ impl Database {
     }
 
     fn query_luna_courses(conn: &Connection) -> Result<Vec<LunaCourseRow>, String> {
+        let (year, term) = Self::effective_luna_scope(conn);
         let mut stmt = conn.prepare(
             "SELECT id, luna_id, name, teacher, day, period FROM luna_courses ORDER BY day, period"
         ).map_err(|e| format!("DB query: {}", e))?;
@@ -480,12 +484,74 @@ impl Database {
                 })
             })
             .map_err(|e| format!("DB map: {}", e))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows
+            .filter_map(|r| r.ok())
+            .filter(|row| luna_course_matches_snapshot(&row.luna_id, &year, &term))
+            .collect())
+    }
+
+    /// Replace the current timetable rows only. Activity and count tables stay,
+    /// because they are keyed by luna_id and are not foreign keys.
+    pub fn replace_luna_courses(&self, courses: &[luna_parser::LunaCourse]) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let now = epoch_secs();
+        let tx = conn.transaction().map_err(|e| format!("DB begin: {}", e))?;
+        tx.execute("DELETE FROM luna_courses", [])
+            .map_err(|e| format!("DB delete luna courses: {}", e))?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO luna_courses (luna_id, name, teacher, day, period, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6)",
+                )
+                .map_err(|e| format!("DB prepare: {}", e))?;
+            let mut seen = std::collections::HashSet::new();
+            for course in courses {
+                let day = course.day as i32;
+                let period = course.period as i32;
+                if !seen.insert((course.idnumber.clone(), day, period)) {
+                    continue;
+                }
+                stmt.execute(params![
+                    course.idnumber,
+                    course.name,
+                    course.teacher,
+                    day,
+                    period,
+                    now
+                ])
+                .map_err(|e| format!("DB insert luna course: {}", e))?;
+            }
+        }
+        tx.commit().map_err(|e| format!("DB commit: {}", e))?;
+        Ok(())
+    }
+
+    fn snapshot_luna_scope(conn: &Connection) -> (String, String) {
+        conn.query_row(
+            "SELECT luna_year, luna_term FROM schedule_snapshot_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or_else(|_| (String::new(), String::new()))
+    }
+
+    /// Calendar period wins over a stale snapshot, so a new spring does not
+    /// keep reading the previous fall just because Luna has not synced yet.
+    fn effective_luna_scope(conn: &Connection) -> (String, String) {
+        let (year, term) = Self::snapshot_luna_scope(conn);
+        if let Some(period) =
+            crate::academic_period::calendar_academic_period(chrono::Local::now().date_naive())
+        {
+            return (period.year, period.term);
+        }
+        (year, term)
     }
 
     /// Get luna_ids that need count enrichment (never fetched, or >1h stale).
     pub fn luna_ids_needing_counts(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let (year, term) = Self::effective_luna_scope(&conn);
         let threshold = epoch_secs() - 3 * 3600; // 3 hours
         let mut stmt = conn
             .prepare(
@@ -496,7 +562,10 @@ impl Database {
         let rows = stmt
             .query_map(params![threshold], |row| row.get::<_, String>(0))
             .map_err(|e| format!("DB map: {}", e))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows
+            .filter_map(|r| r.ok())
+            .filter(|luna_id| luna_course_matches_snapshot(luna_id, &year, &term))
+            .collect())
     }
 
     // ── Session plans ──
@@ -866,10 +935,29 @@ impl Database {
         let kgc_current = Self::query_kgc_courses(&conn, current_week_label)?;
         let kgc_next = Self::query_kgc_courses(&conn, next_week_label)?;
         let luna_courses = Self::query_luna_courses(&conn)?;
-        let session_plans = Self::query_all_session_plans(&conn)?;
-        let luna_counts = Self::query_all_luna_counts(&conn)?;
-        let luna_activities = Self::query_all_luna_activities(&conn)?;
-        let kgc_course_details = Self::query_all_kgc_course_details(&conn)?;
+        let (year, term) = Self::effective_luna_scope(&conn);
+        let visible_codes: std::collections::HashSet<&str> = kgc_current
+            .iter()
+            .chain(kgc_next.iter())
+            .map(|row| row.kgc_code.as_str())
+            .filter(|code| !code.is_empty())
+            .collect();
+        let session_plans = Self::query_all_session_plans(&conn)?
+            .into_iter()
+            .filter(|(code, _)| visible_codes.contains(code.as_str()))
+            .collect();
+        let luna_counts = Self::query_all_luna_counts(&conn)?
+            .into_iter()
+            .filter(|(id, _)| luna_course_matches_snapshot(id, &year, &term))
+            .collect();
+        let luna_activities = Self::query_all_luna_activities(&conn)?
+            .into_iter()
+            .filter(|row| luna_course_matches_snapshot(&row.luna_id, &year, &term))
+            .collect();
+        let kgc_course_details = Self::query_all_kgc_course_details(&conn)?
+            .into_iter()
+            .filter(|detail| visible_codes.contains(detail.kgc_code.as_str()))
+            .collect();
         Ok(ScheduleRawData {
             kgc_entries_current: kgc_current,
             kgc_entries_next: kgc_next,
@@ -1073,4 +1161,112 @@ pub fn epoch_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+/// Luna timetable ids are 16 digits. The academic year is the first four
+/// digits and the term code is at indexes 12..14 (02 spring, 03 fall).
+pub(crate) fn luna_id_year(luna_id: &str) -> Option<&str> {
+    let year = luna_id.get(..4)?;
+    year.chars().all(|c| c.is_ascii_digit()).then_some(year)
+}
+
+pub(crate) fn luna_id_term_code(luna_id: &str) -> Option<&str> {
+    let code = luna_id.get(12..14)?;
+    code.chars().all(|c| c.is_ascii_digit()).then_some(code)
+}
+
+fn plausible_academic_year(year: &str) -> bool {
+    matches!(year.parse::<i32>(), Ok(value) if (2000..=2100).contains(&value))
+}
+
+/// Hide a stored row only when its id positively belongs to another semester.
+/// Unrecognized ids, sentinel years such as 9999, and year-long codes stay.
+/// An empty snapshot term must not hide the whole table.
+pub(crate) fn luna_course_matches_snapshot(luna_id: &str, year: &str, term: &str) -> bool {
+    if !year.is_empty() {
+        if let Some(id_year) = luna_id_year(luna_id) {
+            if plausible_academic_year(id_year) && id_year != year {
+                return false;
+            }
+        }
+    }
+    if term.is_empty() {
+        return true;
+    }
+    match luna_id_term_code(luna_id) {
+        Some(code) if code == "02" || code == "03" => code == term,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hides_spring_luna_ids_when_snapshot_is_fall() {
+        assert!(!luna_course_matches_snapshot(
+            "2026340640010201",
+            "2026",
+            "03"
+        ));
+        assert!(luna_course_matches_snapshot(
+            "2026340650010301",
+            "2026",
+            "03"
+        ));
+    }
+
+    #[test]
+    fn keeps_unrecognized_and_year_long_luna_ids() {
+        assert!(luna_course_matches_snapshot(
+            "2026340640010101",
+            "2026",
+            "03"
+        ));
+        assert!(luna_course_matches_snapshot("not-a-luna-id", "2026", "03"));
+        assert!(luna_course_matches_snapshot("2026340640010201", "2026", ""));
+    }
+
+    #[test]
+    fn hides_a_different_academic_year() {
+        assert!(!luna_course_matches_snapshot(
+            "2025340650010301",
+            "2026",
+            "03"
+        ));
+    }
+
+    #[test]
+    fn hides_fall_luna_ids_when_snapshot_is_spring() {
+        assert!(!luna_course_matches_snapshot(
+            "2026340650010301",
+            "2026",
+            "02"
+        ));
+        assert!(luna_course_matches_snapshot(
+            "2026340640010201",
+            "2026",
+            "02"
+        ));
+        assert!(!luna_course_matches_snapshot(
+            "2026340650010301",
+            "2027",
+            "02"
+        ));
+    }
+
+    #[test]
+    fn keeps_sentinel_community_ids_but_hides_previous_year() {
+        assert!(luna_course_matches_snapshot(
+            "9999CM9901659902",
+            "2027",
+            "02"
+        ));
+        assert!(!luna_course_matches_snapshot(
+            "2026CM2600090102",
+            "2027",
+            "02"
+        ));
+    }
 }

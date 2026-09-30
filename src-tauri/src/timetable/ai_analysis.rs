@@ -416,7 +416,14 @@ pub async fn ai_analyze_todo_internal(
     }
 
     let snap = db.get_snapshot_state()?.unwrap_or_default();
-    let raw = db.build_raw_data(&snap.current_week_label, &snap.next_week_label, Vec::new())?;
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
+    let raw = db.build_raw_data(&scope.current, &scope.next, Vec::new())?;
     let is_local = config.provider == "local";
     let live_notes = if is_local {
         Vec::new()
@@ -962,8 +969,37 @@ pub async fn ai_extract_detail_todos(
 }
 
 pub(super) fn load_ai_cache(db: &Database) -> Result<(Option<AiScheduleResult>, bool), String> {
+    let snapshot = db.get_snapshot_state()?;
     load_ai_cache_inner(db).map(|opt| match opt {
-        Some((result, ts)) => {
+        Some((mut result, ts)) => {
+            if let Some(snapshot) = snapshot.as_ref() {
+                let scope = crate::academic_period::visible_weeks(
+                    &snapshot.current_week_label,
+                    &snapshot.next_week_label,
+                    &snapshot.luna_year,
+                    &snapshot.luna_term,
+                    chrono::Local::now().date_naive(),
+                );
+                let current_mismatch =
+                    week_label_mismatch(&scope.current, &result.current_week_label);
+                let next_mismatch = week_label_mismatch(&scope.next, &result.next_week_label);
+                if current_mismatch {
+                    result.current_week.clear();
+                    result.current_week_label.clear();
+                }
+                if next_mismatch {
+                    result.next_week.clear();
+                    result.next_week_label.clear();
+                }
+                if current_mismatch || next_mismatch {
+                    log::info!(
+                        "load_ai_cache: week label mismatch, ignoring cached AI schedule for that week"
+                    );
+                }
+                if result.current_week.is_empty() && result.next_week.is_empty() {
+                    return (None, true);
+                }
+            }
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -973,6 +1009,10 @@ pub(super) fn load_ai_cache(db: &Database) -> Result<(Option<AiScheduleResult>, 
         }
         None => (None, true),
     })
+}
+
+fn week_label_mismatch(snapshot_label: &str, cached_label: &str) -> bool {
+    !crate::academic_period::week_belongs_to_visible_label(snapshot_label, cached_label)
 }
 
 fn load_ai_cache_inner(db: &Database) -> Result<Option<(AiScheduleResult, i64)>, String> {

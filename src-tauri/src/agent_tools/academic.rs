@@ -22,12 +22,16 @@ struct CourseAggregate {
 
 fn build_course_aggregates(db: &Database) -> Result<Vec<CourseAggregate>, String> {
     let snap = db.get_snapshot_state()?.unwrap_or_default();
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
     let mut map: HashMap<String, CourseAggregate> = HashMap::new();
 
-    for (week_kind, week_label) in [
-        ("current", snap.current_week_label),
-        ("next", snap.next_week_label),
-    ] {
+    for (week_kind, week_label) in [("current", scope.current), ("next", scope.next)] {
         if week_label.is_empty() {
             continue;
         }
@@ -347,13 +351,24 @@ pub(super) async fn list_week_classes(
     let snap = db
         .get_snapshot_state()?
         .ok_or_else(|| "時間割データがありません".to_string())?;
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
     let week_label = if offset == 1 {
-        snap.next_week_label.clone()
+        scope.next
     } else {
-        snap.current_week_label.clone()
+        scope.current
     };
     if week_label.is_empty() {
-        return Err("週ラベルが未設定です".into());
+        return Ok(json!({
+            "week_label": "",
+            "offset": offset,
+            "classes": [],
+        }));
     }
     let classes = collect_classes(&db, &week_label, None)?;
     Ok(json!({
@@ -364,17 +379,17 @@ pub(super) async fn list_week_classes(
 }
 
 fn current_week_and_dow(db: &Database) -> Result<(String, i32), String> {
-    let snap = db
-        .get_snapshot_state()?
-        .ok_or_else(|| "時間割データがありません".to_string())?;
-    let week = if snap.current_week_label.is_empty() {
-        return Err("今週ラベルが未設定です".into());
-    } else {
-        snap.current_week_label
-    };
+    let snap = db.get_snapshot_state()?.unwrap_or_default();
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
     use chrono::Datelike;
     let dow = chrono::Local::now().weekday().number_from_monday() as i32; // 1=Mon..7=Sun
-    Ok((week, dow))
+    Ok((scope.current, dow))
 }
 
 fn dow_label(dow: i32) -> &'static str {

@@ -69,7 +69,12 @@ const MAX_USER_SAMPLES: usize = 8;
 fn sanitize_samples(samples: Vec<String>) -> Vec<String> {
     samples
         .into_iter()
-        .map(|s| s.trim().chars().take(MAX_USER_SAMPLE_CHARS).collect::<String>())
+        .map(|s| {
+            s.trim()
+                .chars()
+                .take(MAX_USER_SAMPLE_CHARS)
+                .collect::<String>()
+        })
         .filter(|s| s.chars().filter(|c| !c.is_whitespace()).count() >= MIN_USER_SAMPLE_CHARS)
         .take(MAX_USER_SAMPLES)
         .collect()
@@ -116,8 +121,7 @@ pub async fn run_calibration(
 
     // One step per seed (human signals), one per generated counterpart, one
     // per known-AI sample (signals only).
-    let total =
-        seeds.len() + seeds.iter().filter(|(_, gen)| *gen).count() + ai_texts.len();
+    let total = seeds.len() + seeds.iter().filter(|(_, gen)| *gen).count() + ai_texts.len();
     let mut done = 0usize;
 
     let mut feats: Vec<[f32; 2]> = Vec::new(); // [feature_score, judge_prob]
@@ -174,7 +178,9 @@ pub async fn run_calibration(
                 feats.push([af, aj]);
                 labels.push(1.0);
             }
-            None => eprintln!("[paper_check] calibration: judge failed, known-AI row skipped ({tag})"),
+            None => {
+                eprintln!("[paper_check] calibration: judge failed, known-AI row skipped ({tag})")
+            }
         }
         done += 1;
         on_progress(done, total);
@@ -183,7 +189,9 @@ pub async fn run_calibration(
     if labels.iter().filter(|&&l| l == 1.0).count() < 2
         || labels.iter().filter(|&&l| l == 0.0).count() < 2
     {
-        return Err("校正用サンプルが不足しています（AI生成に失敗した可能性があります）。".to_string());
+        return Err(
+            "校正用サンプルが不足しています（AI生成に失敗した可能性があります）。".to_string(),
+        );
     }
 
     // Deployment weights: fit on all data. Reported accuracy: leave-one-out, so
@@ -242,7 +250,10 @@ fn wilson_interval(successes: f32, n: f32) -> (f32, f32) {
     let denom = 1.0 + z2 / n;
     let centre = (p + z2 / (2.0 * n)) / denom;
     let half = (z / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
-    ((centre - half).clamp(0.0, 1.0), (centre + half).clamp(0.0, 1.0))
+    (
+        (centre - half).clamp(0.0, 1.0),
+        (centre + half).clamp(0.0, 1.0),
+    )
 }
 
 /// Feature score (deterministic) + judge probability for a text. DNA-GPT and
@@ -255,7 +266,9 @@ fn wilson_interval(successes: f32, n: f32) -> (f32, f32) {
 async fn signals(cfg: &ai::AiConfig, text: &str) -> Option<(f32, f32)> {
     let feature_score = features::extract(text).feature_ai_score;
     let outcome = judge::judge(cfg, text).await;
-    outcome.available.then_some((feature_score, outcome.mean_prob))
+    outcome
+        .available
+        .then_some((feature_score, outcome.mean_prob))
 }
 
 /// The counterpart must match the seed's GENRE and REGISTER, not be converted
@@ -405,13 +418,25 @@ mod tests {
         // The projected fit must clamp the inverted channel to 0, not go
         // negative, while still learning the informative channel.
         let x: Vec<[f32; 2]> = vec![
-            [0.8, 0.1], [0.7, 0.2], [0.9, 0.15], [0.75, 0.1], // label 0
-            [0.2, 0.9], [0.3, 0.8], [0.25, 0.85], [0.1, 0.9], // label 1
+            [0.8, 0.1],
+            [0.7, 0.2],
+            [0.9, 0.15],
+            [0.75, 0.1], // label 0
+            [0.2, 0.9],
+            [0.3, 0.8],
+            [0.25, 0.85],
+            [0.1, 0.9], // label 1
         ];
         let y = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
         let (_bias, w) = fit_logistic(&x, &y, 4000, 0.3);
-        assert!(w[0] >= 0.0 && w[1] >= 0.0, "weights must be non-negative: {w:?}");
-        assert!(w[1] > 1.0, "informative channel should carry the fit: {w:?}");
+        assert!(
+            w[0] >= 0.0 && w[1] >= 0.0,
+            "weights must be non-negative: {w:?}"
+        );
+        assert!(
+            w[1] > 1.0,
+            "informative channel should carry the fit: {w:?}"
+        );
     }
 
     #[test]
@@ -423,7 +448,11 @@ mod tests {
         let y = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let m = sweep_metrics(&probs, &y);
         assert!((m.accuracy - 1.0).abs() < 1e-6, "accuracy {}", m.accuracy);
-        assert!(m.threshold > 0.47 && m.threshold <= 0.48, "threshold {}", m.threshold);
+        assert!(
+            m.threshold > 0.47 && m.threshold <= 0.48,
+            "threshold {}",
+            m.threshold
+        );
         assert_eq!(m.false_positive_rate, 0.0);
         assert_eq!(m.false_negative_rate, 0.0);
     }
@@ -448,8 +477,18 @@ fn loo_probs(x: &[[f32; 2]], y: &[f32]) -> Vec<f32> {
     let n = x.len();
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let train_x: Vec<[f32; 2]> = x.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, v)| *v).collect();
-        let train_y: Vec<f32> = y.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, v)| *v).collect();
+        let train_x: Vec<[f32; 2]> = x
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, v)| *v)
+            .collect();
+        let train_y: Vec<f32> = y
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, v)| *v)
+            .collect();
         let (bias, w) = fit_logistic(&train_x, &train_y, 4000, 0.3);
         let z = bias + w[0] * x[i][0] + w[1] * x[i][1];
         out.push(1.0 / (1.0 + (-z).exp()));

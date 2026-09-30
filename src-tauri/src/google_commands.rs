@@ -195,7 +195,10 @@ fn open_url_os_fallback(url: &str) -> Result<(), String> {
             )
         };
         if result as isize <= 32 {
-            return Err(format!("ShellExecuteW failed with code {}", result as isize));
+            return Err(format!(
+                "ShellExecuteW failed with code {}",
+                result as isize
+            ));
         }
         return Ok(());
     }

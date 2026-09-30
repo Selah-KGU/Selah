@@ -72,8 +72,13 @@ fn collect_gemini_text_parts(parts: Option<&serde_json::Value>) -> String {
 /// Resolved provider ready to run inference.
 pub enum AgentProvider {
     #[cfg(target_os = "macos")]
-    Local { model_id: String, file_name: String },
-    Remote { config: AiConfig },
+    Local {
+        model_id: String,
+        file_name: String,
+    },
+    Remote {
+        config: AiConfig,
+    },
 }
 
 impl AgentProvider {
@@ -89,9 +94,7 @@ impl AgentProvider {
             #[cfg(target_os = "macos")]
             "local" => Self::resolve_local(&cfg),
             #[cfg(not(target_os = "macos"))]
-            "local" => Err(AgentError::config(
-                "本地模型仅在 macOS 版本中可用",
-            )),
+            "local" => Err(AgentError::config("本地模型仅在 macOS 版本中可用")),
             // OpenRouter is OpenAI-compatible, so it routes through the OpenAI path.
             "openai" | "openrouter" | "gemini" => Ok(Self::Remote { config: cfg }),
             other => Err(AgentError::config(format!("不明なプロバイダー: {}", other))),

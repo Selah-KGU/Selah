@@ -1481,7 +1481,10 @@ mod shortcut_tests {
 
     #[test]
     fn parses_supported_windows_shortcuts() {
-        assert_eq!(parse_shortcut_to_vk("ctrl+shift+KeyA"), (MOD_BIT_CTRL | MOD_BIT_SHIFT, 0x41));
+        assert_eq!(
+            parse_shortcut_to_vk("ctrl+shift+KeyA"),
+            (MOD_BIT_CTRL | MOD_BIT_SHIFT, 0x41)
+        );
         assert_eq!(parse_shortcut_to_vk("lalt"), (0, 0xA4));
         assert_eq!(parse_shortcut_to_vk("alt+space"), (MOD_BIT_ALT, 0x20));
     }
@@ -1505,10 +1508,7 @@ mod shortcut_tests {
 
         assert!(!clear_destroyed_window(100));
         assert!(HWND_READY.load(Ordering::Acquire));
-        assert_eq!(
-            WINDOW.lock().unwrap_or_else(|e| e.into_inner()).hwnd,
-            200
-        );
+        assert_eq!(WINDOW.lock().unwrap_or_else(|e| e.into_inner()).hwnd, 200);
 
         assert!(clear_destroyed_window(200));
         assert!(!HWND_READY.load(Ordering::Acquire));

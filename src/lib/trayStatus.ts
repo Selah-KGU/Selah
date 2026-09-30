@@ -321,9 +321,14 @@ export function startTrayStatus() {
   if (trayStatusStarted) return;
   trayStatusStarted = true;
   registerTask("tray_status", "トレイ表示更新", "system", 90_000);
-  // Bootstrap from existing cache (disk or memory)
-  timetableData = getCached<ScheduleResponse>("schedule_data");
   todoItems = getCached<LunaTodoItem[]>("luna_todo") ?? [];
+
+  invoke<ScheduleResponse>("get_schedule_snapshot")
+    .then((data) => {
+      timetableData = data;
+      scheduleRebuild();
+    })
+    .catch(() => {});
 
   unsubscribers.push(
     onCacheUpdate<ScheduleResponse>("schedule_data", (data) => { timetableData = data; scheduleRebuild(); }),

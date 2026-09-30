@@ -709,21 +709,21 @@ pub fn list_local_models() -> Vec<serde_json::Value> {
 
     #[cfg(target_os = "macos")]
     {
-    let catalog = crate::local_ai::model_catalog();
-    catalog
-        .iter()
-        .map(|m| {
-            let downloaded = crate::local_ai::is_model_downloaded(&m.file_name);
-            serde_json::json!({
-                "id": m.id,
-                "name": m.name,
-                "size_label": m.size_label,
-                "param_size": m.param_size,
-                "file_size_mb": m.file_size_mb,
-                "downloaded": downloaded,
+        let catalog = crate::local_ai::model_catalog();
+        catalog
+            .iter()
+            .map(|m| {
+                let downloaded = crate::local_ai::is_model_downloaded(&m.file_name);
+                serde_json::json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "size_label": m.size_label,
+                    "param_size": m.param_size,
+                    "file_size_mb": m.file_size_mb,
+                    "downloaded": downloaded,
+                })
             })
-        })
-        .collect()
+            .collect()
     }
 }
 
@@ -737,22 +737,22 @@ pub async fn download_local_model(app: tauri::AppHandle, model_id: String) -> Re
 
     #[cfg(target_os = "macos")]
     {
-    let catalog = crate::local_ai::model_catalog();
-    let info = catalog
-        .iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| format!("不明なモデル: {}", model_id))?
-        .clone();
+        let catalog = crate::local_ai::model_catalog();
+        let info = catalog
+            .iter()
+            .find(|m| m.id == model_id)
+            .ok_or_else(|| format!("不明なモデル: {}", model_id))?
+            .clone();
 
-    // Run download in blocking thread
-    let app_clone = app.clone();
-    tokio::task::spawn_blocking(move || crate::local_ai::download_model(&app_clone, &info))
-        .await
-        .map_err(|e| format!("タスク実行エラー: {}", e))??;
+        // Run download in blocking thread
+        let app_clone = app.clone();
+        tokio::task::spawn_blocking(move || crate::local_ai::download_model(&app_clone, &info))
+            .await
+            .map_err(|e| format!("タスク実行エラー: {}", e))??;
 
-    // Model availability changed — notify frontend
-    let _ = app.emit("ai-config-changed", ());
-    Ok(())
+        // Model availability changed — notify frontend
+        let _ = app.emit("ai-config-changed", ());
+        Ok(())
     }
 }
 
@@ -774,30 +774,30 @@ pub fn delete_local_model(app: tauri::AppHandle, model_id: String) -> Result<(),
 
     #[cfg(target_os = "macos")]
     {
-    let catalog = crate::local_ai::model_catalog();
-    let info = catalog
-        .iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
+        let catalog = crate::local_ai::model_catalog();
+        let info = catalog
+            .iter()
+            .find(|m| m.id == model_id)
+            .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
 
-    // Unload if currently loaded
-    crate::local_ai::unload_model();
+        // Unload if currently loaded
+        crate::local_ai::unload_model();
 
-    let path = crate::local_ai::model_path(&info.file_name);
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| format!("削除失敗: {}", e))?;
-    }
+        let path = crate::local_ai::model_path(&info.file_name);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| format!("削除失敗: {}", e))?;
+        }
 
-    // Also remove partial file
-    let part = path.with_extension("gguf.part");
-    if part.exists() {
-        let _ = std::fs::remove_file(&part);
-    }
+        // Also remove partial file
+        let part = path.with_extension("gguf.part");
+        if part.exists() {
+            let _ = std::fs::remove_file(&part);
+        }
 
-    // Model availability changed — notify frontend
-    let _ = app.emit("ai-config-changed", ());
+        // Model availability changed — notify frontend
+        let _ = app.emit("ai-config-changed", ());
 
-    Ok(())
+        Ok(())
     }
 }
 

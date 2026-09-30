@@ -47,6 +47,20 @@ pub(super) async fn get_weekly_summary(app: &tauri::AppHandle) -> Result<Value, 
     let (cache, _ts) = db
         .get_ai_schedule_cache()?
         .ok_or_else(|| "週間サマリーがまだ生成されていません".to_string())?;
+    let snap = db.get_snapshot_state()?.unwrap_or_default();
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
+    if !crate::academic_period::week_belongs_to_visible_label(
+        &scope.current,
+        &cache.current_week_label,
+    ) {
+        return Err("今学期の週間サマリーはまだありません".into());
+    }
     Ok(json!({
         "current_week": cache.current_week_label,
         "next_week": cache.next_week_label,
@@ -75,10 +89,21 @@ pub(super) async fn get_upcoming_deadlines(app: &tauri::AppHandle) -> Result<Val
     let acts = db.get_all_luna_activities().unwrap_or_default();
     let luna_courses = db.get_luna_courses().unwrap_or_default();
     let now = chrono::Local::now();
+    let snap = db.get_snapshot_state().ok().flatten().unwrap_or_default();
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        now.date_naive(),
+    );
 
     let mut items: Vec<Value> = Vec::new();
     for a in &acts {
         if !matches!(a.activity_type.as_str(), "report" | "exam" | "discussion") {
+            continue;
+        }
+        if !crate::db::luna_course_matches_snapshot(&a.luna_id, &scope.year, &scope.term) {
             continue;
         }
         let course_name = luna_courses
@@ -138,11 +163,18 @@ pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, Str
     };
 
     // Today's classes (best-effort: snapshot may be missing).
-    let classes: Vec<Value> = match db.get_snapshot_state() {
-        Ok(Some(snap)) if !snap.current_week_label.is_empty() => {
-            let kgc = db
-                .get_kgc_courses(&snap.current_week_label)
-                .unwrap_or_default();
+    let schedule_scope = db.get_snapshot_state().ok().flatten().map(|snap| {
+        crate::academic_period::visible_weeks(
+            &snap.current_week_label,
+            &snap.next_week_label,
+            &snap.luna_year,
+            &snap.luna_term,
+            now.date_naive(),
+        )
+    });
+    let classes: Vec<Value> = match schedule_scope.as_ref() {
+        Some(scope) => {
+            let kgc = db.get_kgc_courses(&scope.current).unwrap_or_default();
             let luna = db.get_luna_courses().unwrap_or_default();
             let mut out: Vec<Value> = Vec::new();
             for c in kgc.iter().filter(|c| c.day == dow) {
@@ -180,6 +212,11 @@ pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, Str
         }
         if a.status.contains("提出済") || a.status.contains("回答済") {
             continue;
+        }
+        if let Some(scope) = schedule_scope.as_ref() {
+            if !crate::db::luna_course_matches_snapshot(&a.luna_id, &scope.year, &scope.term) {
+                continue;
+            }
         }
         let urgency = deadline_urgency(&a.period, &now);
         if !matches!(urgency, "overdue" | "critical" | "soon") {

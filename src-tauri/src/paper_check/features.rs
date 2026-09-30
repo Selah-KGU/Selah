@@ -10,12 +10,35 @@ use super::types::FeatureStats;
 /// not an exhaustive list.
 const TRANSITIONS: &[&str] = &[
     // English
-    "however", "moreover", "furthermore", "therefore", "additionally",
-    "consequently", "nevertheless", "thus", "hence", "overall", "in conclusion",
-    "firstly", "secondly", "finally", "importantly", "notably",
+    "however",
+    "moreover",
+    "furthermore",
+    "therefore",
+    "additionally",
+    "consequently",
+    "nevertheless",
+    "thus",
+    "hence",
+    "overall",
+    "in conclusion",
+    "firstly",
+    "secondly",
+    "finally",
+    "importantly",
+    "notably",
     // Japanese
-    "しかし", "また", "さらに", "したがって", "そのため", "加えて",
-    "すなわち", "つまり", "一方", "結論として", "重要なことに", "まず",
+    "しかし",
+    "また",
+    "さらに",
+    "したがって",
+    "そのため",
+    "加えて",
+    "すなわち",
+    "つまり",
+    "一方",
+    "結論として",
+    "重要なことに",
+    "まず",
 ];
 
 pub fn extract(text: &str) -> FeatureStats {
@@ -139,7 +162,11 @@ fn ngram_repetition(tokens: &[String], n: usize) -> f32 {
         let gram = tokens[i..i + n].join("\u{1}");
         *counts.entry(gram).or_insert(0) += 1;
     }
-    let repeated: usize = counts.values().filter(|&&c| c > 1).map(|&c| c as usize).sum();
+    let repeated: usize = counts
+        .values()
+        .filter(|&&c| c > 1)
+        .map(|&c| c as usize)
+        .sum();
     repeated as f32 / total as f32
 }
 
@@ -234,7 +261,10 @@ mod tests {
             .repeat(3);
         let cr = compressibility(&repetitive);
         let cv = compressibility(&varied);
-        assert!(cr < cv, "repetitive ({cr}) should compress smaller than varied ({cv})");
+        assert!(
+            cr < cv,
+            "repetitive ({cr}) should compress smaller than varied ({cv})"
+        );
         assert!((0.0..=1.0).contains(&cr) && (0.0..=1.0).contains(&cv));
     }
 }

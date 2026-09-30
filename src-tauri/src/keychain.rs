@@ -255,9 +255,7 @@ fn bundle_kc_read() -> BundleRead {
 }
 
 #[cfg(target_os = "windows")]
-fn classify_windows_credential_read(
-    result: Result<String, keyring::Error>,
-) -> BundleRead {
+fn classify_windows_credential_read(result: Result<String, keyring::Error>) -> BundleRead {
     match result {
         Ok(json) => BundleRead::Found(json),
         Err(keyring::Error::NoEntry) => BundleRead::NotFound,

@@ -174,7 +174,11 @@ pub fn display_rescale(params: &CalibrationParams, p: f32) -> f32 {
 /// between the judge, DNA-GPT and Raidar lowers confidence instead of being
 /// hidden by averaging them into a single `model_prob` first.
 fn confidence_from_channels(calibrated: bool, channels: &[ChannelScore]) -> &'static str {
-    let scores: Vec<f32> = channels.iter().filter(|c| c.available).map(|c| c.score).collect();
+    let scores: Vec<f32> = channels
+        .iter()
+        .filter(|c| c.available)
+        .map(|c| c.score)
+        .collect();
     if scores.len() < 2 {
         // A single evidence source cannot be corroborated.
         return if calibrated { "medium" } else { "low" };

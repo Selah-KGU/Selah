@@ -92,9 +92,7 @@ fn start_impl(_reason: String) -> Result<(), String> {
         .name("selah-prevent-sleep".to_string())
         .spawn(move || {
             let previous = unsafe {
-                SetThreadExecutionState(
-                    ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED,
-                )
+                SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
             };
             if previous == 0 {
                 let _ = ready_tx.send(Err("failed to set Windows execution state".to_string()));

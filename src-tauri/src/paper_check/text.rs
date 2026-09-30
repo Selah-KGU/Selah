@@ -67,7 +67,11 @@ pub fn reflow_soft_wraps(text: &str) -> String {
 /// punctuation) is removed; newlines and Latin/mixed spacing are untouched.
 pub fn clean_cjk_spaces(text: &str) -> String {
     fn cjk_side(c: char) -> bool {
-        is_cjk(c) || matches!(c, '。' | '、' | '「' | '」' | '『' | '』' | '(' | ')' | '・' | '?' | '!' | ':')
+        is_cjk(c)
+            || matches!(
+                c,
+                '。' | '、' | '「' | '」' | '『' | '』' | '(' | ')' | '・' | '?' | '!' | ':'
+            )
     }
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -115,7 +119,11 @@ pub fn split_sentences(text: &str) -> Vec<String> {
             // Only treat as a boundary when the next non-quote char is
             // whitespace/end — avoids splitting "3.14" or "e.g.".
             let next = chars.get(i + 1).copied();
-            let prev = if i > 0 { chars.get(i - 1).copied() } else { None };
+            let prev = if i > 0 {
+                chars.get(i - 1).copied()
+            } else {
+                None
+            };
             let next_is_space = next.map(|x| x.is_whitespace()).unwrap_or(true);
             let both_digits = prev.map(|x| x.is_ascii_digit()).unwrap_or(false)
                 && next.map(|x| x.is_ascii_digit()).unwrap_or(false);
@@ -261,8 +269,15 @@ mod tests {
         // PDF-style: one sentence hard-wrapped across three visual lines.
         let wrapped = "本研究では、大学生のレポートにおける生成AIの利用実態を調査し、その\n結果をもとに教育現場での適切な指導方法を検討することを目的として、\n質問紙調査と面接調査を実施した。\n";
         let flowed = reflow_soft_wraps(wrapped);
-        assert_eq!(split_sentences(&flowed).len(), 1, "should be one sentence: {flowed}");
-        assert!(!flowed.contains("その 結果"), "CJK join must not insert a space");
+        assert_eq!(
+            split_sentences(&flowed).len(),
+            1,
+            "should be one sentence: {flowed}"
+        );
+        assert!(
+            !flowed.contains("その 結果"),
+            "CJK join must not insert a space"
+        );
     }
 
     #[test]
@@ -270,25 +285,50 @@ mod tests {
         let wrapped = "The survey was administered to two hundred undergraduate students who\nhad submitted at least one report during the semester.";
         let flowed = reflow_soft_wraps(wrapped);
         assert_eq!(split_sentences(&flowed).len(), 1);
-        assert!(flowed.contains("who had"), "Latin join needs a space: {flowed}");
+        assert!(
+            flowed.contains("who had"),
+            "Latin join needs a space: {flowed}"
+        );
     }
 
     #[test]
     fn reflow_keeps_headings_and_blank_lines() {
         let text = "1. はじめに\n\n本章では研究の背景を述べる。\n2. 方法\n調査は二段階で実施した。";
         let flowed = reflow_soft_wraps(text);
-        assert!(flowed.contains("1. はじめに\n"), "short heading keeps its line break");
-        assert!(flowed.contains("2. 方法\n"), "short heading keeps its line break");
-        assert!(flowed.contains("背景を述べる。\n"), "terminal punctuation keeps the break");
+        assert!(
+            flowed.contains("1. はじめに\n"),
+            "short heading keeps its line break"
+        );
+        assert!(
+            flowed.contains("2. 方法\n"),
+            "short heading keeps its line break"
+        );
+        assert!(
+            flowed.contains("背景を述べる。\n"),
+            "terminal punctuation keeps the break"
+        );
     }
 
     #[test]
     fn clean_cjk_spaces_strips_run_boundary_gaps() {
-        assert_eq!(clean_cjk_spaces("説明だけでは不十分であるように思われ る。"), "説明だけでは不十分であるように思われる。");
-        assert_eq!(clean_cjk_spaces("どの段階から「依存」と呼べるのかを判 別する"), "どの段階から「依存」と呼べるのかを判別する");
-        assert_eq!(clean_cjk_spaces("判　別"), "判別", "fullwidth space between CJK");
+        assert_eq!(
+            clean_cjk_spaces("説明だけでは不十分であるように思われ る。"),
+            "説明だけでは不十分であるように思われる。"
+        );
+        assert_eq!(
+            clean_cjk_spaces("どの段階から「依存」と呼べるのかを判 別する"),
+            "どの段階から「依存」と呼べるのかを判別する"
+        );
+        assert_eq!(
+            clean_cjk_spaces("判　別"),
+            "判別",
+            "fullwidth space between CJK"
+        );
         // Latin boundaries keep their spacing; newlines untouched.
-        assert_eq!(clean_cjk_spaces("AI 技術は difficult 難しい"), "AI 技術は difficult 難しい");
+        assert_eq!(
+            clean_cjk_spaces("AI 技術は difficult 難しい"),
+            "AI 技術は difficult 難しい"
+        );
         assert_eq!(clean_cjk_spaces("一行目\n二行目"), "一行目\n二行目");
     }
 
@@ -296,6 +336,10 @@ mod tests {
     fn reflow_merges_comma_ended_short_line() {
         let text = "しかし、\n実際の運用では課題が残る。";
         let flowed = reflow_soft_wraps(text);
-        assert_eq!(split_sentences(&flowed).len(), 1, "comma-ended line merges: {flowed}");
+        assert_eq!(
+            split_sentences(&flowed).len(),
+            1,
+            "comma-ended line merges: {flowed}"
+        );
     }
 }

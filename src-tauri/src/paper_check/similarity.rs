@@ -136,8 +136,7 @@ pub async fn analyze(text: &str, max_queries: usize) -> SimilarityResult {
             .take(PAGES_PER_QUERY)
             .filter(|r| seen_urls.insert(r.url.clone()))
             .collect();
-        let pages =
-            futures_util::future::join_all(fresh.iter().map(|r| fetch_text(&r.url))).await;
+        let pages = futures_util::future::join_all(fresh.iter().map(|r| fetch_text(&r.url))).await;
         for (r, page_text) in fresh.into_iter().zip(pages) {
             // The snippet is always available even if the page fetch is blocked.
             let page_text = page_text.unwrap_or_default();
@@ -211,7 +210,9 @@ pub async fn analyze(text: &str, max_queries: usize) -> SimilarityResult {
     let overall_pct = if total_visible == 0 {
         0
     } else {
-        ((covered_visible as f32 / total_visible as f32) * 100.0).round().clamp(0.0, 100.0) as u8
+        ((covered_visible as f32 / total_visible as f32) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
     };
 
     let matches = build_passages(&chars, &owner, &sources);
@@ -260,7 +261,10 @@ fn build_passages(
 
     let mut matches: Vec<SimilarityMatch> = Vec::new();
     for (start, end) in runs {
-        let visible = chars[start..end].iter().filter(|c| !c.is_whitespace()).count();
+        let visible = chars[start..end]
+            .iter()
+            .filter(|c| !c.is_whitespace())
+            .count();
         if visible < MIN_PASSAGE_CHARS {
             continue;
         }
@@ -279,7 +283,11 @@ fn build_passages(
         let src = &sources[si];
         let overlap = (covered as f32 / (end - start) as f32).clamp(0.0, 1.0);
         matches.push(SimilarityMatch {
-            sentence: chars[start..end].iter().collect::<String>().trim().to_string(),
+            sentence: chars[start..end]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string(),
             source_url: src.url.clone(),
             source_title: src.title.clone(),
             snippet: src.snippet.clone(),
@@ -356,8 +364,16 @@ fn ngrams(text: &str, n: usize) -> std::collections::HashSet<String> {
 
 /// Headings that mark the start of a reference/bibliography section.
 const REFERENCE_MARKERS: &[&str] = &[
-    "参考文献", "引用文献", "参考資料", "引用・参考文献", "出典", "脚注",
-    "references", "bibliography", "works cited", "reference list",
+    "参考文献",
+    "引用文献",
+    "参考資料",
+    "引用・参考文献",
+    "出典",
+    "脚注",
+    "references",
+    "bibliography",
+    "works cited",
+    "reference list",
 ];
 
 /// Drop everything from the first reference/bibliography heading onward. The
@@ -370,11 +386,19 @@ fn strip_references(text: &str) -> String {
         let lower = trimmed.to_lowercase();
         let stripped: String = lower
             .chars()
-            .filter(|c| !c.is_whitespace() && !matches!(c, '#' | ':' | '：' | '.' | '*' | '-' | '】' | '【' | '[' | ']'))
+            .filter(|c| {
+                !c.is_whitespace()
+                    && !matches!(
+                        c,
+                        '#' | ':' | '：' | '.' | '*' | '-' | '】' | '【' | '[' | ']'
+                    )
+            })
             .collect();
         if !stripped.is_empty()
             && trimmed.chars().count() <= 20
-            && REFERENCE_MARKERS.iter().any(|m| stripped == m.replace(' ', ""))
+            && REFERENCE_MARKERS
+                .iter()
+                .any(|m| stripped == m.replace(' ', ""))
         {
             let body = text[..offset].trim_end();
             if !body.is_empty() {
@@ -436,14 +460,18 @@ fn winnow_queries(chars: &[char], toks: &[(String, usize, usize)], budget: usize
         // Expand the k-token window until the phrase is a usable query length.
         let start_char = toks[i].1;
         let mut end_tok = i + QUERY_K - 1;
-        while end_tok + 1 < toks.len()
-            && visible_between(chars, start_char, toks[end_tok].2) < 20
-        {
+        while end_tok + 1 < toks.len() && visible_between(chars, start_char, toks[end_tok].2) < 20 {
             end_tok += 1;
         }
         let end_char = toks[end_tok].2.min(chars.len());
-        let phrase: String = chars[start_char..end_char].iter().collect::<String>().trim().to_string();
-        if phrase.chars().filter(|c| !c.is_whitespace()).count() >= 12 && seen.insert(phrase.clone()) {
+        let phrase: String = chars[start_char..end_char]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .to_string();
+        if phrase.chars().filter(|c| !c.is_whitespace()).count() >= 12
+            && seen.insert(phrase.clone())
+        {
             phrases.push(phrase);
         }
     }
@@ -462,7 +490,10 @@ fn visible_between(chars: &[char], start: usize, end: usize) -> usize {
     if start >= end {
         return 0;
     }
-    chars[start..end].iter().filter(|c| !c.is_whitespace()).count()
+    chars[start..end]
+        .iter()
+        .filter(|c| !c.is_whitespace())
+        .count()
 }
 
 fn hash64(s: &str) -> u64 {
@@ -521,7 +552,10 @@ mod tests {
         let body = strip_references(text);
         assert!(body.contains("結論として"), "body must be kept");
         assert!(!body.contains("田中"), "reference entries must be dropped");
-        assert!(!body.contains("参考文献"), "the heading itself must be dropped");
+        assert!(
+            !body.contains("参考文献"),
+            "the heading itself must be dropped"
+        );
     }
 
     #[test]
@@ -533,8 +567,13 @@ mod tests {
 
     #[test]
     fn shingle_size_adapts_to_language() {
-        let ja: Vec<char> = "本研究では大学生のレポートにおける生成AIの利用実態を調査した。".chars().collect();
-        let en: Vec<char> = "This study surveyed how undergraduates actually use generative AI in their reports.".chars().collect();
+        let ja: Vec<char> = "本研究では大学生のレポートにおける生成AIの利用実態を調査した。"
+            .chars()
+            .collect();
+        let en: Vec<char> =
+            "This study surveyed how undergraduates actually use generative AI in their reports."
+                .chars()
+                .collect();
         assert_eq!(shingle_size(&ja), SHINGLE_N_CJK);
         assert_eq!(shingle_size(&en), SHINGLE_N);
     }
@@ -547,13 +586,19 @@ mod tests {
         let chars: Vec<char> = text.chars().collect();
         let toks = tokenize_spans(text);
         let queries = winnow_queries(&chars, &toks, 5);
-        assert!(!queries.is_empty(), "should select at least one fingerprint phrase");
+        assert!(
+            !queries.is_empty(),
+            "should select at least one fingerprint phrase"
+        );
         assert!(queries.len() <= 5, "must respect the budget");
         let lowered = text.to_lowercase();
         for q in &queries {
             // Phrases are drawn from the document (token-normalised words present).
             let first: String = q.split_whitespace().next().unwrap_or("").to_lowercase();
-            assert!(lowered.contains(&first), "phrase should come from the text: {q}");
+            assert!(
+                lowered.contains(&first),
+                "phrase should come from the text: {q}"
+            );
         }
     }
 }

@@ -71,7 +71,8 @@ pub async fn paper_check_extract_text(
             .unwrap_or(0);
         let tmp = std::env::temp_dir().join(format!("kwic_paper_{stamp}.{ext}"));
 
-        std::fs::write(&tmp, &bytes).map_err(|e| format!("一時ファイルの作成に失敗しました: {e}"))?;
+        std::fs::write(&tmp, &bytes)
+            .map_err(|e| format!("一時ファイルの作成に失敗しました: {e}"))?;
         let result = crate::agent_tools::read_downloaded_text_full(&tmp);
         let _ = std::fs::remove_file(&tmp);
 
@@ -218,7 +219,8 @@ async fn run_ai_rate(text: &str) -> AiRateResult {
     // the judge dominates, side channels corroborate); fall back to the
     // reproducible feature score when no model channel ran.
     let model_prob = if model_scores.is_empty() {
-        notes.push("モデル系の判定が利用できなかったため、統計特徴のみで評価しました。".to_string());
+        notes
+            .push("モデル系の判定が利用できなかったため、統計特徴のみで評価しました。".to_string());
         features.feature_ai_score
     } else {
         let weight_sum: f32 = model_scores.iter().map(|(_, w)| w).sum();

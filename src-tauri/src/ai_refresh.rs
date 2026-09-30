@@ -318,20 +318,22 @@ async fn refresh_schedule_analysis(
         return Err("KGC未ログインのため時間割AI分析をスキップします".to_string());
     }
     let snap = db.get_snapshot_state()?.unwrap_or_default();
-    if snap.current_week_label.trim().is_empty() {
-        return Err("時間割データがまだありません".to_string());
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
+    if scope.current.trim().is_empty() {
+        return Err("今学期の時間割がまだありません".to_string());
     }
     if !timestamp_is_fresh(snap.updated_at, SCHEDULE_INPUT_MAX_AGE_SECS) {
         return Err("時間割データが最新ではないためAI分析をスキップします".to_string());
     }
-    timetable::ai_generate_schedule_internal(
-        db,
-        snap.current_week_label,
-        snap.next_week_label,
-        force,
-    )
-    .await
-    .map(|_| ())
+    timetable::ai_generate_schedule_internal(db, scope.current, scope.next, force)
+        .await
+        .map(|_| ())
 }
 
 async fn refresh_notification_analysis(
@@ -437,7 +439,14 @@ fn fresh_course_names(db: &Database) -> Result<String, String> {
     if !timestamp_is_fresh(snap.updated_at, SCHEDULE_INPUT_MAX_AGE_SECS) {
         return Ok(String::new());
     }
-    let raw = db.build_raw_data(&snap.current_week_label, &snap.next_week_label, Vec::new())?;
+    let scope = crate::academic_period::visible_weeks(
+        &snap.current_week_label,
+        &snap.next_week_label,
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
+    let raw = db.build_raw_data(&scope.current, &scope.next, Vec::new())?;
     Ok(raw
         .kgc_entries_current
         .iter()
@@ -656,21 +665,21 @@ fn ai_unavailable_reason(config: &AiConfig) -> Option<String> {
         }
         #[cfg(target_os = "macos")]
         {
-        if config.local_model == "qwen3.5-2b" {
-            return Some("2Bモデルでは定期AI分析を実行しません".to_string());
-        }
-        let Some(info) = crate::local_ai::model_catalog()
-            .iter()
-            .find(|model| model.id == config.local_model)
-        else {
-            return Some(format!(
-                "不明なローカルAIモデルです: {}",
-                config.local_model
-            ));
-        };
-        if !crate::local_ai::is_model_downloaded(&info.file_name) {
-            return Some("ローカルAIモデルが未ダウンロードです".to_string());
-        }
+            if config.local_model == "qwen3.5-2b" {
+                return Some("2Bモデルでは定期AI分析を実行しません".to_string());
+            }
+            let Some(info) = crate::local_ai::model_catalog()
+                .iter()
+                .find(|model| model.id == config.local_model)
+            else {
+                return Some(format!(
+                    "不明なローカルAIモデルです: {}",
+                    config.local_model
+                ));
+            };
+            if !crate::local_ai::is_model_downloaded(&info.file_name) {
+                return Some("ローカルAIモデルが未ダウンロードです".to_string());
+            }
         }
     } else if config.api_key.trim().is_empty() {
         return Some("AI APIキーが未設定です".to_string());

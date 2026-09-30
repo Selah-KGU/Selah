@@ -480,9 +480,29 @@ fn build_context(db: &Database) -> Result<DetectiveContext, String> {
     let mut courses: HashMap<String, CourseBuilder> = HashMap::new();
 
     let mut schedule_items = Vec::new();
-    if let Ok(Some((result, _))) = db.get_ai_schedule_cache() {
-        schedule_items.extend(result.current_week);
-        schedule_items.extend(result.next_week);
+    let snap = db.get_snapshot_state().ok().flatten();
+    let scope = snap.as_ref().map(|snap| {
+        crate::academic_period::visible_weeks(
+            &snap.current_week_label,
+            &snap.next_week_label,
+            &snap.luna_year,
+            &snap.luna_term,
+            chrono::Local::now().date_naive(),
+        )
+    });
+    if let (Some(scope), Ok(Some((result, _)))) = (scope.as_ref(), db.get_ai_schedule_cache()) {
+        if crate::academic_period::week_belongs_to_visible_label(
+            &scope.current,
+            &result.current_week_label,
+        ) {
+            schedule_items.extend(result.current_week);
+        }
+        if crate::academic_period::week_belongs_to_visible_label(
+            &scope.next,
+            &result.next_week_label,
+        ) {
+            schedule_items.extend(result.next_week);
+        }
     }
     for item in schedule_items {
         if item.course_name.trim().is_empty() {
@@ -492,24 +512,30 @@ fn build_context(db: &Database) -> Result<DetectiveContext, String> {
         course.schedule_items.push(item);
     }
 
-    if let Ok(Some(snap)) = db.get_snapshot_state() {
-        if let Ok(raw) = db.build_raw_data(
-            &snap.current_week_label,
-            &snap.next_week_label,
-            snap.luna_communities,
-        ) {
-            for row in raw
-                .kgc_entries_current
-                .iter()
-                .chain(raw.kgc_entries_next.iter())
-            {
-                if !row.name.trim().is_empty() {
-                    ensure_course(&mut courses, &row.name);
+    if let Some(scope) = scope.as_ref() {
+        if let Some(snap) = snap {
+            let mut communities = snap.luna_communities;
+            communities.retain(|community| {
+                crate::db::luna_course_matches_snapshot(
+                    &community.idnumber,
+                    &scope.year,
+                    &scope.term,
+                )
+            });
+            if let Ok(raw) = db.build_raw_data(&scope.current, &scope.next, communities) {
+                for row in raw
+                    .kgc_entries_current
+                    .iter()
+                    .chain(raw.kgc_entries_next.iter())
+                {
+                    if !row.name.trim().is_empty() {
+                        ensure_course(&mut courses, &row.name);
+                    }
                 }
-            }
-            for row in raw.luna_courses.iter() {
-                if !row.name.trim().is_empty() {
-                    ensure_course(&mut courses, &row.name);
+                for row in raw.luna_courses.iter() {
+                    if !row.name.trim().is_empty() {
+                        ensure_course(&mut courses, &row.name);
+                    }
                 }
             }
         }

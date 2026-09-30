@@ -1,6 +1,7 @@
 #[cfg(all(feature = "stt-static", feature = "stt-shared"))]
 compile_error!("features `stt-static` and `stt-shared` cannot be enabled together");
 
+mod academic_period;
 mod agent;
 mod agent_commands;
 mod agent_error;

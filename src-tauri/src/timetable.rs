@@ -67,6 +67,8 @@ pub struct ScheduleResponse {
     pub luna_term_options: Vec<luna_parser::SelectOption>,
     pub luna_year: String,
     pub luna_term: String,
+    #[serde(default)]
+    pub kgc_warning: String,
 }
 
 // ── Commands ──
@@ -75,191 +77,237 @@ pub struct ScheduleResponse {
 #[tauri::command]
 pub async fn get_schedule_snapshot(db: State<'_, Database>) -> Result<ScheduleResponse, String> {
     let snap = db.get_snapshot_state()?.unwrap_or_default();
-    let raw = db.build_raw_data(
+    let scope = crate::academic_period::visible_weeks(
         &snap.current_week_label,
         &snap.next_week_label,
-        snap.luna_communities.clone(),
-    )?;
+        &snap.luna_year,
+        &snap.luna_term,
+        chrono::Local::now().date_naive(),
+    );
+    let mut communities = snap.luna_communities.clone();
+    retain_current_communities(&mut communities, &scope.year, &scope.term);
+    let raw = db.build_raw_data(&scope.current, &scope.next, communities.clone())?;
     let (ai_result, ai_stale) = load_ai_cache(&db)?;
+    let mut kgc_warning = load_kgc_warning(&db);
+    if scope.hid_current {
+        kgc_warning = STALE_SEMESTER_KGC_WARNING.to_string();
+    }
     Ok(ScheduleResponse {
         raw,
         ai_result,
         ai_stale,
         snapshot_updated_at: snap.updated_at,
-        luna_communities: snap.luna_communities,
+        luna_communities: communities,
         luna_year_options: snap.luna_year_options,
         luna_term_options: snap.luna_term_options,
-        luna_year: snap.luna_year,
-        luna_term: snap.luna_term,
+        luna_year: scope.year,
+        luna_term: scope.term,
+        kgc_warning,
     })
 }
 
-/// Serial data sync: KGC current → KGC next → Luna → enrichment → persist all.
-/// User-triggered from timetable page. Avoids parallel requests that break login state.
+/// Serial data sync: KGC current, KGC next, Luna, then enrichment.
+/// KGC being down or logged out must not fail the command. Luna still refreshes,
+/// and a login-required error is not returned unless Luna itself needs recovery.
 #[tauri::command]
 pub async fn sync_schedule_data(
     kgc: State<'_, KgcState>,
     luna_state: State<'_, LunaState>,
     db: State<'_, Database>,
 ) -> Result<ScheduleResponse, String> {
-    // Serialize all KGC requests — Struts 1 stores one token per session; any
-    // concurrent KGC page load (background polling) invalidates pending tokens.
-    let _kgc_gate = kgc.gate.lock().await;
+    // Logged-out KGC skips the Struts gate so Luna can refresh immediately.
+    let previous = db.get_snapshot_state()?.unwrap_or_default();
 
-    // ── Step 1: KGC current week (serial) ──
-    let kgc_http = {
-        let client = kgc.client.lock().await;
-        if !client.is_authenticated() {
-            return Err(config::KGC_AUTH_REQUIRED_MSG.into());
-        }
-        client.http.clone()
-    };
+    let mut kgc_warning = String::new();
+    let mut current_week_label = previous.current_week_label.clone();
+    let mut next_week_label = previous.next_week_label.clone();
+    let mut kgc_fetched = false;
 
-    let kgc_url = format!(
-        "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
-        config::KG_COURSE_BASE
-    );
-    let kgc_html = match client::fetch_page_with(&kgc_http, &kgc_url).await {
-        Ok(html) => html,
-        Err(error) => {
-            clear_kgc_if_expired(&kgc, &error).await;
-            return Err(error);
-        }
-    };
-    let kgc_data = parser::parse_timetable(&kgc_html);
-
-    let current_week_label = kgc_data.week_label.clone();
-    log::info!(
-        "sync_schedule_data: parsed KGC: {} entries, week_label='{}'",
-        kgc_data.entries.len(),
-        current_week_label
-    );
-
-    // Guard: empty KGC page — return DB snapshot as-is
-    if kgc_data.entries.is_empty() && current_week_label.is_empty() {
-        log::warn!("sync_schedule_data: KGC returned empty page");
-        return get_schedule_snapshot(db).await;
-    }
-
-    // Store KGC current-week entries
-    for entry in &kgc_data.entries {
-        let day_int = day_str_to_int(&entry.day);
-        if day_int == 0 {
-            continue;
-        }
-        db.upsert_kgc_course(
-            &entry.course_code,
-            &entry.course_name,
-            day_int,
-            entry.period,
-            &entry.room,
-            &entry.detail_path,
-            entry.is_cancelled,
-            entry.is_makeup,
-            entry.is_room_changed,
-            &current_week_label,
-        )?;
-    }
-
-    // ── Step 2: KGC next week (serial, reuses same HTTP client) ──
-    let next_week_label = match fetch_next_week_kgc(&kgc_http, &kgc_data, &db).await {
-        Ok(label) => label,
-        Err(error) => {
-            clear_kgc_if_expired(&kgc, &error).await;
-            return Err(error);
-        }
-    };
-    log::info!("sync_schedule_data: next_week_label='{}'", next_week_label);
-
-    // ── Step 3: Luna timetable (serial, after KGC) ──
-    let (communities, year_opts, term_opts, year, term) = {
-        let luna_http = {
-            let luna = luna_state.client.lock().await;
-            if luna.authenticated {
-                Some(luna.http.clone())
+    let kgc_authenticated = kgc.client.lock().await.is_authenticated();
+    if !kgc_authenticated {
+        log::warn!("sync_schedule_data: KGC not authenticated; continuing with Luna");
+        kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
+    } else {
+        // Struts 1 keeps one token per session, so KGC fetches stay serial.
+        let _kgc_gate = kgc.gate.lock().await;
+        let http = {
+            let client = kgc.client.lock().await;
+            if client.is_authenticated() {
+                Some(client.http.clone())
             } else {
                 None
             }
         };
-        if let Some(http) = luna_http {
-            let url = format!("{}/lms/timetable", config::LUNA_BASE);
-            match client::fetch_with_redirect(
-                &http,
-                &url,
-                config::LUNA_BASE,
-                luna_client::LUNA_SESSION_EXPIRED_MSG,
-                luna_client::is_luna_session_expired,
-            )
-            .await
-            {
+        if let Some(http) = http.as_ref() {
+            let kgc_url = format!(
+                "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
+                config::KG_COURSE_BASE
+            );
+            match client::fetch_page_with(http, &kgc_url).await {
                 Ok(html) => {
-                    let l = luna_parser::parse_luna_timetable(&html);
+                    let kgc_data = parser::parse_timetable(&html);
+                    let label = kgc_data.week_label.clone();
                     log::info!(
-                        "sync_schedule_data: Luna: {} courses, {} communities",
-                        l.courses.len(),
-                        l.communities.len()
+                        "sync_schedule_data: parsed KGC: {} entries, week_label='{}'",
+                        kgc_data.entries.len(),
+                        label
                     );
-                    for course in &l.courses {
-                        db.upsert_luna_course(
-                            &course.idnumber,
-                            &course.name,
-                            &course.teacher,
-                            course.day as i32,
-                            course.period as i32,
-                        )?;
+                    if kgc_data.entries.is_empty() && label.is_empty() {
+                        log::warn!("sync_schedule_data: KGC returned empty page");
+                        kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
+                    } else {
+                        for entry in &kgc_data.entries {
+                            let day_int = day_str_to_int(&entry.day);
+                            if day_int == 0 {
+                                continue;
+                            }
+                            db.upsert_kgc_course(
+                                &entry.course_code,
+                                &entry.course_name,
+                                day_int,
+                                entry.period,
+                                &entry.room,
+                                &entry.detail_path,
+                                entry.is_cancelled,
+                                entry.is_makeup,
+                                entry.is_room_changed,
+                                &label,
+                            )?;
+                        }
+                        current_week_label = label;
+                        kgc_fetched = true;
+                        match fetch_next_week_kgc(http, &kgc_data, &db).await {
+                            Ok(next_label) => {
+                                if !next_label.is_empty() {
+                                    next_week_label = next_label;
+                                }
+                            }
+                            Err(error) => {
+                                clear_kgc_if_expired(&kgc, &error).await;
+                                log::warn!("sync_schedule_data: next week failed: {}", error);
+                                kgc_warning = KGC_NEXT_WEEK_WARNING.to_string();
+                            }
+                        }
+                        log::info!("sync_schedule_data: next_week_label='{}'", next_week_label);
                     }
-                    (
-                        l.communities,
-                        l.year_options,
-                        l.term_options,
-                        l.year,
-                        l.term,
-                    )
                 }
-                Err(e) => {
-                    log::warn!("sync_schedule_data: Luna fetch failed: {}", e);
-                    (
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        String::new(),
-                        String::new(),
-                    )
+                Err(error) => {
+                    clear_kgc_if_expired(&kgc, &error).await;
+                    log::warn!("sync_schedule_data: KGC current week failed: {}", error);
+                    kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
                 }
             }
         } else {
-            log::info!("sync_schedule_data: Luna not authenticated");
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                String::new(),
-                String::new(),
-            )
+            log::warn!("sync_schedule_data: KGC logged out before fetch; continuing with Luna");
+            kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
+        }
+    }
+
+    let scope = crate::academic_period::visible_weeks(
+        &current_week_label,
+        &next_week_label,
+        &previous.luna_year,
+        &previous.luna_term,
+        chrono::Local::now().date_naive(),
+    );
+    if scope.hid_current {
+        kgc_warning = STALE_SEMESTER_KGC_WARNING.to_string();
+    }
+    current_week_label = scope.current.clone();
+    next_week_label = scope.next.clone();
+    let (display_year, display_term) = if scope.from_calendar {
+        (scope.year.clone(), scope.term.clone())
+    } else {
+        (String::new(), String::new())
+    };
+
+    let luna = match sync_luna_timetable(&luna_state, &db, &previous).await {
+        Ok(fields) => fields,
+        Err(error) => {
+            store_kgc_warning(&db, &kgc_warning);
+            let semester_rolled = scope.from_calendar
+                && (scope.year != previous.luna_year || scope.term != previous.luna_term);
+            if kgc_fetched || scope.hid_current || semester_rolled {
+                let (year, term) = if scope.from_calendar {
+                    (display_year.clone(), display_term.clone())
+                } else {
+                    (previous.luna_year.clone(), previous.luna_term.clone())
+                };
+                let snap = SnapshotState {
+                    current_week_label: current_week_label.clone(),
+                    next_week_label: next_week_label.clone(),
+                    luna_year: year,
+                    luna_term: term,
+                    luna_communities: previous.luna_communities.clone(),
+                    luna_year_options: previous.luna_year_options.clone(),
+                    luna_term_options: previous.luna_term_options.clone(),
+                    updated_at: 0,
+                };
+                db.save_snapshot_state(&snap)?;
+            }
+            return Err(error);
         }
     };
 
-    // ── Step 4: Persist snapshot state ──
-    let snap = SnapshotState {
-        current_week_label: current_week_label.clone(),
-        next_week_label: next_week_label.clone(),
-        luna_year: year,
-        luna_term: term,
-        luna_communities: communities.clone(),
-        luna_year_options: year_opts,
-        luna_term_options: term_opts,
-        updated_at: 0, // filled by save_snapshot_state
+    let (save_year, save_term) = if scope.from_calendar {
+        (display_year.clone(), display_term.clone())
+    } else {
+        (luna.year.clone(), luna.term.clone())
     };
-    db.save_snapshot_state(&snap)?;
+    let labels_changed = current_week_label != previous.current_week_label
+        || next_week_label != previous.next_week_label;
+    let term_changed = save_year != previous.luna_year || save_term != previous.luna_term;
+    let should_save =
+        kgc_fetched || luna.replaced || luna.metadata_changed || labels_changed || term_changed;
+    if should_save {
+        let snap = SnapshotState {
+            current_week_label: current_week_label.clone(),
+            next_week_label: next_week_label.clone(),
+            luna_year: save_year,
+            luna_term: save_term,
+            luna_communities: luna.communities.clone(),
+            luna_year_options: luna.year_opts.clone(),
+            luna_term_options: luna.term_opts.clone(),
+            updated_at: 0,
+        };
+        db.save_snapshot_state(&snap)?;
+    }
+    store_kgc_warning(&db, &kgc_warning);
 
-    // ── Step 5: Enrichment (serial — KGC syllabus details, then Luna counts) ──
-    if let Err(e) = enrich_schedule_inner(&kgc, &luna_state, &db).await {
-        clear_kgc_if_expired(&kgc, &e).await;
-        log::warn!("sync_schedule_data: enrichment failed: {}", e);
+    if kgc_fetched {
+        if let Err(e) = enrich_schedule_inner(&kgc, &luna_state, &db).await {
+            clear_kgc_if_expired(&kgc, &e).await;
+            log::warn!("sync_schedule_data: enrichment failed: {}", e);
+        }
     }
 
-    // ── Step 6: Build final response from DB ──
-    let raw = db.build_raw_data(&current_week_label, &next_week_label, communities)?;
+    let response_year = if scope.from_calendar {
+        display_year
+    } else {
+        luna.year.clone()
+    };
+    let response_term = if scope.from_calendar {
+        display_term
+    } else {
+        luna.term.clone()
+    };
+    let mut communities = luna.communities.clone();
+    retain_current_communities(&mut communities, &response_year, &response_term);
+    let raw = db.build_raw_data(&current_week_label, &next_week_label, communities.clone())?;
+    let semester_changed =
+        response_year != previous.luna_year || response_term != previous.luna_term;
+    if raw.kgc_entries_current.is_empty()
+        && raw.kgc_entries_next.is_empty()
+        && raw.luna_courses.is_empty()
+        && current_week_label.is_empty()
+        && !semester_changed
+    {
+        return Err("時間割を取得できませんでした。Luna の接続を確認してください。".into());
+    }
+    if semester_changed && raw.luna_courses.is_empty() && current_week_label.is_empty() {
+        kgc_warning = STALE_SEMESTER_KGC_WARNING.to_string();
+        store_kgc_warning(&db, &kgc_warning);
+    }
     log::info!(
         "sync_schedule_data: done — kgc_current={}, kgc_next={}, luna={}, plans={}, counts={}",
         raw.kgc_entries_current.len(),
@@ -269,18 +317,305 @@ pub async fn sync_schedule_data(
         raw.luna_counts.len()
     );
     let (ai_result, ai_stale) = load_ai_cache(&db)?;
-
     Ok(ScheduleResponse {
         raw,
         ai_result,
         ai_stale,
-        snapshot_updated_at: epoch_secs(),
-        luna_communities: snap.luna_communities,
-        luna_year_options: snap.luna_year_options,
-        luna_term_options: snap.luna_term_options,
-        luna_year: snap.luna_year,
-        luna_term: snap.luna_term,
+        snapshot_updated_at: if should_save {
+            epoch_secs()
+        } else {
+            previous.updated_at
+        },
+        luna_communities: communities,
+        luna_year_options: luna.year_opts,
+        luna_term_options: luna.term_opts,
+        luna_year: response_year,
+        luna_term: response_term,
+        kgc_warning,
     })
+}
+
+const SCHEDULE_KGC_WARNING_KEY: &str = "schedule_kgc_warning";
+const KGC_UNAVAILABLE_WARNING: &str =
+    "KGC に接続できません。Luna と保存済みの時間割を表示しています。";
+const KGC_NEXT_WEEK_WARNING: &str =
+    "KGC の来週の時間割を取得できませんでした。保存済みのデータを表示しています。";
+
+const STALE_SEMESTER_KGC_WARNING: &str =
+    "前学期の時間割は表示していません。KGC から今学期の時間割を取得できていません。";
+
+fn load_kgc_warning(db: &Database) -> String {
+    db.get_data_cache(SCHEDULE_KGC_WARNING_KEY)
+        .ok()
+        .flatten()
+        .map(|(text, _)| text)
+        .unwrap_or_default()
+}
+
+fn store_kgc_warning(db: &Database, warning: &str) {
+    if warning.is_empty() {
+        let _ = db.delete_data_cache(SCHEDULE_KGC_WARNING_KEY);
+    } else {
+        let _ = db.save_data_cache(SCHEDULE_KGC_WARNING_KEY, warning);
+    }
+}
+
+struct LunaSnapshotFields {
+    communities: Vec<luna_parser::LunaCommunity>,
+    year_opts: Vec<luna_parser::SelectOption>,
+    term_opts: Vec<luna_parser::SelectOption>,
+    year: String,
+    term: String,
+    replaced: bool,
+    metadata_changed: bool,
+}
+
+fn luna_fields_from_snapshot(snapshot: &SnapshotState) -> LunaSnapshotFields {
+    LunaSnapshotFields {
+        communities: snapshot.luna_communities.clone(),
+        year_opts: snapshot.luna_year_options.clone(),
+        term_opts: snapshot.luna_term_options.clone(),
+        year: snapshot.luna_year.clone(),
+        term: snapshot.luna_term.clone(),
+        replaced: false,
+        metadata_changed: false,
+    }
+}
+
+async fn sync_luna_timetable(
+    luna_state: &LunaState,
+    db: &Database,
+    previous: &SnapshotState,
+) -> Result<LunaSnapshotFields, String> {
+    let http = {
+        let luna = luna_state.client.lock().await;
+        if luna.authenticated {
+            Some(luna.http.clone())
+        } else {
+            None
+        }
+    };
+    let Some(http) = http else {
+        log::info!("sync_schedule_data: Luna not authenticated; keeping stored timetable");
+        return Ok(luna_fields_from_snapshot(previous));
+    };
+
+    let target = target_luna_period(previous);
+    let parsed = match fetch_current_luna_timetable(&http, target.as_ref()).await {
+        Ok(parsed) => parsed,
+        Err(error) if is_luna_auth_error(&error) => return Err(error),
+        Err(error) => {
+            log::warn!("sync_schedule_data: Luna fetch skipped persist: {}", error);
+            return Ok(luna_fields_from_snapshot(previous));
+        }
+    };
+
+    if !courses_fit_target(&parsed.courses, target.as_ref()) {
+        log::warn!(
+            "sync_schedule_data: Luna courses do not match target term {}/{}; keeping stored rows",
+            parsed.year,
+            parsed.term
+        );
+        return Ok(luna_fields_from_snapshot(previous));
+    }
+
+    let replaced = if parsed.courses.is_empty() {
+        log::warn!("sync_schedule_data: Luna timetable had no courses; keeping stored rows");
+        false
+    } else {
+        db.replace_luna_courses(&parsed.courses)?;
+        log::info!(
+            "sync_schedule_data: Luna: {} courses, {} communities, term={}/{}",
+            parsed.courses.len(),
+            parsed.communities.len(),
+            parsed.year,
+            parsed.term
+        );
+        true
+    };
+
+    let year = if parsed.year.is_empty() {
+        previous.luna_year.clone()
+    } else {
+        parsed.year
+    };
+    let term = if parsed.term.is_empty() {
+        previous.luna_term.clone()
+    } else {
+        parsed.term
+    };
+    Ok(LunaSnapshotFields {
+        communities: if parsed.communities.is_empty() {
+            previous.luna_communities.clone()
+        } else {
+            parsed.communities
+        },
+        year_opts: if parsed.year_options.is_empty() {
+            previous.luna_year_options.clone()
+        } else {
+            parsed.year_options
+        },
+        term_opts: if parsed.term_options.is_empty() {
+            previous.luna_term_options.clone()
+        } else {
+            parsed.term_options
+        },
+        year,
+        term,
+        replaced,
+        metadata_changed: true,
+    })
+}
+
+async fn fetch_current_luna_timetable(
+    http: &reqwest::Client,
+    target: Option<&(String, String)>,
+) -> Result<luna_parser::LunaTimetable, String> {
+    let url = format!("{}/lms/timetable", config::LUNA_BASE);
+    let html = client::fetch_with_redirect(
+        http,
+        &url,
+        config::LUNA_BASE,
+        luna_client::LUNA_SESSION_EXPIRED_MSG,
+        luna_client::is_luna_session_expired,
+    )
+    .await?;
+    let parsed = luna_parser::parse_luna_timetable(&html);
+    if luna_timetable_matches(&parsed, target) {
+        return Ok(parsed);
+    }
+    let Some((year, term)) = target else {
+        return Ok(parsed);
+    };
+    let Some(request) = luna_parser::build_timetable_switch(&html, year, term) else {
+        log::warn!(
+            "sync_schedule_data: Luna page is {}/{}, cannot switch to {}/{}",
+            parsed.year,
+            parsed.term,
+            year,
+            term
+        );
+        return Err("luna-term-mismatch".into());
+    };
+    log::info!(
+        "sync_schedule_data: Luna page is {}/{}, switching to {}/{}",
+        parsed.year,
+        parsed.term,
+        year,
+        term
+    );
+    let switched_html = submit_luna_timetable_switch(http, &request).await?;
+    let switched = luna_parser::parse_luna_timetable(&switched_html);
+    if luna_timetable_matches(&switched, target) {
+        return Ok(switched);
+    }
+    log::warn!(
+        "sync_schedule_data: Luna switch stayed on {}/{}",
+        switched.year,
+        switched.term
+    );
+    Err("luna-term-mismatch".into())
+}
+
+async fn submit_luna_timetable_switch(
+    http: &reqwest::Client,
+    request: &luna_parser::LunaTimetableSwitch,
+) -> Result<String, String> {
+    let url = resolve_luna_action(&request.action)?;
+    let referer = format!("{}/lms/timetable", config::LUNA_BASE);
+    if request.method.eq_ignore_ascii_case("get") {
+        let builder = http
+            .get(&url)
+            .query(&request.fields)
+            .header("Referer", &referer);
+        return client::send_and_follow_redirect(
+            http,
+            builder,
+            config::LUNA_BASE,
+            luna_client::LUNA_SESSION_EXPIRED_MSG,
+            luna_client::is_luna_session_expired,
+        )
+        .await;
+    }
+    client::post_form_with_redirect(
+        http,
+        &url,
+        config::LUNA_BASE,
+        luna_client::LUNA_SESSION_EXPIRED_MSG,
+        luna_client::is_luna_session_expired,
+        request.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        &[("Referer", referer.as_str()), ("Origin", config::LUNA_BASE)],
+    )
+    .await
+}
+
+fn resolve_luna_action(action: &str) -> Result<String, String> {
+    let action = action.trim();
+    if action.is_empty() || action == "#" || action.starts_with("javascript:") {
+        return Ok(format!("{}/lms/timetable", config::LUNA_BASE));
+    }
+    if action.starts_with("http://") || action.starts_with("https://") {
+        if action.starts_with(config::LUNA_BASE) {
+            return Ok(action.to_string());
+        }
+        return Err("Luna timetable form action is outside Luna".into());
+    }
+    if let Some(path) = action.strip_prefix('/') {
+        return Ok(format!("{}/{}", config::LUNA_BASE, path));
+    }
+    Ok(format!(
+        "{}/{}",
+        config::LUNA_BASE,
+        action.trim_start_matches("./")
+    ))
+}
+
+fn target_luna_period(snapshot: &SnapshotState) -> Option<(String, String)> {
+    let today = chrono::Local::now().date_naive();
+    if let Some(period) = crate::academic_period::calendar_academic_period(today) {
+        return Some((period.year, period.term));
+    }
+    if !snapshot.luna_year.is_empty() && !snapshot.luna_term.is_empty() {
+        return Some((snapshot.luna_year.clone(), snapshot.luna_term.clone()));
+    }
+    None
+}
+
+fn retain_current_communities(
+    communities: &mut Vec<luna_parser::LunaCommunity>,
+    year: &str,
+    term: &str,
+) {
+    communities.retain(|community| {
+        crate::db::luna_course_matches_snapshot(&community.idnumber, year, term)
+    });
+}
+
+fn luna_timetable_matches(
+    parsed: &luna_parser::LunaTimetable,
+    target: Option<&(String, String)>,
+) -> bool {
+    let Some((year, term)) = target else {
+        return true;
+    };
+    let year_ok = parsed.year.is_empty() || &parsed.year == year;
+    parsed.term == *term && year_ok
+}
+
+fn courses_fit_target(
+    courses: &[luna_parser::LunaCourse],
+    target: Option<&(String, String)>,
+) -> bool {
+    let Some((year, term)) = target else {
+        return true;
+    };
+    courses
+        .iter()
+        .all(|course| crate::db::luna_course_matches_snapshot(&course.idnumber, year, term))
+}
+
+fn is_luna_auth_error(error: &str) -> bool {
+    error == luna_client::LUNA_SESSION_EXPIRED_MSG || error.contains("Lunaセッションが期限切れ")
 }
 
 async fn clear_kgc_if_expired(kgc: &KgcState, error: &str) {

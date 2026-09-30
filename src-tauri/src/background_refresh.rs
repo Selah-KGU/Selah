@@ -345,8 +345,9 @@ async fn refresh_backend_data_inner(
         }
     }
 
+    // Luna timetable must refresh even when KGC is down or logged out.
     if request.wants("schedule_data")
-        && kgc_authenticated
+        && (kgc_authenticated || luna_authenticated)
         && (request.force || schedule_refresh_is_stale(&db))
     {
         match crate::timetable::sync_schedule_data(
@@ -908,9 +909,16 @@ async fn maybe_auto_sync_calendars(
         return;
     };
 
-    let raw = match db.build_raw_data(
+    let scope = crate::academic_period::visible_weeks(
         &snapshot.current_week_label,
         &snapshot.next_week_label,
+        &snapshot.luna_year,
+        &snapshot.luna_term,
+        chrono::Local::now().date_naive(),
+    );
+    let raw = match db.build_raw_data(
+        &scope.current,
+        &scope.next,
         snapshot.luna_communities.clone(),
     ) {
         Ok(raw) => raw,

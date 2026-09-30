@@ -358,17 +358,15 @@
     syncHomeUiTimers();
     document.addEventListener("visibilitychange", handleHomeVisibility);
     // Restore cached data immediately so UI is never blank
-    const cachedTT = getCached<ScheduleResponse>("schedule_data");
     const cachedTodo = getCached<LunaTodoItem[]>("luna_todo");
     const cachedKwic = getCached<KwicPortalHome>("kwic_home");
     const cachedNotifs = getCached<NotificationsData>("notifications");
     const cachedLunaNotifs = getCached<LunaNotification[]>("luna_updates");
-    if (cachedTT) timetableData = cachedTT;
     if (cachedTodo) todoItems = cachedTodo;
     if (cachedKwic) kwicHome = cachedKwic;
     if (cachedNotifs) kgcNotifs = cachedNotifs.entries ?? [];
     if (cachedLunaNotifs) lunaNotifs = cachedLunaNotifs;
-    if (cachedTT || cachedNotifs || cachedKwic) loading = false;
+    if (cachedNotifs || cachedKwic || cachedTodo) loading = false;
     cachedBackendFetch<WeatherData>("weather").then(applyWeather).catch(() => {});
     checkAiConfig();
     if ($authState.authenticated) {

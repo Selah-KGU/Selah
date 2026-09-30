@@ -71,7 +71,9 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
                 Err(error) => {
                     complete_cdp_call(
                         &tx,
-                        Err(format!("CoreWebView2 is unavailable after SAML loading: {error}")),
+                        Err(format!(
+                            "CoreWebView2 is unavailable after SAML loading: {error}"
+                        )),
                     );
                     return;
                 }
@@ -102,7 +104,9 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
             ) {
                 complete_cdp_call(
                     &tx,
-                    Err(format!("CallDevToolsProtocolMethod dispatch failed: {error}")),
+                    Err(format!(
+                        "CallDevToolsProtocolMethod dispatch failed: {error}"
+                    )),
                 );
             }
         }

@@ -83,7 +83,11 @@ pub fn active_provider_label(cfg: &SearchConfig) -> &'static str {
 }
 
 /// Run one search, dispatching to whichever provider is configured/available.
-pub async fn search(cfg: &SearchConfig, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
+pub async fn search(
+    cfg: &SearchConfig,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchResult>, String> {
     match active_provider_label(cfg) {
         "brave" => brave_search(&cfg.brave_api_key, query, limit).await,
         "google" => google_search(&cfg.google_api_key, &cfg.google_cx, query, limit).await,
@@ -130,7 +134,11 @@ async fn duckduckgo_search(query: &str, limit: usize) -> Result<Vec<SearchResult
             }
             let title = a.text().collect::<String>().trim().to_string();
             let snippet = snippets.get(idx).cloned().unwrap_or_default();
-            out.push(SearchResult { title, url, snippet });
+            out.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
         }
         out
     };

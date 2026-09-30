@@ -228,11 +228,28 @@ pub(crate) fn collect_exam_signals(db: &Database) -> Vec<DetectiveSignal> {
     }
 
     if let Ok(Some((result, _))) = db.get_ai_schedule_cache() {
-        for item in result
-            .current_week
-            .into_iter()
-            .chain(result.next_week.into_iter())
-        {
+        let snap = db.get_snapshot_state().ok().flatten().unwrap_or_default();
+        let scope = crate::academic_period::visible_weeks(
+            &snap.current_week_label,
+            &snap.next_week_label,
+            &snap.luna_year,
+            &snap.luna_term,
+            chrono::Local::now().date_naive(),
+        );
+        let mut weeks = Vec::new();
+        if crate::academic_period::week_belongs_to_visible_label(
+            &scope.current,
+            &result.current_week_label,
+        ) {
+            weeks.extend(result.current_week);
+        }
+        if crate::academic_period::week_belongs_to_visible_label(
+            &scope.next,
+            &result.next_week_label,
+        ) {
+            weeks.extend(result.next_week);
+        }
+        for item in weeks {
             for signal in item
                 .exams
                 .iter()

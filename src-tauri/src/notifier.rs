@@ -1453,7 +1453,10 @@ mod tests {
             strip_trailing_luna_timestamp("レポート（第1回）"),
             "レポート（第1回）"
         );
-        assert_eq!(strip_trailing_luna_timestamp("small (note)"), "small (note)");
+        assert_eq!(
+            strip_trailing_luna_timestamp("small (note)"),
+            "small (note)"
+        );
     }
 
     #[test]

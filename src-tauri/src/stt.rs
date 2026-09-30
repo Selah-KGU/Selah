@@ -6,11 +6,12 @@ use sherpa_onnx::{
     OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, SileroVadModelConfig,
     VadModelConfig, VoiceActivityDetector,
 };
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, LazyLock, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
@@ -568,7 +569,12 @@ fn build_vad_config(profile: &SttSensitivityProfile) -> Result<VadModelConfig, S
             min_silence_duration: profile.vad_min_silence,
             min_speech_duration: profile.vad_min_speech,
             window_size: 512,
-            max_speech_duration: 8.0,
+            // sherpa-onnx raises this model's threshold to 0.90 once the
+            // buffer exceeds max_speech_duration, and ongoing speech then
+            // looks like silence. Do not cut the utterance in userspace to
+            // stay under a short limit: that reset drops the continuation
+            // and queues a long final in front of the next live partial.
+            max_speech_duration: 86_400.0,
         },
         ..Default::default()
     })
@@ -587,6 +593,9 @@ fn selected_model_from_config() -> Result<SttModelInfo, String> {
 struct SttEventPayload {
     text: String,
     caller: String,
+    /// Capture order. Live captions use it so a newer partial is not wiped
+    /// when an older final finishes decoding later.
+    seq: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -789,22 +798,24 @@ fn emit_info(app: &tauri::AppHandle, message: impl Into<String>, caller: &str) {
     );
 }
 
-fn emit_partial(app: &tauri::AppHandle, text: String, caller: &str) {
+fn emit_partial(app: &tauri::AppHandle, text: String, caller: &str, seq: u64) {
     let _ = app.emit(
         "stt-partial",
         SttEventPayload {
             text,
             caller: caller.to_string(),
+            seq,
         },
     );
 }
 
-fn emit_final(app: &tauri::AppHandle, text: String, caller: &str) {
+fn emit_final(app: &tauri::AppHandle, text: String, caller: &str, seq: u64) {
     let _ = app.emit(
         "stt-final",
         SttEventPayload {
             text,
             caller: caller.to_string(),
+            seq,
         },
     );
 }
@@ -815,7 +826,13 @@ fn emit_final(app: &tauri::AppHandle, text: String, caller: &str) {
 /// the same phrase. `last_final` is updated with whatever we end up keeping
 /// (so any legitimate later repeat of the same phrase, spaced by other
 /// content, still goes through).
-fn emit_final_deduped(app: &tauri::AppHandle, text: String, caller: &str, last_final: &mut String) {
+fn emit_final_deduped(
+    app: &tauri::AppHandle,
+    text: String,
+    caller: &str,
+    seq: u64,
+    last_final: &mut String,
+) {
     if text.is_empty() {
         return;
     }
@@ -823,7 +840,7 @@ fn emit_final_deduped(app: &tauri::AppHandle, text: String, caller: &str, last_f
         return;
     }
     *last_final = text.clone();
-    emit_final(app, text, caller);
+    emit_final(app, text, caller, seq);
 }
 
 fn create_recognizer_with_fallback(model: &SttModelInfo) -> Result<RecognizerInitResult, String> {
@@ -1322,26 +1339,90 @@ const PARTIAL_WINDOW_SECS: usize = 5;
 /// Tail window we probe to decide whether the utterance has momentarily
 /// fallen silent. Roughly one natural syllable gap.
 const PARTIAL_TAIL_WINDOW_SAMPLES: usize = TARGET_SAMPLE_RATE as usize / 2; // 500 ms
-/// RMS threshold below which the tail is treated as silent. Kept slightly
-/// above the pre-VAD RMS gate so brief lulls count as silence even if the
-/// gate would still let them through.
-const PARTIAL_TAIL_SILENCE_RMS: f32 = 0.003;
+/// Historical partial-tail cutoff. Low sensitivity's noise gate is louder
+/// than this; using that gate here freezes quiet live captions again.
+const PARTIAL_TAIL_SILENCE_RMS_CAP: f32 = 0.003;
+/// After an utterance ends, keep feeding VAD even if the next chunks dip near
+/// the noise gate. A continuation from the same speaker is otherwise dropped
+/// and recognition looks like it stopped while people are still talking.
+const UTTERANCE_RESTART_GRACE: Duration = Duration::from_millis(1_500);
+/// Hard stop for the restart window so room tone cannot keep VAD awake.
+const UTTERANCE_RESTART_LIMIT: Duration = Duration::from_millis(4_000);
+
+fn partial_tail_silence_rms(rms_gate: f32) -> f32 {
+    rms_gate.min(PARTIAL_TAIL_SILENCE_RMS_CAP)
+}
+
+fn arm_utterance_restart(now: Instant) -> (Instant, Instant) {
+    (now + UTTERANCE_RESTART_GRACE, now + UTTERANCE_RESTART_LIMIT)
+}
+
+/// Keep the restart window open while sound is still arriving, but never
+/// past the deadline captured when the utterance ended.
+fn extend_restart_grace(
+    now: Instant,
+    grace_until: Instant,
+    grace_deadline: Instant,
+    in_utterance: bool,
+    chunk_rms: f32,
+    rms_gate: f32,
+) -> Instant {
+    if in_utterance || now >= grace_until || now >= grace_deadline {
+        return grace_until;
+    }
+    if chunk_rms < rms_gate * 0.5 {
+        return grace_until;
+    }
+    grace_until.max((now + UTTERANCE_RESTART_GRACE).min(grace_deadline))
+}
+
+fn trim_live_utterance(samples: &mut Vec<f32>) {
+    let max_keep = (PARTIAL_WINDOW_SECS + 1) * TARGET_SAMPLE_RATE as usize;
+    if samples.len() <= max_keep {
+        return;
+    }
+    let drop_n = samples.len() - max_keep;
+    samples.copy_within(drop_n.., 0);
+    samples.truncate(max_keep);
+}
 
 /// Returns an owned copy of the audio window to decode for a partial result,
 /// advancing throttle state when the tail is silent. Returns None if the
 /// tick should be skipped entirely.
 ///
-/// `window_secs`: how many seconds of tail audio to decode.
+/// window_secs: how many seconds of tail audio to decode.
+/// tail_silence_rms should be the sensitivity noise gate, not a louder cutoff.
+/// A louder cutoff treats real but quiet speech as a lull and freezes the live
+/// subtitle until VAD eventually endpoints.
 fn partial_decode_slice(
     current_samples: &[f32],
     last_partial_at: &mut Instant,
     stable_streak: &mut u32,
     window_secs: usize,
+    tail_silence_rms: f32,
+) -> Option<Vec<f32>> {
+    let partial_profile = stt_partial_throttle_profile(&load_config().partial_mode);
+    partial_decode_slice_with_profile(
+        current_samples,
+        last_partial_at,
+        stable_streak,
+        window_secs,
+        &partial_profile,
+        tail_silence_rms,
+    )
+}
+
+fn partial_decode_slice_with_profile(
+    current_samples: &[f32],
+    last_partial_at: &mut Instant,
+    stable_streak: &mut u32,
+    window_secs: usize,
+    partial_profile: &SttPartialThrottleProfile,
+    tail_silence_rms: f32,
 ) -> Option<Vec<f32>> {
     if current_samples.len() < (TARGET_SAMPLE_RATE as usize / 2) {
         return None;
     }
-    let partial_profile = stt_partial_throttle_profile(&load_config().partial_mode);
     if !partial_profile.enabled {
         return None;
     }
@@ -1356,17 +1437,17 @@ fn partial_decode_slice(
         return None;
     }
     // If the tail of the utterance is currently silent, nothing the decoder
-    // produces can differ from last time — VAD hasn't cut the segment yet,
+    // produces can differ from last time. VAD has not cut the segment yet,
     // but the speaker is between phrases. Skip the encode entirely.
     let tail_start = current_samples
         .len()
         .saturating_sub(PARTIAL_TAIL_WINDOW_SAMPLES);
-    if rms(&current_samples[tail_start..]) < PARTIAL_TAIL_SILENCE_RMS {
+    if rms(&current_samples[tail_start..]) < tail_silence_rms {
         *stable_streak = stable_streak.saturating_add(1);
         *last_partial_at = Instant::now();
         return None;
     }
-    // Only decode the tail window — SenseVoice is non-streaming, so re-encoding
+    // Only decode the tail window. SenseVoice is non-streaming, so re-encoding
     // the full utterance every partial tick is the dominant CPU cost.
     let window = window_secs * TARGET_SAMPLE_RATE as usize;
     let slice = if current_samples.len() > window {
@@ -1374,28 +1455,392 @@ fn partial_decode_slice(
     } else {
         current_samples
     };
+    *stable_streak = 0;
+    *last_partial_at = Instant::now();
     Some(slice.to_vec())
 }
 
-fn handle_partial_result(
-    app: &tauri::AppHandle,
-    text: String,
-    last_partial: &mut String,
-    last_partial_at: &mut Instant,
-    stable_streak: &mut u32,
-    caller: &str,
+static STT_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_stt_event_seq() -> u64 {
+    STT_EVENT_SEQ.fetch_add(1, Ordering::SeqCst)
+}
+
+#[derive(Debug)]
+enum SttDecodeJob {
+    Partial { seq: u64, samples: Vec<f32> },
+    Final { seq: u64, samples: Vec<f32> },
+    Shutdown,
+}
+
+fn enqueue_stt_decode_job(
+    jobs: &mut VecDeque<SttDecodeJob>,
+    job: SttDecodeJob,
+    prioritize_partials: bool,
 ) {
-    *last_partial_at = Instant::now();
-    if text.is_empty() {
-        return;
+    let is_partial = matches!(job, SttDecodeJob::Partial { .. });
+    if is_partial {
+        // A newer partial supersedes any partial still waiting.
+        jobs.retain(|existing| !matches!(existing, SttDecodeJob::Partial { .. }));
+        if prioritize_partials {
+            // Shared-queue fallback only. Live does not use this path: it has
+            // a second recognizer, so an in-flight final cannot block a partial.
+            // Finals stay in their own order. The UI ignores an older final
+            // that would otherwise wipe the newer partial.
+            let insert_at = jobs
+                .iter()
+                .position(|existing| {
+                    matches!(
+                        existing,
+                        SttDecodeJob::Final { .. } | SttDecodeJob::Shutdown
+                    )
+                })
+                .unwrap_or(jobs.len());
+            jobs.insert(insert_at, job);
+            return;
+        }
     }
-    if text == *last_partial {
-        *stable_streak = stable_streak.saturating_add(1);
-        return;
+    jobs.push_back(job);
+}
+
+struct SttDecodeInbox {
+    jobs: Mutex<VecDeque<SttDecodeJob>>,
+    cv: Condvar,
+    failed: Arc<AtomicBool>,
+    prioritize_partials: bool,
+}
+
+impl SttDecodeInbox {
+    fn new(prioritize_partials: bool, failed: Arc<AtomicBool>) -> Self {
+        Self {
+            jobs: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+            failed,
+            prioritize_partials,
+        }
     }
-    *stable_streak = 0;
-    *last_partial = text.clone();
-    emit_partial(app, text, caller);
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<SttDecodeJob>> {
+        self.jobs.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn push(&self, job: SttDecodeJob) {
+        let mut jobs = self.lock();
+        enqueue_stt_decode_job(&mut jobs, job, self.prioritize_partials);
+        self.cv.notify_one();
+    }
+
+    fn discard_pending(&self) {
+        let mut jobs = self.lock();
+        jobs.retain(|job| matches!(job, SttDecodeJob::Shutdown));
+        self.cv.notify_one();
+    }
+
+    fn pop(&self) -> SttDecodeJob {
+        let mut jobs = self.lock();
+        loop {
+            if let Some(job) = jobs.pop_front() {
+                return job;
+            }
+            jobs = self.cv.wait(jobs).unwrap_or_else(|err| err.into_inner());
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SttDecodeLane {
+    /// Agent and other short inputs: one recognizer handles both job kinds.
+    Combined,
+    /// Live partials. A final already being decoded must not block these.
+    Partial,
+    /// Live finals, kept in arrival order on their own recognizer.
+    Final,
+}
+
+struct DecodePanicGuard {
+    failed: Arc<AtomicBool>,
+}
+
+impl Drop for DecodePanicGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            log::error!("[stt] recognizer thread panicked; stopping recognition");
+            self.failed.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+struct LastPartialText {
+    text: String,
+    seq: u64,
+}
+
+fn lock_last_partial(
+    last_partial: &Mutex<LastPartialText>,
+) -> std::sync::MutexGuard<'_, LastPartialText> {
+    last_partial.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+struct SttDecodeWorker {
+    partial_inbox: Arc<SttDecodeInbox>,
+    final_inbox: Arc<SttDecodeInbox>,
+    joins: Vec<std::thread::JoinHandle<()>>,
+    failed: Arc<AtomicBool>,
+}
+
+impl SttDecodeWorker {
+    fn spawn(
+        app: tauri::AppHandle,
+        caller: String,
+        recognizer: OfflineRecognizer,
+        live_partial_recognizer: Option<OfflineRecognizer>,
+    ) -> Result<Self, String> {
+        let failed = Arc::new(AtomicBool::new(false));
+        let last_partial = Arc::new(Mutex::new(LastPartialText {
+            text: String::new(),
+            seq: 0,
+        }));
+        if let Some(partial_recognizer) = live_partial_recognizer {
+            return Self::spawn_split(
+                app,
+                caller,
+                recognizer,
+                partial_recognizer,
+                failed,
+                last_partial,
+            );
+        }
+
+        let inbox = Arc::new(SttDecodeInbox::new(false, Arc::clone(&failed)));
+        let inbox_thread = Arc::clone(&inbox);
+        let join = std::thread::Builder::new()
+            .name("stt-decode".into())
+            .spawn(move || {
+                decode_worker_loop(
+                    app,
+                    caller,
+                    recognizer,
+                    inbox_thread,
+                    SttDecodeLane::Combined,
+                    last_partial,
+                )
+            })
+            .map_err(|err| format!("音声認識スレッドの起動に失敗しました: {}", err))?;
+        Ok(Self {
+            partial_inbox: Arc::clone(&inbox),
+            final_inbox: inbox,
+            joins: vec![join],
+            failed,
+        })
+    }
+
+    fn spawn_split(
+        app: tauri::AppHandle,
+        caller: String,
+        final_recognizer: OfflineRecognizer,
+        partial_recognizer: OfflineRecognizer,
+        failed: Arc<AtomicBool>,
+        last_partial: Arc<Mutex<LastPartialText>>,
+    ) -> Result<Self, String> {
+        let partial_inbox = Arc::new(SttDecodeInbox::new(false, Arc::clone(&failed)));
+        let final_inbox = Arc::new(SttDecodeInbox::new(false, Arc::clone(&failed)));
+        let partial_for_thread = Arc::clone(&partial_inbox);
+        let final_for_thread = Arc::clone(&final_inbox);
+        let partial_app = app.clone();
+        let final_caller = caller.clone();
+        let partial_last = Arc::clone(&last_partial);
+        let partial_join = std::thread::Builder::new()
+            .name("stt-decode-partial".into())
+            .spawn(move || {
+                decode_worker_loop(
+                    partial_app,
+                    caller,
+                    partial_recognizer,
+                    partial_for_thread,
+                    SttDecodeLane::Partial,
+                    partial_last,
+                )
+            })
+            .map_err(|err| format!("音声認識スレッドの起動に失敗しました: {}", err))?;
+        let final_join = match std::thread::Builder::new()
+            .name("stt-decode-final".into())
+            .spawn(move || {
+                decode_worker_loop(
+                    app,
+                    final_caller,
+                    final_recognizer,
+                    final_for_thread,
+                    SttDecodeLane::Final,
+                    last_partial,
+                )
+            }) {
+            Ok(join) => join,
+            Err(err) => {
+                partial_inbox.push(SttDecodeJob::Shutdown);
+                let _ = partial_join.join();
+                return Err(format!("音声認識スレッドの起動に失敗しました: {}", err));
+            }
+        };
+        Ok(Self {
+            partial_inbox,
+            final_inbox,
+            joins: vec![partial_join, final_join],
+            failed,
+        })
+    }
+
+    fn failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst)
+    }
+
+    fn lanes_are_split(&self) -> bool {
+        !Arc::ptr_eq(&self.partial_inbox, &self.final_inbox)
+    }
+
+    fn push_partial(&self, samples: Vec<f32>) {
+        if samples.is_empty() || self.failed() {
+            return;
+        }
+        self.partial_inbox.push(SttDecodeJob::Partial {
+            seq: next_stt_event_seq(),
+            samples,
+        });
+    }
+
+    fn push_final(&self, samples: Vec<f32>) {
+        if samples.is_empty() || self.failed() {
+            return;
+        }
+        self.final_inbox.push(SttDecodeJob::Final {
+            seq: next_stt_event_seq(),
+            samples,
+        });
+    }
+}
+
+impl Drop for SttDecodeWorker {
+    fn drop(&mut self) {
+        let discard = STT_SHUTDOWN_REQUESTED.load(Ordering::SeqCst) || self.failed();
+        if discard {
+            self.partial_inbox.discard_pending();
+            if self.lanes_are_split() {
+                self.final_inbox.discard_pending();
+            }
+        }
+        self.partial_inbox.push(SttDecodeJob::Shutdown);
+        if self.lanes_are_split() {
+            self.final_inbox.push(SttDecodeJob::Shutdown);
+        }
+        for join in self.joins.drain(..) {
+            let _ = join.join();
+        }
+    }
+}
+
+fn decode_worker_loop(
+    app: tauri::AppHandle,
+    caller: String,
+    recognizer: OfflineRecognizer,
+    inbox: Arc<SttDecodeInbox>,
+    lane: SttDecodeLane,
+    last_partial: Arc<Mutex<LastPartialText>>,
+) {
+    let _panic_guard = DecodePanicGuard {
+        failed: Arc::clone(&inbox.failed),
+    };
+    let mut last_final = String::new();
+    loop {
+        if inbox.failed.load(Ordering::SeqCst) {
+            break;
+        }
+        match inbox.pop() {
+            SttDecodeJob::Shutdown => break,
+            SttDecodeJob::Partial { seq, samples } => {
+                if matches!(lane, SttDecodeLane::Final) {
+                    log::warn!("[stt] final decoder received a partial; dropping");
+                    continue;
+                }
+                if STT_SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let text = match decode_samples_safely(&recognizer, &samples) {
+                    Ok(text) => text,
+                    Err(()) => {
+                        inbox.failed.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                };
+                let mut seen = lock_last_partial(&last_partial);
+                // An older partial can finish after a newer final. Do not let
+                // it overwrite the text the next partial is compared against.
+                if text.is_empty() || seq < seen.seq || text == seen.text {
+                    continue;
+                }
+                seen.text = text.clone();
+                seen.seq = seq;
+                drop(seen);
+                emit_partial(&app, text, &caller, seq);
+            }
+            SttDecodeJob::Final { seq, samples } => {
+                if matches!(lane, SttDecodeLane::Partial) {
+                    log::warn!("[stt] partial decoder received a final; dropping");
+                    continue;
+                }
+                if STT_SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let text = match decode_samples_safely(&recognizer, &samples) {
+                    Ok(text) => text,
+                    Err(()) => {
+                        inbox.failed.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                {
+                    let mut seen = lock_last_partial(&last_partial);
+                    if seq >= seen.seq {
+                        seen.text = text.clone();
+                        seen.seq = seq;
+                    }
+                }
+                emit_final_deduped(&app, text, &caller, seq, &mut last_final);
+            }
+        }
+    }
+}
+
+fn decode_samples_safely(recognizer: &OfflineRecognizer, samples: &[f32]) -> Result<String, ()> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        decode_samples(recognizer, TARGET_SAMPLE_RATE, samples)
+    })) {
+        Ok(text) => Ok(text),
+        Err(_) => {
+            log::error!("[stt] recognizer panicked; stopping recognition");
+            Err(())
+        }
+    }
+}
+
+fn drain_vad_segments(vad: &VoiceActivityDetector, worker: &SttDecodeWorker) -> bool {
+    let mut drained = false;
+    while !vad.is_empty() {
+        if let Some(segment) = vad.front() {
+            let samples = segment.samples().to_vec();
+            drop(segment);
+            worker.push_final(samples);
+        }
+        vad.pop();
+        drained = true;
+    }
+    drained
 }
 
 fn choose_input_config(
@@ -1445,7 +1890,41 @@ fn run_stt_session(
         if let Some(fallback_from) = recognizer_init.fallback_from.as_ref() {
             emit_info(&app, stt_fallback_message(fallback_from), caller);
         }
+        // Decode off this thread. SenseVoice is offline, so one partial or
+        // final can take longer than the audio it covers. Decoding here
+        // starves the VAD, and live speech stops being detected.
+        // Live loads a second recognizer so a final already being decoded
+        // cannot block the next partial. Agent input keeps one recognizer.
+        let live_partial_recognizer = if caller == "live" {
+            log::info!(
+                "[stt] live captions load a second recognizer so partials are not blocked by an in-flight final"
+            );
+            let partial_init = create_recognizer_with_fallback(&model).map_err(|err| {
+                format!(
+                    "リアルタイム字幕用の追加認識器を読み込めませんでした: {}",
+                    err
+                )
+            })?;
+            if recognizer_init.fallback_from.is_none() {
+                if let Some(fallback_from) = partial_init.fallback_from.as_ref() {
+                    log::warn!(
+                        "[stt] live partial recognizer fell back from {}",
+                        fallback_from
+                    );
+                    emit_info(&app, stt_fallback_message(fallback_from), caller);
+                }
+            }
+            Some(partial_init.recognizer)
+        } else {
+            None
+        };
         let recognizer = recognizer_init.recognizer;
+        let decode_worker = SttDecodeWorker::spawn(
+            app.clone(),
+            caller.to_string(),
+            recognizer,
+            live_partial_recognizer,
+        )?;
         let sensitivity_profile = stt_sensitivity_profile(&load_config().sensitivity);
         let vad = VoiceActivityDetector::create(&build_vad_config(&sensitivity_profile)?, 30.0)
             .ok_or_else(|| "VAD の初期化に失敗しました".to_string())?;
@@ -1528,14 +2007,19 @@ fn run_stt_session(
         }
 
         let mut current_utterance = Vec::<f32>::new();
-        let mut last_partial = String::new();
         let mut last_partial_at = Instant::now();
         let mut stable_streak: u32 = 0;
-        let mut last_final = String::new();
         let mut resampler = Resampler::new(sample_rate, channels);
         let mut agc = Agc::new();
+        let mut vad_feed_grace_until = Instant::now();
+        let mut vad_feed_grace_deadline = Instant::now();
 
         let should_flush_pending_audio = loop {
+            if decode_worker.failed() {
+                return Err(
+                    "音声認識が中断されました。マイクを一度止めて、もう一度開始してください".into(),
+                );
+            }
             if stop_rx.try_recv().is_ok() {
                 break !STT_SHUTDOWN_REQUESTED.load(Ordering::SeqCst);
             }
@@ -1545,49 +2029,48 @@ fn run_stt_session(
                     if resampled.is_empty() {
                         continue;
                     }
-                    // Noise-floor gate on the *raw* (pre-AGC) signal: when
-                    // nothing is currently being captured and the chunk is
-                    // below speech level, skip VAD entirely. Checked before
-                    // AGC so amplified ambient noise can't trip the gate.
+                    // Noise-floor gate on the raw (pre-AGC) signal. A short
+                    // grace after each cut keeps a quiet continuation visible
+                    // to VAD; otherwise the next utterance never starts.
+                    let chunk_rms = rms(&resampled);
                     let in_utterance = !current_utterance.is_empty() || vad.detected();
-                    if !in_utterance && rms(&resampled) < sensitivity_profile.rms_gate {
+                    let now = Instant::now();
+                    vad_feed_grace_until = extend_restart_grace(
+                        now,
+                        vad_feed_grace_until,
+                        vad_feed_grace_deadline,
+                        in_utterance,
+                        chunk_rms,
+                        sensitivity_profile.rms_gate,
+                    );
+                    let in_restart_grace = now < vad_feed_grace_until;
+                    if !in_utterance
+                        && !in_restart_grace
+                        && chunk_rms < sensitivity_profile.rms_gate
+                    {
                         continue;
                     }
-                    // Soft AGC: pull quiet mics up toward a conventional
-                    // speech level without over-amplifying. Capped at 2×.
                     agc.apply(&mut resampled, in_utterance);
                     vad.accept_waveform(&resampled);
                     if vad.detected() {
                         current_utterance.extend_from_slice(&resampled);
+                        trim_live_utterance(&mut current_utterance);
                         if let Some(slice) = partial_decode_slice(
                             &current_utterance,
                             &mut last_partial_at,
                             &mut stable_streak,
                             PARTIAL_WINDOW_SECS,
+                            partial_tail_silence_rms(sensitivity_profile.rms_gate),
                         ) {
-                            let text = decode_samples(&recognizer, TARGET_SAMPLE_RATE, &slice);
-                            handle_partial_result(
-                                &app,
-                                text,
-                                &mut last_partial,
-                                &mut last_partial_at,
-                                &mut stable_streak,
-                                caller,
-                            );
+                            decode_worker.push_partial(slice);
                         }
                     }
-                    while !vad.is_empty() {
-                        if let Some(segment) = vad.front() {
-                            let samples = segment.samples().to_vec();
-                            let text = decode_samples(&recognizer, TARGET_SAMPLE_RATE, &samples);
-                            if !text.is_empty() {
-                                last_partial = text.clone();
-                                emit_final_deduped(&app, text, caller, &mut last_final);
-                            }
-                        }
-                        vad.pop();
+                    if drain_vad_segments(&vad, &decode_worker) {
                         current_utterance.clear();
                         stable_streak = 0;
+                        let (until, deadline) = arm_utterance_restart(Instant::now());
+                        vad_feed_grace_until = until;
+                        vad_feed_grace_deadline = deadline;
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -1597,23 +2080,12 @@ fn run_stt_session(
             }
         };
 
-        if should_flush_pending_audio {
+        if should_flush_pending_audio && !decode_worker.failed() {
             vad.flush();
-            while !vad.is_empty() {
-                if let Some(segment) = vad.front() {
-                    let samples = segment.samples().to_vec();
-                    let text = decode_samples(&recognizer, TARGET_SAMPLE_RATE, &samples);
-                    if !text.is_empty() {
-                        emit_final_deduped(&app, text, caller, &mut last_final);
-                    }
-                }
-                vad.pop();
-            }
-            if !current_utterance.is_empty() {
-                let text = decode_samples(&recognizer, TARGET_SAMPLE_RATE, &current_utterance);
-                if !text.is_empty() {
-                    emit_final_deduped(&app, text, caller, &mut last_final);
-                }
+            // The flushed segment already contains this utterance. Pushing
+            // current_utterance as well emits the same speech twice.
+            if !drain_vad_segments(&vad, &decode_worker) && !current_utterance.is_empty() {
+                decode_worker.push_final(std::mem::take(&mut current_utterance));
             }
         }
 
@@ -1849,4 +2321,248 @@ pub(crate) fn stt_shutdown_for_exit(timeout: Duration) {
         std::thread::sleep(Duration::from_millis(25));
     }
     log::warn!("[stt] shutdown: timed out waiting for STT session to stop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn balanced_profile() -> SttPartialThrottleProfile {
+        SttPartialThrottleProfile {
+            enabled: true,
+            min_interval_ms: 600,
+            stable_interval_ms: 1500,
+            very_stable_interval_ms: 5000,
+        }
+    }
+
+    fn audible_tail() -> Vec<f32> {
+        let mut samples = vec![0.0; TARGET_SAMPLE_RATE as usize];
+        let tail_start = samples.len() - PARTIAL_TAIL_WINDOW_SAMPLES;
+        for sample in &mut samples[tail_start..] {
+            *sample = 0.0028;
+        }
+        samples
+    }
+
+    #[test]
+    fn audible_tail_is_not_treated_as_silence() {
+        let samples = audible_tail();
+        let profile = balanced_profile();
+
+        let mut last_partial_at = Instant::now() - Duration::from_secs(10);
+        let mut stable_streak = 0;
+        let skipped = partial_decode_slice_with_profile(
+            &samples,
+            &mut last_partial_at,
+            &mut stable_streak,
+            PARTIAL_WINDOW_SECS,
+            &profile,
+            0.003,
+        );
+        assert!(skipped.is_none());
+        assert_eq!(stable_streak, 1);
+
+        let mut last_partial_at = Instant::now() - Duration::from_secs(10);
+        let mut stable_streak = 4;
+        let kept = partial_decode_slice_with_profile(
+            &samples,
+            &mut last_partial_at,
+            &mut stable_streak,
+            PARTIAL_WINDOW_SECS,
+            &profile,
+            0.0018,
+        );
+        assert!(kept.is_some());
+        assert_eq!(stable_streak, 0);
+    }
+
+    #[test]
+    fn silent_tail_skips_partial_decode() {
+        let mut last_partial_at = Instant::now() - Duration::from_secs(10);
+        let mut stable_streak = 0;
+        let samples = vec![0.0001; TARGET_SAMPLE_RATE as usize];
+        let slice = partial_decode_slice_with_profile(
+            &samples,
+            &mut last_partial_at,
+            &mut stable_streak,
+            PARTIAL_WINDOW_SECS,
+            &balanced_profile(),
+            0.0018,
+        );
+        assert!(slice.is_none());
+        assert_eq!(stable_streak, 1);
+    }
+
+    #[test]
+    fn tail_silence_cutoff_is_never_stricter_than_before() {
+        assert_eq!(partial_tail_silence_rms(0.0008), 0.0008);
+        assert_eq!(partial_tail_silence_rms(0.0018), 0.0018);
+        assert_eq!(partial_tail_silence_rms(0.0035), 0.003);
+    }
+
+    #[test]
+    fn restart_grace_extends_while_sound_continues_until_deadline() {
+        let now = Instant::now();
+        let deadline = now + UTTERANCE_RESTART_LIMIT;
+        let until = now + Duration::from_millis(200);
+        let extended = extend_restart_grace(now, until, deadline, false, 0.002, 0.0018);
+        assert_eq!(extended, (now + UTTERANCE_RESTART_GRACE).min(deadline));
+
+        let quiet = extend_restart_grace(now, until, deadline, false, 0.0001, 0.0018);
+        assert_eq!(quiet, until);
+
+        let speaking = extend_restart_grace(now, until, deadline, true, 0.02, 0.0018);
+        assert_eq!(speaking, until);
+
+        let expired = extend_restart_grace(now, now, deadline, false, 0.02, 0.0018);
+        assert_eq!(expired, now);
+    }
+
+    #[test]
+    fn live_utterance_keeps_only_the_partial_window() {
+        let mut samples = vec![1.0; (PARTIAL_WINDOW_SECS + 3) * TARGET_SAMPLE_RATE as usize];
+        samples[0] = 7.0;
+        trim_live_utterance(&mut samples);
+        assert_eq!(
+            samples.len(),
+            (PARTIAL_WINDOW_SECS + 1) * TARGET_SAMPLE_RATE as usize
+        );
+        assert_ne!(samples[0], 7.0);
+    }
+
+    #[test]
+    fn newer_partial_replaces_queued_partial_without_passing_finals() {
+        let mut jobs = VecDeque::new();
+        enqueue_stt_decode_job(
+            &mut jobs,
+            SttDecodeJob::Final {
+                seq: 1,
+                samples: vec![1.0],
+            },
+            false,
+        );
+        enqueue_stt_decode_job(
+            &mut jobs,
+            SttDecodeJob::Partial {
+                seq: 2,
+                samples: vec![2.0],
+            },
+            false,
+        );
+        enqueue_stt_decode_job(
+            &mut jobs,
+            SttDecodeJob::Partial {
+                seq: 3,
+                samples: vec![3.0],
+            },
+            false,
+        );
+        assert_eq!(jobs.len(), 2);
+        match &jobs[0] {
+            SttDecodeJob::Final { samples, .. } => assert_eq!(samples, &vec![1.0]),
+            other => panic!("expected final, got {:?}", other),
+        }
+        match &jobs[1] {
+            SttDecodeJob::Partial { seq, samples } => {
+                assert_eq!(*seq, 3);
+                assert_eq!(samples, &vec![3.0]);
+            }
+            other => panic!("expected partial, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_partial_jumps_ahead_of_queued_finals() {
+        let mut jobs = VecDeque::new();
+        enqueue_stt_decode_job(
+            &mut jobs,
+            SttDecodeJob::Final {
+                seq: 1,
+                samples: vec![1.0],
+            },
+            true,
+        );
+        enqueue_stt_decode_job(
+            &mut jobs,
+            SttDecodeJob::Partial {
+                seq: 2,
+                samples: vec![2.0],
+            },
+            true,
+        );
+        enqueue_stt_decode_job(
+            &mut jobs,
+            SttDecodeJob::Final {
+                seq: 3,
+                samples: vec![3.0],
+            },
+            true,
+        );
+        enqueue_stt_decode_job(
+            &mut jobs,
+            SttDecodeJob::Partial {
+                seq: 4,
+                samples: vec![4.0],
+            },
+            true,
+        );
+        assert_eq!(jobs.len(), 3);
+        match &jobs[0] {
+            SttDecodeJob::Partial { seq, samples } => {
+                assert_eq!(*seq, 4);
+                assert_eq!(samples, &vec![4.0]);
+            }
+            other => panic!("expected partial, got {:?}", other),
+        }
+        match &jobs[1] {
+            SttDecodeJob::Final { seq, .. } => assert_eq!(*seq, 1),
+            other => panic!("expected first final, got {:?}", other),
+        }
+        match &jobs[2] {
+            SttDecodeJob::Final { seq, .. } => assert_eq!(*seq, 3),
+            other => panic!("expected second final, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_partial_lane_is_not_blocked_by_queued_finals() {
+        let failed = Arc::new(AtomicBool::new(false));
+        let partial_inbox = SttDecodeInbox::new(false, Arc::clone(&failed));
+        let final_inbox = SttDecodeInbox::new(false, failed);
+        final_inbox.push(SttDecodeJob::Final {
+            seq: 1,
+            samples: vec![1.0],
+        });
+        partial_inbox.push(SttDecodeJob::Partial {
+            seq: 2,
+            samples: vec![2.0],
+        });
+        final_inbox.push(SttDecodeJob::Final {
+            seq: 3,
+            samples: vec![3.0],
+        });
+        partial_inbox.push(SttDecodeJob::Partial {
+            seq: 4,
+            samples: vec![4.0],
+        });
+        assert_eq!(partial_inbox.len(), 1);
+        assert_eq!(final_inbox.len(), 2);
+
+        match partial_inbox.pop() {
+            SttDecodeJob::Partial { seq, samples } => {
+                assert_eq!(seq, 4);
+                assert_eq!(samples, vec![4.0]);
+            }
+            other => panic!("expected partial, got {:?}", other),
+        }
+        match final_inbox.pop() {
+            SttDecodeJob::Final { seq, .. } => assert_eq!(seq, 1),
+            other => panic!("expected first final, got {:?}", other),
+        }
+        match final_inbox.pop() {
+            SttDecodeJob::Final { seq, .. } => assert_eq!(seq, 3),
+            other => panic!("expected second final, got {:?}", other),
+        }
+    }
 }

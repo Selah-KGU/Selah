@@ -10,10 +10,12 @@
   import ViewLoader from "../ViewLoader.svelte";
   import FirstVisitTip from "../onboarding/FirstVisitTip.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
+  import { preferredLunaCourse } from "../schedule";
 
   // ── State ──
   let loading = $state(true);
   let error = $state("");
+  let kgcWarning = $state("");
   let scheduleData = $state<ScheduleResponse | null>(null);
   let aiResult = $state<AiScheduleResult | null>(null);
   let aiGenerating = $state(false);
@@ -144,8 +146,14 @@
 
   function getCell(day: number, period: number): CellData {
     const kgc = kgcEntries.find(e => e.day === day && e.period === period);
-    const luna = scheduleData?.raw.luna_courses.find(c => c.day === day && c.period === period);
-    const aiItems = aiResult
+    const luna = preferredLunaCourse(
+      scheduleData?.raw.luna_courses ?? [],
+      day,
+      period,
+      scheduleData?.luna_term ?? "",
+      scheduleData?.luna_year ?? "",
+    );
+    const aiItems = aiWeekMatches() && aiResult
       ? (activeWeek === "current" ? aiResult.current_week : aiResult.next_week)
       : [];
     const ai = aiItems.find(i => i.day === day && i.period === period);
@@ -156,7 +164,63 @@
   }
 
   function cellName(c: CellData): string {
-    return c.ai?.course_name || c.luna?.name || c.kgc?.name || c.favorite?.course_title || "";
+    const rawName = rawCourseName(c);
+    const aiName = c.ai?.course_name?.trim() || "";
+    if (aiName && namesAgree(aiName, rawName)) return aiName;
+    return rawName || c.favorite?.course_title || "";
+  }
+
+  function rawCourseName(c: CellData): string {
+    const kgcName = c.kgc?.name?.trim() || "";
+    const lunaName = c.luna?.name?.trim() || "";
+    if (kgcName && lunaName && !namesAgree(lunaName, kgcName)) return kgcName;
+    return lunaName || kgcName;
+  }
+
+  function namesAgree(a: string, b: string): boolean {
+    const norm = (value: string) => value.replace(/\s+/g, "").trim();
+    return !norm(a) || !norm(b) || norm(a) === norm(b);
+  }
+
+  function lunaAgreesWithKgc(c: CellData): boolean {
+    return !!c.luna && namesAgree(c.luna.name || "", c.kgc?.name || "");
+  }
+
+  function aiWeekMatches(): boolean {
+    if (!aiResult || !scheduleData) return false;
+    const aiLabel = activeWeek === "current" ? aiResult.current_week_label : aiResult.next_week_label;
+    const rawLabel = activeWeek === "current" ? scheduleData.raw.current_week_label : scheduleData.raw.next_week_label;
+    return !weekLabelsDisagree(rawLabel || "", aiLabel || "");
+  }
+
+  function matchingAiResult(result: AiScheduleResult | null, data: ScheduleResponse): AiScheduleResult | null {
+    if (!result) return null;
+    const currentMismatch = weekLabelsDisagree(data.raw.current_week_label || "", result.current_week_label || "");
+    const nextMismatch = weekLabelsDisagree(data.raw.next_week_label || "", result.next_week_label || "");
+    if (!currentMismatch && !nextMismatch) return result;
+    if (currentMismatch && nextMismatch) return null;
+    if (currentMismatch) {
+      return { ...result, current_week: [], current_week_label: data.raw.current_week_label || "" };
+    }
+    return { ...result, next_week: [], next_week_label: data.raw.next_week_label || "" };
+  }
+
+  function weekLabelsDisagree(shown: string, cached: string): boolean {
+    const left = shown.trim();
+    const right = cached.trim();
+    if (!left || !right) return true;
+    return left !== right;
+  }
+
+  function applySchedule(data: ScheduleResponse) {
+    scheduleData = data;
+    kgcWarning = data.kgc_warning || "";
+    aiResult = matchingAiResult(data.ai_result, data);
+  }
+
+  function hasVisibleSchedule(): boolean {
+    const raw = scheduleData?.raw;
+    return !!raw && (raw.kgc_entries_current.length > 0 || raw.kgc_entries_next.length > 0 || raw.luna_courses.length > 0);
   }
 
   function cellDotColor(c: CellData): string {
@@ -172,7 +236,7 @@
     const name = cellName(c);
     if (!name) return;
     if (isDemoActive()) return;
-    if (c.luna && $lunaAuthState.authenticated) {
+    if (lunaAgreesWithKgc(c) && c.luna && $lunaAuthState.authenticated) {
       try {
         await invoke("university_open_detail_window", {
           path: "", title: name, mode: "course", idnumber: c.luna.luna_id,
@@ -253,8 +317,7 @@
         has_ai: !!data.ai_result,
         snapshot_updated_at: data.snapshot_updated_at,
       });
-      scheduleData = data;
-      aiResult = data.ai_result;
+      applySchedule(data);
     } catch (e: any) {
       error = e?.message || String(e);
     } finally {
@@ -358,9 +421,9 @@
         kgc_next: data.raw.kgc_entries_next.length,
         luna: data.raw.luna_courses.length,
       });
-      scheduleData = data;
-      if (data.ai_result) aiResult = data.ai_result;
-      showToast("時間割を更新しました");
+      applySchedule(data);
+      if (data.kgc_warning) showToast(data.kgc_warning, "info");
+      else showToast("時間割を更新しました");
 
       // Reload cached extras (exam might have updated)
       loadCachedExtras();
@@ -371,8 +434,19 @@
       }
       localStorage.setItem("selah-cal-last-sync", String(Date.now()));
     } catch (e: any) {
-      error = e?.message || String(e);
-      showToast(error, "error");
+      const message = e?.message || String(e);
+      let recovered = hasVisibleSchedule();
+      try {
+        applySchedule(await getScheduleSnapshot());
+        recovered = hasVisibleSchedule();
+      } catch { /* keep the grid that is already on screen */ }
+      if (recovered) {
+        if (!kgcWarning) kgcWarning = message;
+        showToast(message, "error");
+      } else {
+        error = message;
+        showToast(message, "error");
+      }
     } finally {
       syncing = false;
     }
@@ -504,7 +578,7 @@
     {
       const lines: string[] = [];
       const room = c.ai?.room || c.kgc?.room;
-      const teacher = c.ai?.teacher || c.luna?.teacher;
+      const teacher = c.ai?.teacher || (lunaAgreesWithKgc(c) ? c.luna?.teacher : "");
       if (room) lines.push(room);
       if (teacher) lines.push(teacher);
       const hasNotify = !!(c.ai?.notifications?.length);
@@ -931,8 +1005,9 @@
 
   // SWR: pick up background poll refreshes
   const unsubSchedule = onCacheUpdate<ScheduleResponse>("schedule_data", (fresh) => {
-    scheduleData = fresh;
-    if (fresh?.ai_result) aiResult = fresh.ai_result;
+    if (!fresh) return;
+    applySchedule(fresh);
+    if (hasVisibleSchedule()) error = "";
   });
   const unsubExams = onCacheUpdate<ExamTimetableData>("exams", (fresh) => {
     examEntries = fresh?.entries || [];
@@ -1131,6 +1206,12 @@
     <div class="error-banner">
       <span>カレンダー同期に失敗: {gcalError}</span>
       <button class="link-btn" onclick={() => gcalError = ""}>閉じる</button>
+    </div>
+  {/if}
+  {#if kgcWarning}
+    <div class="error-banner">
+      <span>{kgcWarning}</span>
+      <button class="link-btn" onclick={() => kgcWarning = ""}>閉じる</button>
     </div>
   {/if}
 

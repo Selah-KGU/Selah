@@ -63,7 +63,10 @@ pub async fn score(cfg: &ai::AiConfig, text: &str) -> Option<f32> {
         return None;
     }
     let real_grams = word_ngrams(&real_rest, NGRAM);
-    let hits = cont_grams.iter().filter(|g| real_grams.contains(*g)).count();
+    let hits = cont_grams
+        .iter()
+        .filter(|g| real_grams.contains(*g))
+        .count();
     Some((hits as f32 / cont_grams.len() as f32).clamp(0.0, 1.0))
 }
 

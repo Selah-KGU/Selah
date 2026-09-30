@@ -66,6 +66,7 @@
     summaries: [],
   });
   let partialText = $state("");
+  let lastPartialSeq = 0;
   let sttListening = $state(false);
   let sttPhase = $state<SttPhase>("idle");
   let busy = $state(false);
@@ -1347,14 +1348,23 @@
       });
       scheduleFocusTimer = setInterval(refreshFocusedCoursesFromClock, 60_000);
 
-      unlistenPartial = await listen<{ text: string; caller: string }>("stt-partial", (event) => {
+      unlistenPartial = await listen<{ text: string; caller: string; seq?: number }>("stt-partial", (event) => {
         if (event.payload.caller !== "live") return;
+        const seq = event.payload.seq ?? 0;
+        if (seq > 0 && seq < lastPartialSeq) return;
+        if (seq > 0) lastPartialSeq = seq;
         partialText = event.payload.text || "";
       });
-      unlistenFinal = await listen<{ text: string; caller: string }>("stt-final", async (event) => {
+      unlistenFinal = await listen<{ text: string; caller: string; seq?: number }>("stt-final", async (event) => {
         if (event.payload.caller !== "live") return;
         if (!snapshot.active) return;
-        partialText = "";
+        const seq = event.payload.seq ?? 0;
+        // An older final can finish after a newer partial. Keep the live line,
+        // but still commit the finished sentence to the transcript.
+        if (seq === 0 || seq >= lastPartialSeq) {
+          if (seq > 0) lastPartialSeq = seq;
+          partialText = "";
+        }
         try {
           // The backend also emits `live-session-updated`; we apply the
           // return value and let the listener be an idempotent no-op via

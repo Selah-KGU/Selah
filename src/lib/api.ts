@@ -2187,10 +2187,12 @@ async function refreshLiveGeneratedTodoCaches(next: LiveGeneratedTodo[]) {
     const loaded = await loadBackendManagedCache("luna_todo");
     if (loaded) replaceCacheEntry("luna_todo", loaded);
   }
-  const cachedSchedule = getCached<ScheduleResponse>("schedule_data");
-  if (cachedSchedule) {
-    const mergedSchedule = mergeGeneratedTodosIntoSchedule(cachedSchedule, next);
+  try {
+    const freshSchedule = await getScheduleSnapshot();
+    const mergedSchedule = mergeGeneratedTodosIntoSchedule(freshSchedule, next);
     if (mergedSchedule) replaceCacheEntry("schedule_data", mergedSchedule);
+  } catch {
+    // Do not republish a disk timetable; it may belong to the previous semester.
   }
 }
 
