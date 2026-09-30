@@ -442,26 +442,6 @@ impl Database {
 
     // ── Luna courses ──
 
-    pub fn upsert_luna_course(
-        &self,
-        luna_id: &str,
-        name: &str,
-        teacher: &str,
-        day: i32,
-        period: i32,
-    ) -> Result<i64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        let now = epoch_secs();
-        conn.execute(
-            "INSERT INTO luna_courses (luna_id, name, teacher, day, period, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6)
-             ON CONFLICT(luna_id, day, period) DO UPDATE SET name=?2, teacher=?3, updated_at=?6",
-            params![luna_id, name, teacher, day, period, now],
-        )
-        .map_err(|e| format!("DB upsert luna: {}", e))?;
-        Ok(conn.last_insert_rowid())
-    }
-
     pub fn get_luna_courses(&self) -> Result<Vec<LunaCourseRow>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         Self::query_luna_courses(&conn)
