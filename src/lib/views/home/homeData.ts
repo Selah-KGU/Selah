@@ -128,7 +128,7 @@ export function getRecentNotifications(
 
   if (kwicHome) {
     const notifSections = kwicHome.sections.filter(
-      section => section.title !== "メインリンク" && section.title !== "注目コンテンツ" && section.title !== "授業のお知らせ",
+      section => section.title !== "メインリンク" && section.title !== "注目コンテンツ",
     );
     for (const section of notifSections) {
       for (const item of section.items) {

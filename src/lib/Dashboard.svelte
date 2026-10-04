@@ -124,7 +124,7 @@
     }
     if (kwicHome) {
       for (const sec of kwicHome.sections) {
-        if (sec.title === "メインリンク" || sec.title === "注目コンテンツ" || sec.title === "授業のお知らせ") continue;
+        if (sec.title === "メインリンク" || sec.title === "注目コンテンツ") continue;
         for (const item of sec.items) {
           const readKey = item.id || notifKey(item.title, item.date);
           if (!kwicRead.has(readKey)) count++;

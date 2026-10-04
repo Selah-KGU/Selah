@@ -47,8 +47,9 @@
     kwic: new Set($readIdsStore.kwic),
   });
 
-  function notifRenderKey(n: UnifiedNotif): string {
-    return [n.source, n.id, n.title, n.date, n.category, n.courseInfo ?? ""].join("\u001f");
+  function notifRenderKey(n: UnifiedNotif, index = 0): string {
+    // Index keeps a repeated campus row from throwing and blanking the class list.
+    return [n.source, n.id, n.title, n.date, n.category, n.courseInfo ?? "", n.informationType ?? "", String(index)].join("\u001f");
   }
 
   function isNotifRead(n: { source: string; id: string; title: string; date: string }): boolean {
@@ -222,11 +223,13 @@
       }
     }
 
-    // KWIC sections → map by section title (exclude 授業のお知らせ, use KGC/Luna for that)
+    // KWIC 授業のお知らせ is a real list. KGC is often empty, so skipping this
+    // section leaves the class tab with nothing the portal actually showed.
     if (kwicHome) {
       const kwicTabMap: Record<string, TabName> = {
         "呼出し・重要なお知らせ": "呼出し・重要なお知らせ",
         "学部・研究科からのお知らせ": "学部・研究科からのお知らせ",
+        "授業のお知らせ": "授業のお知らせ",
         "その他": "その他",
       };
       for (const sec of kwicHome.sections) {
@@ -417,7 +420,7 @@
         <div class="section-label">
           未読 <span class="section-count">{partitioned.unread.length}</span>
         </div>
-        {#each partitioned.unread as n (notifRenderKey(n))}
+        {#each partitioned.unread as n, i (notifRenderKey(n, i))}
           {@render notifItem(n)}
         {/each}
       {/if}
@@ -426,7 +429,7 @@
         {#if partitioned.unread.length > 0}
           <div class="section-label section-label-read">既読</div>
         {/if}
-        {#each visibleRead as n (notifRenderKey(n))}
+        {#each visibleRead as n, i (notifRenderKey(n, i))}
           {@render notifItem(n)}
         {/each}
         {#if partitioned.read.length > readVisibleCount}
