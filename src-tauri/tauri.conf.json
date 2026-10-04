@@ -52,8 +52,13 @@
       "minimumSystemVersion": "11.0",
       "entitlements": "Entitlements.plist",
       "frameworks": [
-        "lib/libpdfium.dylib"
-      ]
+        "lib/libpdfium.dylib",
+        "lib/libselah_apple_ai.dylib",
+        "lib/libselah_widget.dylib"
+      ],
+      "files": {
+        "PlugIns/SelahWidget.appex": "lib/SelahWidget.appex"
+      }
     },
     "windows": {
       "digestAlgorithm": "sha256",

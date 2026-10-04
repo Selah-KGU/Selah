@@ -171,7 +171,7 @@ export async function getAiReadinessLabel(): Promise<{ ready: boolean; note: str
     if (ready) return { ready: true, note: "利用可能" };
     return {
       ready: false,
-      note: cfg.provider === "local" ? "ローカルモデル未ダウンロード" : "API キー未設定",
+      note: cfg.provider === "local" ? "Apple Intelligence を利用できません" : "API キー未設定",
     };
   } catch {
     return { ready: false, note: "状態を取得できません" };

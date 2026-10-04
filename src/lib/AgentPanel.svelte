@@ -423,7 +423,11 @@
     } else if (event.type === "token") {
       streamText += event.text;
     } else if (event.type === "error") {
-      error = event.message;
+      if (isContextLimitMessage(event.message) && keepStreamedAnswer()) {
+        error = "";
+      } else {
+        error = event.message;
+      }
       void finishTurn(false);
     } else if (event.type === "done") {
       void finishTurn(true);
@@ -522,6 +526,29 @@
     }
   }
 
+  function isContextLimitMessage(message: string): boolean {
+    return message.includes("コンテキスト上限");
+  }
+
+  let keptContextAnswer = false;
+
+  function keepStreamedAnswer(): boolean {
+    if (keptContextAnswer) return true;
+    const partial = streamText.trim();
+    if (!partial) return false;
+    keptContextAnswer = true;
+    messages = [...messages, {
+      id: -Date.now(),
+      conv_id: convId,
+      role: "assistant",
+      content: partial,
+      images: null,
+      created_at: Math.floor(Date.now() / 1000),
+    }];
+    streamText = "";
+    return true;
+  }
+
   async function send(): Promise<void> {
     const content = draft.trim();
     const images = attachments;
@@ -529,6 +556,7 @@
     if (!convId) await loadActiveConversation();
     const currentConv = convId;
     error = "";
+    keptContextAnswer = false;
     draft = "";
     attachments = [];
     resizeComposer();
@@ -563,7 +591,12 @@
       }
       if (sending) await finishTurn(true);
     } catch (cause) {
-      error = `送信に失敗しました: ${String(cause)}`;
+      const message = String(cause);
+      if (isContextLimitMessage(message) && keepStreamedAnswer()) {
+        error = "";
+      } else {
+        error = `送信に失敗しました: ${message}`;
+      }
       await finishTurn(false);
     }
   }

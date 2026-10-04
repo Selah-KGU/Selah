@@ -5,14 +5,6 @@
   import { getAiConfig, isDemoActive, updateAiReadiness } from "../../api";
   import CapabilityMatrix from "../../onboarding/CapabilityMatrix.svelte";
 
-  interface LocalModel {
-    id: string;
-    name: string;
-    size_label: string;
-    file_size_mb: number;
-    downloaded: boolean;
-  }
-
   interface SttModel {
     id: string;
     name: string;
@@ -52,8 +44,21 @@
     live_summary_interval_minutes: number;
   }
 
+  interface LocalAiSupport {
+    supported: boolean;
+    reason: string;
+    os: string;
+    model?: string;
+    memory_gb: number | null;
+    chip: string | null;
+    gpus: string[];
+  }
+
+  const OPENAI_DEFAULT_MODEL = "gpt-6-luna";
+  const RETIRED_OPENAI_MODELS = new Set(["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]);
+
   const MODEL_PRESETS: Record<string, string[]> = {
-    openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+    openai: [OPENAI_DEFAULT_MODEL],
     openrouter: [
       "moonshotai/kimi-k2.6",
       "anthropic/claude-opus-4.8",
@@ -72,7 +77,9 @@
     gemini: "",
   };
   const isWindows = navigator.userAgent.includes('Windows');
-  const supportsLocalAi = !isWindows;
+  let supportsLocalAi = $state(false);
+  let localAiUnsupportedReason = $state("");
+  let localModelName = $state("Apple Intelligence");
 
   const DEFAULT_STT_BACKEND_OPTIONS: SttExecutionBackendOption[] = [
     {
@@ -119,14 +126,8 @@
   ] as const;
   const DEMO_STT_CONFIG_KEY = "selah-demo-stt-config";
   const DEMO_NATIVE_AGENT_KEY = "selah-demo-native-agent-config";
-  const DEMO_LOCAL_MODELS_KEY = "selah-demo-local-models";
   const DEMO_STT_MODELS_KEY = "selah-demo-stt-models";
-
-  const DEMO_LOCAL_MODELS: LocalModel[] = [
-    { id: "qwen3.5-8b", name: "Qwen 3.5 8B", size_label: "5.1 GB", file_size_mb: 5100, downloaded: true },
-    { id: "qwen3.5-2b", name: "Qwen 3.5 2B", size_label: "1.5 GB", file_size_mb: 1500, downloaded: false },
-    { id: "llama3.2-3b", name: "Llama 3.2 3B", size_label: "2.0 GB", file_size_mb: 2000, downloaded: false },
-  ];
+  const APPLE_INTELLIGENCE_MODEL_ID = "apple-intelligence";
 
   const DEMO_STT_MODELS: SttModel[] = [
     { id: "sensevoice-ja-en", name: "SenseVoice JA/EN", size_label: "620 MB", file_size_mb: 620, downloaded: true },
@@ -134,8 +135,8 @@
   ];
 
   let aiEnabled = $state("true");
-  let aiProvider = $state(supportsLocalAi ? "local" : "openai");
-  let selectedLocalModel = $state("qwen3.5-2b");
+  let aiProvider = $state("openai");
+  let selectedLocalModel = $state(APPLE_INTELLIGENCE_MODEL_ID);
   let apiKey = $state("");
   let model = $state("");
   let baseUrl = $state("");
@@ -145,9 +146,6 @@
   let aiRefreshInterval = $state(360);
   let liveSummaryInterval = $state(5);
 
-  let modelList = $state<LocalModel[]>([]);
-  let downloading = $state(false);
-  let downloadProgress = $state<{ modelId: string; name: string; percent: number; downloaded: number; total: number } | null>(null);
   let sttModelList = $state<SttModel[]>([]);
   let selectedSttModel = $state("sensevoice-ja-en");
   let sttLanguage = $state("ja");
@@ -157,6 +155,8 @@
   let sttExecutionBackendOptions = $state<SttExecutionBackendOption[]>(DEFAULT_STT_BACKEND_OPTIONS);
   let sttDownloading = $state(false);
   let sttDownloadProgress = $state<{ modelId: string; name: string; percent: number; downloaded: number; total: number } | null>(null);
+  let pendingDeleteSttModelId = $state<string | null>(null);
+  let pendingDeleteSttModelTimer: ReturnType<typeof setTimeout> | null = null;
   let sttTestBusy = $state(false);
   let sttTestMsg = $state("");
   let sttTestOk = $state<boolean | null>(null);
@@ -176,7 +176,6 @@
   let localTestMsg = $state("");
   let localTestOk = $state<boolean | null>(null);
 
-  let unlistenDlProgress: (() => void) | null = null;
   let unlistenSttDlProgress: (() => void) | null = null;
 
   function readDemoState<T>(key: string, fallback: T): T {
@@ -376,20 +375,11 @@
     const foreignPresets = Object.entries(MODEL_PRESETS)
       .filter(([p]) => p !== aiProvider)
       .flatMap(([, list]) => list);
-    if (presets.length && (!model.trim() || foreignPresets.includes(model.trim()))) {
+    if (
+      presets.length &&
+      (!model.trim() || foreignPresets.includes(model.trim()) || RETIRED_OPENAI_MODELS.has(model.trim()))
+    ) {
       model = presets[0];
-    }
-  }
-
-  async function loadModelList() {
-    if (isDemoActive()) {
-      modelList = readDemoState(DEMO_LOCAL_MODELS_KEY, DEMO_LOCAL_MODELS);
-      return;
-    }
-    try {
-      modelList = await invoke<LocalModel[]>("list_local_models");
-    } catch (e) {
-      console.error("Failed to load models:", e);
     }
   }
 
@@ -403,43 +393,6 @@
     } catch (e) {
       console.error("Failed to load STT models:", e);
     }
-  }
-
-  async function startDownload(modelId: string) {
-    if (downloading) return;
-    downloading = true;
-    const m = modelList.find(x => x.id === modelId);
-    if (!m) return;
-    downloadProgress = { modelId, name: m.name, percent: 0, downloaded: 0, total: 0 };
-    try {
-      if (isDemoActive()) {
-        const next = modelList.map((item) => item.id === modelId ? { ...item, downloaded: true } : item);
-        writeDemoState(DEMO_LOCAL_MODELS_KEY, next);
-        modelList = next;
-      } else {
-      await invoke("download_local_model", { modelId });
-      }
-      showStatus(m.name + " のダウンロードが完了しました", "success");
-      await loadModelList();
-      selectedLocalModel = modelId;
-      updateAiReadiness().catch(() => {});
-    } catch (e) {
-      if (String(e) === "cancelled") showStatus("ダウンロードを中止しました", "error");
-      else showStatus("ダウンロードエラー: " + friendlyError(e), "error");
-    } finally {
-      downloading = false;
-      downloadProgress = null;
-    }
-  }
-
-  function cancelDownload() {
-    if (isDemoActive()) {
-      downloading = false;
-      downloadProgress = null;
-      showStatus("ダウンロードを中止しました", "error");
-      return;
-    }
-    invoke("cancel_model_download").catch(() => {});
   }
 
   async function startSttDownload(modelId: string) {
@@ -478,39 +431,6 @@
     invoke("cancel_stt_model_download").catch(() => {});
   }
 
-  let pendingDeleteModelId = $state<string | null>(null);
-  let pendingDeleteSttModelId = $state<string | null>(null);
-  let pendingDeleteModelTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingDeleteSttModelTimer: ReturnType<typeof setTimeout> | null = null;
-
-  async function deleteModel(modelId: string) {
-    if (pendingDeleteModelId !== modelId) {
-      pendingDeleteModelId = modelId;
-      if (pendingDeleteModelTimer) clearTimeout(pendingDeleteModelTimer);
-      pendingDeleteModelTimer = setTimeout(() => {
-        pendingDeleteModelId = null;
-        pendingDeleteModelTimer = null;
-      }, 3000);
-      return;
-    }
-    if (pendingDeleteModelTimer) { clearTimeout(pendingDeleteModelTimer); pendingDeleteModelTimer = null; }
-    pendingDeleteModelId = null;
-    try {
-      if (isDemoActive()) {
-        const next = modelList.map((item) => item.id === modelId ? { ...item, downloaded: false } : item);
-        writeDemoState(DEMO_LOCAL_MODELS_KEY, next);
-        modelList = next;
-      } else {
-      await invoke("delete_local_model", { modelId });
-      }
-      showStatus("モデルを削除しました", "success");
-      await loadModelList();
-      updateAiReadiness().catch(() => {});
-    } catch (e) {
-      showStatus("削除エラー: " + String(e), "error");
-    }
-  }
-
   async function deleteSttModel(modelId: string) {
     if (pendingDeleteSttModelId !== modelId) {
       pendingDeleteSttModelId = modelId;
@@ -538,8 +458,31 @@
     }
   }
 
+  async function loadLocalAiSupport() {
+    if (isDemoActive()) {
+      supportsLocalAi = !isWindows;
+      localModelName = "Apple Intelligence";
+      localAiUnsupportedReason = isWindows
+        ? "ローカル AI は Windows では利用できません。クラウド API を使用してください。"
+        : "";
+      return;
+    }
+    try {
+      const support = await invoke<LocalAiSupport>("get_local_ai_support");
+      supportsLocalAi = support.supported;
+      localModelName = support.model || "Apple Intelligence";
+      localAiUnsupportedReason = support.supported
+        ? ""
+        : (support.reason || "Apple Intelligence を利用できません。");
+    } catch {
+      supportsLocalAi = false;
+      localAiUnsupportedReason = "Apple Intelligence の状態を確認できません。";
+    }
+  }
+
   async function loadConfig() {
     try {
+      await loadLocalAiSupport();
       const c = await getAiConfig();
       const stt = isDemoActive()
         ? readDemoState<SttConfig>(DEMO_STT_CONFIG_KEY, {
@@ -557,9 +500,11 @@
       aiProvider = c.provider === "local" && !supportsLocalAi
         ? "openai"
         : (c.provider || (supportsLocalAi ? "local" : "openai"));
-      selectedLocalModel = c.local_model || "qwen3.5-2b";
+      selectedLocalModel = APPLE_INTELLIGENCE_MODEL_ID;
       apiKey = c.api_key || "";
       model = c.model || "";
+      if (RETIRED_OPENAI_MODELS.has(model.trim())) model = OPENAI_DEFAULT_MODEL;
+
       baseUrl = c.base_url || "";
       maxTokens = c.max_tokens != null ? c.max_tokens : 0;
       temperature = c.temperature != null ? c.temperature : 0.7;
@@ -593,7 +538,6 @@
       subtitleOverlayEnabled = nativeAgent?.subtitle_overlay_enabled ? "true" : "false";
       lastSavedSubtitleOverlayEnabled = subtitleOverlayEnabled;
       nativeAgentLoaded = true;
-      await loadModelList();
       await loadSttModelList();
     } catch (e) {
       console.error("Failed to load config:", e);
@@ -665,9 +609,9 @@
   async function testLocalModel() {
     localTestBusy = true;
     localTestOk = null;
-    localTestMsg = "モデルを読み込み中...";
+    localTestMsg = "Apple Intelligence を確認中...";
     try {
-      let r = "デモモードのローカルモデルは利用可能です";
+      let r = "デモモードでは Apple Intelligence を呼び出しません";
       if (isDemoActive()) {
         writeDemoState("selah-demo-ai-config", getConfig());
       } else {
@@ -721,15 +665,9 @@
   }
 
   onMount(async () => {
+    await loadLocalAiSupport();
     await loadConfig();
     if (isDemoActive()) return;
-    unlistenDlProgress = await listen<{ percent: number; downloaded: number; total: number }>(
-      "model-download-progress",
-      (ev) => {
-        if (!downloadProgress) return;
-        downloadProgress = { ...downloadProgress, percent: ev.payload.percent ?? downloadProgress.percent, downloaded: ev.payload.downloaded ?? 0, total: ev.payload.total ?? 0 };
-      }
-    );
     unlistenSttDlProgress = await listen<{ percent: number; downloaded: number; total: number }>(
       "stt-model-download-progress",
       (ev) => {
@@ -740,7 +678,6 @@
   });
 
   onDestroy(() => {
-    unlistenDlProgress?.();
     unlistenSttDlProgress?.();
     if (recordingShortcut) stopShortcutRecording();
   });
@@ -847,7 +784,7 @@
   <div class="card-label">AI アシスタントの推論</div>
   <div class="card section-intro-card">
     <div class="section-intro">
-      ホーム・課題・通知・LIVE 要約で使う推論設定です。{isLocal() ? "ローカルモデルなら端末内で完結します。" : "外部 API を使う場合は接続先とモデルをここで調整します。"}
+      ホーム・課題・通知・LIVE 要約で使う推論設定です。{isLocal() ? "Apple Intelligence なら端末内で完結します。" : "外部 API を使う場合は接続先とモデルをここで調整します。"}
     </div>
   </div>
   <div class="card">
@@ -855,13 +792,16 @@
       <span class="row-label">推論方法</span>
       <div class="row-input">
         <select bind:value={aiProvider}>
-          {#if supportsLocalAi}<option value="local">ローカルモデル</option>{/if}
+          {#if supportsLocalAi}<option value="local">Apple Intelligence</option>{/if}
           <option value="openai">OpenAI API</option>
           <option value="openrouter">OpenRouter</option>
           <option value="gemini">Google Gemini API</option>
         </select>
+        {#if !supportsLocalAi && localAiUnsupportedReason}
+          <div class="hint hint-error">{localAiUnsupportedReason}</div>
+        {/if}
         <div class="hint">
-          {isLocal() ? "ローカルモデルはこのデバイス上で実行されます。通信なしで使いたいときに向いています。" : "API 利用時のみ、API キー・モデル名・ベース URL・最大トークン・Temperature が有効です。"}
+          {isLocal() ? "この Mac の Apple Intelligence で端末内推論します。モデルのダウンロードは不要です。" : "API 利用時のみ、API キー・モデル名・ベース URL・最大トークン・Temperature が有効です。"}
         </div>
       </div>
     </div>
@@ -869,47 +809,14 @@
   {#if supportsLocalAi && isLocal()}
     <div class="card-label">AI アシスタントのモデル</div>
     <div class="card">
-      {#each modelList as m}
-        <div class="model-row">
-          <input type="radio" class="model-radio" name="localModel" value={m.id} bind:group={selectedLocalModel} />
-          <div class="model-info">
-            <div class="model-name">{m.name}</div>
-            <div class="model-meta">{m.size_label}</div>
-            {#if m.id === "qwen3.5-2b"}
-              <div class="model-meta model-note-standard">標準: ホームのお知らせAI要約 / 時間割のAI日程分析は利用不可</div>
-            {:else if m.id === "qwen3.5-4b"}
-              <div class="model-meta model-note-high">高品質: すべてのAI分析機能を利用可能</div>
-            {/if}
-          </div>
-          <span class="model-badge" class:downloaded={m.downloaded}>
-            {m.downloaded ? "DL済み" : m.file_size_mb + "MB"}
-          </span>
-          <div class="model-actions">
-            {#if !m.downloaded}
-              <button class="btn-test" onclick={() => startDownload(m.id)} disabled={downloading}>ダウンロード</button>
-            {:else}
-              <button class="btn-test danger" class:armed={pendingDeleteModelId === m.id} onclick={() => deleteModel(m.id)}>{pendingDeleteModelId === m.id ? "本当に削除？" : "削除"}</button>
-            {/if}
-          </div>
+      <div class="row">
+        <span class="row-label">モデル</span>
+        <div class="row-input">
+          <div class="model-name">{localModelName || "Apple Intelligence"}</div>
+          <div class="hint">macOS に内蔵された Apple Intelligence です。ダウンロードやモデル選択は不要で、対応しているすべての AI 機能を端末内で実行します。コンテキストは約 4096 トークンで、入力と応答が同じ窓を共有します。JSON は途中で切らず、配列の要素を落とすかブロックごと残します。</div>
         </div>
-      {/each}
-      {#if modelList.length === 0}
-        <div class="model-empty">モデル情報を読み込み中...</div>
-      {/if}
-    </div>
-    {#if downloadProgress}
-      <div class="card download-progress">
-        <div class="dl-head">
-          <span class="dl-name">{downloadProgress.name}</span>
-          <span class="dl-percent">{downloadProgress.percent}%</span>
-          <button class="btn-test danger" onclick={cancelDownload}>中止</button>
-        </div>
-        <div class="dl-bar"><div class="dl-fill" style="width:{downloadProgress.percent}%"></div></div>
-        {#if downloadProgress.total}
-          <div class="dl-size">{(downloadProgress.downloaded / 1048576).toFixed(1)} / {(downloadProgress.total / 1048576).toFixed(1)} MB</div>
-        {/if}
       </div>
-    {/if}
+    </div>
     <div class="action-row">
       <button class="btn-test" onclick={testLocalModel} disabled={localTestBusy}>
         {localTestBusy ? "テスト中..." : "推論テスト"}
@@ -934,7 +841,7 @@
       <div class="row">
         <span class="row-label">モデル名</span>
         <div class="row-input">
-          <input type="text" bind:value={model} placeholder="gpt-5.4-nano" spellcheck="false" />
+          <input type="text" bind:value={model} placeholder="gpt-6-luna" spellcheck="false" />
           <div class="presets">
             {#each (MODEL_PRESETS[aiProvider] || []) as preset}
               <button class="preset" onclick={() => (model = preset)}>{preset}</button>

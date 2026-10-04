@@ -1,273 +1,37 @@
-use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+//! On-device Apple Intelligence via the Swift Foundation Models bridge.
+//!
+//! The bridge is a dylib built by `build.rs` and loaded only when this process
+//! actually runs inference. The app binary itself stays free of a hard
+//! FoundationModels / Swift runtime dependency so macOS 11–25 can still launch.
+
+use crate::ai::ChatMessage;
+use crate::local_ai_support;
+use serde::Deserialize;
+use std::collections::HashSet;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, OnceLock};
-use tauri::Emitter;
 
-use llama_cpp_2::context::params::LlamaContextParams;
-use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::model::params::LlamaModelParams;
-#[allow(deprecated)] // token_to_str — token_to_piece requires encoding_rs::Decoder setup
-use llama_cpp_2::model::{AddBos, LlamaModel, Special};
-use llama_cpp_2::sampling::LlamaSampler;
+pub const APPLE_INTELLIGENCE_MODEL_ID: &str = local_ai_support::APPLE_INTELLIGENCE_MODEL_ID;
+pub const CANCELLED_MSG: &str = "推論はキャンセルされました";
 
-// ============ Model catalog ============
+/// On-device Foundation Models window. Instructions, prompt, and the reply share it.
+/// This replaces the old llama N_CTX = 65536 cap, which Apple Intelligence does not inherit.
+pub const APPLE_CONTEXT_WINDOW_TOKENS: usize = 4096;
+pub const APPLE_CONTEXT_OVERHEAD_TOKENS: usize = 160;
+/// Room kept for a reply so generation can stop inside the window instead of throwing.
+pub const APPLE_RESPONSE_RESERVE_TOKENS: usize = 768;
+pub const APPLE_PROMPT_TOKEN_BUDGET: usize =
+    APPLE_CONTEXT_WINDOW_TOKENS - APPLE_CONTEXT_OVERHEAD_TOKENS - APPLE_RESPONSE_RESERVE_TOKENS;
+/// Plan output cap. Answer calls may use more when the prompt leaves more room.
+pub const APPLE_MAX_RESPONSE_TOKENS: u32 = APPLE_RESPONSE_RESERVE_TOKENS as u32;
+/// Extra reply room when the caller must return one JSON object.
+pub const APPLE_JSON_RESPONSE_RESERVE_TOKENS: usize = 1280;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelInfo {
-    pub id: String,
-    pub name: String,
-    pub size_label: String,
-    pub param_size: String,
-    pub file_name: String,
-    pub download_url: String,
-    pub file_size_mb: u64,
-}
+const RTLD_NOW: i32 = 2;
+const RTLD_LOCAL: i32 = 4;
 
-static MODEL_CATALOG: LazyLock<Vec<ModelInfo>> = LazyLock::new(|| {
-    vec![
-        ModelInfo {
-            id: "qwen3.5-2b".into(),
-            name: "標準".into(),
-            size_label: "Qwen 3.5 2B".into(),
-            param_size: "2B".into(),
-            file_name: "Qwen3.5-2B-Q4_K_M.gguf".into(),
-            download_url:
-                "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                    .into(),
-            file_size_mb: 1280,
-        },
-        ModelInfo {
-            id: "qwen3.5-4b".into(),
-            name: "高品質".into(),
-            size_label: "Qwen 3.5 4B".into(),
-            param_size: "4B".into(),
-            file_name: "Qwen3.5-4B-Q4_K_M.gguf".into(),
-            download_url:
-                "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
-                    .into(),
-            file_size_mb: 2740,
-        },
-    ]
-});
-
-pub fn model_catalog() -> &'static [ModelInfo] {
-    &MODEL_CATALOG
-}
-
-// ============ Model directory ============
-
-fn models_dir() -> &'static PathBuf {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = crate::client::data_dir().join("models");
-        let _ = std::fs::create_dir_all(&dir);
-        dir
-    })
-}
-
-pub fn model_path(file_name: &str) -> PathBuf {
-    models_dir().join(file_name)
-}
-
-pub fn is_model_downloaded(file_name: &str) -> bool {
-    let path = model_path(file_name);
-    path.exists()
-        && path
-            .metadata()
-            .map(|m| m.len() > 1_000_000)
-            .unwrap_or(false)
-}
-
-// ============ Model download ============
-
-static DOWNLOAD_CANCEL: Mutex<bool> = Mutex::new(false);
-
-pub fn cancel_download() {
-    if let Ok(mut flag) = DOWNLOAD_CANCEL.lock() {
-        *flag = true;
-    }
-}
-
-pub fn download_model(app: &tauri::AppHandle, model: &ModelInfo) -> Result<(), String> {
-    // Reset cancel flag
-    if let Ok(mut flag) = DOWNLOAD_CANCEL.lock() {
-        *flag = false;
-    }
-
-    let url = &model.download_url;
-    let dest = model_path(&model.file_name);
-    let tmp = dest.with_extension("gguf.part");
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(3600))
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    // Support resume: check if partial file exists
-    let mut resume_from: u64 = 0;
-    if tmp.exists() {
-        resume_from = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
-    }
-
-    let mut req = client.get(url);
-    if resume_from > 0 {
-        req = req.header("Range", format!("bytes={}-", resume_from));
-    }
-
-    let resp = req
-        .send()
-        .map_err(|e| format!("ダウンロード開始失敗: {}", e))?;
-
-    if !resp.status().is_success() && resp.status().as_u16() != 206 {
-        return Err(format!("ダウンロードエラー ({})", resp.status()));
-    }
-
-    let total_size = if resp.status().as_u16() == 206 {
-        // Partial content — get total from Content-Range header
-        resp.headers()
-            .get("content-range")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.rsplit('/').next())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0)
-    } else {
-        resume_from = 0; // Server doesn't support range, start over
-        resp.content_length().unwrap_or(0)
-    };
-
-    let file = if resume_from > 0 {
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&tmp)
-            .map_err(|e| format!("ファイルオープン失敗: {}", e))?
-    } else {
-        std::fs::File::create(&tmp).map_err(|e| format!("ファイル作成失敗: {}", e))?
-    };
-
-    let mut writer = std::io::BufWriter::new(file);
-    let mut downloaded = resume_from;
-    let mut last_emit = std::time::Instant::now();
-
-    let mut reader = resp;
-    let mut buf = vec![0u8; 256 * 1024]; // 256KB chunks
-
-    loop {
-        // Check cancellation
-        if let Ok(flag) = DOWNLOAD_CANCEL.lock() {
-            if *flag {
-                drop(writer);
-                let _ = std::fs::remove_file(&tmp);
-                return Err("cancelled".into());
-            }
-        }
-
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| format!("ダウンロード読み取りエラー: {}", e))?;
-
-        if n == 0 {
-            break;
-        }
-
-        writer
-            .write_all(&buf[..n])
-            .map_err(|e| format!("ファイル書き込みエラー: {}", e))?;
-
-        downloaded += n as u64;
-
-        // Emit progress every 200ms
-        if last_emit.elapsed() > std::time::Duration::from_millis(200) {
-            let _ = app.emit("model-download-progress", serde_json::json!({
-                "downloaded": downloaded,
-                "total": total_size,
-                "percent": if total_size > 0 { (downloaded as f64 / total_size as f64 * 100.0) as u32 } else { 0 },
-            }));
-            last_emit = std::time::Instant::now();
-        }
-    }
-
-    writer
-        .flush()
-        .map_err(|e| format!("ファイルフラッシュエラー: {}", e))?;
-    drop(writer);
-
-    // Rename .part -> final
-    std::fs::rename(&tmp, &dest).map_err(|e| format!("ファイルリネームエラー: {}", e))?;
-
-    // Final progress
-    let _ = app.emit(
-        "model-download-progress",
-        serde_json::json!({
-            "downloaded": downloaded,
-            "total": total_size,
-            "percent": 100,
-            "done": true,
-        }),
-    );
-
-    Ok(())
-}
-
-// ============ Local inference ============
-
-/// Inference engine: backend initialized once, model hot-swapped on demand.
-struct InferenceEngine {
-    backend: LlamaBackend,
-    model: Option<(LlamaModel, String)>, // (model, model_id)
-}
-
-// SAFETY: LlamaModel and LlamaBackend wrap C pointers accessed exclusively
-// through the Mutex — no concurrent access is possible.
-unsafe impl Send for InferenceEngine {}
-
-static ENGINE: Mutex<Option<InferenceEngine>> = Mutex::new(None);
-
-/// Unload the current model from memory (backend stays alive).
-pub fn unload_model() {
-    if let Ok(mut lock) = ENGINE.lock() {
-        if let Some(engine) = lock.as_mut() {
-            if let Some((_, id)) = engine.model.take() {
-                log::debug!("[local_ai] Unloaded model: {}", id);
-            }
-        }
-    }
-}
-
-// ── Cancellation ──
-
-static CANCEL_FLAGS: LazyLock<Mutex<std::collections::HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-
-pub fn cancel_inference(gen_id: &str) {
-    if let Ok(mut set) = CANCEL_FLAGS.lock() {
-        set.insert(gen_id.to_string());
-    }
-}
-
-pub fn clear_inference_cancel(gen_id: &str) {
-    clear_cancel(gen_id);
-}
-
-fn is_cancelled(gen_id: &str) -> bool {
-    CANCEL_FLAGS
-        .lock()
-        .map(|s| s.contains(gen_id))
-        .unwrap_or(false)
-}
-
-fn clear_cancel(gen_id: &str) {
-    if let Ok(mut set) = CANCEL_FLAGS.lock() {
-        set.remove(gen_id);
-    }
-}
-
-// ── Public API ──
-
-/// Sampler configuration for local inference. Decoupled from the inference
-/// pipeline so callers can tune parameters without touching the engine.
 #[derive(Debug, Clone)]
 pub struct SamplerConfig {
     pub temperature: f32,
@@ -290,30 +54,21 @@ impl Default for SamplerConfig {
 }
 
 impl SamplerConfig {
-    /// Low-creativity config for deterministic planning output.
     pub fn deterministic(temperature: f32) -> Self {
         Self {
             temperature,
             ..Default::default()
         }
     }
-
-    fn build_sampler(&self) -> LlamaSampler {
-        LlamaSampler::chain_simple([
-            LlamaSampler::penalties(self.penalty_last_n, 1.0, 0.0, self.presence_penalty),
-            LlamaSampler::top_k(self.top_k),
-            LlamaSampler::top_p(self.top_p, 1),
-            LlamaSampler::temp(self.temperature),
-            LlamaSampler::dist(rand::random::<u32>()),
-        ])
-    }
 }
 
-/// All parameters for a single local inference call, bundled for clarity.
+/// Parameters kept so existing callers do not need a wide rewrite.
+/// `file_name` and `think_budget_pct` are ignored: Apple Intelligence has one
+/// system model and does not emit `<think>` tags.
 pub struct InferenceRequest {
     pub model_id: String,
     pub file_name: String,
-    pub messages: Vec<crate::ai::ChatMessage>,
+    pub messages: Vec<ChatMessage>,
     pub sampler: SamplerConfig,
     pub max_tokens: u32,
     pub prefill: String,
@@ -321,503 +76,1122 @@ pub struct InferenceRequest {
     pub think_budget_pct: u32,
 }
 
-/// Non-streaming inference (planning, schedule generation, etc.).
-pub fn run_inference(req: InferenceRequest) -> Result<String, String> {
-    run_local_inference(&req, None::<fn(&str, bool)>)
+#[derive(Debug, Clone)]
+pub struct BridgeStatus {
+    pub supported: bool,
+    pub reason: String,
+    pub permanent: bool,
+    pub model: String,
+    pub context_size: i64,
 }
 
-/// Streaming inference with token-level callback.
+static CANCEL_FLAGS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static INFERENCE_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn unload_model() {}
+
+pub fn cancel_inference(gen_id: &str) {
+    if gen_id.is_empty() {
+        return;
+    }
+    if let Ok(mut set) = CANCEL_FLAGS.lock() {
+        set.insert(gen_id.to_string());
+    }
+    if let Some(api) = loaded_api() {
+        if let Ok(c_id) = CString::new(gen_id) {
+            unsafe { (api.cancel)(c_id.as_ptr()) };
+        }
+    }
+}
+
+pub fn clear_inference_cancel(gen_id: &str) {
+    if gen_id.is_empty() {
+        return;
+    }
+    if let Ok(mut set) = CANCEL_FLAGS.lock() {
+        set.remove(gen_id);
+    }
+    if let Some(api) = loaded_api() {
+        if let Ok(c_id) = CString::new(gen_id) {
+            unsafe { (api.clear_cancel)(c_id.as_ptr()) };
+        }
+    }
+}
+
+fn is_cancelled(gen_id: &str) -> bool {
+    if gen_id.is_empty() {
+        return false;
+    }
+    CANCEL_FLAGS
+        .lock()
+        .map(|set| set.contains(gen_id))
+        .unwrap_or(false)
+}
+
+pub fn run_inference(req: InferenceRequest) -> Result<String, String> {
+    run_local(&req, None)
+}
+
 pub fn run_inference_streaming<F: FnMut(&str, bool)>(
     req: InferenceRequest,
-    on_chunk: F,
+    mut on_chunk: F,
 ) -> Result<String, String> {
     if !req.gen_id.is_empty() {
-        clear_cancel(&req.gen_id);
+        clear_inference_cancel(&req.gen_id);
     }
-    let result = run_local_inference(&req, Some(on_chunk));
+    let result = run_local(&req, Some(&mut on_chunk));
     if !req.gen_id.is_empty() {
-        clear_cancel(&req.gen_id);
+        clear_inference_cancel(&req.gen_id);
     }
     result
 }
 
-// ── Core inference pipeline ──
-
-const N_CTX: u32 = 65536;
-const PREFILL_CHUNK: usize = 1024;
-
-fn run_local_inference<F: FnMut(&str, bool)>(
+fn run_local(
     req: &InferenceRequest,
-    mut on_token: Option<F>,
+    on_chunk: Option<&mut dyn FnMut(&str, bool)>,
 ) -> Result<String, String> {
-    let mut lock = ENGINE
+    let _ = (&req.model_id, &req.file_name, req.think_budget_pct);
+    local_ai_support::ensure_supported()?;
+    if is_cancelled(&req.gen_id) {
+        return Err(CANCELLED_MSG.into());
+    }
+    let _guard = INFERENCE_LOCK
         .lock()
-        .map_err(|_| "エンジンロック取得失敗".to_string())?;
-    let engine = ensure_engine(&mut lock)?;
-    ensure_model(engine, &req.model_id, &req.file_name)?;
-    let (model, _) = engine.model.as_ref().unwrap();
-
-    // Tokenize ChatML prompt (with optional assistant prefill).
-    let prompt = format_chatml(&req.messages, &req.prefill);
-    let tokens = model
-        .str_to_token(&prompt, AddBos::Always)
-        .map_err(|e| format!("トークン化失敗: {}", e))?;
-    let n_tokens = tokens.len();
-    if n_tokens as u32 >= N_CTX {
-        return Err(format!(
-            "入力が長すぎます（{}トークン / 上限{}）",
-            n_tokens, N_CTX
-        ));
+        .map_err(|_| "推論ロックの取得に失敗しました".to_string())?;
+    if is_cancelled(&req.gen_id) {
+        return Err(CANCELLED_MSG.into());
     }
 
-    // Context + prefill.
-    let ctx_params = LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(N_CTX));
-    let mut ctx = model
-        .new_context(&engine.backend, ctx_params)
-        .map_err(|e| format!("コンテキスト作成失敗: {}", e))?;
-    prefill(&mut ctx, &tokens)?;
-
-    // Sampler from config.
-    let mut sampler = req.sampler.build_sampler();
-
-    // Budget.
-    let remaining = (N_CTX as usize).saturating_sub(n_tokens);
-    let max_gen = if req.max_tokens == 0 {
-        remaining
+    let (instructions, prompt) = apple_request_parts(&req.messages, &req.prefill);
+    let fitted = fit_apple_request(&instructions, &prompt, req.max_tokens);
+    if fitted.trimmed {
+        log::info!(
+            "Apple Intelligence input trimmed to {} tokens; response cap {}",
+            fitted.input_tokens,
+            fitted.max_tokens
+        );
+    }
+    let temperature = req.sampler.temperature;
+    let request = serde_json::json!({
+        "gen_id": req.gen_id,
+        "instructions": fitted.instructions,
+        "prompt": fitted.prompt,
+        "temperature": temperature,
+        "max_tokens": fitted.max_tokens,
+        "greedy": temperature <= 0.0,
+    });
+    let request = serde_json::to_string(&request).map_err(|error| error.to_string())?;
+    let api = library()?;
+    let c_request =
+        CString::new(request).map_err(|_| "推論リクエストに NUL が含まれています".to_string())?;
+    let mut streamed = String::new();
+    let response = if let Some(callback) = on_chunk {
+        let mut wrapped = |text: &str, is_think: bool| {
+            streamed.push_str(text);
+            callback(text, is_think);
+        };
+        call_generate(&api, c_request.as_ptr(), Some(&mut wrapped))
     } else {
-        (req.max_tokens as usize).min(remaining)
+        call_generate(&api, c_request.as_ptr(), None)
     };
-
-    // Think-block tracking (token level).
-    let think_open = model
-        .str_to_token("<think>", AddBos::Never)
-        .unwrap_or_default();
-    let think_close = model
-        .str_to_token("</think>\n", AddBos::Never)
-        .unwrap_or_default();
-    let stop_tokens = [
-        model.str_to_token("<|im_end|>", AddBos::Never).ok(),
-        model.str_to_token("<|endoftext|>", AddBos::Never).ok(),
-    ];
-
-    let pct = (req.think_budget_pct as usize).min(90);
-    let think_budget = max_gen * pct / 100;
-    let mut think_state = ThinkState::new(think_budget);
-
-    // Stream state.
-    let streaming = on_token.is_some();
-    let mut stream = StreamState::default();
-
-    let mut n_cur = n_tokens;
-    let mut output_tokens = Vec::with_capacity(max_gen);
-    let mut batch = LlamaBatch::new(PREFILL_CHUNK, 1);
-    let mut cancelled = false;
-
-    for _ in 0..max_gen {
-        if !req.gen_id.is_empty() && is_cancelled(&req.gen_id) {
-            cancelled = true;
-            break;
-        }
-
-        let token = sampler.sample(&ctx, -1);
-        if model.is_eog_token(token) {
-            break;
-        }
-        if is_stop_token(&stop_tokens, token) {
-            break;
-        }
-
-        output_tokens.push(token);
-
-        // Think-block tracking.
-        think_state.update(&output_tokens, &think_open, &think_close);
-
-        // Force-close think block when budget exhausted.
-        if think_state.should_force_close(&think_close) {
-            think_state.force_close();
-            decode_single(&mut ctx, &mut batch, token, &mut n_cur)?;
-            if streaming {
-                emit_piece(model, token, &mut stream, on_token.as_mut());
-            }
-
-            for &close_tok in &think_close {
-                output_tokens.push(close_tok);
-                decode_single(&mut ctx, &mut batch, close_tok, &mut n_cur)?;
-                if streaming {
-                    emit_piece(model, close_tok, &mut stream, on_token.as_mut());
-                }
-            }
-            continue;
-        }
-
-        decode_single(&mut ctx, &mut batch, token, &mut n_cur)?;
-        if streaming {
-            emit_piece(model, token, &mut stream, on_token.as_mut());
-        }
-    }
-
-    if cancelled {
-        return Err("推論はキャンセルされました".into());
-    }
-
-    if streaming {
-        stream.flush(on_token.as_mut());
-        Ok(stream.visible.trim().to_string())
-    } else {
-        let generated = detokenize_all(model, &output_tokens)?;
-        if req.prefill.is_empty() {
-            Ok(generated)
-        } else {
-            Ok(format!("{}{}", req.prefill, generated))
-        }
+    let owned = BridgeString {
+        ptr: response,
+        free: api.free,
+    };
+    let raw = owned.as_str()?.to_string();
+    match parse_generate_response(&raw) {
+        Ok(text) => Ok(text),
+        Err(error) => recover_context_limit(&error, &streamed),
     }
 }
 
-// ── Engine / Model management ──
+fn call_generate(
+    api: &BridgeApi,
+    request: *const c_char,
+    on_chunk: Option<&mut dyn FnMut(&str, bool)>,
+) -> *mut c_char {
+    match on_chunk {
+        Some(callback) => {
+            let mut ctx = ChunkCtx { callback };
+            unsafe {
+                (api.generate)(
+                    request,
+                    Some(chunk_trampoline),
+                    &mut ctx as *mut ChunkCtx as *mut c_void,
+                )
+            }
+        }
+        None => unsafe { (api.generate)(request, None, std::ptr::null_mut()) },
+    }
+}
 
-fn ensure_engine(lock: &mut Option<InferenceEngine>) -> Result<&mut InferenceEngine, String> {
-    if lock.is_none() {
-        log::debug!("[local_ai] Initializing inference backend");
-        let mut backend =
-            LlamaBackend::init().map_err(|e| format!("バックエンド初期化失敗: {}", e))?;
-        backend.void_logs();
-        *lock = Some(InferenceEngine {
-            backend,
-            model: None,
+pub fn query_availability() -> Result<BridgeStatus, String> {
+    if local_ai_support::macos_major_version().unwrap_or(0) < 26 {
+        return Ok(BridgeStatus {
+            supported: false,
+            reason: local_ai_support::MACOS_TOO_OLD_MESSAGE.into(),
+            permanent: true,
+            model: String::new(),
+            context_size: 0,
         });
     }
-    Ok(lock.as_mut().unwrap())
-}
-
-fn ensure_model(
-    engine: &mut InferenceEngine,
-    model_id: &str,
-    file_name: &str,
-) -> Result<(), String> {
-    let need_load = match engine.model.as_ref() {
-        Some((_, id)) if id == model_id => false,
-        Some((_, id)) => {
-            log::debug!("[local_ai] Switching model: {} -> {}", id, model_id);
-            true
-        }
-        None => true,
+    let api = library()?;
+    let owned = BridgeString {
+        ptr: unsafe { (api.availability)() },
+        free: api.free,
     };
-    if need_load {
-        engine.model = None;
-        let path = model_path(file_name);
-        if !path.exists() {
-            return Err(format!("モデルファイルが見つかりません: {}", file_name));
-        }
-        log::debug!("[local_ai] Loading model: {} from {:?}", model_id, path);
-        let model =
-            LlamaModel::load_from_file(&engine.backend, &path, &LlamaModelParams::default())
-                .map_err(|e| format!("モデル読み込み失敗: {}", e))?;
-        engine.model = Some((model, model_id.to_string()));
-        log::info!("[local_ai] Model ready: {}", model_id);
-    }
-    Ok(())
-}
-
-// ── ChatML formatting ──
-
-fn format_chatml(messages: &[crate::ai::ChatMessage], prefill: &str) -> String {
-    let cap: usize = messages
-        .iter()
-        .map(|m| m.role.len() + m.content.len() + 30)
-        .sum();
-    let mut s = String::with_capacity(cap + 20 + prefill.len());
-    for msg in messages {
-        s.push_str("<|im_start|>");
-        s.push_str(&msg.role);
-        s.push('\n');
-        s.push_str(&msg.content);
-        s.push_str("<|im_end|>\n");
-    }
-    s.push_str("<|im_start|>assistant\n");
-    if !prefill.is_empty() {
-        s.push_str(prefill);
-    }
-    s
-}
-
-// ── Prefill ──
-
-fn prefill(
-    ctx: &mut llama_cpp_2::context::LlamaContext,
-    tokens: &[llama_cpp_2::token::LlamaToken],
-) -> Result<(), String> {
-    let mut batch = LlamaBatch::new(PREFILL_CHUNK, 1);
-    for (chunk_idx, chunk) in tokens.chunks(PREFILL_CHUNK).enumerate() {
-        batch.clear();
-        let start = chunk_idx * PREFILL_CHUNK;
-        for (j, &tok) in chunk.iter().enumerate() {
-            batch
-                .add(tok, (start + j) as i32, &[0], j == chunk.len() - 1)
-                .map_err(|_| "バッチ追加失敗".to_string())?;
-        }
-        ctx.decode(&mut batch)
-            .map_err(|e| format!("プロンプトデコード失敗: {}", e))?;
-    }
-    Ok(())
-}
-
-// ── Decode helpers ──
-
-fn decode_single(
-    ctx: &mut llama_cpp_2::context::LlamaContext,
-    batch: &mut LlamaBatch,
-    token: llama_cpp_2::token::LlamaToken,
-    n_cur: &mut usize,
-) -> Result<(), String> {
-    batch.clear();
-    batch
-        .add(token, *n_cur as i32, &[0], true)
-        .map_err(|_| "バッチ追加失敗".to_string())?;
-    ctx.decode(batch)
-        .map_err(|e| format!("デコード失敗: {}", e))?;
-    *n_cur += 1;
-    Ok(())
-}
-
-fn is_stop_token(
-    stop_tokens: &[Option<Vec<llama_cpp_2::token::LlamaToken>>; 2],
-    token: llama_cpp_2::token::LlamaToken,
-) -> bool {
-    stop_tokens.iter().any(|st| {
-        st.as_ref()
-            .map(|toks| toks.len() == 1 && toks[0] == token)
-            .unwrap_or(false)
+    let raw = owned.as_str()?.to_string();
+    let parsed: AvailabilityJson = serde_json::from_str(&raw)
+        .map_err(|error| format!("可用性 JSON を読み取れません: {error}"))?;
+    Ok(BridgeStatus {
+        supported: parsed.supported,
+        reason: parsed.reason,
+        permanent: parsed.permanent,
+        model: parsed.model,
+        context_size: parsed.context_size,
     })
 }
 
-fn detokenize_all(
-    model: &LlamaModel,
-    tokens: &[llama_cpp_2::token::LlamaToken],
-) -> Result<String, String> {
-    #[allow(deprecated)]
-    let output = tokens
-        .iter()
-        .map(|&t| model.token_to_str(t, Special::Tokenize))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("デトークン化失敗: {}", e))?
-        .join("");
-    Ok(output.trim().to_string())
-}
-
-// ── Think-block state machine (token level) ──
-
-#[derive(Default)]
-struct ThinkState {
-    in_think: bool,
-    token_count: usize,
-    forced_close: bool,
-    budget: usize,
-}
-
-impl ThinkState {
-    fn new(budget: usize) -> Self {
-        Self {
-            budget,
-            ..Default::default()
-        }
-    }
-
-    fn update(
-        &mut self,
-        output: &[llama_cpp_2::token::LlamaToken],
-        open: &[llama_cpp_2::token::LlamaToken],
-        close: &[llama_cpp_2::token::LlamaToken],
-    ) {
-        if !self.in_think && !self.forced_close {
-            if !open.is_empty()
-                && output.len() >= open.len()
-                && output[output.len() - open.len()..] == open[..]
-            {
-                self.in_think = true;
-                self.token_count = 0;
-            }
-        } else if self.in_think {
-            self.token_count += 1;
-            if !close.is_empty()
-                && output.len() >= close.len()
-                && output[output.len() - close.len()..] == close[..]
-            {
-                self.in_think = false;
-            }
-        }
-    }
-
-    fn should_force_close(&self, close: &[llama_cpp_2::token::LlamaToken]) -> bool {
-        !close.is_empty() && self.in_think && self.token_count >= self.budget
-    }
-
-    fn force_close(&mut self) {
-        self.in_think = false;
-        self.forced_close = true;
-    }
-}
-
-// ── Stream state machine (string level) ──
-
-#[derive(Default)]
-struct StreamState {
-    pending: String,
-    in_think: bool,
-    visible: String,
-}
-
-impl StreamState {
-    fn flush<F: FnMut(&str, bool)>(&mut self, on_chunk: Option<&mut F>) {
-        if self.pending.is_empty() {
-            return;
-        }
-        if let Some(cb) = on_chunk {
-            cb(&self.pending, self.in_think);
-        }
-        if !self.in_think {
-            self.visible.push_str(&self.pending);
-        }
-        self.pending.clear();
-    }
-}
-
-const THINKING_START_TAGS: &[&str] = &["<think>", "<thought>", "<thinking>"];
-const THINKING_END_TAGS: &[&str] = &["</think>", "</thought>", "</thinking>"];
-const GUARD_WINDOW: usize = 10; // shorter than the longest supported thinking tag.
-
-fn emit_piece<F: FnMut(&str, bool)>(
-    model: &LlamaModel,
-    token: llama_cpp_2::token::LlamaToken,
-    stream: &mut StreamState,
-    on_chunk: Option<&mut F>,
-) {
-    #[allow(deprecated)]
-    let piece = model
-        .token_to_str(token, Special::Tokenize)
-        .unwrap_or_default();
-    process_stream_piece(&piece, stream, on_chunk);
-}
-
-fn process_stream_piece<F: FnMut(&str, bool)>(
-    piece: &str,
-    stream: &mut StreamState,
-    mut on_chunk: Option<&mut F>,
-) {
-    stream.pending.push_str(piece);
-    loop {
-        if stream.in_think {
-            if let Some((pos, tag_len)) = find_thinking_end_tag(&stream.pending) {
-                if pos > 0 {
-                    let to_emit: String = stream.pending.drain(..pos).collect();
-                    if let Some(cb) = on_chunk.as_deref_mut() {
-                        cb(&to_emit, true);
-                    }
-                }
-                stream.pending.drain(..tag_len);
-                stream.in_think = false;
-                continue;
-            }
-            emit_safe(
-                &mut stream.pending,
-                true,
-                &mut stream.visible,
-                &mut on_chunk,
-            );
-            break;
+/// Apple Intelligence counts about one token per CJK character and ~3 ASCII characters.
+pub(crate) fn estimate_apple_tokens(text: &str) -> usize {
+    let mut ascii = 0usize;
+    let mut other = 0usize;
+    for ch in text.chars() {
+        if ch.is_ascii() {
+            ascii += 1;
         } else {
-            if let Some((pos, tag_len)) = find_thinking_start_tag(&stream.pending) {
-                if pos > 0 {
-                    let to_emit: String = stream.pending.drain(..pos).collect();
-                    stream.visible.push_str(&to_emit);
-                    if let Some(cb) = on_chunk.as_deref_mut() {
-                        cb(&to_emit, false);
-                    }
-                }
-                stream.pending.drain(..tag_len);
-                stream.in_think = true;
-                continue;
+            other += 1;
+        }
+    }
+    other + ascii.div_ceil(3) + 1
+}
+
+/// requested == 0 means "use the room left in the window", never unlimited.
+pub(crate) fn apple_response_limit(requested: u32, input_tokens: usize) -> u32 {
+    let room = APPLE_CONTEXT_WINDOW_TOKENS
+        .saturating_sub(APPLE_CONTEXT_OVERHEAD_TOKENS)
+        .saturating_sub(input_tokens)
+        .clamp(
+            192,
+            APPLE_CONTEXT_WINDOW_TOKENS - APPLE_CONTEXT_OVERHEAD_TOKENS,
+        ) as u32;
+    if requested == 0 {
+        room
+    } else {
+        requested.min(room).max(32)
+    }
+}
+
+pub(crate) struct FittedAppleRequest {
+    pub instructions: String,
+    pub prompt: String,
+    pub max_tokens: u32,
+    pub input_tokens: usize,
+    pub trimmed: bool,
+}
+
+/// Fit instructions and the conversation into the Apple window before the bridge runs.
+/// Every local caller, including timetable and Live, goes through this.
+pub(crate) fn fit_apple_request(
+    instructions: &str,
+    prompt: &str,
+    requested_max_tokens: u32,
+) -> FittedAppleRequest {
+    let budget = prompt_budget_for(&instructions, &prompt);
+    let mut instructions = instructions.trim().to_string();
+    let mut prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        prompt = "応答してください。".to_string();
+    }
+    let before = estimate_apple_tokens(&instructions) + estimate_apple_tokens(&prompt);
+    if before > budget {
+        let prompt_floor = 512usize.min(budget.saturating_sub(256));
+        let prompt_budget = (budget / 2).clamp(prompt_floor, budget.saturating_sub(256));
+        prompt = trim_apple_turns(&prompt, prompt_budget);
+        let instruction_budget = budget
+            .saturating_sub(estimate_apple_tokens(&prompt))
+            .max(128);
+        if estimate_apple_tokens(&instructions) > instruction_budget {
+            instructions = trim_apple_text(&instructions, instruction_budget);
+        }
+        let used = estimate_apple_tokens(&instructions) + estimate_apple_tokens(&prompt);
+        if used > budget {
+            let tighter = budget
+                .saturating_sub(estimate_apple_tokens(&instructions))
+                .max(64);
+            prompt = trim_apple_turns(&prompt, tighter);
+        }
+    }
+    let mut input_tokens = estimate_apple_tokens(&instructions) + estimate_apple_tokens(&prompt);
+    if input_tokens > budget {
+        prompt = trim_apple_turns(&prompt, budget / 2);
+        let instruction_budget = budget.saturating_sub(estimate_apple_tokens(&prompt));
+        instructions = trim_apple_text(&instructions, instruction_budget);
+        input_tokens = estimate_apple_tokens(&instructions) + estimate_apple_tokens(&prompt);
+    }
+    FittedAppleRequest {
+        instructions,
+        prompt,
+        max_tokens: apple_response_limit(requested_max_tokens, input_tokens),
+        input_tokens,
+        trimmed: before > budget,
+    }
+}
+
+fn json_reply_requested(instructions: &str, prompt: &str) -> bool {
+    instructions.contains("JSONのみ")
+        || instructions.contains("JSONだけ")
+        || instructions.contains("Output one JSON")
+        || instructions.contains("出力は必ず")
+        || prompt.contains("JSONのみ")
+        || prompt.contains("JSONだけ")
+}
+
+fn prompt_budget_for(instructions: &str, prompt: &str) -> usize {
+    let reserve = if json_reply_requested(instructions, prompt) {
+        APPLE_JSON_RESPONSE_RESERVE_TOKENS
+    } else {
+        APPLE_RESPONSE_RESERVE_TOKENS
+    };
+    APPLE_CONTEXT_WINDOW_TOKENS
+        .saturating_sub(APPLE_CONTEXT_OVERHEAD_TOKENS)
+        .saturating_sub(reserve)
+        .max(512)
+}
+
+/// Shrink a JSON value without cutting through an object, array, or string.
+/// Arrays lose whole items. Long strings are shortened inside the quotes.
+pub(crate) fn compact_json_value(value: &serde_json::Value, budget: usize) -> serde_json::Value {
+    if budget < 2 {
+        return serde_json::Value::Null;
+    }
+    let raw = serde_json::to_string(value).unwrap_or_else(|_| "null".into());
+    if estimate_apple_tokens(&raw) <= budget {
+        return value.clone();
+    }
+    match value {
+        serde_json::Value::String(text) => {
+            serde_json::Value::String(truncate_json_string(text, budget))
+        }
+        serde_json::Value::Array(items) => compact_json_array(items, budget),
+        serde_json::Value::Object(map) => compact_json_object(map, budget),
+        other => {
+            if estimate_apple_tokens(&raw) <= budget {
+                other.clone()
+            } else {
+                serde_json::Value::Null
             }
-            emit_safe(
-                &mut stream.pending,
-                false,
-                &mut stream.visible,
-                &mut on_chunk,
-            );
-            break;
         }
     }
 }
 
-fn find_thinking_start_tag(s: &str) -> Option<(usize, usize)> {
-    find_earliest_tag(s, THINKING_START_TAGS)
+fn compact_json_array(items: &[serde_json::Value], budget: usize) -> serde_json::Value {
+    let mut kept = Vec::new();
+    for item in items {
+        let used = serde_json::to_string(&serde_json::Value::Array(kept.clone()))
+            .map(|text| estimate_apple_tokens(&text))
+            .unwrap_or(2);
+        let remaining = budget.saturating_sub(used).saturating_sub(1);
+        if remaining < 2 {
+            break;
+        }
+        let shrunk = compact_json_value(item, remaining);
+        let mut trial = kept.clone();
+        trial.push(shrunk.clone());
+        let rendered =
+            serde_json::to_string(&serde_json::Value::Array(trial)).unwrap_or_else(|_| "[]".into());
+        if estimate_apple_tokens(&rendered) > budget {
+            break;
+        }
+        kept.push(shrunk);
+    }
+    serde_json::Value::Array(kept)
 }
 
-fn find_thinking_end_tag(s: &str) -> Option<(usize, usize)> {
-    find_earliest_tag(s, THINKING_END_TAGS)
+fn compact_json_object(
+    map: &serde_json::Map<String, serde_json::Value>,
+    budget: usize,
+) -> serde_json::Value {
+    // Keep smaller fields first so a large array is shortened instead of deleted.
+    let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+    entries.sort_by_key(|(_, value)| {
+        serde_json::to_string(value)
+            .map(|text| text.len())
+            .unwrap_or(0)
+    });
+    let mut kept = serde_json::Map::new();
+    for (key, value) in entries {
+        let used = serde_json::to_string(&serde_json::Value::Object(kept.clone()))
+            .map(|text| estimate_apple_tokens(&text))
+            .unwrap_or(2);
+        let key_cost = estimate_apple_tokens(key) + 3;
+        let remaining = budget.saturating_sub(used).saturating_sub(key_cost);
+        if remaining < 2 {
+            continue;
+        }
+        let shrunk = compact_json_value(value, remaining);
+        let mut trial = kept.clone();
+        trial.insert(key.clone(), shrunk.clone());
+        let rendered = serde_json::to_string(&serde_json::Value::Object(trial))
+            .unwrap_or_else(|_| "{}".into());
+        if estimate_apple_tokens(&rendered) > budget {
+            continue;
+        }
+        kept.insert(key.clone(), shrunk);
+    }
+    serde_json::Value::Object(kept)
+}
+fn truncate_json_string(text: &str, budget: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        let candidate: String = chars[..mid].iter().collect();
+        let rendered = serde_json::to_string(&serde_json::Value::String(candidate))
+            .unwrap_or_else(|_| "\"\"".into());
+        if estimate_apple_tokens(&rendered) <= budget {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let mut out: String = chars[..low].iter().collect();
+    if low < chars.len()
+        && estimate_apple_tokens(
+            &serde_json::to_string(&serde_json::Value::String(format!("{out}…")))
+                .unwrap_or_default(),
+        ) <= budget
+    {
+        out.push('…');
+    }
+    out
 }
 
-fn find_earliest_tag(s: &str, tags: &[&str]) -> Option<(usize, usize)> {
-    tags.iter()
-        .filter_map(|tag| s.find(tag).map(|idx| (idx, tag.len())))
-        .min_by_key(|(idx, _)| *idx)
+fn outermost_brace_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut in_string = false;
+    let mut escape = false;
+    let mut index = 0usize;
+    while index < text.len() {
+        let ch = text[index..].chars().next().unwrap_or('\0');
+        let len = ch.len_utf8();
+        if in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            index += len;
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            index += len;
+            continue;
+        }
+        if ch == '{' || ch == '[' {
+            if let Some(end) = matching_close(text, index) {
+                spans.push((index, end));
+                index = end;
+                continue;
+            }
+        }
+        index += len;
+    }
+    spans
 }
 
-/// Emit pending text up to the guard window.
-fn emit_safe<F: FnMut(&str, bool)>(
-    pending: &mut String,
-    is_think: bool,
-    visible: &mut String,
-    on_chunk: &mut Option<&mut F>,
-) {
-    if pending.len() <= GUARD_WINDOW {
+fn matching_close(text: &str, open_byte: usize) -> Option<usize> {
+    let opener = text[open_byte..].chars().next()?;
+    let closer = if opener == '{' { '}' } else { ']' };
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut index = open_byte;
+    while index < text.len() {
+        let ch = text[index..].chars().next()?;
+        let len = ch.len_utf8();
+        if in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+        } else {
+            match ch {
+                '"' => in_string = true,
+                '{' | '[' => depth += 1,
+                '}' | ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (ch == closer).then_some(index + len);
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += len;
+    }
+    None
+}
+
+fn compact_embedded_json(text: &str, span_budget: usize) -> String {
+    let spans = outermost_brace_spans(text);
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    for (start, end) in spans {
+        out.push_str(&text[cursor..start]);
+        let span = &text[start..end];
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(span) {
+            if estimate_apple_tokens(span) > span_budget {
+                let compact = compact_json_value(&value, span_budget.max(16));
+                out.push_str(&serde_json::to_string(&compact).unwrap_or_else(|_| "{}".into()));
+            } else {
+                out.push_str(span);
+            }
+        } else {
+            out.push_str(span);
+        }
+        cursor = end;
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+fn split_atoms(text: &str) -> Vec<String> {
+    let spans = outermost_brace_spans(text);
+    let mut atoms = Vec::new();
+    let mut cursor = 0usize;
+    for (start, end) in spans {
+        if start > cursor {
+            push_prose_atoms(&mut atoms, &text[cursor..start]);
+        }
+        atoms.push(text[start..end].to_string());
+        cursor = end;
+    }
+    if cursor < text.len() {
+        push_prose_atoms(&mut atoms, &text[cursor..]);
+    }
+    atoms.retain(|atom| !atom.trim().is_empty());
+    atoms
+}
+
+fn push_prose_atoms(out: &mut Vec<String>, prose: &str) {
+    if prose.is_empty() {
         return;
     }
-    let split = floor_char_boundary(pending, pending.len() - GUARD_WINDOW);
-    if split == 0 {
-        return;
-    }
-    let to_emit: String = pending.drain(..split).collect();
-    if !is_think {
-        visible.push_str(&to_emit);
-    }
-    if let Some(cb) = on_chunk.as_deref_mut() {
-        cb(&to_emit, is_think);
+    let parts: Vec<&str> = prose.split("\n\n").collect();
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index == 0 {
+            out.push((*part).to_string());
+        } else {
+            out.push(format!("\n\n{part}"));
+        }
     }
 }
 
-fn floor_char_boundary(s: &str, idx: usize) -> usize {
-    let mut i = idx.min(s.len());
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
+fn is_brace_atom(atom: &str) -> bool {
+    let trimmed = atom.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
+}
+
+fn fit_atom(atom: &str, budget: usize, keep_tail: bool) -> Option<String> {
+    if budget < 2 || atom.is_empty() {
+        return None;
     }
-    i
+    if estimate_apple_tokens(atom) <= budget {
+        return Some(atom.to_string());
+    }
+    if is_brace_atom(atom) {
+        let trimmed = atom.trim();
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let compact = compact_json_value(&value, budget);
+            let rendered = serde_json::to_string(&compact).unwrap_or_else(|_| "{}".into());
+            if estimate_apple_tokens(&rendered) <= budget {
+                return Some(rendered);
+            }
+        }
+        return None;
+    }
+    if atom.contains('{') || atom.contains('[') {
+        return None;
+    }
+    let sliced = slice_prose(atom, budget, keep_tail);
+    if sliced.trim().is_empty() {
+        None
+    } else {
+        Some(sliced)
+    }
+}
+
+fn slice_prose(text: &str, budget: usize, keep_tail: bool) -> String {
+    if estimate_apple_tokens(text) <= budget {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        let slice: String = if keep_tail {
+            chars[chars.len() - mid..].iter().collect()
+        } else {
+            chars[..mid].iter().collect()
+        };
+        if estimate_apple_tokens(&slice) <= budget {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    if keep_tail {
+        chars[chars.len() - low..].iter().collect()
+    } else {
+        chars[..low].iter().collect()
+    }
+}
+
+fn join_atoms(atoms: &[String]) -> String {
+    let mut out = String::new();
+    let mut omitted = false;
+    for atom in atoms {
+        if atom.is_empty() {
+            omitted = true;
+            continue;
+        }
+        if omitted && !out.is_empty() && !out.ends_with('…') {
+            out.push_str("\n…\n");
+        }
+        omitted = false;
+        out.push_str(atom);
+    }
+    out
+}
+
+fn enforce_atom_budget(mut atoms: Vec<String>, budget: usize, drop_front: bool) -> String {
+    while estimate_apple_tokens(&join_atoms(&atoms)) > budget && !atoms.is_empty() {
+        if drop_front {
+            atoms.remove(0);
+        } else {
+            atoms.pop();
+        }
+    }
+    join_atoms(&atoms)
+}
+
+fn atom_room(budget: usize, used: usize) -> usize {
+    let separator = usize::from(used > 0);
+    budget.saturating_sub(used).saturating_sub(separator)
+}
+
+fn select_side(atoms: &[String], budget: usize, keep_tail: bool) -> String {
+    let mut chosen = Vec::new();
+    let mut used = 0usize;
+    let indexes: Vec<usize> = if keep_tail {
+        (0..atoms.len()).rev().collect()
+    } else {
+        (0..atoms.len()).collect()
+    };
+    for index in indexes {
+        let separator = usize::from(used > 0);
+        let remaining = atom_room(budget, used);
+        let Some(fitted) = fit_atom(&atoms[index], remaining, keep_tail) else {
+            continue;
+        };
+        let cost = estimate_apple_tokens(&fitted) + separator;
+        if used + cost > budget {
+            continue;
+        }
+        used += cost;
+        if keep_tail {
+            chosen.insert(0, fitted);
+        } else {
+            chosen.push(fitted);
+        }
+    }
+    enforce_atom_budget(chosen, budget, keep_tail)
+}
+
+fn select_head_and_tail(atoms: &[String], budget: usize) -> String {
+    let mut chosen: Vec<Option<String>> = vec![None; atoms.len()];
+    let mut used = 0usize;
+    for (index, atom) in atoms.iter().enumerate() {
+        if !is_brace_atom(atom) {
+            continue;
+        }
+        let separator = usize::from(used > 0);
+        let remaining = atom_room(budget, used);
+        let Some(fitted) = fit_atom(atom, remaining, false) else {
+            continue;
+        };
+        let cost = estimate_apple_tokens(&fitted) + separator;
+        if used + cost > budget {
+            continue;
+        }
+        used += cost;
+        chosen[index] = Some(fitted);
+    }
+    let prose_budget = budget.saturating_sub(used);
+    let head_limit = prose_budget / 3;
+    let mut prose_used = 0usize;
+    for (index, atom) in atoms.iter().enumerate() {
+        if chosen[index].is_some() || is_brace_atom(atom) {
+            continue;
+        }
+        let separator = usize::from(prose_used > 0);
+        let remaining = atom_room(head_limit, prose_used);
+        let Some(fitted) = fit_atom(atom, remaining, false) else {
+            break;
+        };
+        let cost = estimate_apple_tokens(&fitted) + separator;
+        if prose_used + cost > head_limit {
+            break;
+        }
+        prose_used += cost;
+        chosen[index] = Some(fitted);
+    }
+    for (index, atom) in atoms.iter().enumerate().rev() {
+        if chosen[index].is_some() || is_brace_atom(atom) {
+            continue;
+        }
+        let separator = usize::from(prose_used > 0);
+        let remaining = atom_room(prose_budget, prose_used);
+        let Some(fitted) = fit_atom(atom, remaining, true) else {
+            continue;
+        };
+        let cost = estimate_apple_tokens(&fitted) + separator;
+        if prose_used + cost > prose_budget {
+            continue;
+        }
+        prose_used += cost;
+        chosen[index] = Some(fitted);
+    }
+    let kept: Vec<String> = chosen.into_iter().flatten().collect();
+    enforce_atom_budget(kept, budget, false)
+}
+
+/// Keep rules, JSON blocks, and the latest material. JSON is never cut mid-value.
+pub(crate) fn trim_apple_text(text: &str, budget: usize) -> String {
+    trim_structured(text, budget, false)
+}
+
+fn trim_apple_turns(prompt: &str, budget: usize) -> String {
+    trim_structured(prompt, budget, true)
+}
+
+fn trim_structured(text: &str, budget: usize, keep_tail: bool) -> String {
+    if budget == 0 || text.is_empty() {
+        return String::new();
+    }
+    let compacted = compact_embedded_json(text, budget.max(32));
+    if estimate_apple_tokens(&compacted) <= budget {
+        return compacted;
+    }
+    let atoms = split_atoms(&compacted);
+    let selected = if keep_tail {
+        select_side(&atoms, budget, true)
+    } else {
+        select_head_and_tail(&atoms, budget)
+    };
+    if selected.is_empty() && !compacted.contains('{') && !compacted.contains('[') {
+        return slice_prose(&compacted, budget, keep_tail);
+    }
+    selected
+}
+
+pub(crate) fn apple_request_parts(messages: &[ChatMessage], prefill: &str) -> (String, String) {
+    let mut instructions = Vec::new();
+    let mut turns = Vec::new();
+    for message in messages {
+        let content = message.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        match message.role.as_str() {
+            "system" | "developer" => instructions.push(content.to_string()),
+            "assistant" => turns.push(format!("Assistant:\n{content}")),
+            _ => turns.push(format!("User:\n{content}")),
+        }
+    }
+    let prefill = prefill.trim();
+    if !prefill.is_empty() {
+        instructions.push(
+            "応答は下書きの続きだけを出力し、下書き自体は繰り返さないでください。".to_string(),
+        );
+        turns.push(format!("Assistant:\n{prefill}"));
+    }
+    (instructions.join("\n\n"), turns.join("\n\n"))
+}
+
+struct ChunkCtx<'a> {
+    callback: &'a mut dyn FnMut(&str, bool),
+}
+
+unsafe extern "C" fn chunk_trampoline(chunk: *const c_char, is_final: c_int, ctx: *mut c_void) {
+    if chunk.is_null() || ctx.is_null() || is_final != 0 {
+        return;
+    }
+    let text = unsafe { CStr::from_ptr(chunk) }.to_string_lossy();
+    if text.is_empty() {
+        return;
+    }
+    let ctx = unsafe { &mut *(ctx as *mut ChunkCtx) };
+    (ctx.callback)(&text, false);
+}
+
+#[derive(Deserialize)]
+struct AvailabilityJson {
+    supported: bool,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    permanent: bool,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    context_size: i64,
+}
+
+#[derive(Deserialize)]
+struct GenerateJson {
+    ok: bool,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    cancelled: bool,
+}
+
+pub(crate) fn is_apple_context_limit(message: &str) -> bool {
+    message.contains("コンテキスト上限")
+}
+
+/// Apple Intelligence throws once the window is full, even after it has already
+/// streamed a usable reply. Keep that reply instead of failing the whole send.
+pub(crate) fn recover_context_limit(error: &str, partial: &str) -> Result<String, String> {
+    let partial = partial.trim();
+    if is_apple_context_limit(error) && !partial.is_empty() {
+        Ok(partial.to_string())
+    } else {
+        Err(error.to_string())
+    }
+}
+
+fn parse_generate_response(raw: &str) -> Result<String, String> {
+    let parsed: GenerateJson = serde_json::from_str(raw)
+        .map_err(|error| format!("推論結果を読み取れません: {error}: {raw}"))?;
+    if parsed.cancelled || parsed.error == CANCELLED_MSG {
+        return Err(CANCELLED_MSG.into());
+    }
+    if parsed.ok {
+        return Ok(parsed.text);
+    }
+    if parsed.error.is_empty() {
+        Err("Apple Intelligence の推論に失敗しました".into())
+    } else {
+        Err(parsed.error)
+    }
+}
+
+type FreeFn = unsafe extern "C" fn(*mut c_char);
+type AvailabilityFn = unsafe extern "C" fn() -> *mut c_char;
+type ChunkFn = unsafe extern "C" fn(*const c_char, c_int, *mut c_void);
+type GenerateFn = unsafe extern "C" fn(*const c_char, Option<ChunkFn>, *mut c_void) -> *mut c_char;
+type CancelFn = unsafe extern "C" fn(*const c_char);
+
+#[derive(Clone, Copy)]
+struct BridgeApi {
+    free: FreeFn,
+    availability: AvailabilityFn,
+    generate: GenerateFn,
+    cancel: CancelFn,
+    clear_cancel: CancelFn,
+}
+
+struct BridgeString {
+    ptr: *mut c_char,
+    free: FreeFn,
+}
+
+impl BridgeString {
+    fn as_str(&self) -> Result<&str, String> {
+        if self.ptr.is_null() {
+            return Err("Apple Intelligence ブリッジが空の応答を返しました".into());
+        }
+        unsafe { CStr::from_ptr(self.ptr) }
+            .to_str()
+            .map_err(|_| "Apple Intelligence ブリッジの応答が UTF-8 ではありません".into())
+    }
+}
+
+impl Drop for BridgeString {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { (self.free)(self.ptr) };
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}
+
+fn loaded_api() -> Option<BridgeApi> {
+    library().ok()
+}
+
+fn library() -> Result<BridgeApi, String> {
+    static LOADED: OnceLock<Result<BridgeApi, String>> = OnceLock::new();
+    LOADED.get_or_init(load_library).clone()
+}
+
+fn load_library() -> Result<BridgeApi, String> {
+    let path = library_path()?;
+    let c_path = CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| "Apple Intelligence ブリッジのパスが不正です".to_string())?;
+    let handle = unsafe { dlopen(c_path.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+    if handle.is_null() {
+        return Err(format!(
+            "Apple Intelligence ブリッジを読み込めませんでした: {}",
+            last_dlerror()
+        ));
+    }
+    unsafe {
+        Ok(BridgeApi {
+            free: transmute_symbol(handle, "selah_apple_ai_free")?,
+            availability: transmute_symbol(handle, "selah_apple_ai_availability_json")?,
+            generate: transmute_symbol(handle, "selah_apple_ai_generate")?,
+            cancel: transmute_symbol(handle, "selah_apple_ai_cancel")?,
+            clear_cancel: transmute_symbol(handle, "selah_apple_ai_clear_cancel")?,
+        })
+    }
+}
+
+fn library_path() -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("SELAH_APPLE_AI_LIB") {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.push(PathBuf::from(env!("SELAH_APPLE_AI_LIB")));
+    candidates.push(PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lib/libselah_apple_ai.dylib"
+    )));
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("../Frameworks/libselah_apple_ai.dylib"));
+            candidates.push(parent.join("libselah_apple_ai.dylib"));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| "Apple Intelligence ブリッジが見つかりません".to_string())
+}
+
+unsafe fn transmute_symbol<T>(handle: *mut c_void, name: &str) -> Result<T, String> {
+    let c_name = CString::new(name).map_err(|_| format!("symbol {name} is invalid"))?;
+    let symbol = unsafe { dlsym(handle, c_name.as_ptr()) };
+    if symbol.is_null() {
+        return Err(format!(
+            "Apple Intelligence ブリッジに {name} がありません: {}",
+            last_dlerror()
+        ));
+    }
+    Ok(unsafe { std::mem::transmute_copy(&symbol) })
+}
+
+fn last_dlerror() -> String {
+    let ptr = unsafe { dlerror() };
+    if ptr.is_null() {
+        return "unknown dlopen error".into();
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+extern "C" {
+    fn dlopen(path: *const c_char, flags: i32) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlerror() -> *const c_char;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn process_stream_piece_routes_thought_tags_to_thinking_stream() {
-        let mut stream = StreamState::default();
-        let mut chunks: Vec<(String, bool)> = Vec::new();
-        {
-            let mut cb = |chunk: &str, is_think: bool| {
-                chunks.push((chunk.to_string(), is_think));
-            };
-            process_stream_piece("visible <thought>hidden", &mut stream, Some(&mut cb));
-            process_stream_piece("</thought> done", &mut stream, Some(&mut cb));
-            stream.flush(Some(&mut cb));
+    fn message(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.into(),
+            content: content.into(),
+            images: Vec::new(),
         }
+    }
 
-        assert_eq!(stream.visible, "visible  done");
+    #[test]
+    fn system_messages_become_instructions_and_turns_keep_order() {
+        let (instructions, prompt) = apple_request_parts(
+            &[
+                message("system", "関学生向けに短く答える"),
+                message("user", "次の授業は？"),
+                message("assistant", "3限です"),
+                message("user", "教室は？"),
+            ],
+            "",
+        );
+        assert_eq!(instructions, "関学生向けに短く答える");
         assert_eq!(
-            chunks,
-            vec![
-                ("visible ".to_string(), false),
-                ("hidden".to_string(), true),
-                (" done".to_string(), false),
-            ]
+            prompt,
+            "User:\n次の授業は？\n\nAssistant:\n3限です\n\nUser:\n教室は？"
         );
     }
+
+    #[test]
+    fn context_limit_keeps_partial_output() {
+        let partial = "今日の3限はアルゴリズムです。";
+        let recovered = recover_context_limit(
+            "入力が Apple Intelligence のコンテキスト上限を超えています。",
+            partial,
+        )
+        .expect("partial reply");
+        assert_eq!(recovered, partial);
+        assert!(recover_context_limit(
+            "入力が Apple Intelligence のコンテキスト上限を超えています。",
+            "   "
+        )
+        .is_err());
+        assert!(recover_context_limit("Apple Intelligence の推論に失敗しました", partial).is_err());
+    }
+
+    #[test]
+    fn prefill_is_appended_as_an_assistant_draft() {
+        let (instructions, prompt) =
+            apple_request_parts(&[message("user", "JSONで")], "{\"tools\":[");
+        assert!(instructions.contains("下書き"));
+        assert!(prompt.ends_with("Assistant:\n{\"tools\":["));
+    }
+
+    #[test]
+    fn apple_limit_stops_inside_the_window() {
+        let short = fit_apple_request("指示", "User:\n天気", 0);
+        assert!(!short.trimmed);
+        assert!(short.max_tokens > 0);
+        assert!(short.max_tokens < 8_192);
+
+        let oversized_request = fit_apple_request("指示", "User:\n天気", 8_192);
+        assert!(
+            oversized_request.max_tokens
+                <= (APPLE_CONTEXT_WINDOW_TOKENS - APPLE_CONTEXT_OVERHEAD_TOKENS) as u32
+        );
+        assert!(oversized_request.max_tokens < 8_192);
+
+        let instructions = format!("RULES\n{}", "指示".repeat(8_000));
+        let prompt = format!("User:\n{}\n\nUser:\n最終質問です", "古い".repeat(8_000));
+        let fitted = fit_apple_request(&instructions, &prompt, 0);
+        assert!(fitted.trimmed);
+        assert!(fitted.prompt.contains("最終質問です"));
+        assert!(fitted.input_tokens <= APPLE_PROMPT_TOKEN_BUDGET);
+        assert!(fitted.max_tokens >= 192);
+        assert!(fitted.instructions.contains("RULES") || fitted.instructions.contains("指示"));
+    }
+
+    #[test]
+    fn json_is_compacted_instead_of_cut() {
+        let value = serde_json::json!({
+            "items": (0..20).map(|index| serde_json::json!({
+                "id": index,
+                "title": "課題",
+                "body": "あ".repeat(80)
+            })).collect::<Vec<_>>()
+        });
+        let compact = compact_json_value(&value, 80);
+        let rendered = serde_json::to_string(&compact).expect("json");
+        assert!(serde_json::from_str::<serde_json::Value>(&rendered).is_ok());
+        assert!(estimate_apple_tokens(&rendered) <= 80);
+    }
+
+    #[test]
+    fn schema_block_is_kept_whole() {
+        let schema = r#"{
+  "current_week": [{"day": 1, "course_name": "科目"}]
+}"#;
+        let prose = "説明".repeat(3000);
+        let text = format!("{prose}\n\n出力形式:\n{schema}\n\n{prose}");
+        let trimmed = trim_apple_text(&text, 500);
+        assert!(super::braces_balanced(&trimmed), "{trimmed}");
+        assert!(trimmed.contains("current_week"));
+        let start = trimmed.find('{').expect("schema");
+        let end = super::matching_close(&trimmed, start).expect("close");
+        let block = &trimmed[start..end];
+        assert!(
+            serde_json::from_str::<serde_json::Value>(block).is_ok(),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn invalid_schema_block_is_kept_whole() {
+        let schema = "{\n  \"next_week\": [同じ形式],\n  \"weekly_summary\": \"文\"\n}";
+        let prose = "説明".repeat(3000);
+        let text = format!("ルール\n\n{prose}\n\n出力形式:\n{schema}\n\n末尾の条件");
+        let trimmed = trim_apple_text(&text, 500);
+        assert!(super::braces_balanced(&trimmed), "{trimmed}");
+        assert!(trimmed.contains("同じ形式"), "{trimmed}");
+        assert!(trimmed.contains("weekly_summary"), "{trimmed}");
+        assert!(trimmed.contains("末尾の条件"), "{trimmed}");
+    }
+
+    #[test]
+    fn oversized_invalid_schema_is_dropped_not_sliced() {
+        let schema = format!(
+            "{{\"next_week\": [同じ形式], \"note\": \"{}\"}}",
+            "科目".repeat(800)
+        );
+        let text = format!("先頭\n\n{schema}\n\n末尾の質問");
+        let trimmed = trim_apple_text(&text, 40);
+        assert!(super::braces_balanced(&trimmed), "{trimmed}");
+        assert!(!trimmed.contains("同じ形式"), "{trimmed}");
+        assert!(trimmed.contains("末尾の質問") || trimmed.contains("先頭"));
+    }
+}
+
+fn braces_balanced(text: &str) -> bool {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for ch in text.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    !in_string && depth == 0
 }

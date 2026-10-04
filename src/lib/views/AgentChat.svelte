@@ -385,10 +385,12 @@
         flushStreamTokens();
         finalizeTurn();
         break;
-      case "error":
+      case "error": {
         terminalTurnSeq = turnSeq;
         flushStreamTokens();
+        const keptContextAnswer = ev.message.includes("コンテキスト上限") && messages.some((message) => message.role === "assistant" && message._streaming && message.content.trim());
         finalizeTurn();
+        if (!keptContextAnswer) {
         messages = [
           ...messages,
           {
@@ -399,8 +401,10 @@
             created_at: Math.floor(Date.now() / 1000),
           },
         ];
+        }
         scheduleScroll();
         break;
+      }
     }
   }
 
@@ -568,7 +572,10 @@
       await tick();
       if (terminalTurnSeq === seq || !sending) return;
       console.warn("agent send", e);
+      const message = String(e);
+      const keptContextAnswer = message.includes("コンテキスト上限") && messages.some((item) => item.role === "assistant" && item._streaming && item.content.trim());
       finalizeTurn(false);
+      if (!keptContextAnswer) {
       messages = [
         ...messages,
         {
@@ -579,6 +586,7 @@
           created_at: Math.floor(Date.now() / 1000),
         },
       ];
+      }
     }
   }
 

@@ -258,13 +258,18 @@ fn day_offset(day: &str) -> i64 {
     }
 }
 
+pub struct OAuthLoginAttempt {
+    pub url: String,
+    pub verifier: String,
+    pub redirect_uri: String,
+    pub state: String,
+}
+
 pub struct GoogleCalendarClient {
     http: Client,
     pub token: Option<TokenData>,
     pub config: GoogleCalConfig,
     pub sync_state: SyncState,
-    pkce_verifier: Option<String>,
-    redirect_uri: Option<String>,
 }
 
 impl GoogleCalendarClient {
@@ -278,8 +283,6 @@ impl GoogleCalendarClient {
             token: None,
             config: load_config(),
             sync_state: load_sync_state(),
-            pkce_verifier: None,
-            redirect_uri: None,
         }
     }
 
@@ -324,16 +327,17 @@ impl GoogleCalendarClient {
         self.token.is_some()
     }
 
-    pub fn auth_url(&mut self, port: u16) -> Result<String, String> {
+    /// Start a loopback login without storing PKCE on the shared client.
+    /// Each attempt carries its own verifier, redirect URI, and state so a
+    /// second login cannot clobber an in-flight callback.
+    pub fn begin_login(&self, port: u16) -> Result<OAuthLoginAttempt, String> {
         if self.config.client_id.trim().is_empty() {
             return Err("Google Client IDが未設定です。設定画面で入力してください。".into());
         }
         let (verifier, challenge) = generate_pkce();
-        self.pkce_verifier = Some(verifier);
         let redirect_uri = format!("http://127.0.0.1:{}", port);
-        self.redirect_uri = Some(redirect_uri.clone());
         let state = uuid::Uuid::new_v4().to_string();
-        Ok(format!(
+        let url = format!(
             "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&access_type=offline&prompt=consent&code_challenge={}&code_challenge_method=S256&state={}",
             GOOGLE_AUTH_URL,
             urlencoding::encode(self.config.client_id.trim()),
@@ -341,27 +345,36 @@ impl GoogleCalendarClient {
             urlencoding::encode(SCOPES),
             urlencoding::encode(&challenge),
             urlencoding::encode(&state),
-        ))
+        );
+        Ok(OAuthLoginAttempt {
+            url,
+            verifier,
+            redirect_uri,
+            state,
+        })
     }
 
-    pub async fn exchange_code(&mut self, code: &str) -> Result<(), String> {
-        let verifier = self
-            .pkce_verifier
-            .take()
-            .ok_or("PKCE verifier missing. Please retry login.")?;
-        let redirect_uri = self
-            .redirect_uri
-            .take()
-            .ok_or("Redirect URI missing. Please retry login.")?;
+    pub async fn exchange_code(
+        &mut self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<(), String> {
+        if verifier.is_empty() {
+            return Err("PKCE verifier missing. Please retry login.".into());
+        }
+        if redirect_uri.is_empty() {
+            return Err("Redirect URI missing. Please retry login.".into());
+        }
         let client_id = self.config.client_id.trim().to_string();
         let client_secret = self.config.client_secret.trim().to_string();
 
         let mut params = vec![
             ("client_id", client_id.as_str()),
             ("code", code),
-            ("redirect_uri", redirect_uri.as_str()),
+            ("redirect_uri", redirect_uri),
             ("grant_type", "authorization_code"),
-            ("code_verifier", verifier.as_str()),
+            ("code_verifier", verifier),
         ];
         if !client_secret.is_empty() {
             params.push(("client_secret", client_secret.as_str()));

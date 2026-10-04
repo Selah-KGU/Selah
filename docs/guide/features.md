@@ -15,9 +15,9 @@ Selah は関西学院大学の学生生活に必要な情報を 1 つのアプ�
 | [シラバス検索](/guide/syllabus) | 多条件検索 + お気に入り | KWIC |
 | お知らせ | KWIC + Luna の通知を統合表示 | KWIC + Luna |
 | 変更情報 | 休講・補講・教室変更 | KWIC |
-| [LIVE 講義文字起こし](/guide/live) | リアルタイム STT + AI 定期要約 + macOS 字幕オーバーレイ | オンデバイス STT + ローカル / OpenAI / Gemini |
+| [LIVE 講義文字起こし](/guide/live) | リアルタイム STT + AI 定期要約 + macOS 字幕オーバーレイ | オンデバイス STT + Apple Intelligence / OpenAI / Gemini |
 | [Detective](/guide/detective) | Live ノートと試験関連通知から作る調査型復習システム | Live ノート + KWIC / Luna |
-| [AI 機能](/guide/ai) | Selah Agent・履修分析・学習計画・通知サマリー・音声入力 | ローカル / OpenAI / Gemini |
+| [AI 機能](/guide/ai) | Selah Agent・履修分析・学習計画・通知サマリー・音声入力 | Apple Intelligence / OpenAI / Gemini |
 | ICT ツール | 施設予約・Zoom・Box・Slack・OneDrive・リモート PC など大学 ICT サービスへのクイックアクセス | — |
 
 ## プラットフォーム統合

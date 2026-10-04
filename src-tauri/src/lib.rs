@@ -35,9 +35,12 @@ mod kwic_commands;
 mod live;
 #[cfg(target_os = "macos")]
 pub mod local_ai;
+pub mod local_ai_support;
 mod luna_client;
 mod luna_commands;
 mod luna_parser;
+#[cfg(target_os = "macos")]
+mod macos_fullscreen_exit;
 #[cfg(target_os = "macos")]
 mod macos_native_agent;
 #[cfg(target_os = "macos")]
@@ -55,6 +58,7 @@ mod syllabus;
 mod timetable;
 mod tray;
 mod webview_toolbar;
+mod widget_bridge;
 #[cfg(target_os = "windows")]
 mod windows_native_agent;
 #[cfg(target_os = "windows")]
@@ -258,17 +262,125 @@ fn persist_sessions_before_exit(app: &tauri::AppHandle) {
     };
 }
 
+fn defer_fullscreen_quit(
+    app: &tauri::AppHandle,
+    api: &tauri::ExitRequestApi,
+    code: Option<i32>,
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if macos_fullscreen_exit::defer_programmed_exit(app, code) {
+            api.prevent_exit();
+            return true;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, api, code);
+    }
+    false
+}
+
 fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
     match event {
-        tauri::RunEvent::ExitRequested { .. } => {
+        tauri::RunEvent::ExitRequested { api, code, .. } => {
+            if defer_fullscreen_quit(app, &api, code) {
+                return;
+            }
             stt::stt_shutdown_for_exit(std::time::Duration::from_millis(1500));
         }
         tauri::RunEvent::Exit => {
             stt::stt_shutdown_for_exit(std::time::Duration::from_millis(500));
             persist_sessions_before_exit(app);
         }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            reopen_windows_from_dock(app, has_visible_windows);
+        }
         _ => {}
     }
+}
+
+fn attach_main_window_close_handler(window: &tauri::WebviewWindow, app_handle: tauri::AppHandle) {
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            if let Some(main) = app_handle.get_webview_window("main") {
+                let _ = main.hide();
+            }
+        }
+    });
+}
+
+/// Close hides the main window instead of destroying it. tao answers
+/// applicationShouldHandleReopen with hasVisibleWindows, so AppKit will not
+/// restore that window on a Dock click unless we show it ourselves.
+#[cfg(target_os = "macos")]
+fn reopen_windows_from_dock(app: &tauri::AppHandle, has_visible_windows: bool) {
+    let any_window_on_screen = app.windows().values().any(window_is_on_screen);
+    if !should_restore_on_dock_click(has_visible_windows, any_window_on_screen) {
+        return;
+    }
+
+    // Cmd+H hides the process; unhide before ordering a window front.
+    let _ = app.show();
+    if app.get_webview_window("main").is_none() {
+        if let Err(err) = recreate_main_window(app) {
+            log::warn!("failed to recreate main window from Dock: {err}");
+        }
+    }
+    if app.get_webview_window("main").is_some() {
+        present_main_window(app);
+        return;
+    }
+    if let Some(window) = app.get_window("document-tabs") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn present_main_window(app: &tauri::AppHandle) {
+    let _ = tray::show_main_window_with_tab(app, None);
+    // AppKit can order the window back out after applicationShouldHandleReopen
+    // returns. Show again on the next main-thread turn so the Dock click sticks.
+    let deferred = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = tray::show_main_window_with_tab(&deferred, None);
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn recreate_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .cloned()
+        .or_else(|| app.config().app.windows.first().cloned())
+        .ok_or_else(|| "main window config missing".to_string())?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|err| err.to_string())?
+        .build()
+        .map_err(|err| err.to_string())?;
+    attach_main_window_close_handler(&window, app.clone());
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn window_is_on_screen(window: &tauri::Window) -> bool {
+    window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn should_restore_on_dock_click(has_visible_windows: bool, any_window_on_screen: bool) -> bool {
+    !has_visible_windows || !any_window_on_screen
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -378,6 +490,8 @@ pub fn run() {
                 .join("com.kgu.selah");
             let database = db::Database::open(&data_dir)
                 .map_err(|e| format!("Failed to open timetable database: {}", e))?;
+            widget_bridge::publish(&database);
+            widget_bridge::ensure_host_registered();
             app.manage(database);
 
             let tray_status = std::sync::Arc::new(tray::TrayStatusState::new());
@@ -403,6 +517,7 @@ pub fn run() {
             commands::migrate_deduplicate_by_filename();
             #[cfg(target_os = "macos")]
             {
+                macos_fullscreen_exit::install(app.handle());
                 macos_native_agent::setup(app.handle());
                 macos_subtitle_overlay::setup(app.handle());
                 let native_agent_cfg = commands::load_native_agent_config();
@@ -428,22 +543,14 @@ pub fn run() {
                 }
             }
 
-            // Hide main window on close instead of quitting (keep in tray)
+            // Hide main window on close instead of quitting (keep in tray).
+            // macOS Dock clicks show it again in reopen_windows_from_dock.
             if let Some(win) = app.get_webview_window("main") {
                 #[cfg(target_os = "windows")]
                 {
                     let _ = win.set_decorations(false);
                 }
-
-                let app_handle = app.handle().clone();
-                win.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        if let Some(w) = app_handle.get_webview_window("main") {
-                            let _ = w.hide();
-                        }
-                    }
-                });
+                attach_main_window_close_handler(&win, app.handle().clone());
             }
 
             #[cfg(debug_assertions)]
@@ -568,13 +675,11 @@ pub fn run() {
             google_commands::gcal_sync_timetable,
             google_commands::gcal_clear_calendar,
             ai::get_ai_config,
+            ai::get_local_ai_support,
             ai::save_ai_config,
             ai::ai_chat,
             ai::ai_test_connection,
             ai::list_local_models,
-            ai::download_local_model,
-            ai::cancel_model_download,
-            ai::delete_local_model,
             ai::debug_test_notification,
             native_notification::native_notification_permission_granted,
             stt::get_stt_config,
@@ -733,4 +838,25 @@ pub fn run() {
                 );
             }
         });
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod dock_reopen_tests {
+    use super::should_restore_on_dock_click;
+
+    #[test]
+    fn restores_when_no_window_is_on_screen() {
+        assert!(should_restore_on_dock_click(false, false));
+        assert!(should_restore_on_dock_click(true, false));
+    }
+
+    #[test]
+    fn restores_when_appkit_reports_no_visible_windows() {
+        assert!(should_restore_on_dock_click(false, true));
+    }
+
+    #[test]
+    fn leaves_an_open_window_alone() {
+        assert!(!should_restore_on_dock_click(true, true));
+    }
 }

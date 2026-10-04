@@ -4,7 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { toPng } from "html-to-image";
   import selahLogoUrl from "../../assets/logo.png";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, isLocalStandard2b, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive, saveImageFile, copyImageToClipboard, shareImageNative } from "../api";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive, saveImageFile, copyImageToClipboard, shareImageNative } from "../api";
   import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady, authState, activeTab } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
@@ -21,7 +21,6 @@
   let aiGenerating = $state(false);
   let aiError = $state("");
   let aiProvider = $state("");
-  let aiBlocked2b = $state(false);
   let syncing = $state(false);
   let activeWeek = $state<"current" | "next">("current");
   let gcalSyncing = $state(false);
@@ -55,6 +54,7 @@
 
   // ── Derived ──
   let hasAi = $derived(!!aiResult && (aiResult.current_week.length > 0 || aiResult.next_week.length > 0));
+
 
   let kgcEntries = $derived.by(() => {
     if (!scheduleData) return [];
@@ -454,10 +454,6 @@
 
   async function triggerAiGenerate(force: boolean) {
     if (aiGenerating || !scheduleData || get(sessionExpired)) return;
-    if (await isLocalStandard2b()) {
-      aiError = "standard_2b_blocked";
-      return;
-    }
     aiGenerating = true;
     aiError = "";
     debugLog("[Timetable] triggerAiGenerate:", {
@@ -473,7 +469,7 @@
       if (!ready) {
         const cfg = await getAiConfig();
         aiProvider = cfg.provider || "";
-        aiError = cfg.provider === "local" ? "local_model_missing" : "api_key_missing";
+        aiError = cfg.provider === "local" ? "apple_intelligence_unavailable" : "api_key_missing";
         return;
       }
     } catch {
@@ -502,12 +498,10 @@
       if (msg.includes("APIキーが設定されていません")) {
         aiError = "api_key_missing";
       } else if (
-        msg.includes("不明なモデル") ||
-        msg.includes("モデルファイルが見つかりません") ||
-        msg.includes("モデルが読み込まれていません") ||
+        msg.includes("Apple Intelligence") ||
         msg.includes("AI機能が無効")
       ) {
-        aiError = "local_model_missing";
+        aiError = "apple_intelligence_unavailable";
       } else {
         aiError = msg;
       }
@@ -524,31 +518,23 @@
     try {
       const weeks = buildSyncWeeks(scheduleData.raw);
 
-      // Google Calendar sync
-      try {
-        const status = await gcalCheckSession();
-        if (!status.authenticated) {
-          await gcalOpenLogin();
-          gcalSyncing = false;
-          return;
-        }
-        for (const { entries: raw, label } of weeks) {
-          const calEntries = buildCalendarEntries(raw);
-          if (calEntries.length > 0) {
-            await gcalSyncTimetable(calEntries, label);
-          }
-        }
-        const freshStatus = await gcalCheckSession();
-        gcalAuthState.update(s => ({
-          ...s,
-          authenticated: freshStatus.authenticated,
-          calendarExists: freshStatus.calendar_exists,
-          syncedEvents: freshStatus.synced_events,
-        }));
-      } catch (e: any) {
-        console.error("[Timetable] Google Calendar sync failed:", e);
+      const status = await gcalCheckSession();
+      if (!status.authenticated) {
+        await gcalOpenLogin();
       }
-
+      for (const { entries: raw, label } of weeks) {
+        const calEntries = buildCalendarEntries(raw);
+        if (calEntries.length > 0) {
+          await gcalSyncTimetable(calEntries, label);
+        }
+      }
+      const freshStatus = await gcalCheckSession();
+      gcalAuthState.update(s => ({
+        ...s,
+        authenticated: freshStatus.authenticated,
+        calendarExists: freshStatus.calendar_exists,
+        syncedEvents: freshStatus.synced_events,
+      }));
       showToast("カレンダーに同期しました");
     } catch (e: any) {
       gcalError = e?.message || String(e);
@@ -968,7 +954,6 @@
     getAiConfig().then(cfg => {
       aiProvider = cfg.provider || "";
     }).catch(() => {});
-    isLocalStandard2b().then(v => { aiBlocked2b = v; }).catch(() => {});
     loadData();
     syncTipCycle();
     window.addEventListener("keydown", handleKeydown);
@@ -1110,8 +1095,8 @@
           <button
             class="action-btn action-btn-ai"
             onclick={() => triggerAiGenerate(true)}
-            disabled={aiGenerating || aiBlocked2b || !$aiReady}
-            title={!$aiReady ? 'AI が無効です（設定で有効化）' : aiBlocked2b ? '高品質モデルが必要です' : aiProvider === 'local' ? 'ローカルモデルでAI日程を分析' : 'AI日程を分析'}
+            disabled={aiGenerating || !$aiReady}
+            title={!$aiReady ? 'AI が無効です（設定で有効化）' : aiProvider === 'local' ? 'Apple Intelligence でAI日程を分析' : 'AI日程を分析'}
           >
             {#if aiGenerating}
               <span class="mini-spinner"></span>
@@ -1191,11 +1176,8 @@
       {#if aiError === "api_key_missing"}
         <span>AI 機能を利用するには API キーの設定が必要です</span>
         <button class="link-btn" onclick={() => openSettingsWindow()}>設定</button>
-      {:else if aiError === "local_model_missing"}
-        <span>ローカル AI を利用するにはモデルのダウンロードが必要です</span>
-        <button class="link-btn" onclick={() => openSettingsWindow()}>設定</button>
-      {:else if aiError === "standard_2b_blocked"}
-        <span>AI 日程分析には「高品質」モデルが必要です</span>
+      {:else if aiError === "apple_intelligence_unavailable" || aiError === "local_model_missing"}
+        <span>Apple Intelligence を利用できません。システム設定とアプリの AI 設定を確認してください</span>
         <button class="link-btn" onclick={() => openSettingsWindow()}>設定</button>
       {:else}
         <span>AI 分析に失敗: {aiError}</span>
@@ -1216,6 +1198,7 @@
   {/if}
 
   <ViewLoader {loading} {error} empty={!loading && !error && !hasEntries} emptyMessage="登録されている授業はありません">
+
 
     <!-- Grid timetable -->
     <div class="grid-outer" bind:this={captureRef}>
@@ -1555,6 +1538,7 @@
   }
 
   /* ── Error banner ── */
+
   .error-banner {
     display: flex;
     align-items: center;

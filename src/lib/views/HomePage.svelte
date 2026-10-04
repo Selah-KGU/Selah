@@ -3,7 +3,7 @@
   import { get } from "svelte/store";
   import { authState, lunaAuthState, kwicAuthState, activeTab, cachedBackendFetch, onCacheUpdate, getCached, aiNotifStore, sessionExpired } from "../stores";
   import type { NotificationsData, NotificationEntry } from "../stores";
-  import { kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicOpenCabinetReference, getAiConfig, isAiReady, isLocalStandard2b, resetAiReady, isDemoActive, openLunaTodoItem, backendAiRefreshNow } from "../api";
+  import { kwicFetchSubportal, kwicOpenLink, kwicOpenDetail, kwicOpenCabinetReference, getAiConfig, isAiReady, resetAiReady, isDemoActive, openLunaTodoItem, backendAiRefreshNow } from "../api";
   import type { KwicPortalHome, KwicSubportalData, WeatherData } from "../api";
   import type { LunaTodoItem, LunaNotification, ScheduleResponse } from "../types";
   import { PERIOD_TIMES, DAY_LABELS } from "../types";
@@ -51,13 +51,12 @@
   // AI smart notification state
   let aiConfigEnabled = $state(false);
   let aiEnabled = $state(false);
-  let aiNotifBlocked2b = $state(false);
   let aiNotifResult = $state<AiNotifResult | null>(null);
   let aiNotifLoading = $state(false);
   let aiNotifError = $state("");
   let aiNotifSources = $state<UnifiedNotif[]>([]);
-  /** AI notifs are usable: enabled, ready, and not blocked by 2B */
-  let aiNotifUsable = $derived(aiConfigEnabled && aiEnabled && !aiNotifBlocked2b);
+  /** AI notifs are usable when AI is enabled and the selected provider is ready. */
+  let aiNotifUsable = $derived(aiConfigEnabled && aiEnabled);
 
   function isTeacherQualificationPortal(item: { title: string }) {
     return item.title.includes("教職") || item.title.includes("資格取得");
@@ -172,6 +171,7 @@
   });
 
   let heroClasses = $derived.by(() => getHeroCourses(homeEntries, now));
+
 
   let upcomingDays = $derived.by(() => {
     if (!homeEntries.length) {
@@ -490,7 +490,6 @@
       aiConfigEnabled = (await getAiConfig()).ai_enabled !== false;
       const ready = await isAiReady();
       aiEnabled = ready;
-      aiNotifBlocked2b = await isLocalStandard2b();
     } catch { aiEnabled = false; }
   }
 
@@ -500,9 +499,8 @@
       aiConfigEnabled = (await getAiConfig()).ai_enabled !== false;
       const ready = await isAiReady();
       aiEnabled = ready;
-      aiNotifBlocked2b = await isLocalStandard2b();
     } catch { /* keep existing */ }
-    if (aiNotifBlocked2b) return;
+    if (!aiNotifUsable) return;
     if (get(sessionExpired)) return;
     aiNotifLoading = true;
     aiNotifError = "";
@@ -579,6 +577,8 @@
       navigate("notifications");
     }
   }
+
+
 
   function openTodo(item: LunaTodoItem) {
     if (item.url) {
@@ -939,6 +939,7 @@
 
   .fade-in { opacity: 1; transform: translateY(0); }
   .fade-out { opacity: 0; transform: translateY(4px); }
+
 
   .header-line2 {
     display: flex;

@@ -30,7 +30,7 @@
     ["ai", "AI アシスタント", "更新間隔", "通知分析 課題分析 自動再計算"],
     ["ai", "AI アシスタント", "LIVE 要約の生成間隔", "live 講義 分割要約"],
     ["ai", "AI アシスタントの推論", "推論方法", "local api ローカル openai gemini"],
-    ["ai", "AI アシスタントのモデル", "ローカルモデル", "qwen llama download metal"],
+    ["ai", "AI アシスタントのモデル", "Apple Intelligence", "apple intelligence ローカル on-device"],
     ["ai", "AI アシスタントの API 設定", "API キー", "openai gemini key"],
     ["ai", "AI アシスタントの API 設定", "モデル名", "model gpt gemini"],
     ["ai", "AI アシスタントの API 設定", "ベース URL", "endpoint openai compatible 互換"],

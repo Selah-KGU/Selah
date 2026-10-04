@@ -117,6 +117,24 @@ jobs:
             --entitlements src-tauri/Entitlements.plist \
             "$APP_PATH"
 
+          APPEX="$APP_PATH/Contents/PlugIns/SelahWidget.appex"
+          if [ -d "$APPEX" ]; then
+            # --deep replaces the widget entitlements. Sign the appex again, then
+            # reseal the outer app without --deep so the nested signature survives.
+            codesign --force \
+              --sign "$APPLE_DISTRIBUTION_SIGNING_IDENTITY" \
+              --entitlements src-tauri/swift/widget/Widget.entitlements \
+              --options runtime \
+              --timestamp \
+              "$APPEX"
+            codesign --force \
+              --sign "$APPLE_DISTRIBUTION_SIGNING_IDENTITY" \
+              --entitlements src-tauri/Entitlements.plist \
+              --options runtime \
+              --timestamp \
+              "$APP_PATH"
+          fi
+
           codesign --verify --deep --strict "$APP_PATH"
 
           # Build the .pkg

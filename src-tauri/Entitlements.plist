@@ -28,10 +28,10 @@
     <!-- Hardened Runtime: required for Tauri WebView JIT -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
-    <!-- llama.cpp Metal JIT / WebKit paths may allocate unsigned executable pages -->
+    <!-- WebKit may allocate unsigned executable pages -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
-    <!-- Bundled / third-party dylibs (sherpa-onnx shared, llama.cpp Metal, WebKit) -->
+    <!-- Bundled / third-party dylibs (sherpa-onnx shared, WebKit) -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
     <!-- Real-time STT (SenseVoice) captures from the default input device -->

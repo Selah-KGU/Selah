@@ -45,7 +45,7 @@
 
   const PROVIDER_DEFAULTS: Record<Provider, { model: string; baseUrl: string; keyUrl: string; hint: string }> = {
     openai: {
-      model: "gpt-5.4-nano",
+      model: "gpt-6-luna",
       baseUrl: "https://api.openai.com/v1",
       keyUrl: "https://platform.openai.com/api-keys",
       hint: "OpenAI API キーは platform.openai.com で取得できます。",
@@ -388,7 +388,7 @@
             </button>
           </div>
           <button class="link-quiet" onclick={() => jumpToSettings("ai", "checklist")}>
-            詳しい設定（ローカル AI 等）を開く →
+            詳しい設定（Apple Intelligence / API）を開く →
           </button>
         {:else if step === "apikey"}
           <p class="lead">{PROVIDER_DEFAULTS[provider].hint}</p>

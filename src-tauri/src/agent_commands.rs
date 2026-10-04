@@ -252,8 +252,8 @@ pub fn agent_rename_conversation(
     Ok(())
 }
 
-/// Minimal UUIDv4 generator (no new dependency).  Uses `rand` (already a
-/// transitive dependency of the macOS llama-cpp-2 backend.
+/// Minimal UUIDv4 generator (no new dependency). Uses `rand`, already a
+/// direct dependency.
 fn uuid_v4() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];

@@ -40,7 +40,7 @@ features:
     details: リアルタイム STT で発話を即時テキスト化し、AI が定期的に講義内容を要約。macOS では字幕オーバーレイにも対応。
   - icon: "\U0001F916"
     title: Selah Agent
-    details: ローカル AI または OpenAI / Gemini による対話型エージェント。履修分析・学習計画・通知サマリーを生成し、音声入力にも対応。
+    details: Apple Intelligence または OpenAI / Gemini による対話型エージェント。履修分析・学習計画・通知サマリーを生成し、音声入力にも対応。
 ---
 
 <style>
@@ -181,7 +181,7 @@ Selah は個人開発のサードパーティデスクトップクライアン�
 | フロントエンド | Svelte 5 + TypeScript |
 | バックエンド | Rust |
 | ローカル DB | SQLite (WAL) |
-| AI | macOS: ローカル (llama-cpp-2 + Qwen) / Windows: OpenAI / Google Gemini |
+| AI | macOS: Apple Intelligence（オンデバイス） / Windows: OpenAI / OpenRouter / Google Gemini |
 | 音声認識 | sherpa-onnx + SenseVoice (オンデバイス) |
 
 ---

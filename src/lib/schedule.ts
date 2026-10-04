@@ -100,6 +100,7 @@ export function buildCourseSlots(schedule: ScheduleResponse | null): CourseSlot[
   });
 }
 
+
 export function getHeroCourses(entries: CourseSlot[], now: Date): HeroCourse[] {
   if (!entries.length) return [];
   const jsDow = now.getDay();

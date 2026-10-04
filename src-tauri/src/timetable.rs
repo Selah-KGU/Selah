@@ -106,6 +106,14 @@ pub async fn get_schedule_snapshot(db: State<'_, Database>) -> Result<ScheduleRe
     })
 }
 
+struct WidgetSnapshotGuard<'a>(&'a crate::db::Database);
+
+impl Drop for WidgetSnapshotGuard<'_> {
+    fn drop(&mut self) {
+        crate::widget_bridge::publish(self.0);
+    }
+}
+
 /// Serial data sync: KGC current, KGC next, Luna, then enrichment.
 /// KGC being down or logged out must not fail the command. Luna still refreshes,
 /// and a login-required error is not returned unless Luna itself needs recovery.
@@ -115,6 +123,7 @@ pub async fn sync_schedule_data(
     luna_state: State<'_, LunaState>,
     db: State<'_, Database>,
 ) -> Result<ScheduleResponse, String> {
+    let _widget_snapshot = WidgetSnapshotGuard(db.inner());
     // Logged-out KGC skips the Struts gate so Luna can refresh immediately.
     let previous = db.get_snapshot_state()?.unwrap_or_default();
 

@@ -569,6 +569,9 @@ async fn luna_fetch_cached<T: serde::Serialize + serde::de::DeserializeOwned>(
             let data = parse(&html);
             if let Ok(json) = serde_json::to_string(&data) {
                 let _ = db.save_data_cache(cache_key, &json);
+                if cache_key == "luna_todo" {
+                    crate::widget_bridge::publish(db.inner());
+                }
             }
             Ok(data)
         }

@@ -1,7 +1,8 @@
 //! Provider abstraction for the Selah agent.
 //!
 //! Two concrete variants:
-//!   - **Local (macOS)**: runs Qwen 3.5 2B/4B via llama-cpp-2 (blocking, on-device).
+//!   - **Local (macOS)**: runs Apple's on-device Foundation Model when Apple
+//!     Intelligence is available. Windows stays cloud-only.
 //!   - **Remote**: calls any OpenAI-compatible or Gemini API (SSE streaming).
 //!
 //! The agent pipeline (`agent.rs`) talks only to the `AgentProvider` enum,
@@ -92,9 +93,14 @@ impl AgentProvider {
         }
         match cfg.provider.as_str() {
             #[cfg(target_os = "macos")]
-            "local" => Self::resolve_local(&cfg),
+            "local" => {
+                crate::local_ai_support::ensure_supported().map_err(AgentError::config)?;
+                Self::resolve_local(&cfg)
+            }
             #[cfg(not(target_os = "macos"))]
-            "local" => Err(AgentError::config("本地模型仅在 macOS 版本中可用")),
+            "local" => Err(AgentError::config(
+                crate::local_ai_support::unsupported_message(),
+            )),
             // OpenRouter is OpenAI-compatible, so it routes through the OpenAI path.
             "openai" | "openrouter" | "gemini" => Ok(Self::Remote { config: cfg }),
             other => Err(AgentError::config(format!("不明なプロバイダー: {}", other))),
@@ -103,19 +109,10 @@ impl AgentProvider {
 
     #[cfg(target_os = "macos")]
     fn resolve_local(cfg: &AiConfig) -> Result<Self, AgentError> {
-        let catalog = local_ai::model_catalog();
-        let info = catalog
-            .iter()
-            .find(|m| m.id == cfg.local_model)
-            .ok_or_else(|| AgentError::model(format!("不明なモデル: {}", cfg.local_model)))?;
-        if !local_ai::is_model_downloaded(&info.file_name) {
-            return Err(AgentError::model(
-                "ローカルモデルがダウンロードされていません。",
-            ));
-        }
+        let _ = cfg;
         Ok(Self::Local {
-            model_id: info.id.clone(),
-            file_name: info.file_name.clone(),
+            model_id: local_ai::APPLE_INTELLIGENCE_MODEL_ID.into(),
+            file_name: String::new(),
         })
     }
 
@@ -282,26 +279,27 @@ impl AgentProvider {
     }
 
     /// Whether the provider honours assistant prefill (used for Phase 1 JSON).
-    /// The macOS local llama backend can literally prepend bytes to the assistant turn;
-    /// OpenAI/Gemini cannot, so the planner prompt must ask for a full object.
+    /// Apple Intelligence and the cloud APIs both need a full object, not a prefix.
     pub fn supports_prefill(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            return matches!(self, Self::Local { .. });
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
+        let _ = self;
+        false
     }
 
-    /// Whether to attempt sending images to this provider. On-device Qwen is
-    /// text-only, so never. For Remote we always TRY (we don't pre-judge any
+    /// Whether to attempt sending images to this provider. On-device Apple
+    /// Intelligence is text-only, so never. For Remote we always TRY (we don't pre-judge any
     /// model — including DeepSeek): vision models receive the image, and if a
     /// text-only endpoint rejects the `image_url` part the request layer falls
     /// back to text-only for that one call instead of failing.
     pub fn supports_vision(&self) -> bool {
         matches!(self, Self::Remote { .. })
+    }
+
+    pub fn is_local(&self) -> bool {
+        match self {
+            #[cfg(target_os = "macos")]
+            Self::Local { .. } => true,
+            Self::Remote { .. } => false,
+        }
     }
 }
 

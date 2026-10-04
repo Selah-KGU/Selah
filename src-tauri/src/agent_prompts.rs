@@ -29,6 +29,15 @@ pub fn plan_system_prompt(date_context: &str, supports_prefill: bool) -> String 
     s
 }
 
+/// Planner prompt that fits Apple Intelligence's shared 4096-token window.
+/// The cloud planner prompt is about 17k characters and cannot be sent as-is.
+pub fn apple_plan_system_prompt(date_context: &str) -> String {
+    let tools = crate::agent_tools::tool_catalog_signatures();
+    format!(
+        "You plan tools for an on-device model. Instructions, history, and the reply share one 4096-token window.\nOutput one JSON object and nothing else. No markdown, no explanation.\nSchema: {{\"tools\":[{{\"name\":\"<tool>\",\"args\":{{}}}}]}}\nUse only tools listed below. If none apply, output {{\"tools\":[]}}.\nCampus data, mail, files, deadlines, browser pages, and calendar events need tools.\n\nToday: {date_context}\n\nAvailable tools:\n{tools}\n"
+    )
+}
+
 pub fn answer_tool_usage_section() -> &'static str {
     "\n\n=== TOOL EXECUTION BOUNDARY ===\n\
      Tool selection and execution are already finished before this answer phase.\n\

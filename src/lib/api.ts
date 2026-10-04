@@ -102,7 +102,17 @@ if (!__selahGlobal[__SELAH_LISTENERS_KEY]) {
   });
 
   listen("gcal-login-error", () => {
-    gcalAuthState.update(s => ({ ...s, authenticated: false }));
+    // A failed or timed-out retry must not clear a session that is still valid.
+    gcalCheckSession()
+      .then((status) => {
+        gcalAuthState.update((s) => ({
+          ...s,
+          authenticated: status.authenticated,
+          calendarExists: status.calendar_exists,
+          syncedEvents: status.synced_events,
+        }));
+      })
+      .catch(() => {});
   });
 
   listen("mail-login-error", () => {
@@ -1597,7 +1607,7 @@ export async function getAiConfig(): Promise<AiConfig> {
       api_key: "demo",
       model: "",
       provider: "local",
-      local_model: "qwen3.5-8b",
+      local_model: "apple-intelligence",
       base_url: "",
       max_tokens: 0,
       temperature: 0.7,
@@ -1631,10 +1641,8 @@ export async function isAiReady(): Promise<boolean> {
         return false;
       }
       if (cfg.provider === "local") {
-        // Check if the selected model is downloaded
-        const models = await invoke<any[]>("list_local_models");
-        const selected = models.find((m: any) => m.id === cfg.local_model);
-        _aiReadyCache = selected?.downloaded === true;
+        const support = await invoke<{ supported: boolean }>("get_local_ai_support");
+        _aiReadyCache = support.supported === true;
         return _aiReadyCache;
       }
       // API provider — needs api_key
@@ -1673,11 +1681,9 @@ export async function updateAiReadiness(): Promise<void> {
       return;
     }
     if (cfg.provider === "local") {
-      const models = await invoke<any[]>("list_local_models");
-      const selected = models.find((m: any) => m.id === cfg.local_model);
-      const downloaded = selected?.downloaded === true;
-      aiReady.set(downloaded);
-      agentReady.set(downloaded);
+      const support = await invoke<{ supported: boolean }>("get_local_ai_support");
+      aiReady.set(support.supported === true);
+      agentReady.set(support.supported === true);
     } else {
       const hasKey = !!(cfg.api_key?.trim());
       aiReady.set(hasKey);
@@ -1686,20 +1692,6 @@ export async function updateAiReadiness(): Promise<void> {
   } catch {
     aiReady.set(false);
     agentReady.set(false);
-  }
-}
-
-/** Returns true when local provider is using the standard 2B model. */
-export async function isLocalStandard2b(): Promise<boolean> {
-  if (_isDemo()) {
-    const cfg = await getAiConfig();
-    return cfg.provider === "local" && cfg.local_model === "qwen3.5-2b";
-  }
-  try {
-    const cfg = await getAiConfig();
-    return cfg.provider === "local" && cfg.local_model === "qwen3.5-2b";
-  } catch {
-    return false;
   }
 }
 
@@ -2599,8 +2591,7 @@ export async function refreshAllData(): Promise<void> {
   initialItems.push({ key: "schedule_sync", label: "時間割同期", platform: "KGC", status: "pending" });
   // Add AI refresh items (only if AI has been validated to work)
   const aiReady = await isAiReady();
-  const aiBlocked2b = aiReady && await isLocalStandard2b();
-  if (aiReady && !aiBlocked2b) {
+  if (aiReady) {
     initialItems.push({ key: "ai_notif", label: "AI 通知分析", platform: "AI", status: "pending" });
     // AI 課題分析は一括更新では実行しない。AI 補助モードの「再分析」専用。
     initialItems.push({ key: "ai_schedule", label: "AI 時間割分析", platform: "AI", status: "pending" });
@@ -2643,7 +2634,7 @@ export async function refreshAllData(): Promise<void> {
       setItemStatus("schedule_sync", "error");
     }
     // AI refresh (after all data is fresh)
-    if (aiReady && !aiBlocked2b) {
+    if (aiReady) {
       setItemStatus("ai_notif", "running");
       try {
         const status = await backendAiRefreshNow(true);

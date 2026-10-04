@@ -23,6 +23,7 @@ do_kill() {
   pkill -f "selah-app" 2>/dev/null || true
   pkill -f "tauri dev" 2>/dev/null || true
   pkill -f "cargo-tauri" 2>/dev/null || true
+  pkill -f "selah-widget-host" 2>/dev/null || true
   sleep 0.5
 }
 

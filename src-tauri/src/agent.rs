@@ -4,8 +4,8 @@
 //!   Phase 1 — Planning: asks the model to pick tools (JSON, non-streaming).
 //!   Phase 2 — Answering: streams the final reply with persona + tool results.
 //!
-//! Small 2B/4B models are unreliable at multi-turn ReAct, so we constrain
-//! them to a single planning step per turn.
+//! The on-device Apple model is unreliable at multi-turn ReAct, so we constrain
+//! it to a single planning step per turn.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -987,6 +987,7 @@ async fn run_plan_inference_with_note(
         repair_note,
         turn_context,
         provider.supports_vision(),
+        provider.is_local(),
     );
     let prefill = if supports_prefill {
         CFG.plan_prefill
@@ -994,10 +995,15 @@ async fn run_plan_inference_with_note(
         ""
     };
 
+    let plan_max_tokens = if provider.is_local() {
+        crate::local_ai::APPLE_MAX_RESPONSE_TOKENS
+    } else {
+        CFG.plan_max_tokens
+    };
     let raw = provider
         .plan(
             msgs,
-            CFG.plan_max_tokens,
+            plan_max_tokens,
             CFG.plan_temperature,
             prefill,
             CFG.plan_think_budget_pct,
@@ -1047,6 +1053,7 @@ fn build_plan_messages(
         None,
         &AgentTurnContext::default(),
         false,
+        false,
     )
 }
 
@@ -1094,9 +1101,14 @@ fn build_plan_messages_with_note(
     repair_note: Option<&str>,
     turn_context: &AgentTurnContext,
     vision: bool,
+    local: bool,
 ) -> Vec<ChatMessage> {
-    let mut system = agent_prompts::plan_system_prompt(&datetime_context(), supports_prefill);
-    append_browser_context(&mut system, app, turn_context);
+    let mut system = if local {
+        agent_prompts::apple_plan_system_prompt(&datetime_context())
+    } else {
+        agent_prompts::plan_system_prompt(&datetime_context(), supports_prefill)
+    };
+    append_browser_context(&mut system, app, turn_context, local);
     if let Some(note) = repair_note {
         system.push_str("\n\n=== INVALID PREVIOUS PLAN ===\n");
         system.push_str(note);
@@ -1108,10 +1120,12 @@ fn build_plan_messages_with_note(
         images: Vec::new(),
     }];
 
+    let history_turns = if local { 2 } else { CFG.plan_history_turns };
+    let history_chars = if local { 180 } else { 400 };
     for row in history
         .iter()
         .rev()
-        .take(CFG.plan_history_turns)
+        .take(history_turns)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -1119,20 +1133,33 @@ fn build_plan_messages_with_note(
         match row.role.as_str() {
             "user" | "assistant" => msgs.push(ChatMessage {
                 role: row.role.clone(),
-                content: trim_to(&row.content, 400),
+                content: if local {
+                    local_text(&row.content, 80)
+                } else {
+                    trim_to(&row.content, history_chars)
+                },
                 images: Vec::new(),
             }),
             "tool" => {
                 if let (Some(name), Some(json)) =
                     (row.tool_name.as_deref(), row.tool_result_json.as_deref())
                 {
+                    let summary = summarize_plan_tool_result(name, json);
+                    let summary = if local {
+                        let trimmed = summary.trim_start();
+                        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                            serde_json::from_str::<Value>(json)
+                                .map(|value| render_local_json(&value, 80))
+                                .unwrap_or_else(|_| local_text(&summary, 80))
+                        } else {
+                            local_text(&summary, 80)
+                        }
+                    } else {
+                        summary
+                    };
                     msgs.push(ChatMessage {
                         role: "assistant".into(),
-                        content: format!(
-                            "[tool result: {}] {}",
-                            name,
-                            summarize_plan_tool_result(name, json)
-                        ),
+                        content: format!("[tool result: {name}] {summary}"),
                         images: Vec::new(),
                     });
                 }
@@ -1143,7 +1170,11 @@ fn build_plan_messages_with_note(
 
     msgs.push(ChatMessage {
         role: "user".into(),
-        content: user_text.to_string(),
+        content: if local {
+            local_text(user_text, 400)
+        } else {
+            user_text.to_string()
+        },
         // Attach the latest screenshot so a vision model can see the page it is
         // operating on when deciding the next step.
         images: if vision {
@@ -1765,12 +1796,32 @@ fn append_browser_context(
     system: &mut String,
     app: Option<&AppHandle>,
     turn_context: &AgentTurnContext,
+    compact: bool,
 ) {
     let Some(app) = app else {
         return;
     };
     let active_target = turn_context.browser_target.as_deref();
     let windows = crate::webview_toolbar::list_browser_windows(app);
+    if compact {
+        system.push_str("\n\n=== CURRENT BROWSER ===\n");
+        if let Some(active) = active_target {
+            let title = turn_context.page_title.as_deref().unwrap_or("");
+            system.push_str(&format!(
+                "Attached target={active} title={}. Use this target for this page.\n",
+                trim_to(title, 80)
+            ));
+        }
+        for window in windows.iter().take(3) {
+            system.push_str(&format!(
+                "- target={} title={} url={}\n",
+                window.target,
+                trim_to(&window.title, 60),
+                trim_to(&window.url, 80),
+            ));
+        }
+        return;
+    }
     system.push_str("\n\n=== CURRENT BROWSER WINDOWS ===\n");
     if let Some(active) = active_target {
         let title = turn_context.page_title.as_deref().unwrap_or("");
@@ -3360,6 +3411,7 @@ async fn answer_phase_with_note(
         repair_note,
         turn_context,
         provider.supports_vision(),
+        provider.is_local(),
     );
     log::debug!(
         "[agent answer] start conv_id={} messages={} tool_results={}",
@@ -3603,8 +3655,33 @@ fn build_answer_messages(
     repair_note: Option<&str>,
     turn_context: &AgentTurnContext,
     vision: bool,
+    local: bool,
 ) -> Vec<ChatMessage> {
-    let mut budget = CFG.prompt_token_budget;
+    // Apple Intelligence shares one 4096-token window between the prompt and the reply.
+    let mut budget = if local {
+        crate::local_ai::APPLE_PROMPT_TOKEN_BUDGET
+    } else {
+        CFG.prompt_token_budget
+    };
+    let token_cost = |text: &str| -> usize {
+        if local {
+            crate::local_ai::estimate_apple_tokens(text)
+        } else {
+            estimate_tokens(text)
+        }
+    };
+    let tool_result_chars = if local { 420 } else { CFG.tool_result_chars };
+    let recent_chars = if local {
+        280
+    } else {
+        CFG.recent_tool_result_chars
+    };
+    let history_chars = if local { 220 } else { 1200 };
+    let user_content = if local {
+        local_text(user_text, 400)
+    } else {
+        user_text.to_string()
+    };
 
     // ── System prompt: persona + date + tool results ──
     let mut system = String::from(agent_prompts::PERSONA_PROMPT);
@@ -3613,45 +3690,59 @@ fn build_answer_messages(
         datetime_context()
     ));
     system.push_str(agent_prompts::answer_tool_usage_section());
-    system.push_str("\n\n=== AVAILABLE TOOLS REFERENCE (READ-ONLY) ===\n");
-    system.push_str(
-        "These exact tool names/signatures exist, but this answer phase cannot execute new tools. \
-         Use this only to avoid inventing capabilities or fake tool names.\n",
-    );
-    system.push_str(agent_tools::tool_catalog_prompt());
-    append_browser_context(&mut system, app, turn_context);
+    if local {
+        system.push_str(
+            "\n\n=== AVAILABLE TOOLS REFERENCE (READ-ONLY) ===\n\
+             Tool execution is already finished. Use only the results below. Do not invent tool names.\n",
+        );
+    } else {
+        system.push_str("\n\n=== AVAILABLE TOOLS REFERENCE (READ-ONLY) ===\n");
+        system.push_str(
+            "These exact tool names/signatures exist, but this answer phase cannot execute new tools. \
+             Use this only to avoid inventing capabilities or fake tool names.\n",
+        );
+        system.push_str(agent_tools::tool_catalog_prompt());
+    }
+    append_browser_context(&mut system, app, turn_context, local);
 
     if !tool_results.is_empty() {
         system.push_str("\n\n<tool_results>\n");
-        for (name, value) in tool_results {
-            let json_str = serde_json::to_string(&sanitize_answer_tool_result(value))
-                .unwrap_or_else(|_| "{}".into());
-            system.push_str(&format!(
-                "[{}] {}\n",
-                name,
-                trim_to(&json_str, CFG.tool_result_chars)
-            ));
+        let result_limit = if local { 3 } else { tool_results.len() };
+        for (name, value) in tool_results.iter().take(result_limit) {
+            let sanitized = sanitize_answer_tool_result(value);
+            let rendered = if local {
+                render_local_json(&sanitized, 180)
+            } else {
+                let json_str = serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".into());
+                trim_to(&json_str, tool_result_chars)
+            };
+            system.push_str(&format!("[{}] {}\n", name, rendered));
         }
         system.push_str("</tool_results>\n");
     }
 
     let current_names: HashSet<&str> = tool_results.iter().map(|(n, _)| n.as_str()).collect();
-    let recent: Vec<(String, String)> = recent_tool_results(history, CFG.recent_tool_context)
+    let recent_limit = if local { 1 } else { CFG.recent_tool_context };
+    let recent: Vec<(String, String)> = recent_tool_results(history, recent_limit)
         .into_iter()
         .filter(|(name, _)| !current_names.contains(name.as_str()))
         .collect();
     if !recent.is_empty() {
         system.push_str("\n<recent_tool_results>\n");
         for (name, json) in &recent {
-            let sanitized = serde_json::from_str::<Value>(json)
-                .map(|v| sanitize_answer_tool_result(&v))
-                .unwrap_or_else(|_| Value::String(trim_to(json, CFG.recent_tool_result_chars)));
-            let safe_json = serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".into());
-            system.push_str(&format!(
-                "[{}] {}\n",
-                name,
-                trim_to(&safe_json, CFG.recent_tool_result_chars)
-            ));
+            let rendered = if local {
+                match serde_json::from_str::<Value>(json) {
+                    Ok(value) => render_local_json(&sanitize_answer_tool_result(&value), 120),
+                    Err(_) => local_text(json, 120),
+                }
+            } else {
+                let sanitized = serde_json::from_str::<Value>(json)
+                    .map(|v| sanitize_answer_tool_result(&v))
+                    .unwrap_or_else(|_| Value::String(trim_to(json, recent_chars)));
+                let safe_json = serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".into());
+                trim_to(&safe_json, recent_chars)
+            };
+            system.push_str(&format!("[{}] {}\n", name, rendered));
         }
         system.push_str("</recent_tool_results>\n");
     }
@@ -3670,8 +3761,18 @@ fn build_answer_messages(
         system.push('\n');
     }
 
-    budget = budget.saturating_sub(estimate_tokens(&system));
-    budget = budget.saturating_sub(estimate_tokens(user_text));
+    if local {
+        let system_budget = crate::local_ai::APPLE_PROMPT_TOKEN_BUDGET
+            .saturating_sub(token_cost(&user_content))
+            .saturating_sub(32)
+            .max(128);
+        if token_cost(&system) > system_budget {
+            system = crate::local_ai::trim_apple_text(&system, system_budget);
+        }
+    }
+
+    budget = budget.saturating_sub(token_cost(&system));
+    budget = budget.saturating_sub(token_cost(&user_content));
 
     let mut msgs = vec![ChatMessage {
         role: "system".into(),
@@ -3685,8 +3786,12 @@ fn build_answer_messages(
         if row.role != "user" && row.role != "assistant" {
             continue;
         }
-        let content = trim_to(&row.content, 1200);
-        let cost = estimate_tokens(&content) + 10; // overhead for role/tags
+        let content = if local {
+            local_text(&row.content, 80)
+        } else {
+            trim_to(&row.content, history_chars)
+        };
+        let cost = token_cost(&content) + 10; // overhead for role/tags
         if budget < cost {
             break;
         }
@@ -3707,7 +3812,7 @@ fn build_answer_messages(
     }
     msgs.push(ChatMessage {
         role: "user".into(),
-        content: user_text.to_string(),
+        content: user_content,
         images,
     });
 
@@ -4921,6 +5026,14 @@ fn looks_like_kgc_code(token: &str) -> bool {
     KGC_PREFIX_WHITELIST.contains(&prefix.as_str())
 }
 
+fn local_text(text: &str, tokens: usize) -> String {
+    crate::local_ai::trim_apple_text(text, tokens)
+}
+
+fn render_local_json(value: &Value, tokens: usize) -> String {
+    let compact = crate::local_ai::compact_json_value(value, tokens);
+    serde_json::to_string(&compact).unwrap_or_else(|_| "{}".into())
+}
 fn trim_to(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();
@@ -6413,6 +6526,7 @@ mod tests {
             None,
             &AgentTurnContext::default(),
             false,
+            false,
         );
         assert_eq!(msgs.len(), 2); // system + user
         assert!(msgs[0].content.contains("tool_results"));
@@ -6420,6 +6534,85 @@ mod tests {
         assert!(msgs[0].content.contains("TOOL EXECUTION BOUNDARY"));
         assert!(msgs[0].content.contains("AVAILABLE TOOLS REFERENCE"));
         assert!(msgs[0].content.contains("open_browser_url(url: string)"));
+    }
+    #[test]
+    fn local_answer_omits_tool_catalog_but_keeps_results() {
+        let tool_results = vec![("get_weather".to_string(), serde_json::json!({"temp": 22}))];
+        let msgs = build_answer_messages(
+            None,
+            &[],
+            "天気は？",
+            &[],
+            &tool_results,
+            None,
+            &AgentTurnContext::default(),
+            false,
+            true,
+        );
+        assert!(msgs[0].content.contains("get_weather"));
+        assert!(!msgs[0].content.contains("open_browser_url(url: string)"));
+        assert_eq!(msgs.last().unwrap().content, "天気は？");
+    }
+
+    #[test]
+    fn local_answer_compacts_tool_json_instead_of_slicing_it() {
+        let todos: Vec<_> = (0..40)
+            .map(|index| {
+                serde_json::json!({
+                    "title": format!("課題{index}{}", "あ".repeat(40)),
+                    "course": "科目",
+                    "deadline": "2026-04-20"
+                })
+            })
+            .collect();
+        let tool_results = vec![(
+            "list_luna_todos".to_string(),
+            serde_json::json!({"todos": todos}),
+        )];
+        let msgs = build_answer_messages(
+            None,
+            &[],
+            "課題は？",
+            &[],
+            &tool_results,
+            None,
+            &AgentTurnContext::default(),
+            false,
+            true,
+        );
+        let system = &msgs[0].content;
+        let marker = "[list_luna_todos]";
+        let start = system.find(marker).expect("tool label");
+        let rest = system[start + marker.len()..].trim_start();
+        let line = rest.lines().next().expect("json line").trim();
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|error| {
+            panic!("tool JSON was sliced: {error}: {line}");
+        });
+        assert!(parsed
+            .get("todos")
+            .and_then(|value| value.as_array())
+            .is_some());
+    }
+
+    #[test]
+    fn local_plan_fits_apple_window() {
+        let msgs = build_plan_messages_with_note(
+            None,
+            &[],
+            "明日の予定は？",
+            false,
+            None,
+            &AgentTurnContext::default(),
+            false,
+            true,
+        );
+        let system = &msgs[0].content;
+        assert!(system.contains("list_today_classes()"));
+        assert!(!system.contains("FAST SELECTION MAP"));
+        assert!(
+            crate::local_ai::estimate_apple_tokens(system)
+                < crate::local_ai::APPLE_PROMPT_TOKEN_BUDGET
+        );
     }
 
     #[test]
@@ -6451,6 +6644,7 @@ mod tests {
             &[],
             None,
             &AgentTurnContext::default(),
+            false,
             false,
         );
         // Budget should prevent ALL 200 history messages from being included.

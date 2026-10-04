@@ -92,16 +92,21 @@
   }
 
   async function gcalLogin() {
+    gcalStatusColor = "var(--text-secondary)";
+    gcalStatusMsg = isDemoActive() ? "デモモードでは認証処理を行いません" : "ブラウザで認証中...";
     try {
       await gcalSaveConfig(gcalClientId.trim(), gcalClientSecret.trim());
       await gcalOpenLogin();
-      gcalStatusColor = "var(--text-secondary)";
-      gcalStatusMsg = isDemoActive() ? "デモモードでは認証処理を行いません" : "ブラウザで認証中...";
+      if (!isDemoActive()) {
+        gcalStatusColor = "var(--green)";
+        gcalStatusMsg = "Google Calendar 認証成功";
+        await checkGcalSession();
+      }
     } catch (e) {
       gcalStatusColor = "var(--red)";
       gcalStatusMsg = "認証失敗: " + String(e);
     }
-    setTimeout(() => { gcalStatusMsg = ""; }, 5000);
+    setTimeout(() => { gcalStatusMsg = ""; }, 4000);
   }
 
   async function gcalLogout() {

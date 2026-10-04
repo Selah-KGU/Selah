@@ -375,7 +375,6 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | chrono | 0.4.44 | MIT OR Apache-2.0 |  | https://github.com/chronotope/chrono |
 | cipher | 0.4.4 | MIT OR Apache-2.0 | RustCrypto Developers | https://github.com/RustCrypto/traits |
 | clang-sys | 1.8.1 | Apache-2.0 | Kyle Mayes <kyle@mayeses.com> | https://github.com/KyleMayes/clang-sys |
-| cmake | 0.1.58 | MIT OR Apache-2.0 | Alex Crichton <alex@alexcrichton.com> | https://github.com/rust-lang/cmake-rs |
 | combine | 4.6.7 | MIT | Markus Westerlind <marwes91@gmail.com> | https://github.com/Marwes/combine |
 | concurrent-queue | 2.5.0 | Apache-2.0 OR MIT | Stjepan Glavina <stjepang@gmail.com>; Taiki Endo <te316e89@gmail.com>; John Nunley <dev@notgull.net> | https://github.com/smol-rs/concurrent-queue |
 | convert_case | 0.4.0 | MIT | David Purdum <purdum41@gmail.com> | https://github.com/rutrum/convert-case |
@@ -448,7 +447,6 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | fern | 0.7.1 | MIT | David Ross <daboross@daboross.net> | https://github.com/daboross/fern |
 | field-offset | 0.3.6 | MIT OR Apache-2.0 | Diggory Blake <diggsey@googlemail.com> | https://github.com/Diggsey/rust-field-offset |
 | filetime | 0.2.27 | MIT/Apache-2.0 | Alex Crichton <alex@alexcrichton.com> | https://github.com/alexcrichton/filetime |
-| find_cuda_helper | 0.2.0 | MIT OR Apache-2.0 |  | https://github.com/Rust-GPU/Rust-CUDA |
 | find-msvc-tools | 0.1.9 | MIT OR Apache-2.0 |  | https://github.com/rust-lang/cc-rs |
 | flate2 | 1.1.9 | MIT OR Apache-2.0 | Alex Crichton <alex@alexcrichton.com>; Josh Triplett <josh@joshtriplett.org> | https://github.com/rust-lang/flate2-rs |
 | fnv | 1.0.7 | Apache-2.0 / MIT | Alex Crichton <alex@alexcrichton.com> | https://github.com/servo/rust-fnv |
@@ -566,8 +564,6 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | Dan Gohman <dev@sunfishcode.online> | https://github.com/sunfishcode/linux-raw-sys |
 | litemap | 0.8.2 | Unicode-3.0 | The ICU4X Project Developers | https://github.com/unicode-org/icu4x |
 | litrs | 1.0.0 | MIT OR Apache-2.0 | Lukas Kalbertodt <lukas.kalbertodt@gmail.com> | https://github.com/LukasKalbertodt/litrs |
-| llama-cpp-2 | 0.1.142 | MIT OR Apache-2.0 |  | https://github.com/utilityai/llama-cpp-rs |
-| llama-cpp-sys-2 | 0.1.142 | MIT OR Apache-2.0 |  | https://github.com/utilityai/llama-cpp-rs |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | Amanieu d'Antras <amanieu@gmail.com> | https://github.com/Amanieu/parking_lot |
 | log | 0.4.29 | MIT OR Apache-2.0 | The Rust Project Developers | https://github.com/rust-lang/log |
 | lopdf | 0.35.0 | MIT | Junfeng Liu <china.liujunfeng@gmail.com>; Emulator <emulator@hotmail.it> | https://github.com/J-F-Liu/lopdf.git |
@@ -881,7 +877,6 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | Henri Sivonen <hsivonen@hsivonen.fi> | https://github.com/hsivonen/utf8_iter |
 | utf8-width | 0.1.8 | MIT | Magic Len <len@magiclen.org> | https://github.com/magiclen/utf8-width |
 | uuid | 1.23.0 | Apache-2.0 OR MIT | Ashley Mannix<ashleymannix@live.com.au>; Dylan DPC<dylan.dpc@gmail.com>; Hunar Roop Kahlon<hunar.roop@gmail.com> | https://github.com/uuid-rs/uuid |
-| valuable | 0.1.1 | MIT |  | https://github.com/tokio-rs/valuable |
 | value-bag | 1.12.0 | Apache-2.0 OR MIT | Ashley Mannix <ashleymannix@live.com.au> | https://github.com/sval-rs/value-bag |
 | vcpkg | 0.2.15 | MIT/Apache-2.0 | Jim McGrath <jimmc2@gmail.com> | https://github.com/mcgoo/vcpkg-rs |
 | version_check | 0.9.5 | MIT/Apache-2.0 | Sergio Benitez <sb@sergio.bz> | https://github.com/SergioBenitez/version_check |

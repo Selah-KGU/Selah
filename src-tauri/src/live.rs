@@ -261,19 +261,7 @@ fn live_ai_config() -> Result<crate::ai::AiConfig, String> {
         return Err("Live要約にはAIを有効にしてください".into());
     }
     if cfg.provider == "local" {
-        #[cfg(not(target_os = "macos"))]
-        return Err("本地模型仅在 macOS 版本中可用".into());
-
-        #[cfg(target_os = "macos")]
-        {
-            let model = crate::local_ai::model_catalog()
-                .iter()
-                .find(|model| model.id == cfg.local_model)
-                .ok_or_else(|| "Live要約用のローカルモデルが見つかりません".to_string())?;
-            if !crate::local_ai::is_model_downloaded(&model.file_name) {
-                return Err("Live要約用のローカルモデルを先にダウンロードしてください".into());
-            }
-        }
+        crate::local_ai_support::ensure_supported()?;
     } else if cfg.api_key.is_empty() {
         // Surfaces the real cause instead of letting the request 401 silently.
         // Most common in packaged builds when the keychain item is unreadable.

@@ -113,7 +113,7 @@ async fn send_non_streaming_request(
 pub struct AiConfig {
     pub ai_enabled: bool,
     pub provider: String,    // "local" | "openai" | "openrouter" | "gemini"
-    pub local_model: String, // model id from catalog, e.g. "qwen3.5-2b"
+    pub local_model: String, // "apple-intelligence"; kept so saved configs stay valid
     pub api_key: String,
     pub model: String,
     pub base_url: String,
@@ -130,10 +130,22 @@ fn default_live_summary_interval_minutes() -> u32 {
     5
 }
 
+const OPENAI_DEFAULT_MODEL: &str = "gpt-6-luna";
+
+fn is_retired_openai_model(model: &str) -> bool {
+    matches!(model.trim(), "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-nano")
+}
+
 fn normalize_ai_config(config: &mut AiConfig) {
     config.live_summary_interval_minutes = config.live_summary_interval_minutes.max(5);
-    #[cfg(not(target_os = "macos"))]
-    if config.provider == "local" {
+    config.local_model = crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID.into();
+    if is_retired_openai_model(&config.model) {
+        config.model = OPENAI_DEFAULT_MODEL.into();
+    }
+}
+
+fn demote_unsupported_local_provider(config: &mut AiConfig) {
+    if config.provider == "local" && crate::local_ai_support::should_demote_local_provider() {
         config.provider = "openai".into();
     }
 }
@@ -186,9 +198,9 @@ impl Default for AiConfig {
         Self {
             ai_enabled: false,
             provider: "local".into(),
-            local_model: "qwen3.5-2b".into(),
+            local_model: crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID.into(),
             api_key: String::new(),
-            model: "gpt-5.4-nano".into(),
+            model: OPENAI_DEFAULT_MODEL.into(),
             base_url: "https://api.openai.com/v1".into(),
             max_tokens: 0,
             temperature: 0.7,
@@ -336,12 +348,17 @@ fn load_config() -> AiConfig {
         AiConfig::default()
     };
 
+    let retired_model = is_retired_openai_model(&cfg.model);
+    normalize_ai_config(&mut cfg);
+
     // Migration: move api_key from JSON file to OS keychain
+    let mut persisted = false;
     if !cfg.api_key.is_empty() {
         if crate::keychain::set_secret("ai_api_key", &cfg.api_key).is_ok() {
             let key = std::mem::take(&mut cfg.api_key);
             let _ = save_config_to_disk(&cfg);
             cfg.api_key = key; // keep in memory for this session
+            persisted = true;
         }
     } else if let Some(key) = crate::keychain::get_secret("ai_api_key") {
         // Backed by the in-memory secret bundle (one keychain read per process),
@@ -349,7 +366,28 @@ fn load_config() -> AiConfig {
         cfg.api_key = key;
     }
 
-    normalize_ai_config(&mut cfg);
+    demote_unsupported_local_provider(&mut cfg);
+    if retired_model && !persisted && path.exists() {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert(
+                        "model".into(),
+                        serde_json::Value::String(OPENAI_DEFAULT_MODEL.into()),
+                    );
+                    if let Ok(data) = serde_json::to_string_pretty(&value) {
+                        let _ = std::fs::write(&path, data);
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let perms = std::fs::Permissions::from_mode(0o600);
+                            std::fs::set_permissions(&path, perms).ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
     cfg
 }
 
@@ -400,32 +438,29 @@ async fn chat_completion(config: &AiConfig, messages: Vec<ChatMessage>) -> Resul
     match config.provider.as_str() {
         #[cfg(target_os = "macos")]
         "local" => {
-            // Run local inference in a blocking thread
-            let model_id = config.local_model.clone();
-            let catalog = crate::local_ai::model_catalog();
-            let info = catalog
-                .iter()
-                .find(|m| m.id == model_id)
-                .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
-            let file_name = info.file_name.clone();
+            crate::local_ai_support::ensure_supported()?;
             let msgs = messages;
+            let temperature = config.temperature;
             tokio::task::spawn_blocking(move || {
                 crate::local_ai::run_inference(crate::local_ai::InferenceRequest {
-                    model_id,
-                    file_name,
+                    model_id: crate::local_ai::APPLE_INTELLIGENCE_MODEL_ID.into(),
+                    file_name: String::new(),
                     messages: msgs,
-                    sampler: crate::local_ai::SamplerConfig::default(),
+                    sampler: crate::local_ai::SamplerConfig {
+                        temperature,
+                        ..crate::local_ai::SamplerConfig::default()
+                    },
                     max_tokens: 0,
                     prefill: String::new(),
                     gen_id: String::new(),
-                    think_budget_pct: 40,
+                    think_budget_pct: 0,
                 })
             })
             .await
             .map_err(|e| format!("タスク実行エラー: {}", e))?
         }
         #[cfg(not(target_os = "macos"))]
-        "local" => Err("本地模型仅在 macOS 版本中可用".into()),
+        "local" => Err(crate::local_ai_support::unsupported_message()),
         "gemini" => call_gemini(config, messages).await,
         _ => call_openai(config, messages).await,
     }
@@ -632,6 +667,11 @@ pub fn get_ai_config() -> AiConfig {
 }
 
 #[tauri::command]
+pub fn get_local_ai_support() -> crate::local_ai_support::LocalAiSupport {
+    crate::local_ai_support::current()
+}
+
+#[tauri::command]
 pub fn save_ai_config(app: tauri::AppHandle, mut config: AiConfig) -> Result<(), String> {
     config.temperature = config.temperature.clamp(0.0, 2.0);
     config.api_key = config.api_key.trim().to_string();
@@ -642,14 +682,10 @@ pub fn save_ai_config(app: tauri::AppHandle, mut config: AiConfig) -> Result<(),
 
     // Validate based on provider
     match config.provider.as_str() {
-        #[cfg(target_os = "macos")]
         "local" => {
-            if config.local_model.is_empty() {
-                return Err("ローカルモデルを選択してください".into());
-            }
+            crate::local_ai_support::ensure_supported()?;
+            config.local_model = crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID.into();
         }
-        #[cfg(not(target_os = "macos"))]
-        "local" => return Err("本地模型仅在 macOS 版本中可用".into()),
         "openai" | "openrouter" | "gemini" => {
             config.max_tokens = config.max_tokens.clamp(8192, 32768);
             if config.model.is_empty() {
@@ -704,101 +740,23 @@ pub async fn ai_test_connection() -> Result<String, String> {
 
 #[tauri::command]
 pub fn list_local_models() -> Vec<serde_json::Value> {
-    #[cfg(not(target_os = "macos"))]
-    return Vec::new();
-
-    #[cfg(target_os = "macos")]
-    {
-        let catalog = crate::local_ai::model_catalog();
-        catalog
-            .iter()
-            .map(|m| {
-                let downloaded = crate::local_ai::is_model_downloaded(&m.file_name);
-                serde_json::json!({
-                    "id": m.id,
-                    "name": m.name,
-                    "size_label": m.size_label,
-                    "param_size": m.param_size,
-                    "file_size_mb": m.file_size_mb,
-                    "downloaded": downloaded,
-                })
-            })
-            .collect()
+    let support = crate::local_ai_support::current();
+    if !support.supported {
+        return Vec::new();
     }
-}
-
-#[tauri::command]
-pub async fn download_local_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, model_id);
-        return Err("本地模型仅在 macOS 版本中可用".into());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let catalog = crate::local_ai::model_catalog();
-        let info = catalog
-            .iter()
-            .find(|m| m.id == model_id)
-            .ok_or_else(|| format!("不明なモデル: {}", model_id))?
-            .clone();
-
-        // Run download in blocking thread
-        let app_clone = app.clone();
-        tokio::task::spawn_blocking(move || crate::local_ai::download_model(&app_clone, &info))
-            .await
-            .map_err(|e| format!("タスク実行エラー: {}", e))??;
-
-        // Model availability changed — notify frontend
-        let _ = app.emit("ai-config-changed", ());
-        Ok(())
-    }
-}
-
-#[tauri::command]
-pub fn cancel_model_download() {
-    #[cfg(not(target_os = "macos"))]
-    return;
-    #[cfg(target_os = "macos")]
-    crate::local_ai::cancel_download();
-}
-
-#[tauri::command]
-pub fn delete_local_model(app: tauri::AppHandle, model_id: String) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, model_id);
-        return Err("本地模型仅在 macOS 版本中可用".into());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let catalog = crate::local_ai::model_catalog();
-        let info = catalog
-            .iter()
-            .find(|m| m.id == model_id)
-            .ok_or_else(|| format!("不明なモデル: {}", model_id))?;
-
-        // Unload if currently loaded
-        crate::local_ai::unload_model();
-
-        let path = crate::local_ai::model_path(&info.file_name);
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| format!("削除失敗: {}", e))?;
-        }
-
-        // Also remove partial file
-        let part = path.with_extension("gguf.part");
-        if part.exists() {
-            let _ = std::fs::remove_file(&part);
-        }
-
-        // Model availability changed — notify frontend
-        let _ = app.emit("ai-config-changed", ());
-
-        Ok(())
-    }
+    let name = if support.model.is_empty() {
+        "Apple Intelligence".to_string()
+    } else {
+        support.model
+    };
+    vec![serde_json::json!({
+        "id": crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID,
+        "name": name,
+        "size_label": "システム内蔵",
+        "param_size": "on-device",
+        "file_size_mb": 0,
+        "downloaded": true,
+    })]
 }
 
 /// Send a native notification.
@@ -843,5 +801,30 @@ pub async fn debug_test_notification(title: String, body: String) -> Result<Stri
     #[cfg(not(target_os = "macos"))]
     {
         Err("debug_test_notification: use test_notification on non-macOS".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retired_openai_presets_become_gpt_6_luna() {
+        for old in ["gpt-5.4", "gpt-5.4-mini", " gpt-5.4-nano "] {
+            let mut cfg = AiConfig::default();
+            cfg.model = old.into();
+            normalize_ai_config(&mut cfg);
+            assert_eq!(cfg.model, OPENAI_DEFAULT_MODEL);
+        }
+
+        let mut custom = AiConfig::default();
+        custom.model = "gpt-6.1-sol".into();
+        custom.local_model = "qwen3.5-4b".into();
+        normalize_ai_config(&mut custom);
+        assert_eq!(custom.model, "gpt-6.1-sol");
+        assert_eq!(
+            custom.local_model,
+            crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID
+        );
     }
 }

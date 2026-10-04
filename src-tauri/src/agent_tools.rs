@@ -908,6 +908,18 @@ pub fn tool_catalog_prompt() -> &'static str {
     &TOOL_CATALOG_PROMPT
 }
 
+/// Names and argument shapes only. The full catalog does not fit Apple's 4096-token window.
+pub fn tool_catalog_signatures() -> &'static str {
+    static TOOL_CATALOG_SIGNATURES: LazyLock<String> = LazyLock::new(|| {
+        TOOL_SPECS
+            .iter()
+            .map(|spec| format!("- {}", spec.signature))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    &TOOL_CATALOG_SIGNATURES
+}
+
 fn build_tool_catalog_prompt() -> String {
     let mut out = String::new();
     let mut current_category = "";
