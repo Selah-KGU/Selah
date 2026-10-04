@@ -157,6 +157,8 @@ fn foundation_models_27(swiftc: &str, sdk: &str, target: &str) -> bool {
             "Foundation",
         ])
         .arg(&source)
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false);
@@ -170,9 +172,19 @@ fn compile_macos_widget() -> Result<(), String> {
     let widget_src = manifest_dir.join("swift/widget/SelahWidget.swift");
     let host_src = manifest_dir.join("swift/widget/WidgetHost.swift");
     let bridge_src = manifest_dir.join("swift/WidgetBridge.swift");
-    let entitlements = manifest_dir.join("swift/widget/Widget.entitlements");
+    let entitlements = widget_entitlements(&manifest_dir);
+    let app_store_entitlements = manifest_dir.join("swift/widget/Widget.entitlements");
+    let developer_id_entitlements = manifest_dir.join("swift/widget/Widget.DeveloperID.entitlements");
     let logo = manifest_dir.join("../src/assets/logo.png");
-    for path in [&widget_src, &host_src, &bridge_src, &entitlements, &logo] {
+    for path in [
+        &widget_src,
+        &host_src,
+        &bridge_src,
+        &entitlements,
+        &app_store_entitlements,
+        &developer_id_entitlements,
+        &logo,
+    ] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let lib_dir = manifest_dir.join("lib");
@@ -459,6 +471,18 @@ fn widget_info_plist(version: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
+fn widget_entitlements(manifest_dir: &Path) -> PathBuf {
+    let identity = std::env::var("APPLE_SIGNING_IDENTITY").unwrap_or_default();
+    if identity.contains("Developer ID") {
+        let developer_id = manifest_dir.join("swift/widget/Widget.DeveloperID.entitlements");
+        if developer_id.is_file() {
+            return developer_id;
+        }
+    }
+    manifest_dir.join("swift/widget/Widget.entitlements")
+}
+
+#[cfg(target_os = "macos")]
 fn sign_appex(appex: &Path, entitlements: &Path) -> Result<(), String> {
     let identity = std::env::var("APPLE_SIGNING_IDENTITY")
         .ok()
@@ -467,6 +491,12 @@ fn sign_appex(appex: &Path, entitlements: &Path) -> Result<(), String> {
         .unwrap_or_else(|| "-".to_string());
     let mut command = Command::new("codesign");
     command.args(["--force", "--sign", &identity]);
+    if let Ok(keychain) = std::env::var("SELAH_CODESIGN_KEYCHAIN") {
+        let keychain = keychain.trim();
+        if !keychain.is_empty() {
+            command.args(["--keychain", keychain]);
+        }
+    }
     if identity != "-" {
         command.args(["--options", "runtime", "--timestamp"]);
     }
