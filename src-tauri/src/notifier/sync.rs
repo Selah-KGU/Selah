@@ -157,6 +157,25 @@ pub(in crate::notifier) fn cache_refresh_due(
     }
 }
 
+pub(in crate::notifier) fn notifications_json_is_empty(json: Option<&str>) -> bool {
+    let Some(json) = json else {
+        return true;
+    };
+    serde_json::from_str::<NotificationsData>(json)
+        .map(|data| data.entries.is_empty())
+        .unwrap_or(true)
+}
+
+/// An empty KGC notice cache is not proof the campus has nothing to show.
+/// Retry on the fast interval instead of waiting out the 12 hour stable age.
+pub(in crate::notifier) fn kgc_notification_max_age(payload_empty: bool, fast_max_age: i64) -> i64 {
+    if payload_empty {
+        fast_max_age
+    } else {
+        KGC_NOTIFICATION_MAX_AGE_SECS
+    }
+}
+
 async fn sync_notifications_inner(
     app: &AppHandle,
     keys: Option<&std::collections::BTreeSet<String>>,
@@ -174,11 +193,13 @@ async fn sync_notifications_inner(
     let fast_max_age = crate::background_refresh::fast_cache_max_age_secs(
         crate::background_refresh::is_app_focused(app),
     );
+    let notifications_empty =
+        notifications_json_is_empty(db.cache_payload("notifications").as_deref());
     let kgc_notifications_due = source_wanted(keys, "notifications")
         && cache_refresh_due(
             cache_updated_at(&db, "notifications"),
             now,
-            KGC_NOTIFICATION_MAX_AGE_SECS,
+            kgc_notification_max_age(notifications_empty, fast_max_age),
             force,
         );
     let luna_updates_due = source_wanted(keys, "luna_updates")

@@ -25,13 +25,14 @@ mod types;
 
 pub(in crate::notifier) use seen::*;
 pub(in crate::notifier) use sources::*;
-#[cfg(test)]
-pub(in crate::notifier) use sync::cache_refresh_due;
 pub use sync::*;
+#[cfg(test)]
+pub(in crate::notifier) use sync::{
+    cache_refresh_due, kgc_notification_max_age, notifications_json_is_empty,
+};
 pub(in crate::notifier) use types::{
     BootstrapMode, BootstrapState, CourseNotificationKind, SyncRunDebug, BOOTSTRAP_GRACE_PERIOD,
-    HIDDEN_SKIP_MAX, INITIAL_SYNC_DELAY, KGC_NOTIFICATION_MAX_AGE_SECS,
-    POLL_INTERVAL,
+    HIDDEN_SKIP_MAX, INITIAL_SYNC_DELAY, KGC_NOTIFICATION_MAX_AGE_SECS, POLL_INTERVAL,
 };
 pub use types::{
     NotificationClickTarget, NotificationDebugInfo, NotificationEventDebugInfo,

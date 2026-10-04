@@ -27,7 +27,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis, LunaTodoItem } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, isCacheFresh, hasMemoryCache, getCacheStamp, touchCacheTimestamp, rememberRawCache, readRawCache, hasRawCache, knownRawUpdatedAt, requestedMailMessageId } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, isCacheFresh, isEmptyNotificationsPayload, hasMemoryCache, getCacheStamp, touchCacheTimestamp, rememberRawCache, readRawCache, hasRawCache, knownRawUpdatedAt, requestedMailMessageId } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 import type { LiveGeneratedTodo, LiveTodoSuggestion } from "./liveSessionApi";
@@ -1468,6 +1468,14 @@ async function syncBackendManagedKeys(keys: string[], onlyIfStale = false): Prom
     if (!row.json) continue;
     const data = parseCacheJson<any>(row.json, key);
     if (data == null) continue;
+    if (
+      key === "notifications"
+      && isEmptyNotificationsPayload(data)
+      && hasMemoryCache(key)
+      && !isEmptyNotificationsPayload(getCached(key))
+    ) {
+      continue;
+    }
     rememberRawCache(dbKey, row.updated_at, data);
     if (key === "ai_notif_analysis") {
       aiNotifStore.set({

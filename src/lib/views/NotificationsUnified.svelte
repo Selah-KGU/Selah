@@ -47,6 +47,10 @@
     kwic: new Set($readIdsStore.kwic),
   });
 
+  function notifRenderKey(n: UnifiedNotif): string {
+    return [n.source, n.id, n.title, n.date, n.category, n.courseInfo ?? ""].join("\u001f");
+  }
+
   function isNotifRead(n: { source: string; id: string; title: string; date: string }): boolean {
     if (n.source === "mail") return false; // mail has its own read state
     const key = n.id || notifKey(n.title, n.date);
@@ -413,7 +417,7 @@
         <div class="section-label">
           未読 <span class="section-count">{partitioned.unread.length}</span>
         </div>
-        {#each partitioned.unread as n (`${n.source}:${n.id}`)}
+        {#each partitioned.unread as n (notifRenderKey(n))}
           {@render notifItem(n)}
         {/each}
       {/if}
@@ -422,7 +426,7 @@
         {#if partitioned.unread.length > 0}
           <div class="section-label section-label-read">既読</div>
         {/if}
-        {#each visibleRead as n (`${n.source}:${n.id}`)}
+        {#each visibleRead as n (notifRenderKey(n))}
           {@render notifItem(n)}
         {/each}
         {#if partitioned.read.length > readVisibleCount}

@@ -22,6 +22,25 @@ pub struct NotificationsData {
     pub entries: Vec<NotificationEntry>,
 }
 
+fn is_notification_header(headers: &[String]) -> bool {
+    headers.iter().any(|text| {
+        text.contains("タイトル") || text.contains("お知らせ") || text.contains("掲示日")
+    })
+}
+
+/// True only when the response actually contains the campus notice table.
+/// A login shell or empty portal page must not be stored as "no notices".
+pub fn notifications_list_present(html: &str) -> bool {
+    let doc = Html::parse_document(html);
+    doc.select(&SEL_TR).any(|tr| {
+        let headers: Vec<String> = tr
+            .select(&SEL_TH)
+            .map(|el| el.text().collect::<String>().trim().to_string())
+            .collect();
+        is_notification_header(&headers)
+    })
+}
+
 pub fn parse_notifications(html: &str) -> NotificationsData {
     let doc = Html::parse_document(html);
     let mut entries = Vec::new();
@@ -36,10 +55,7 @@ pub fn parse_notifications(html: &str) -> NotificationsData {
             .map(|el| el.text().collect::<String>().trim().to_string())
             .collect();
 
-        if ths
-            .iter()
-            .any(|t| t.contains("タイトル") || t.contains("お知らせ") || t.contains("掲示日"))
-        {
+        if is_notification_header(&ths) {
             headers = ths;
             continue;
         }

@@ -59,3 +59,17 @@ fn revision_key_differs_on_genuine_update() {
     let updated = notif("・お知らせ が更新されました。(2025/07/01 12:00)");
     assert_ne!(luna_revision_key(&added), luna_revision_key(&updated));
 }
+
+#[test]
+fn empty_kgc_notifications_retry_on_the_fast_interval() {
+    assert!(notifications_json_is_empty(None));
+    assert!(notifications_json_is_empty(Some(r#"{"entries":[]}"#)));
+    assert!(!notifications_json_is_empty(Some(
+        r#"{"entries":[{"id":"a","title":"t","date":"d","category":"c"}]}"#
+    )));
+    assert_eq!(kgc_notification_max_age(true, 300), 300);
+    assert_eq!(
+        kgc_notification_max_age(false, 300),
+        KGC_NOTIFICATION_MAX_AGE_SECS
+    );
+}

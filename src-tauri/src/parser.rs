@@ -226,6 +226,10 @@ mod session_plan_tests {
         assert_eq!(data.entries[0].url, "/uniasv2/CPA020Action.do?id=42");
         assert_eq!(data.entries[1].title, "リンクのない掲示");
         assert!(data.entries[1].url.is_empty());
+        assert!(notifications_list_present(html));
+        assert!(!notifications_list_present(
+            "<html><body>login</body></html>"
+        ));
     }
 
     #[test]

@@ -576,9 +576,18 @@ function stableCacheJson(data: unknown): string | null {
   }
 }
 
+export function isEmptyNotificationsPayload(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  const entries = (data as { entries?: unknown }).entries;
+  return Array.isArray(entries) && entries.length === 0;
+}
+
 export function isCacheFresh(key: string, ttl?: number): boolean {
   const entry = cache.get(key);
   if (!entry) return false;
+  // An empty campus list is not a successful load. The 12h TTL would otherwise
+  // keep a failed parse on screen until the next day.
+  if (key === "notifications" && isEmptyNotificationsPayload(entry.data)) return false;
   const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
   return Date.now() - entry.ts < effectiveTtl;
 }
@@ -744,6 +753,10 @@ async function sqliteCacheNewerThan(key: string, diskTs: number): Promise<boolea
 }
 
 function refreshBackendIfStale<T>(key: string, data: T, ttl: number) {
+  if (key === "notifications" && isEmptyNotificationsPayload(data)) {
+    void queueBackendManagedRefresh<T>(key, true, data);
+    return;
+  }
   void backendRowAgeMs(key, data).then((age) => {
     if (age != null && age < ttl) return;
     void queueBackendManagedRefresh<T>(key, false, data);
@@ -772,6 +785,14 @@ function queueBackendManagedRefresh<T>(key: string, force: boolean, fallback?: T
       if (!loaded) {
         if (fallback !== undefined) return fallback;
         throw new Error(`No backend cache available for "${key}"`);
+      }
+      if (
+        key === "notifications"
+        && isEmptyNotificationsPayload(loaded.data)
+        && fallback !== undefined
+        && !isEmptyNotificationsPayload(fallback)
+      ) {
+        return fallback;
       }
       persistCacheValue(key, loaded.data, loaded.ts, true);
       return loaded.data;
@@ -815,19 +836,21 @@ export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<
     refreshBackendIfStale(key, loaded.data, effectiveTtl);
     return loaded.data;
   }
-  if (entry && Date.now() - entry.ts < effectiveTtl) {
+  if (entry && isCacheFresh(key, effectiveTtl)) {
     return entry.data as T;
   }
 
   if (entry) {
-    void queueBackendManagedRefresh<T>(key, false, entry.data as T);
+    const forceEmptyNotifications = key === "notifications" && isEmptyNotificationsPayload(entry.data);
+    void queueBackendManagedRefresh<T>(key, forceEmptyNotifications, entry.data as T);
     return entry.data as T;
   }
 
   if (DISK_CACHE_KEYS.has(key)) {
     const disk = loadDiskCache(key);
     if (disk) {
-      if (Date.now() - disk.ts < effectiveTtl && !(await sqliteCacheNewerThan(key, disk.ts))) {
+      const diskLooksFresh = Date.now() - disk.ts < effectiveTtl && !(await sqliteCacheNewerThan(key, disk.ts));
+      if (diskLooksFresh && !(key === "notifications" && isEmptyNotificationsPayload(disk.data))) {
         persistCacheValue(key, disk.data as T, disk.ts, false);
         return disk.data as T;
       }
@@ -835,6 +858,15 @@ export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<
       // stale disk payload even when that row is too new to need a network refresh.
       const loaded = await loadBackendManagedCache<T>(key);
       if (loaded) {
+        if (
+          key === "notifications"
+          && isEmptyNotificationsPayload(loaded.data)
+          && !isEmptyNotificationsPayload(disk.data)
+        ) {
+          persistCacheValue(key, disk.data as T, disk.ts, false);
+          void queueBackendManagedRefresh<T>(key, true, disk.data as T);
+          return disk.data as T;
+        }
         persistCacheValue(key, loaded.data, loaded.ts, true);
         refreshBackendIfStale(key, loaded.data, effectiveTtl);
         return loaded.data;

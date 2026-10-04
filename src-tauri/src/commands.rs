@@ -254,7 +254,46 @@ pub async fn fetch_notifications(
     state: State<'_, KgcState>,
     db: State<'_, crate::db::Database>,
 ) -> Result<parser::NotificationsData, String> {
-    kgc_fetch_cached!(state, db, "notifications", "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010", parser::parse_notifications, "kgc-notifications.html")
+    const PATH: &str = "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010";
+    match kgc_try_fetch(&state, PATH).await {
+        Ok(html) => {
+            // A 200 that is not the notice table used to be parsed as an empty
+            // list and then treated as fresh for 12 hours. Keep the last real list.
+            if !parser::notifications_list_present(&html) {
+                log::warn!(
+                    "notifications: response has no list table ({} bytes); keeping previous cache",
+                    html.len()
+                );
+                if let Ok(Some((json, _))) = db.get_data_cache("notifications") {
+                    if let Ok(cached) = serde_json::from_str(&json) {
+                        return Ok(cached);
+                    }
+                }
+                return Err("お知らせ一覧を読み取れませんでした".into());
+            }
+            let data = parser::parse_notifications(&html);
+            if let Ok(json) = serde_json::to_string(&data) {
+                let _ = db.save_data_cache("notifications", &json);
+            }
+            #[cfg(debug_assertions)]
+            {
+                if crate::should_dump_debug_html() {
+                    let _ =
+                        std::fs::write(std::env::temp_dir().join("kgc-notifications.html"), &html);
+                }
+            }
+            Ok(data)
+        }
+        Err(e) => {
+            if let Ok(Some((json, _))) = db.get_data_cache("notifications") {
+                if let Ok(cached) = serde_json::from_str(&json) {
+                    log::info!("notifications: cache fallback ({})", e);
+                    return Ok(cached);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Agent-accessible KGC notification detail fetch. The detail endpoint is the
