@@ -34,6 +34,8 @@ use super::macos_fullscreen_exit;
 use super::macos_native_agent;
 #[cfg(target_os = "macos")]
 use super::macos_subtitle_overlay;
+#[cfg(target_os = "macos")]
+use super::macos_widget_open;
 use super::mail;
 use super::mail_commands;
 use super::native_notification;
@@ -205,6 +207,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 macos_fullscreen_exit::install(app.handle());
+                macos_widget_open::install(app.handle());
                 macos_native_agent::setup(app.handle());
                 macos_subtitle_overlay::setup(app.handle());
                 let native_agent_cfg = commands::load_native_agent_config();

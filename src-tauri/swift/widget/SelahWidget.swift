@@ -249,6 +249,7 @@ struct SelahWidgetView: View {
             logoMark(metrics)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .widgetURL(URL(string: "selah://open"))
     }
 
     private func classColumn(_ classes: [ClassSlot], today: Int, now: Int, metrics: WidgetMetrics) -> some View {

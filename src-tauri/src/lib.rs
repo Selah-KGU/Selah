@@ -45,6 +45,8 @@ mod macos_fullscreen_exit;
 mod macos_native_agent;
 #[cfg(target_os = "macos")]
 mod macos_subtitle_overlay;
+#[cfg(target_os = "macos")]
+mod macos_widget_open;
 mod mail;
 mod mail_commands;
 mod native_notification;

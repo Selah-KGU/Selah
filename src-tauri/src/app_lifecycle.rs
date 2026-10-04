@@ -6,6 +6,10 @@ use super::macos_fullscreen_exit;
 use super::stt;
 #[cfg(target_os = "macos")]
 use super::tray;
+#[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApp, NSWindow};
 
 #[cfg(unix)]
 pub(crate) fn protect_log_storage(
@@ -38,6 +42,10 @@ pub(crate) fn protect_log_storage(
     _app: &tauri::AppHandle,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
+}
+
+pub(crate) fn is_widget_launch_url(url: &url::Url) -> bool {
+    url.scheme().eq_ignore_ascii_case("selah")
 }
 
 pub(crate) fn run_event_panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -118,6 +126,13 @@ pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         } => {
             reopen_windows_from_dock(app, has_visible_windows);
         }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Opened { urls } => {
+            if urls.iter().any(is_widget_launch_url) {
+                log::info!("widget URL opened; presenting main window");
+                present_main_window(app);
+            }
+        }
         _ => {}
     }
 }
@@ -146,40 +161,122 @@ pub(crate) fn attach_main_window_close_handler(
 /// Close hides the main window instead of destroying it. tao answers
 /// applicationShouldHandleReopen with hasVisibleWindows, so AppKit will not
 /// restore that window on a Dock click unless we show it ourselves.
+/// macOS 14+ also ignores activateIgnoringOtherApps, so a visible window that
+/// is not front still has to be ordered forward here.
 #[cfg(target_os = "macos")]
 fn reopen_windows_from_dock(app: &tauri::AppHandle, has_visible_windows: bool) {
     let any_window_on_screen = app.windows().values().any(window_is_on_screen);
-    if !should_restore_on_dock_click(has_visible_windows, any_window_on_screen) {
+    if !should_raise_on_reopen(has_visible_windows, any_window_on_screen, app_is_active()) {
         return;
     }
+    if any_window_on_screen {
+        raise_on_screen_windows(app);
+        return;
+    }
+    present_main_window(app);
+}
 
-    // Cmd+H hides the process; unhide before ordering a window front.
+/// Show the main window and ask AppKit to activate this process.
+///
+/// Call this from the widget or Dock callback. `set_focus` only calls the
+/// deprecated activation API, which no longer raises a background window.
+#[cfg(target_os = "macos")]
+pub(crate) fn present_main_window(app: &tauri::AppHandle) {
     let _ = app.show();
     if app.get_webview_window("main").is_none() {
         if let Err(err) = recreate_main_window(app) {
-            log::warn!("failed to recreate main window from Dock: {err}");
+            log::warn!("failed to recreate main window: {err}");
         }
     }
-    if app.get_webview_window("main").is_some() {
-        present_main_window(app);
-        return;
+    if let Some(window) = app.get_webview_window("main") {
+        raise_webview(&window);
+        let _ = tray::show_main_window_with_tab(app, None);
+    } else if let Some(window) = app.get_window("document-tabs") {
+        raise_window(&window);
     }
-    if let Some(window) = app.get_window("document-tabs") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    // Activate after the window exists. macOS 14+ drops activation that
+    // happens before there is a window to order forward.
+    activate_app();
+    if let Some(window) = app.get_webview_window("main") {
+        raise_webview(&window);
+    }
+    // AppKit can order the window back out after the callback returns.
+    let deferred = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        activate_app();
+        if let Some(window) = deferred.get_webview_window("main") {
+            raise_webview(&window);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn raise_on_screen_windows(app: &tauri::AppHandle) {
+    let _ = app.show();
+    if let Some(main) = app.get_webview_window("main") {
+        if main.is_visible().unwrap_or(false) && !main.is_minimized().unwrap_or(false) {
+            raise_webview(&main);
+            activate_app();
+            raise_webview(&main);
+            return;
+        }
+    }
+    if let Some(window) = app
+        .windows()
+        .values()
+        .find(|window| window_is_on_screen(window))
+    {
+        raise_window(window);
+    }
+    activate_app();
+}
+
+#[cfg(target_os = "macos")]
+fn activate_app() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApp(mtm);
+    app.unhide(None);
+    app.activate();
+}
+
+#[cfg(target_os = "macos")]
+fn app_is_active() -> bool {
+    MainThreadMarker::new().is_some_and(|mtm| NSApp(mtm).isActive())
+}
+
+#[cfg(target_os = "macos")]
+fn raise_webview(window: &tauri::WebviewWindow) {
+    let _ = window.unminimize();
+    let _ = window.show();
+    if let Ok(ptr) = window.ns_window() {
+        order_raw_window(ptr);
     }
 }
 
 #[cfg(target_os = "macos")]
-fn present_main_window(app: &tauri::AppHandle) {
-    let _ = tray::show_main_window_with_tab(app, None);
-    // AppKit can order the window back out after applicationShouldHandleReopen
-    // returns. Show again on the next main-thread turn so the Dock click sticks.
-    let deferred = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        let _ = tray::show_main_window_with_tab(&deferred, None);
-    });
+fn raise_window(window: &tauri::Window) {
+    let _ = window.unminimize();
+    let _ = window.show();
+    if let Ok(ptr) = window.ns_window() {
+        order_raw_window(ptr);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn order_raw_window(ptr: *mut std::ffi::c_void) {
+    if ptr.is_null() {
+        return;
+    }
+    let window = unsafe { &*(ptr as *const NSWindow) };
+    if window.isMiniaturized() {
+        window.deminiaturize(None);
+    }
+    window.makeKeyAndOrderFront(None);
+    if !app_is_active() {
+        window.orderFrontRegardless();
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -211,6 +308,15 @@ fn should_restore_on_dock_click(has_visible_windows: bool, any_window_on_screen:
     !has_visible_windows || !any_window_on_screen
 }
 
+#[cfg(target_os = "macos")]
+fn should_raise_on_reopen(
+    has_visible_windows: bool,
+    any_window_on_screen: bool,
+    app_is_active: bool,
+) -> bool {
+    !app_is_active || should_restore_on_dock_click(has_visible_windows, any_window_on_screen)
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod dock_reopen_tests {
     use super::should_restore_on_dock_click;
@@ -229,5 +335,24 @@ mod dock_reopen_tests {
     #[test]
     fn leaves_an_open_window_alone() {
         assert!(!should_restore_on_dock_click(true, true));
+    }
+
+    #[test]
+    fn raises_a_background_window() {
+        assert!(super::should_raise_on_reopen(true, true, false));
+        assert!(!super::should_raise_on_reopen(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod widget_url_tests {
+    use super::is_widget_launch_url;
+
+    #[test]
+    fn accepts_selah_open_urls() {
+        let url = url::Url::parse("selah://open").unwrap();
+        assert!(is_widget_launch_url(&url));
+        let other = url::Url::parse("https://example.com").unwrap();
+        assert!(!is_widget_launch_url(&other));
     }
 }
