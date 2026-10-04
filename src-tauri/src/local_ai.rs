@@ -4,6 +4,8 @@
 //! actually runs inference. The app binary itself stays free of a hard
 //! FoundationModels / Swift runtime dependency so macOS 11–25 can still launch.
 
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
+
 use crate::ai::ChatMessage;
 use crate::local_ai_support;
 use serde::Deserialize;
@@ -29,7 +31,9 @@ pub const APPLE_MAX_RESPONSE_TOKENS: u32 = APPLE_RESPONSE_RESERVE_TOKENS as u32;
 /// Extra reply room when the caller must return one JSON object.
 pub const APPLE_JSON_RESPONSE_RESERVE_TOKENS: usize = 1280;
 
+#[cfg(target_os = "macos")]
 const RTLD_NOW: i32 = 2;
+#[cfg(target_os = "macos")]
 const RTLD_LOCAL: i32 = 4;
 
 #[derive(Debug, Clone)]
@@ -85,12 +89,15 @@ pub struct BridgeStatus {
     pub context_size: i64,
 }
 
+#[cfg(target_os = "macos")]
 static CANCEL_FLAGS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+#[cfg(target_os = "macos")]
 static INFERENCE_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn unload_model() {}
 
+#[cfg(target_os = "macos")]
 pub fn cancel_inference(gen_id: &str) {
     if gen_id.is_empty() {
         return;
@@ -105,6 +112,7 @@ pub fn cancel_inference(gen_id: &str) {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn clear_inference_cancel(gen_id: &str) {
     if gen_id.is_empty() {
         return;
@@ -119,6 +127,7 @@ pub fn clear_inference_cancel(gen_id: &str) {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn is_cancelled(gen_id: &str) -> bool {
     if gen_id.is_empty() {
         return false;
@@ -129,10 +138,12 @@ fn is_cancelled(gen_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "macos")]
 pub fn run_inference(req: InferenceRequest) -> Result<String, String> {
     run_local(&req, None)
 }
 
+#[cfg(target_os = "macos")]
 pub fn run_inference_streaming<F: FnMut(&str, bool)>(
     req: InferenceRequest,
     mut on_chunk: F,
@@ -147,6 +158,7 @@ pub fn run_inference_streaming<F: FnMut(&str, bool)>(
     result
 }
 
+#[cfg(target_os = "macos")]
 fn run_local(
     req: &InferenceRequest,
     on_chunk: Option<&mut dyn FnMut(&str, bool)>,
@@ -206,6 +218,7 @@ fn run_local(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn call_generate(
     api: &BridgeApi,
     request: *const c_char,
@@ -226,6 +239,7 @@ fn call_generate(
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn query_availability() -> Result<BridgeStatus, String> {
     if local_ai_support::macos_major_version().unwrap_or(0) < 26 {
         return Ok(BridgeStatus {
@@ -835,10 +849,12 @@ pub(crate) fn apple_request_parts(messages: &[ChatMessage], prefill: &str) -> (S
     (instructions.join("\n\n"), turns.join("\n\n"))
 }
 
+#[cfg(target_os = "macos")]
 struct ChunkCtx<'a> {
     callback: &'a mut dyn FnMut(&str, bool),
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" fn chunk_trampoline(chunk: *const c_char, is_final: c_int, ctx: *mut c_void) {
     if chunk.is_null() || ctx.is_null() || is_final != 0 {
         return;
@@ -851,6 +867,7 @@ unsafe extern "C" fn chunk_trampoline(chunk: *const c_char, is_final: c_int, ctx
     (ctx.callback)(&text, false);
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Deserialize)]
 struct AvailabilityJson {
     supported: bool,
@@ -864,6 +881,7 @@ struct AvailabilityJson {
     context_size: i64,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Deserialize)]
 struct GenerateJson {
     ok: bool,
@@ -890,6 +908,7 @@ pub(crate) fn recover_context_limit(error: &str, partial: &str) -> Result<String
     }
 }
 
+#[cfg(target_os = "macos")]
 fn parse_generate_response(raw: &str) -> Result<String, String> {
     let parsed: GenerateJson = serde_json::from_str(raw)
         .map_err(|error| format!("推論結果を読み取れません: {error}: {raw}"))?;
@@ -906,12 +925,18 @@ fn parse_generate_response(raw: &str) -> Result<String, String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 type FreeFn = unsafe extern "C" fn(*mut c_char);
+#[cfg(target_os = "macos")]
 type AvailabilityFn = unsafe extern "C" fn() -> *mut c_char;
+#[cfg(target_os = "macos")]
 type ChunkFn = unsafe extern "C" fn(*const c_char, c_int, *mut c_void);
+#[cfg(target_os = "macos")]
 type GenerateFn = unsafe extern "C" fn(*const c_char, Option<ChunkFn>, *mut c_void) -> *mut c_char;
+#[cfg(target_os = "macos")]
 type CancelFn = unsafe extern "C" fn(*const c_char);
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct BridgeApi {
     free: FreeFn,
@@ -921,11 +946,13 @@ struct BridgeApi {
     clear_cancel: CancelFn,
 }
 
+#[cfg(target_os = "macos")]
 struct BridgeString {
     ptr: *mut c_char,
     free: FreeFn,
 }
 
+#[cfg(target_os = "macos")]
 impl BridgeString {
     fn as_str(&self) -> Result<&str, String> {
         if self.ptr.is_null() {
@@ -937,6 +964,7 @@ impl BridgeString {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for BridgeString {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -946,15 +974,18 @@ impl Drop for BridgeString {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn loaded_api() -> Option<BridgeApi> {
     library().ok()
 }
 
+#[cfg(target_os = "macos")]
 fn library() -> Result<BridgeApi, String> {
     static LOADED: OnceLock<Result<BridgeApi, String>> = OnceLock::new();
     LOADED.get_or_init(load_library).clone()
 }
 
+#[cfg(target_os = "macos")]
 fn load_library() -> Result<BridgeApi, String> {
     let path = library_path()?;
     let c_path = CString::new(path.to_string_lossy().as_bytes())
@@ -977,6 +1008,7 @@ fn load_library() -> Result<BridgeApi, String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn library_path() -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Ok(path) = std::env::var("SELAH_APPLE_AI_LIB") {
@@ -999,6 +1031,7 @@ fn library_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "Apple Intelligence ブリッジが見つかりません".to_string())
 }
 
+#[cfg(target_os = "macos")]
 unsafe fn transmute_symbol<T>(handle: *mut c_void, name: &str) -> Result<T, String> {
     let c_name = CString::new(name).map_err(|_| format!("symbol {name} is invalid"))?;
     let symbol = unsafe { dlsym(handle, c_name.as_ptr()) };
@@ -1011,6 +1044,7 @@ unsafe fn transmute_symbol<T>(handle: *mut c_void, name: &str) -> Result<T, Stri
     Ok(unsafe { std::mem::transmute_copy(&symbol) })
 }
 
+#[cfg(target_os = "macos")]
 fn last_dlerror() -> String {
     let ptr = unsafe { dlerror() };
     if ptr.is_null() {
@@ -1021,6 +1055,7 @@ fn last_dlerror() -> String {
         .into_owned()
 }
 
+#[cfg(target_os = "macos")]
 extern "C" {
     fn dlopen(path: *const c_char, flags: i32) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
@@ -1166,6 +1201,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 fn braces_balanced(text: &str) -> bool {
     let mut depth = 0i32;
     let mut in_string = false;

@@ -33,7 +33,6 @@ pub(crate) mod keychain;
 mod kwic_client;
 mod kwic_commands;
 mod live;
-#[cfg(target_os = "macos")]
 pub mod local_ai;
 pub mod local_ai_support;
 mod luna_client;
