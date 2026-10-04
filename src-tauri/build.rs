@@ -52,6 +52,13 @@ fn compile_apple_intelligence_bridge() -> Result<(), String> {
     if swiftc.is_empty() {
         return Err("swiftc was not found. Install the Xcode Command Line Tools.".into());
     }
+    let host_target = swift_target(&host_arch(), "26.0").unwrap_or_default();
+    let fm27 = foundation_models_27(swiftc, sdk.trim(), &host_target);
+    if !fm27 {
+        println!(
+            "cargo:warning=FoundationModels SDK has no macOS 27 symbols; building the macOS 26 Apple Intelligence bridge"
+        );
+    }
 
     let slices_dir = manifest_dir.join("target/apple-ai-slices");
     std::fs::create_dir_all(&slices_dir).map_err(|error| error.to_string())?;
@@ -62,8 +69,8 @@ fn compile_apple_intelligence_bridge() -> Result<(), String> {
             continue;
         };
         let slice = slices_dir.join(format!("libselah_apple_ai_{arch}.dylib"));
-        let status = Command::new(swiftc)
-            .args([
+        let mut command = Command::new(swiftc);
+        command.args([
                 "-emit-library",
                 "-parse-as-library",
                 "-module-name",
@@ -87,8 +94,12 @@ fn compile_apple_intelligence_bridge() -> Result<(), String> {
                 "-install_name",
                 "-Xlinker",
                 "@rpath/libselah_apple_ai.dylib",
-                "-o",
-            ])
+            ]);
+        if fm27 {
+            command.args(["-D", "SELAH_FM_27"]);
+        }
+        let status = command
+            .args(["-o"])
             .arg(&slice)
             .arg(&source)
             .status()
@@ -116,6 +127,41 @@ fn compile_apple_intelligence_bridge() -> Result<(), String> {
         .status();
     println!("cargo:rustc-env=SELAH_APPLE_AI_LIB={}", bundled.display());
     Ok(())
+}
+
+
+#[cfg(target_os = "macos")]
+fn foundation_models_27(swiftc: &str, sdk: &str, target: &str) -> bool {
+    if target.is_empty() {
+        return false;
+    }
+    let dir = std::env::temp_dir().join(format!("selah-fm-probe-{}", std::process::id()));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    let source = dir.join("probe.swift");
+    let snippet = "import FoundationModels\n@available(macOS 27.0, *)\nfunc selahProbe(_ error: LanguageModelError) {}\n";
+    if std::fs::write(&source, snippet).is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return false;
+    }
+    let ok = Command::new(swiftc)
+        .args([
+            "-parse-as-library",
+            "-typecheck",
+            "-target",
+            target,
+            "-sdk",
+            sdk,
+            "-framework",
+            "Foundation",
+        ])
+        .arg(&source)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    let _ = std::fs::remove_dir_all(&dir);
+    ok
 }
 
 #[cfg(target_os = "macos")]

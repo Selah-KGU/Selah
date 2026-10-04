@@ -111,6 +111,7 @@ private func describe(_ error: Error) -> (String, Bool) {
             return (generation.localizedDescription, false)
         }
     }
+#if SELAH_FM_27
     if #available(macOS 27.0, *) {
         if let modelError = error as? LanguageModelError {
             switch modelError {
@@ -143,6 +144,7 @@ private func describe(_ error: Error) -> (String, Bool) {
             }
         }
     }
+#endif
     let text = error.localizedDescription
     if text.isEmpty {
         return ("Apple Intelligence の推論に失敗しました。", false)
@@ -151,12 +153,14 @@ private func describe(_ error: Error) -> (String, Bool) {
 }
 
 private func modelDisplayName() -> String {
+#if SELAH_FM_27
     if #available(macOS 27.0, *) {
         let name = SystemLanguageModel.default.variant.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !name.isEmpty {
             return name
         }
     }
+#endif
     return "Apple Intelligence"
 }
 
@@ -275,11 +279,13 @@ private func isContextLimit(_ error: Error) -> Bool {
             return true
         }
     }
+#if SELAH_FM_27
     if #available(macOS 27.0, *) {
         if let modelError = error as? LanguageModelError, case .contextSizeExceeded = modelError {
             return true
         }
     }
+#endif
     return false
 }
 
@@ -943,7 +949,11 @@ private func finishPartial(_ text: String, _ callback: SendableCallback) -> Stri
 private func generationOptions(temperature: Double, greedy: Bool, responseTokens: Int) -> GenerationOptions {
     var options = GenerationOptions()
     if greedy {
+#if SELAH_FM_27
         options.samplingMode = .greedy
+#else
+        options.sampling = .greedy
+#endif
     } else {
         options.temperature = min(max(temperature, 0), 2)
     }
