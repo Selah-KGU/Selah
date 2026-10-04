@@ -47,6 +47,8 @@ Selah（以下「本アプリ」）は、関西学院大学の教務システム
 | KG-Course (kg-course.kwansei.ac.jp) | SSO 認証 | ログイン資格情報 |
 | Open-Meteo API | 天気情報の取得 | 西宮上ケ原キャンパスの固定座標のみ（位置情報は取得しません） |
 | OpenAI API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
+| OpenRouter API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
+| DeepSeek API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
 | Google Gemini API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
 | Google Calendar API（任意） | カレンダー同期 | 授業名・教室・時限（OAuth 認証が必要） |
 
@@ -62,9 +64,11 @@ Selah（以下「本アプリ」）は、関西学院大学の教務システム
 
 ### AI 機能について
 
-AI 機能（履修分析・学習計画・通知サマリー）は**任意の機能**であり、ユーザーが API キーを設定した場合にのみ使用されます。AI 機能を使用する際、授業情報・成績情報・シラバス情報の一部が OpenAI または Google のサーバーに送信されます。各社のプライバシーポリシーもあわせてご確認ください。
+AI 機能（履修分析・学習計画・通知サマリー）は**任意の機能**であり、ユーザーが API キーを設定した場合にのみ使用されます。AI 機能を使用する際、授業情報・成績情報・シラバス情報の一部が、選択した提供元（OpenAI、OpenRouter、DeepSeek または Google）のサーバーに送信されます。各社のプライバシーポリシーもあわせてご確認ください。
 
 - [OpenAI プライバシーポリシー](https://openai.com/privacy)
+- [OpenRouter プライバシーポリシー](https://openrouter.ai/privacy)
+- [DeepSeek プライバシーポリシー](https://cdn.deepseek.com/policies/ja-JP/deepseek-privacy-policy.html)
 - [Google プライバシーポリシー](https://policies.google.com/privacy)
 
 ## データの共有

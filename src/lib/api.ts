@@ -1,11 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { isAuxiliarySurface } from "./surfaceKind";
 import { openExternalUrl } from "./system";
 import { startTrayStatus, stopTrayStatus } from "./trayStatus";
 import {
   DETAIL_GENERATED_TODO_KEY,
   LIVE_GENERATED_TODO_KEY,
-  repairMailSourceUrl,
+  generatedTodoIdentityKey,
+  mergeDetailTodosIntoLunaTodos,
+  mergeGeneratedTodosIntoLunaTodos,
+  mergeGeneratedTodosIntoSchedule,
+  repairDetailGeneratedTodoSourceUrls,
 } from "./generatedTodoSupport";
 import type {
   GradesData,
@@ -22,9 +27,10 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis, LunaTodoItem } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, requestedMailMessageId } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, isCacheFresh, hasMemoryCache, getCacheStamp, touchCacheTimestamp, rememberRawCache, readRawCache, hasRawCache, knownRawUpdatedAt, requestedMailMessageId } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
+import type { LiveGeneratedTodo, LiveTodoSuggestion } from "./liveSessionApi";
 
 /** Check if demo mode is active (no async import needed — just reads localStorage). */
 function _isDemo(): boolean {
@@ -63,7 +69,10 @@ function writeDemoJson<T>(key: string, value: T): void {
 // re-imports do not stack duplicate handlers on the Tauri event bus.
 const __SELAH_LISTENERS_KEY = Symbol.for("selah.api.globalListeners");
 const __selahGlobal = globalThis as unknown as Record<symbol, boolean>;
-if (!__selahGlobal[__SELAH_LISTENERS_KEY]) {
+// Each WebView is its own realm, so this guard does not stop auxiliary windows
+// from subscribing. Those windows import api helpers but must not fan out
+// app-wide cache sync on every backend emit.
+if (!isAuxiliarySurface() && !__selahGlobal[__SELAH_LISTENERS_KEY]) {
   __selahGlobal[__SELAH_LISTENERS_KEY] = true;
 
   listen("luna-login-success", () => {
@@ -1285,36 +1294,204 @@ async function loadBackendManagedCache(key: string): Promise<any | null> {
   }
 }
 
-async function syncBackendManagedKeys(keys: string[]): Promise<void> {
+
+interface CacheBatchRow {
+  key: string;
+  updated_at: number;
+  unchanged: boolean;
+  json?: string | null;
+}
+
+interface FrontendCacheBatch {
+  rows: CacheBatchRow[];
+  schedule_updated_at: number;
+  live_todo_updated_at: number;
+  schedule_unchanged: boolean;
+  schedule?: ScheduleResponse | null;
+}
+
+function cacheDbKey(key: string): string {
+  return BACKEND_CACHE_DB_KEY[key] ?? key;
+}
+
+function parseCacheJson<T>(json: string | null | undefined, key: string): T | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as T;
+  } catch (e) {
+    console.warn("[Selah] backend cache parse failed for " + key + ":", e);
+    return null;
+  }
+}
+
+function parseTodoArray(json: string | null | undefined): any[] {
+  const parsed = parseCacheJson<unknown>(json, "generated_todo");
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function rowByKey(rows: CacheBatchRow[], key: string): CacheBatchRow | undefined {
+  return rows.find((row) => row.key === key);
+}
+
+function knownScheduleStamp(): string | null {
+  if (!hasMemoryCache("schedule_data")) return null;
+  const stamp = getCacheStamp("schedule_data");
+  return typeof stamp === "string" ? stamp : null;
+}
+
+function knownUpdatedAtFor(dbKey: string, memoryKey: string): number | null {
+  if (!hasMemoryCache(memoryKey) || !hasRawCache(dbKey)) return null;
+  return knownRawUpdatedAt(dbKey);
+}
+
+function liveTodosFromRow(row: CacheBatchRow | undefined): any[] {
+  if (row && row.unchanged && hasRawCache(LIVE_GENERATED_TODO_KEY)) {
+    return readRawCache<any[]>(LIVE_GENERATED_TODO_KEY) ?? [];
+  }
+  if (!row || row.json == null) return readRawCache<any[]>(LIVE_GENERATED_TODO_KEY) ?? [];
+  const parsed = parseTodoArray(row.json);
+  rememberRawCache(LIVE_GENERATED_TODO_KEY, row.updated_at, parsed);
+  return parsed;
+}
+
+async function detailTodosFromRow(row: CacheBatchRow | undefined): Promise<any[]> {
+  if (row && row.unchanged && hasRawCache(DETAIL_GENERATED_TODO_KEY)) {
+    return readRawCache<any[]>(DETAIL_GENERATED_TODO_KEY) ?? [];
+  }
+  if (!row || row.json == null) return readRawCache<any[]>(DETAIL_GENERATED_TODO_KEY) ?? [];
+  const parsed = parseTodoArray(row.json);
+  const repaired = await repairDetailGeneratedTodoSourceUrls(parsed, getDataCache, saveDataCache);
+  rememberRawCache(DETAIL_GENERATED_TODO_KEY, row.updated_at, repaired);
+  return repaired;
+}
+
+async function syncBackendManagedKeys(keys: string[], onlyIfStale = false): Promise<void> {
   const uniqueKeys = [...new Set(keys.filter(Boolean))];
   if (!uniqueKeys.length || _isDemo()) return;
+  const pending = uniqueKeys.filter((key) => !(onlyIfStale && isCacheFresh(key, 5 * 60 * 1000)));
+  if (!pending.length) return;
 
-  await Promise.all(uniqueKeys.map(async (key) => {
-    const data = await loadBackendManagedCache(key);
-    if (data == null) return;
+  const includeSchedule = pending.includes("schedule_data");
+  const needsLiveTodos = includeSchedule || pending.includes("luna_todo");
+  const needsDetailTodos = pending.includes("luna_todo");
+  const queries: Array<{ key: string; knownUpdatedAt: number | null }> = [];
+  const seenQuery = new Set<string>();
+  const pushQuery = (dbKey: string, knownUpdatedAt: number | null) => {
+    if (seenQuery.has(dbKey)) return;
+    seenQuery.add(dbKey);
+    queries.push({ key: dbKey, knownUpdatedAt });
+  };
+
+  for (const key of pending) {
+    if (key === "schedule_data") continue;
+    pushQuery(cacheDbKey(key), knownUpdatedAtFor(cacheDbKey(key), key));
+  }
+  if (needsLiveTodos) {
+    pushQuery(
+      LIVE_GENERATED_TODO_KEY,
+      hasRawCache(LIVE_GENERATED_TODO_KEY) ? knownRawUpdatedAt(LIVE_GENERATED_TODO_KEY) : null,
+    );
+  }
+  if (needsDetailTodos) {
+    pushQuery(
+      DETAIL_GENERATED_TODO_KEY,
+      hasRawCache(DETAIL_GENERATED_TODO_KEY) ? knownRawUpdatedAt(DETAIL_GENERATED_TODO_KEY) : null,
+    );
+  }
+
+  const batch = await invoke<FrontendCacheBatch>("get_frontend_cache_batch", {
+    queries,
+    includeSchedule,
+    knownScheduleStamp: includeSchedule ? knownScheduleStamp() : null,
+  });
+  const rows = batch.rows ?? [];
+
+  if (includeSchedule) {
+    const stamp = String(batch.schedule_updated_at) + ":" + String(batch.live_todo_updated_at);
+    if (batch.schedule_unchanged && hasMemoryCache("schedule_data")) {
+      touchCacheTimestamp("schedule_data");
+    } else if (batch.schedule) {
+      const generated = liveTodosFromRow(rowByKey(rows, LIVE_GENERATED_TODO_KEY));
+      replaceCacheEntry(
+        "schedule_data",
+        mergeGeneratedTodosIntoSchedule(batch.schedule, generated),
+        Date.now(),
+        stamp,
+      );
+    }
+  }
+
+  if (pending.includes("luna_todo")) {
+    const lunaRow = rowByKey(rows, "luna_todo");
+    const liveRow = rowByKey(rows, LIVE_GENERATED_TODO_KEY);
+    const detailRow = rowByKey(rows, DETAIL_GENERATED_TODO_KEY);
+    const liveChanged = !!liveRow && !liveRow.unchanged;
+    const detailChanged = !!detailRow && !detailRow.unchanged;
+    if (lunaRow?.unchanged && !liveChanged && !detailChanged && hasMemoryCache("luna_todo")) {
+      touchCacheTimestamp("luna_todo");
+    } else {
+      const generated = liveTodosFromRow(liveRow);
+      const detail = await detailTodosFromRow(detailRow);
+      let base: unknown = [];
+      if (lunaRow?.unchanged && hasMemoryCache("luna_todo")) {
+        base = getCached("luna_todo") ?? [];
+      } else if (lunaRow?.json) {
+        const parsed = parseCacheJson<unknown>(lunaRow.json, "luna_todo");
+        base = Array.isArray(parsed) ? parsed : [];
+        if (parsed != null) rememberRawCache("luna_todo", lunaRow.updated_at, parsed);
+      }
+      const nothingStored = !lunaRow?.json && !lunaRow?.unchanged && generated.length === 0 && detail.length === 0;
+      if (!nothingStored) {
+        const merged = mergeDetailTodosIntoLunaTodos(
+          mergeGeneratedTodosIntoLunaTodos(base, generated),
+          detail,
+        );
+        const stamp = String(lunaRow?.updated_at ?? 0) + ":" + String(liveRow?.updated_at ?? 0) + ":" + String(detailRow?.updated_at ?? 0);
+        replaceCacheEntry("luna_todo", merged, Date.now(), stamp);
+      }
+    }
+  }
+
+  for (const key of pending) {
+    if (key === "schedule_data" || key === "luna_todo") continue;
+    const dbKey = cacheDbKey(key);
+    const row = rowByKey(rows, dbKey);
+    if (!row) continue;
+    if (row.unchanged && hasMemoryCache(key)) {
+      touchCacheTimestamp(key);
+      if (key === "ai_todo_analysis") {
+        const ageSecs = row.updated_at ? Date.now() / 1000 - row.updated_at : Infinity;
+        if (ageSecs > AI_TODO_ANALYSIS_TTL_SECS) aiTodoStore.set(null);
+      }
+      continue;
+    }
+    if (!row.json) continue;
+    const data = parseCacheJson<any>(row.json, key);
+    if (data == null) continue;
+    rememberRawCache(dbKey, row.updated_at, data);
     if (key === "ai_notif_analysis") {
       aiNotifStore.set({
         result: data.result ?? data,
         sources: Array.isArray(data.sources) ? data.sources : [],
         timestamp: typeof data.generated_at === "number" ? data.generated_at * 1000 : Date.now(),
       });
-      return;
+      replaceCacheEntry(key, data, Date.now(), row.updated_at);
+      continue;
     }
     if (key === "ai_todo_analysis") {
-      // 有効期限を過ぎた分析結果はストアに載せない（「再分析」を促すため）。
-      const updatedAt = await getDataCacheUpdatedAt("ai_todo_analysis");
-      const ageSecs = updatedAt ? Date.now() / 1000 - updatedAt : Infinity;
+      const ageSecs = row.updated_at ? Date.now() / 1000 - row.updated_at : Infinity;
+      replaceCacheEntry(key, data, Date.now(), row.updated_at);
       if (ageSecs > AI_TODO_ANALYSIS_TTL_SECS) {
         aiTodoStore.set(null);
-        return;
+        continue;
       }
       const result = { ...(data as Record<string, unknown>) };
       delete result._cache_fingerprint;
-      aiTodoStore.set({ result, timestamp: updatedAt ? updatedAt * 1000 : Date.now() });
-      return;
+      aiTodoStore.set({ result, timestamp: row.updated_at ? row.updated_at * 1000 : Date.now() });
+      continue;
     }
-    replaceCacheEntry(key, data);
-  }));
+    replaceCacheEntry(key, data, Date.now(), row.updated_at);
+  }
 
   cacheStatus.update((s) => ({ ...s, lastUpdated: Date.now() }));
 }
@@ -1332,7 +1509,7 @@ function refreshVisibleBackendCaches() {
     "exams",
     "ai_notif_analysis",
     "ai_todo_analysis",
-  ]);
+  ], true);
 }
 
 async function syncBackendSessionStatusNow(): Promise<void> {
@@ -1704,348 +1881,31 @@ export async function aiChat(messages: AiChatMessage[]): Promise<string> {
   return invoke<string>("ai_chat", { messages });
 }
 
-export interface LiveCourseInfo {
-  course_name: string;
-  course_code: string;
-  room: string;
-  teacher: string;
-  day: number;
-  period: number;
-  time_label: string;
-  is_free_note: boolean;
-}
-
-export interface LiveTranscriptLine {
-  text: string;
-  at: string;
-}
-
-export interface LiveTermExplanation {
-  term: string;
-  explanation: string;
-  source_excerpt?: string;
-  external_source?: string;
-}
-
-export interface LiveWhiteboardNode {
-  id: string;
-  label: string;
-  detail?: string;
-  node_type?: "structure" | "term" | string;
-  kind?: "core" | "support" | "question" | "result" | string;
-  role?: "main" | "branch" | string;
-  parent_id?: string;
-  source_type?: "lecture" | "external" | string;
-  source_excerpt?: string;
-  external_source?: string;
-}
-
-export interface LiveWhiteboardEdge {
-  from: string;
-  to: string;
-  label?: string;
-}
-
-export interface LiveWhiteboard {
-  title: string;
-  layout?: "flow" | "hub" | "compare" | "cycle" | "grid" | string;
-  nodes?: LiveWhiteboardNode[];
-  edges?: LiveWhiteboardEdge[];
-  /** Protocol version. 0 = legacy, 1 = node_type + normalized_by supported. */
-  schema_version?: number;
-  /** Which layer last performed structural normalization: "backend" | "". */
-  normalized_by?: string;
-}
-
-export interface LiveSummaryChunk {
-  title: string;
-  range_label: string;
-  body: string;
-  line_count: number;
-  terms?: LiveTermExplanation[];
-  whiteboard?: LiveWhiteboard | null;
-}
-
-export interface LiveSessionSnapshot {
-  active: boolean;
-  course: LiveCourseInfo | null;
-  started_at: string | null;
-  transcript_lines: LiveTranscriptLine[];
-  pending_lines: LiveTranscriptLine[];
-  summaries: LiveSummaryChunk[];
-  /** Epoch millis when the next periodic summary is due. */
-  next_summary_at_ms?: number | null;
-  /** True while a periodic summary is being generated. */
-  summarizing?: boolean;
-}
-
-export interface LiveSaveResult {
-  saved: boolean;
-  path: string;
-  markdown: string;
-  snapshot: LiveSessionSnapshot;
-  suggested_todos?: LiveTodoSuggestion[];
-  /** TODO/DDL extraction is running in the background; suggestions arrive via
-   *  the `live-todo-suggestions` event. */
-  todos_pending?: boolean;
-}
-
-/** Payload of the `live-todo-suggestions` event. */
-export interface LiveTodoSuggestionsEvent {
-  suggestions: LiveTodoSuggestion[];
-  source_path: string;
-}
-
-export interface LiveTodoSuggestion {
-  title: string;
-  course_name: string;
-  content_type: string;
-  deadline: string;
-  note: string;
-  source_excerpt: string;
-  day: number;
-  period: number;
-}
-
-export interface LiveGeneratedTodo extends LiveTodoSuggestion {
-  id: string;
-  created_at: string;
-  source_path: string;
-  completed_at?: string;
-  archived_at?: string;
-}
-
-const DEMO_LIVE_KEY = "selah-demo-live-session";
-function emptyDemoLiveSession(): LiveSessionSnapshot {
-  return {
-    active: false,
-    course: null,
-    started_at: null,
-    transcript_lines: [],
-    pending_lines: [],
-    summaries: [],
-  };
-}
-
-function loadDemoLiveSession(): LiveSessionSnapshot {
-  if (!_isDemo()) return emptyDemoLiveSession();
-  try {
-    const raw = localStorage.getItem(DEMO_LIVE_KEY);
-    if (!raw) return emptyDemoLiveSession();
-    const parsed = JSON.parse(raw) as Partial<LiveSessionSnapshot>;
-    return {
-      active: parsed.active === true,
-      course: parsed.course ?? null,
-      started_at: parsed.started_at ?? null,
-      transcript_lines: Array.isArray(parsed.transcript_lines) ? parsed.transcript_lines : [],
-      pending_lines: Array.isArray(parsed.pending_lines) ? parsed.pending_lines : [],
-      summaries: Array.isArray(parsed.summaries) ? parsed.summaries : [],
-    };
-  } catch {
-    return emptyDemoLiveSession();
-  }
-}
-
-function saveDemoLiveSession(snapshot: LiveSessionSnapshot): LiveSessionSnapshot {
-  if (_isDemo()) {
-    try { localStorage.setItem(DEMO_LIVE_KEY, JSON.stringify(snapshot)); } catch {}
-  }
-  return snapshot;
-}
-
-function demoLiveCourseMatches(a: LiveCourseInfo | null, b: LiveCourseInfo | null): boolean {
-  if (!a || !b) return false;
-  return a.course_name === b.course_name && a.day === b.day && a.period === b.period;
-}
-
-function buildDemoLiveSummaries(lines: LiveTranscriptLine[]): LiveSummaryChunk[] {
-  if (lines.length === 0) return [];
-  const recent = lines.slice(-3).map((line) => line.text).join(" / ");
-  return [{
-    title: "デモ用要約",
-    range_label: "最近",
-    body: `### 全体要約\n${recent || "このセッションでは授業内容の要点がまとめられます。"}\n\n### 次に見るポイント\n- キーワードを 2〜3 個に絞って見返す\n- 宿題や小テストに関係する箇所を先に確認する`,
-    line_count: lines.length,
-    terms: [
-      {
-        term: "メタ認知",
-        explanation: "自分の理解度や学習方法を客観的に確認する考え方。復習時は、何が分かっていて何が曖昧かを分けて見る観点になる。",
-        source_excerpt: "キーワードを短くメモし、あとで見返しやすい形に整理",
-        external_source: "Flavell, J. H. (1979), Metacognition and cognitive monitoring, American Psychologist",
-      },
-      {
-        term: "想起練習",
-        explanation: "資料を眺めるだけでなく、覚えている内容を自分で思い出す復習方法。小テスト対策では、要点を閉じた状態で説明できるかを確認する。",
-        source_excerpt: "課題や小テストにつながるポイント",
-        external_source: "Roediger, H. L. & Karpicke, J. D. (2006), Test-enhanced learning, Psychological Science",
-      },
-    ],
-    whiteboard: {
-      title: "知識整理の流れ",
-      layout: "flow",
-      nodes: [
-        { id: "n1", label: "キーワード", detail: "短く拾う", node_type: "structure", kind: "core", role: "main", source_type: "lecture", source_excerpt: "重要語を先に拾う" },
-        { id: "n2", label: "理解確認", detail: "説明できるか", node_type: "structure", kind: "support", role: "branch", parent_id: "n1", source_type: "lecture", source_excerpt: "自分の言葉で説明" },
-        { id: "n3", label: "想起練習", detail: "外部補足: 記憶定着の方法", node_type: "term", kind: "support", role: "branch", parent_id: "n1", source_type: "external", external_source: "Roediger & Karpicke (2006), Psychological Science" },
-        { id: "n4", label: "課題接続", detail: "提出物へつなぐ", node_type: "structure", kind: "result", role: "main", source_type: "lecture", source_excerpt: "課題や小テストにつながるポイント" },
-      ],
-      edges: [
-        { from: "n1", to: "n2", label: "整理" },
-        { from: "n1", to: "n3", label: "" },
-        { from: "n2", to: "n4", label: "活用" },
-      ],
-    },
-  }];
-}
-
-function buildDemoLiveTranscript(course: LiveCourseInfo): LiveTranscriptLine[] {
-  const now = new Date();
-  const at = (offsetMin: number) =>
-    new Date(now.getTime() + offsetMin * 60_000).toLocaleTimeString("ja-JP", {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  const name = course.course_name || "自由ノート";
-  return [
-    { at: at(0), text: `${name} のデモセッションを開始しました。今日のテーマと到達目標を確認します。` },
-    { at: at(2), text: "授業で強調されたキーワードを短くメモし、あとで見返しやすい形に整理します。" },
-    { at: at(4), text: "課題や小テストにつながるポイントを先に押さえておくと復習が楽になります。" },
-  ];
-}
-
-export async function liveGetSession(): Promise<LiveSessionSnapshot> {
-  if (_isDemo()) return loadDemoLiveSession();
-  return invoke<LiveSessionSnapshot>("live_get_session");
-}
-
-export async function livePeekDayCache(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
-  if (_isDemo()) {
-    const snapshot = loadDemoLiveSession();
-    return demoLiveCourseMatches(snapshot.course, course) ? snapshot : emptyDemoLiveSession();
-  }
-  return invoke<LiveSessionSnapshot>("live_peek_day_cache", { course });
-}
-
-export async function liveStartSession(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
-  if (_isDemo()) {
-    const transcript_lines = buildDemoLiveTranscript(course);
-    return saveDemoLiveSession({
-      active: true,
-      course,
-      started_at: new Date().toISOString(),
-      transcript_lines,
-      pending_lines: [],
-      summaries: buildDemoLiveSummaries(transcript_lines),
-    });
-  }
-  return invoke<LiveSessionSnapshot>("live_start_session", { course });
-}
-
-export async function liveAppendTranscript(text: string): Promise<LiveSessionSnapshot> {
-  if (_isDemo()) {
-    const snapshot = loadDemoLiveSession();
-    if (!snapshot.active || !text.trim()) return snapshot;
-    const next: LiveSessionSnapshot = {
-      ...snapshot,
-      transcript_lines: [
-        ...snapshot.transcript_lines,
-        {
-          text: text.trim(),
-          at: new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }),
-        },
-      ],
-      pending_lines: [],
-    };
-    return saveDemoLiveSession(next);
-  }
-  return invoke<LiveSessionSnapshot>("live_append_transcript", { text });
-}
-
-export async function liveFlushSummary(force: boolean = false): Promise<LiveSessionSnapshot> {
-  if (_isDemo()) {
-    const snapshot = loadDemoLiveSession();
-    if (!force && snapshot.transcript_lines.length === 0) return snapshot;
-    const next = {
-      ...snapshot,
-      summaries: buildDemoLiveSummaries(snapshot.transcript_lines),
-    };
-    return saveDemoLiveSession(next);
-  }
-  return invoke<LiveSessionSnapshot>("live_flush_summary", { force });
-}
-
-export async function liveGenerateOverallSummary(): Promise<string> {
-  if (_isDemo()) {
-    const snapshot = await liveFlushSummary(true);
-    const content = snapshot.transcript_lines.map((line) => line.text).join(" / ");
-    return `### 全体要約\n${content || "このセッションの内容はまだありません。"}\n\n### 今回の論点\n- 現在までの文字起こし全体を対象に生成したデモ要約`;
-  }
-  return invoke<string>("live_generate_overall_summary");
-}
-
-export async function liveCancelSession(): Promise<void> {
-  if (_isDemo()) {
-    saveDemoLiveSession(emptyDemoLiveSession());
-    return;
-  }
-  return invoke<void>("live_cancel_session");
-}
-
-export async function liveClearDayCache(course: LiveCourseInfo): Promise<void> {
-  if (_isDemo()) {
-    const snapshot = loadDemoLiveSession();
-    if (demoLiveCourseMatches(snapshot.course, course)) {
-      saveDemoLiveSession(emptyDemoLiveSession());
-    }
-    return;
-  }
-  return invoke<void>("live_clear_day_cache", { course });
-}
-
-export async function liveFinishSession(): Promise<LiveSaveResult> {
-  if (_isDemo()) {
-    const snapshot = await liveFlushSummary(true);
-    const saved = snapshot.transcript_lines.length > 0;
-    const markdown = saved
-      ? `# ${snapshot.course?.course_name ?? "LIVE Demo"}\n\n${snapshot.summaries.map((chunk) => chunk.body).join("\n\n")}\n\n## Transcript\n${snapshot.transcript_lines.map((line) => `- ${line.at} ${line.text}`).join("\n")}`
-      : "";
-    const result: LiveSaveResult = {
-      saved,
-      path: saved ? `/DemoNotes/${(snapshot.course?.course_name ?? "live-demo").replace(/[^\w\u3040-\u30ff\u4e00-\u9faf-]+/g, "_")}.md` : "",
-      markdown,
-      snapshot: emptyDemoLiveSession(),
-    };
-    saveDemoLiveSession(emptyDemoLiveSession());
-    return result;
-  }
-  return invoke<LiveSaveResult>("live_finish_session");
-}
-
-type GeneratedTodoIdentity = {
-  course_name?: string;
-  title?: string;
-  deadline?: string;
-  completed_at?: string;
-  archived_at?: string;
-};
-
-function normalizeTodoIdentityKey(item: GeneratedTodoIdentity): string {
-  return [item.course_name, item.title, item.deadline]
-    .map((part) => (part || "").trim().toLowerCase().replace(/\s+/g, " "))
-    .join("|");
-}
-
-function normalizeGeneratedTodoKey(item: GeneratedTodoIdentity): string {
-  return normalizeTodoIdentityKey(item);
-}
-
-function isActiveGeneratedTodo(item: LiveGeneratedTodo): boolean {
-  return isActiveGeneratedTodoItem(item);
-}
-
-function isActiveGeneratedTodoItem(item: GeneratedTodoIdentity): boolean {
-  return !item.completed_at && !item.archived_at;
-}
+export type {
+  LiveCourseInfo,
+  LiveTranscriptLine,
+  LiveTermExplanation,
+  LiveWhiteboardNode,
+  LiveWhiteboardEdge,
+  LiveWhiteboard,
+  LiveSummaryChunk,
+  LiveSessionSnapshot,
+  LiveSaveResult,
+  LiveTodoSuggestionsEvent,
+  LiveTodoSuggestion,
+  LiveGeneratedTodo,
+} from "./liveSessionApi";
+export {
+  liveGetSession,
+  livePeekDayCache,
+  liveStartSession,
+  liveAppendTranscript,
+  liveFlushSummary,
+  liveGenerateOverallSummary,
+  liveCancelSession,
+  liveClearDayCache,
+  liveFinishSession,
+} from "./liveSessionApi";
 
 async function readGeneratedTodos<T>(cacheKey: string): Promise<T[]> {
   if (_isDemo()) return [];
@@ -2059,31 +1919,6 @@ async function readGeneratedTodos<T>(cacheKey: string): Promise<T[]> {
   }
 }
 
-async function repairDetailGeneratedTodoSourceUrls(items: DetailGeneratedTodo[]): Promise<DetailGeneratedTodo[]> {
-  const mailTodos = items.filter((item) => item.source_url?.startsWith("mail://"));
-  if (mailTodos.length === 0) return items;
-  const inboxJson = await getDataCache("mail_inbox");
-  if (!inboxJson) return items;
-  let messages: MailMessage[] = [];
-  try {
-    const parsed = JSON.parse(inboxJson);
-    if (Array.isArray(parsed)) messages = parsed;
-  } catch {
-    return items;
-  }
-  if (messages.length === 0) return items;
-
-  let changed = false;
-  const repaired = items.map((item) => {
-    const nextSourceUrl = repairMailSourceUrl(item.source_url || "", messages);
-    if (nextSourceUrl === (item.source_url || "")) return item;
-    changed = true;
-    return { ...item, source_url: nextSourceUrl };
-  });
-  if (changed) await saveDataCache(DETAIL_GENERATED_TODO_KEY, JSON.stringify(repaired));
-  return repaired;
-}
-
 async function writeGeneratedTodos<T>(
   cacheKey: string,
   next: T[],
@@ -2091,83 +1926,6 @@ async function writeGeneratedTodos<T>(
 ): Promise<void> {
   await saveDataCache(cacheKey, JSON.stringify(next));
   await refreshCaches(next);
-}
-
-function isGeneratedLunaTodoItem(item: LunaTodoItem): boolean {
-  return (
-    item.source === "live" ||
-    item.url?.startsWith("live-generated://") ||
-    item.feedback?.startsWith("Liveから追加")
-  );
-}
-
-function liveGeneratedTodoToLunaItem(item: LiveGeneratedTodo): LunaTodoItem {
-  return {
-    course_name: item.course_name,
-    content_type: item.content_type || "課題",
-    content_name: item.title,
-    url: `live-generated://${encodeURIComponent(item.id)}`,
-    deadline: item.deadline || "",
-    status: "未提出",
-    feedback: item.note ? `Liveから追加: ${item.note}` : "Liveから追加",
-    source: "live",
-    local_id: item.id,
-    source_path: item.source_path,
-    source_excerpt: item.source_excerpt,
-  };
-}
-
-function mergeGeneratedTodosIntoLunaTodos(base: LunaTodoItem[], generated: LiveGeneratedTodo[]): LunaTodoItem[] {
-  const baseWithoutGenerated = base.filter((item) => !isGeneratedLunaTodoItem(item));
-  const seen = new Set(baseWithoutGenerated.map((item) => normalizeGeneratedTodoKey({
-    course_name: item.course_name,
-    title: item.content_name,
-    deadline: item.deadline,
-  })));
-  const merged = [...baseWithoutGenerated];
-  for (const item of generated.filter(isActiveGeneratedTodo)) {
-    const key = normalizeGeneratedTodoKey({
-      course_name: item.course_name,
-      title: item.title,
-      deadline: item.deadline,
-    });
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(liveGeneratedTodoToLunaItem(item));
-  }
-  return merged;
-}
-
-function assignmentLabelFromGeneratedTodo(item: LiveGeneratedTodo): string {
-  const type = item.content_type || "課題";
-  const deadline = item.deadline ? ` (締切: ${item.deadline})` : "";
-  return `Live追加 ${type}: ${item.title}${deadline}`;
-}
-
-function mergeGeneratedTodosIntoSchedule(base: ScheduleResponse | null, generated: LiveGeneratedTodo[]): ScheduleResponse | null {
-  if (!base?.ai_result) return base;
-  const cloned: ScheduleResponse = JSON.parse(JSON.stringify(base));
-  const activeGenerated = generated.filter(isActiveGeneratedTodo);
-  const mergeWeek = (items: any[]) => {
-    for (const cell of items) {
-      if (Array.isArray(cell.assignments)) {
-        cell.assignments = cell.assignments.filter((label: unknown) => !String(label).startsWith("Live追加 "));
-      }
-      for (const todo of activeGenerated) {
-        const matchesCourse = todo.course_name && cell.course_name === todo.course_name;
-        const matchesSlot = todo.day > 0 && todo.period > 0 && cell.day === todo.day && cell.period === todo.period;
-        if (!matchesCourse && !matchesSlot) continue;
-        const label = assignmentLabelFromGeneratedTodo(todo);
-        if (!Array.isArray(cell.assignments)) cell.assignments = [];
-        if (!cell.assignments.includes(label)) cell.assignments.push(label);
-      }
-    }
-  };
-  const aiResult = cloned.ai_result;
-  if (!aiResult) return cloned;
-  mergeWeek(aiResult.current_week);
-  mergeWeek(aiResult.next_week);
-  return cloned;
 }
 
 async function refreshLiveGeneratedTodoCaches(next: LiveGeneratedTodo[]) {
@@ -2198,7 +1956,7 @@ export async function saveLiveGeneratedTodos(
 ): Promise<LiveGeneratedTodo[]> {
   if (_isDemo() || suggestions.length === 0) return [];
   const existing = await getLiveGeneratedTodos();
-  const seen = new Set(existing.map(normalizeGeneratedTodoKey));
+  const seen = new Set(existing.map(generatedTodoIdentityKey));
   const createdAt = new Date().toISOString();
   const additions: LiveGeneratedTodo[] = [];
   for (const item of suggestions) {
@@ -2217,7 +1975,7 @@ export async function saveLiveGeneratedTodos(
       created_at: createdAt,
       source_path: sourcePath || "",
     };
-    const key = normalizeGeneratedTodoKey(normalized);
+    const key = generatedTodoIdentityKey(normalized);
     if (seen.has(key)) continue;
     seen.add(key);
     additions.push(normalized);
@@ -2258,55 +2016,6 @@ export interface DetailGeneratedTodo extends DetailTodoSuggestion {
   archived_at?: string;
 }
 
-function normalizeDetailTodoKey(item: GeneratedTodoIdentity): string {
-  return normalizeTodoIdentityKey(item);
-}
-
-function isActiveDetailTodo(item: DetailGeneratedTodo): boolean {
-  return isActiveGeneratedTodoItem(item);
-}
-
-function isDetailLunaTodoItem(item: LunaTodoItem): boolean {
-  return item.source === "detail" || item.url?.startsWith("detail-generated://");
-}
-
-function detailGeneratedTodoToLunaItem(item: DetailGeneratedTodo): LunaTodoItem {
-  return {
-    course_name: item.course_name,
-    content_type: item.content_type || "課題",
-    content_name: item.title,
-    url: `detail-generated://${encodeURIComponent(item.id)}`,
-    deadline: item.deadline || "",
-    status: "未提出",
-    feedback: item.note ? `マグネット: ${item.note}` : "マグネットで追加",
-    source: "detail",
-    local_id: item.id,
-    source_path: item.source_url,
-    source_excerpt: item.source_excerpt,
-  };
-}
-
-function mergeDetailTodosIntoLunaTodos(base: LunaTodoItem[], generated: DetailGeneratedTodo[]): LunaTodoItem[] {
-  const baseWithoutDetail = base.filter((item) => !isDetailLunaTodoItem(item));
-  const seen = new Set(baseWithoutDetail.map((item) => normalizeDetailTodoKey({
-    course_name: item.course_name,
-    title: item.content_name,
-    deadline: item.deadline,
-  })));
-  const merged = [...baseWithoutDetail];
-  for (const item of generated.filter(isActiveDetailTodo)) {
-    const key = normalizeDetailTodoKey({
-      course_name: item.course_name,
-      title: item.title,
-      deadline: item.deadline,
-    });
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(detailGeneratedTodoToLunaItem(item));
-  }
-  return merged;
-}
-
 async function refreshDetailGeneratedTodoCaches(next: DetailGeneratedTodo[]) {
   const cachedTodos = getCached<LunaTodoItem[]>("luna_todo");
   if (cachedTodos) {
@@ -2319,7 +2028,7 @@ async function refreshDetailGeneratedTodoCaches(next: DetailGeneratedTodo[]) {
 
 export async function getDetailGeneratedTodos(): Promise<DetailGeneratedTodo[]> {
   const items = await readGeneratedTodos<DetailGeneratedTodo>(DETAIL_GENERATED_TODO_KEY);
-  return repairDetailGeneratedTodoSourceUrls(items);
+  return repairDetailGeneratedTodoSourceUrls(items, getDataCache, saveDataCache);
 }
 
 export async function saveDetailGeneratedTodos(
@@ -2327,7 +2036,7 @@ export async function saveDetailGeneratedTodos(
 ): Promise<DetailGeneratedTodo[]> {
   if (_isDemo() || suggestions.length === 0) return [];
   const existing = await getDetailGeneratedTodos();
-  const seen = new Set(existing.map(normalizeDetailTodoKey));
+  const seen = new Set(existing.map(generatedTodoIdentityKey));
   const createdAt = new Date().toISOString();
   const additions: DetailGeneratedTodo[] = [];
   for (const item of suggestions) {
@@ -2344,7 +2053,7 @@ export async function saveDetailGeneratedTodos(
       note: (item.note || "").trim(),
       created_at: createdAt,
     };
-    const key = normalizeDetailTodoKey(normalized);
+    const key = generatedTodoIdentityKey(normalized);
     if (seen.has(key)) continue;
     seen.add(key);
     additions.push(normalized);
@@ -2447,7 +2156,7 @@ const TASK_LABELS: Record<string, string> = {
 };
 
 const BACKEND_TASKS: Array<{ key: string; tier: "volatile" | "stable" | "system"; intervalMs: number }> = [
-  { key: "notifications", tier: "volatile", intervalMs: 5 * 60 * 1000 },
+  { key: "notifications", tier: "stable", intervalMs: 12 * 60 * 60 * 1000 },
   { key: "luna_todo", tier: "volatile", intervalMs: 5 * 60 * 1000 },
   { key: "luna_updates", tier: "volatile", intervalMs: 5 * 60 * 1000 },
   { key: "mail_inbox", tier: "volatile", intervalMs: 5 * 60 * 1000 },
@@ -2652,86 +2361,44 @@ export async function refreshAllData(): Promise<void> {
   }
 }
 
-// ── Agent (Selah) ──
-
-export interface AgentConversationSummary {
-  id: string;
-  title: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface AgentImagePart {
-  mime: string;
-  data_base64: string;
-}
-
-export interface AgentMessage {
-  id: number;
-  conv_id: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
-  images?: AgentImagePart[] | null;
-  tool_name?: string | null;
-  tool_result?: unknown;
-  created_at: number;
-}
-
-export type AgentStreamEvent =
-  | { type: "phase"; stage: "planning" | "answering" }
-  | { type: "plan"; steps: { name: string; detail?: string | null }[] }
-  | { type: "tool_call"; name: string }
-  | { type: "tool_result"; name: string; preview: string; ok: boolean }
-  | { type: "think"; text: string }
-  | { type: "token"; text: string }
-  | { type: "done" }
-  | { type: "error"; message: string };
-
-export async function agentListConversations(): Promise<AgentConversationSummary[]> {
-  if (_isDemo()) return [];
-  return invoke<AgentConversationSummary[]>("agent_list_conversations");
-}
-
-export async function agentCreateConversation(title?: string): Promise<string> {
-  if (_isDemo()) throw new Error("デモモードでは Agent は利用できません");
-  return invoke<string>("agent_create_conversation", { title: title ?? null });
-}
-
-export async function agentLoadMessages(convId: string): Promise<AgentMessage[]> {
-  if (_isDemo()) return [];
-  return invoke<AgentMessage[]>("agent_load_messages", { convId });
-}
-
-export async function agentSend(
-  convId: string,
-  content: string,
-  images: AgentImagePart[] = [],
-): Promise<void> {
-  if (_isDemo()) throw new Error("デモモードでは Agent は利用できません");
-  return invoke("agent_send", { convId, content, images });
-}
-
-export async function agentCancel(convId: string): Promise<void> {
-  if (_isDemo()) return;
-  return invoke("agent_cancel", { convId });
-}
-
-export async function agentDeleteConversation(convId: string): Promise<void> {
-  if (_isDemo()) return;
-  return invoke("agent_delete_conversation", { convId });
-}
-
-export async function agentRenameConversation(convId: string, title: string): Promise<void> {
-  if (_isDemo()) return;
-  return invoke("agent_rename_conversation", { convId, title });
-}
+export type {
+  AgentConversationSummary,
+  AgentImagePart,
+  AgentMessage,
+  AgentStreamEvent,
+} from "./agentApi";
+export {
+  agentListConversations,
+  agentCreateConversation,
+  agentLoadMessages,
+  agentSend,
+  agentCancel,
+  agentDeleteConversation,
+  agentRenameConversation,
+} from "./agentApi";
 
 // ============ Image Share ============
 
 /** Save PNG image data to a file using the native save dialog. */
+function uint8ToBase64(data: Uint8Array): Promise<string> {
+  const copy = new Uint8Array(data.byteLength);
+  copy.set(data);
+  const blob = new Blob([copy.buffer]);
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("画像の変換に失敗しました"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 export async function saveImageFile(data: Uint8Array, defaultName: string): Promise<string> {
   return invoke<string>("save_image_file", {
-    data: Array.from(data),
+    dataBase64: await uint8ToBase64(data),
     defaultName,
   });
 }
@@ -2739,14 +2406,14 @@ export async function saveImageFile(data: Uint8Array, defaultName: string): Prom
 /** Copy PNG image data to the system clipboard using native APIs. */
 export async function copyImageToClipboard(data: Uint8Array): Promise<void> {
   return invoke("copy_image_to_clipboard", {
-    data: Array.from(data),
+    dataBase64: await uint8ToBase64(data),
   });
 }
 
 /** Share PNG image data via the native OS share sheet. */
 export async function shareImageNative(data: Uint8Array, fileName: string): Promise<void> {
   return invoke("share_image_native", {
-    data: Array.from(data),
+    dataBase64: await uint8ToBase64(data),
     fileName,
   });
 }

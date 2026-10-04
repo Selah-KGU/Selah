@@ -48,8 +48,8 @@ Windows ではローカル AI を利用できません。クラウド API を使
 
 ### クラウド AI
 
-1. **AI 設定** の「プロバイダ」で **OpenAI** または **Gemini** を選択
-2. **OpenAI API Key** または **Google Gemini API Key** を入力
+1. **AI 設定** の「推論方法」で **OpenAI**、**OpenRouter**、**DeepSeek** または **Gemini** を選択
+2. 選んだ提供元の API キーを入力
 3. 使用するモデルを選択して保存
 
 ::: info

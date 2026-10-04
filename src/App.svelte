@@ -2,7 +2,6 @@
   import "./styles.css";
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
-  import type { Component } from "svelte";
   import { demoMode } from "./lib/demoStore";
   import { authState, sessionExpired, invalidateCache } from "./lib/stores";
   import { restoreAllSessions, startBackgroundPolling, stopBackgroundPolling, serviceRegistry } from "./lib/api";
@@ -43,33 +42,10 @@
     }
   }
 
-  function readSurfaceParam(name: string): string {
-    const search = new URLSearchParams(window.location.search);
-    const fromSearch = search.get(name);
-    if (fromSearch) return fromSearch;
-    const rawHash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
-    return new URLSearchParams(rawHash).get(name) || "";
-  }
-
-  const surface = readSurfaceParam("surface");
-  const isDocumentTabsSurface = surface === "document-tabs";
-  const isMarkdownReaderSurface = surface === "markdown-reader";
-  const isUniversityDetailSurface = surface === "university-detail" || surface === "luna-detail";
-  const isAgentPanelSurface = surface === "agent-panel";
-  const isFilesSurface = surface === "files";
-  const isHomeSurface = surface === "home";
-  const isDetectiveSurface = surface === "detective";
-  const isPaperCheckSurface = surface === "paper-check";
-  const isSplitDividerSurface = surface === "split-divider";
-  const isBrowserMouseSelftestSurface = surface === "browser-mouse-selftest";
-  const isAuxiliarySurface = isDocumentTabsSurface || isMarkdownReaderSurface || isUniversityDetailSurface || isAgentPanelSurface || isFilesSurface || isHomeSurface || isDetectiveSurface || isPaperCheckSurface || isSplitDividerSurface || isBrowserMouseSelftestSurface;
-
   let demoBootFlag = $state(readDemoBootFlag());
   let everLoggedIn = $state(readEverLoggedIn());
   let currentView = $derived(($demoMode || demoBootFlag || $authState.authenticated || $sessionExpired || everLoggedIn) ? "dashboard" : "login");
   let restoring = $state(true);
-  let AuxiliarySurface = $state<Component | null>(null);
-  let auxiliaryError = $state("");
   let unlistenLogout: (() => void) | null = null;
 
   async function restoreDemoState(): Promise<boolean> {
@@ -78,35 +54,6 @@
   }
 
   onMount(async () => {
-    if (isAuxiliarySurface) {
-      try {
-        if (isDocumentTabsSurface) {
-          AuxiliarySurface = (await import("./lib/DocumentTabs.svelte")).default;
-        } else if (isMarkdownReaderSurface) {
-          AuxiliarySurface = (await import("./lib/MarkdownReaderSurface.svelte")).default;
-        } else if (isAgentPanelSurface) {
-          AuxiliarySurface = (await import("./lib/AgentPanel.svelte")).default;
-        } else if (isFilesSurface) {
-          AuxiliarySurface = (await import("./lib/FilesSurface.svelte")).default;
-        } else if (isHomeSurface) {
-          AuxiliarySurface = (await import("./lib/NewTabSurface.svelte")).default;
-        } else if (isDetectiveSurface) {
-          AuxiliarySurface = (await import("./lib/views/Detective.svelte")).default;
-        } else if (isPaperCheckSurface) {
-          AuxiliarySurface = (await import("./lib/views/PaperCheck.svelte")).default;
-        } else if (isSplitDividerSurface) {
-          AuxiliarySurface = (await import("./lib/SplitDividerSurface.svelte")).default;
-        } else if (isBrowserMouseSelftestSurface) {
-          AuxiliarySurface = (await import("./lib/BrowserMouseSelftestSurface.svelte")).default;
-        } else {
-          AuxiliarySurface = (await import("./lib/UniversityDetailSurface.svelte")).default;
-        }
-      } catch (error) {
-        auxiliaryError = error instanceof Error ? error.message : String(error);
-      }
-      restoring = false;
-      return;
-    }
     // Handle logout triggered from settings window (or other windows)
     unlistenLogout = await listen("logout", async () => {
       const { deactivateDemo, isDemoMode: checkDemo } = await import("./lib/demo");
@@ -169,20 +116,7 @@
   });
 </script>
 
-{#if isAuxiliarySurface}
-  {#if AuxiliarySurface}
-    <AuxiliarySurface />
-  {:else}
-    <main class="auxiliary-state" class:errored={!!auxiliaryError}>
-      {#if auxiliaryError}
-        <strong>ページを読み込めませんでした</strong>
-        <span>{auxiliaryError}</span>
-      {:else}
-        <span class="auxiliary-spinner" aria-hidden="true"></span>
-      {/if}
-    </main>
-  {/if}
-{:else if currentView === "login" && !restoring}
+{#if currentView === "login" && !restoring}
   <main class="app-main">
     <div class="page-transition">
       <Login />
@@ -193,60 +127,6 @@
 {/if}
 
 <style>
-  .auxiliary-state {
-    min-height: 100vh;
-    display: grid;
-    place-content: center;
-    justify-items: center;
-    gap: 10px;
-    box-sizing: border-box;
-    padding: 32px;
-    color: #60646c;
-    background: #f7f8fa;
-    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Noto Sans JP", sans-serif;
-    text-align: center;
-    /* Hold the surface blank briefly: fast module imports never flash a spinner,
-       and the surface's own skeleton takes over almost immediately. */
-    opacity: 0;
-    animation: auxiliary-appear 0.3s ease 0.16s forwards;
-  }
-
-  .auxiliary-state.errored {
-    opacity: 1;
-    animation: none;
-  }
-
-  @keyframes auxiliary-appear {
-    to { opacity: 1; }
-  }
-
-  .auxiliary-state strong {
-    color: #24262b;
-    font-size: 15px;
-  }
-
-  .auxiliary-spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(96, 100, 108, 0.2);
-    border-top-color: #60646c;
-    border-radius: 50%;
-    animation: auxiliary-spin 0.8s linear infinite;
-  }
-
-  :global([data-theme="dark"]) .auxiliary-state {
-    color: #a9abb2;
-    background: #1c1c1e;
-  }
-
-  :global([data-theme="dark"]) .auxiliary-state strong {
-    color: #f5f5f7;
-  }
-
-  @keyframes auxiliary-spin {
-    to { transform: rotate(360deg); }
-  }
-
   .app-main {
     flex: 1;
     overflow: hidden;

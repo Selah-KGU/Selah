@@ -11,7 +11,7 @@
 - **ワンクリック SSO ログイン** -- 関学の SSO 認証に対応。一度のログインで KWIC・Luna・メールすべてにアクセス
 - **高速起動** -- SQLite によるローカルキャッシュと SWR 方式で、ネットワーク待ちなしに即座にデータを表示
 - **ネイティブ通知** -- 新着お知らせ・課題をデスクトップ通知でお届け
-- **AI アシスト** -- macOS の Apple Intelligence、または OpenAI / OpenRouter / Gemini による履修分析・学習計画・対話型エージェント
+- **AI アシスト** -- macOS の Apple Intelligence、または OpenAI / OpenRouter / DeepSeek / Gemini による履修分析・学習計画・対話型エージェント
 - **音声入力** -- オンデバイス STT (sherpa-onnx + SenseVoice) で Selah Agent へ発話入力
 - **オフライン対応** -- キャッシュされたデータでネット不通時も作業継続（AI は設定した API の接続が必要です）
 - **クロスプラットフォーム** -- macOS と Windows に対応
@@ -26,7 +26,7 @@ Selah は [Tauri 2](https://tauri.app/) をベースに構築されています�
 | フロントエンド | Svelte 5 + TypeScript + Vite |
 | バックエンド | Rust (reqwest, scraper, rusqlite) |
 | ローカル DB | SQLite (WAL モード) |
-| AI 統合 | macOS: Apple Intelligence（オンデバイス） / Windows: OpenAI / OpenRouter / Google Gemini |
+| AI 統合 | macOS: Apple Intelligence（オンデバイス） / Windows: OpenAI / OpenRouter / DeepSeek / Google Gemini |
 | 音声認識 | sherpa-onnx + SenseVoice (オンデバイス、日英対応) |
 | デスクトップ統合 | macOS: WKWebView / Windows: WebView2, NSIS |
 

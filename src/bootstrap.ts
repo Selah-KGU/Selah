@@ -51,6 +51,17 @@ addLog("info", `UA: ${navigator.userAgent.substring(0, 80)}`);
 addLog("info", `#app element: ${document.getElementById("app") ? "found" : "NOT FOUND"}`);
 addLog("info", `__TAURI_INTERNALS__: ${typeof window.__TAURI_INTERNALS__ !== "undefined" ? "available" : "NOT available"}`);
 
-void import("./main");
+import { isAuxiliarySurface } from "./lib/surfaceKind";
+
+if (navigator.userAgent.includes("Windows")) {
+  document.body.classList.add("platform-windows");
+}
+
+// Secondary WebViews must not parse the dashboard graph or register app-wide listeners.
+if (isAuxiliarySurface()) {
+  void import("./surfaceMain");
+} else {
+  void import("./main");
+}
 
 export {};

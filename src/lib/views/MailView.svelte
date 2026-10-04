@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { mailAuthState, cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, getCacheTimestamp, unreadMailCount, updateCacheEntry, requestedMailMessageId } from "../stores";
+  import { mailAuthState, cachedBackendFetch, refreshBackendManagedCache, onCacheUpdate, getCacheTimestamp, unreadMailCount, updateCacheEntry, requestedMailMessageId, activeTab } from "../stores";
   import { mailCheckSession, mailOpenLogin, mailFetchInbox, mailFetchMessage, mailFetchProfile, mailFetchAttachments, mailDownloadAttachment } from "../api";
   import type { MailMessage, MailDetail, MailAttachment } from "../api";
   import Icon from "../Icon.svelte";
@@ -62,6 +62,7 @@
   });
 
   onMount(async () => {
+    document.addEventListener("visibilitychange", onMailVisibilityChange);
     unsubscribeRequestedMail = requestedMailMessageId.subscribe((id) => {
       if (!id) return;
       pendingMailOpenId = id;
@@ -98,7 +99,7 @@
     }
   });
 
-  onDestroy(() => { unlistenLogin?.(); unsubscribeRequestedMail?.(); unsubMail(); stopTick(); });
+  onDestroy(() => { document.removeEventListener("visibilitychange", onMailVisibilityChange); unlistenLogin?.(); unsubscribeRequestedMail?.(); unsubMail(); stopTick(); });
 
   async function loadInbox() {
     loading = messages.length === 0;
@@ -342,6 +343,18 @@
   function stopTick() {
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
   }
+
+  let mailWindowHidden = $state(typeof document !== "undefined" && document.hidden);
+
+  function onMailVisibilityChange() {
+    mailWindowHidden = document.hidden;
+  }
+
+  $effect(() => {
+    const visible = $activeTab === "mail" && !mailWindowHidden && lastFetchTs != null;
+    if (visible) startTick();
+    else stopTick();
+  });
 
   function updatedAgoText(): string {
     if (!lastFetchTs) return "";

@@ -147,7 +147,7 @@ pub fn save_seen_notif_ids(db: &Database, source: &str, ids: Vec<String>) {
         ids
     };
     if let Ok(json) = serde_json::to_string(&trimmed) {
-        let _ = db.save_data_cache(&key, &json);
+        let _ = db.save_data_cache_if_changed(&key, &json);
     }
 }
 
@@ -166,7 +166,7 @@ pub fn save_luna_notif_seen_entries(db: &Database, entries: Vec<LunaNotifSeenEnt
         entries
     };
     if let Ok(json) = serde_json::to_string(&trimmed) {
-        let _ = db.save_data_cache(SEEN_LUNA_OBJECTS_KEY, &json);
+        let _ = db.save_data_cache_if_changed(SEEN_LUNA_OBJECTS_KEY, &json);
     }
 }
 
@@ -179,9 +179,12 @@ pub fn is_seen_notif_initialized(db: &Database, source: &str) -> bool {
 }
 
 pub fn mark_seen_notif_initialized(db: &Database, source: &str) {
+    if is_seen_notif_initialized(db, source) {
+        return;
+    }
     let key = format!("{}{}", SEEN_INIT_PREFIX, source);
     if let Ok(json) = serde_json::to_string(&true) {
-        let _ = db.save_data_cache(&key, &json);
+        let _ = db.save_data_cache_if_changed(&key, &json);
     }
 }
 

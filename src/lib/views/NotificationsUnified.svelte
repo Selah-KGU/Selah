@@ -413,7 +413,7 @@
         <div class="section-label">
           未読 <span class="section-count">{partitioned.unread.length}</span>
         </div>
-        {#each partitioned.unread as n}
+        {#each partitioned.unread as n (`${n.source}:${n.id}`)}
           {@render notifItem(n)}
         {/each}
       {/if}
@@ -422,7 +422,7 @@
         {#if partitioned.unread.length > 0}
           <div class="section-label section-label-read">既読</div>
         {/if}
-        {#each visibleRead as n}
+        {#each visibleRead as n (`${n.source}:${n.id}`)}
           {@render notifItem(n)}
         {/each}
         {#if partitioned.read.length > readVisibleCount}

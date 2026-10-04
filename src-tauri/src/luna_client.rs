@@ -2,7 +2,8 @@ use reqwest::Client;
 use std::sync::Arc;
 
 use crate::client::{
-    build_http_client, delete_cookie_jar, load_cookie_jar, new_cookie_client, save_cookie_jar,
+    fresh_cookie_client_clearing, new_cookie_client, save_service_cookie_jar,
+    try_restore_cookie_client,
 };
 
 pub(crate) const LUNA_COOKIES_KEY: &str = "luna_cookie_jar";
@@ -42,37 +43,31 @@ impl LunaClient {
 
     /// Save Luna cookies to disk
     pub fn save_session(&self) {
-        if !self.authenticated {
-            log::warn!("Luna save_session skipped: not authenticated");
-            return;
-        }
-        match save_cookie_jar(&self.cookie_store, LUNA_COOKIES_KEY) {
-            Ok(()) => log::info!("Luna cookies saved securely"),
-            Err(e) => log::warn!("Failed to save Luna cookies securely: {}", e),
-        }
+        save_service_cookie_jar(
+            self.authenticated,
+            &self.cookie_store,
+            LUNA_COOKIES_KEY,
+            "Luna",
+        );
     }
 
     /// Try to restore Luna session from disk.
     /// Returns true if cookies were loaded (session still needs server validation).
     pub fn try_restore_session(&mut self) -> bool {
-        match load_cookie_jar(LUNA_COOKIES_KEY) {
-            Some(store) => {
-                let cookie_store = Arc::new(reqwest_cookie_store::CookieStoreMutex::new(store));
-                self.http = build_http_client(cookie_store.clone());
-                self.cookie_store = cookie_store;
-                self.authenticated = true;
-                log::info!("Luna session restored from disk");
-                true
-            }
-            None => false,
-        }
+        let Some(parts) = try_restore_cookie_client(LUNA_COOKIES_KEY) else {
+            return false;
+        };
+        self.http = parts.http;
+        self.cookie_store = parts.cookie_store;
+        self.authenticated = true;
+        log::info!("Luna session restored from disk");
+        true
     }
 
     pub fn clear(&mut self) {
         self.authenticated = false;
-        delete_cookie_jar(LUNA_COOKIES_KEY);
-        let (cookie_store, http) = new_cookie_client();
-        self.http = http;
-        self.cookie_store = cookie_store;
+        let parts = fresh_cookie_client_clearing(LUNA_COOKIES_KEY);
+        self.http = parts.http;
+        self.cookie_store = parts.cookie_store;
     }
 }

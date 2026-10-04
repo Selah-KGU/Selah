@@ -3,6 +3,7 @@
   import type { LiveWhiteboard } from "./api";
   import {
     computeWhiteboardLayout,
+    whiteboardLayoutReady,
     whiteboardTopics,
     type WhiteboardLayoutResult,
   } from "./whiteboardLayout";
@@ -25,15 +26,19 @@
   let drag = $state<{ x: number; y: number; panX: number; panY: number } | null>(null);
   let dragged = false;
 
-  const topics = $derived(whiteboardTopics(board));
+  const topics = $derived.by(() => {
+    void $whiteboardLayoutReady;
+    return whiteboardTopics(board);
+  });
   const topicFingerprint = $derived(topics.map((topic) => topic.id).join("|"));
-  const layout = $derived<WhiteboardLayoutResult | null>(
-    computeWhiteboardLayout(board, {
+  const layout = $derived.by((): WhiteboardLayoutResult | null => {
+    void $whiteboardLayoutReady;
+    return computeWhiteboardLayout(board, {
       fallbackBoardTitle: "知識整理ボード",
       externalNodeLabel: "外部",
       topicIds: topics.length > 1 && selectedTopicIds.length ? selectedTopicIds : undefined,
-    }),
-  );
+    });
+  });
   const stage = $derived(layout?.stage || { width: 1040, height: 660 });
   const allTopicsSelected = $derived(topics.length > 0 && selectedTopicIds.length >= topics.length);
   const highlighted = $derived.by(() => {

@@ -64,6 +64,48 @@ pub(crate) fn new_cookie_client() -> (Arc<reqwest_cookie_store::CookieStoreMutex
     (cookie_store, http)
 }
 
+pub(crate) struct CookieClientParts {
+    pub http: Client,
+    pub cookie_store: Arc<reqwest_cookie_store::CookieStoreMutex>,
+}
+
+/// Rebuild an HTTP client around one service's cookie store.
+/// Callers keep a separate store per service; this never merges jars.
+pub(crate) fn cookie_client_from_store(store: cookie_store::CookieStore) -> CookieClientParts {
+    let cookie_store = Arc::new(reqwest_cookie_store::CookieStoreMutex::new(store));
+    CookieClientParts {
+        http: build_http_client(cookie_store.clone()),
+        cookie_store,
+    }
+}
+
+pub(crate) fn try_restore_cookie_client(key: &str) -> Option<CookieClientParts> {
+    load_cookie_jar(key).map(cookie_client_from_store)
+}
+
+pub(crate) fn fresh_cookie_client_clearing(key: &str) -> CookieClientParts {
+    delete_cookie_jar(key);
+    let (cookie_store, http) = new_cookie_client();
+    CookieClientParts { http, cookie_store }
+}
+
+pub(crate) fn save_service_cookie_jar(
+    authenticated: bool,
+    store: &reqwest_cookie_store::CookieStoreMutex,
+    key: &str,
+    service_label: &str,
+) {
+    if !authenticated {
+        log::warn!("{service_label} save_session skipped: not authenticated");
+        return;
+    }
+    match save_cookie_jar_reporting(store, key) {
+        Ok(true) => log::info!("{service_label} cookies saved securely"),
+        Ok(false) => {}
+        Err(e) => log::warn!("Failed to save {service_label} cookies securely: {e}"),
+    }
+}
+
 /// Find the soonest-expiring cookie in a cookie store and return seconds until it expires.
 /// Returns None if all cookies are session-only (no explicit expiry).
 pub(crate) fn soonest_cookie_expiry(store: &reqwest_cookie_store::CookieStoreMutex) -> Option<i64> {
@@ -170,12 +212,45 @@ pub(crate) fn save_cookie_jar(
     store: &reqwest_cookie_store::CookieStoreMutex,
     key: &str,
 ) -> Result<(), String> {
+    save_cookie_jar_reporting(store, key).map(|_| ())
+}
+
+fn save_cookie_jar_reporting(
+    store: &reqwest_cookie_store::CookieStoreMutex,
+    key: &str,
+) -> Result<bool, String> {
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
     if store.iter_unexpired().next().is_none() {
         return Err(format!("cookie jar is empty ({})", key));
     }
-    store_cookie_jar_securely(&store, now_epoch_secs(), key)
+    let cookie_json = serialize_cookie_json(&store).map_err(|e| format!("serialize: {}", e))?;
+    if cookie_payload_unchanged(key, &cookie_json) {
+        return Ok(false);
+    }
+    store_cookie_jar_securely(&store, now_epoch_secs(), key)?;
+    remember_cookie_payload(key, &cookie_json);
+    Ok(true)
 }
+
+fn cookie_payload_unchanged(key: &str, cookie_json: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(cookie_json.as_bytes());
+    let guard = COOKIE_SAVE_HASH.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .get(key)
+        .is_some_and(|prev| prev.as_slice() == digest.as_slice())
+}
+
+fn remember_cookie_payload(key: &str, cookie_json: &str) {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(cookie_json.as_bytes()).to_vec();
+    let mut guard = COOKIE_SAVE_HASH.lock().unwrap_or_else(|e| e.into_inner());
+    guard.insert(key.to_string(), digest);
+}
+
+static COOKIE_SAVE_HASH: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 fn serialize_cookie_json(store: &cookie_store::CookieStore) -> Result<String, serde_json::Error> {
     let cookies: Vec<_> = store.iter_unexpired().cloned().collect();
@@ -224,7 +299,15 @@ pub(crate) fn load_cookie_jar(key: &str) -> Option<cookie_store::CookieStore> {
     load_saved_cookie_jar(key).map(|(store, _)| store)
 }
 
+fn forget_cookie_payload(key: &str) {
+    let mut guard = COOKIE_SAVE_HASH.lock().unwrap_or_else(|e| e.into_inner());
+    guard.remove(key);
+}
+
 pub(crate) fn delete_cookie_jar(key: &str) {
+    // The skip-hash must not outlive the keychain entry. A later login that
+    // receives the same cookies would otherwise skip the write and lose the jar.
+    forget_cookie_payload(key);
     crate::keychain::delete_cookie_secret(key);
 }
 
@@ -452,11 +535,9 @@ impl KgcClient {
                 log::warn!("KGC clear_session: failed to delete session file: {}", e);
             }
         }
-        delete_cookie_jar(KGC_COOKIES_KEY);
-        // Recreate client with fresh cookie jar
-        let (cookie_store, http) = new_cookie_client();
-        self.http = http;
-        self.cookie_store = cookie_store;
+        let parts = fresh_cookie_client_clearing(KGC_COOKIES_KEY);
+        self.http = parts.http;
+        self.cookie_store = parts.cookie_store;
     }
 
     /// Save session and cookies to disk
@@ -467,15 +548,17 @@ impl KgcClient {
         if let Some(session) = &self.session {
             if let Ok(json) = serde_json::to_string_pretty(session) {
                 let path = dir.join(SESSION_FILE);
-                if let Err(e) = std::fs::write(&path, json) {
-                    log::warn!("Failed to save session: {}", e);
-                } else {
-                    #[cfg(unix)]
-                    {
-                        let _ = std::fs::set_permissions(
-                            &path,
-                            std::os::unix::fs::PermissionsExt::from_mode(0o600),
-                        );
+                if std::fs::read_to_string(&path).ok().as_deref() != Some(json.as_str()) {
+                    if let Err(e) = std::fs::write(&path, json) {
+                        log::warn!("Failed to save session: {}", e);
+                    } else {
+                        #[cfg(unix)]
+                        {
+                            let _ = std::fs::set_permissions(
+                                &path,
+                                std::os::unix::fs::PermissionsExt::from_mode(0o600),
+                            );
+                        }
                     }
                 }
             }
@@ -509,11 +592,10 @@ impl KgcClient {
         };
 
         // Load cookies
-        match load_cookie_jar(KGC_COOKIES_KEY) {
-            Some(store) => {
-                let cookie_store = Arc::new(reqwest_cookie_store::CookieStoreMutex::new(store));
-                self.http = build_http_client(cookie_store.clone());
-                self.cookie_store = cookie_store;
+        match try_restore_cookie_client(KGC_COOKIES_KEY) {
+            Some(parts) => {
+                self.http = parts.http;
+                self.cookie_store = parts.cookie_store;
                 self.session = Some(session);
                 log::info!("Session restored from disk");
                 true
@@ -534,7 +616,10 @@ impl KgcClient {
 
 #[cfg(test)]
 mod cookie_persistence_tests {
-    use super::{parse_cookie_json, serialize_stored_cookie_jar, StoredCookieJar};
+    use super::{
+        cookie_client_from_store, parse_cookie_json, serialize_cookie_json,
+        serialize_stored_cookie_jar, StoredCookieJar,
+    };
 
     #[test]
     fn persisted_cookie_json_keeps_session_cookies() {
@@ -556,5 +641,49 @@ mod cookie_persistence_tests {
 
         assert_eq!(stored.saved_at, 123);
         assert_eq!(restored.iter_unexpired().count(), 1);
+    }
+
+    #[test]
+    fn separate_cookie_stores_do_not_share_cookies() {
+        let url = url::Url::parse("https://example.test").unwrap();
+        let mut luna = cookie_store::CookieStore::default();
+        luna.insert_raw(
+            &cookie_store::RawCookie::build(("luna", "a"))
+                .path("/")
+                .build(),
+            &url,
+        )
+        .unwrap();
+        let mut kwic = cookie_store::CookieStore::default();
+        kwic.insert_raw(
+            &cookie_store::RawCookie::build(("kwic", "b"))
+                .path("/")
+                .build(),
+            &url,
+        )
+        .unwrap();
+
+        let luna_client = cookie_client_from_store(luna);
+        let kwic_client = cookie_client_from_store(kwic);
+        let luna_json = serialize_cookie_json(&luna_client.cookie_store.lock().unwrap()).unwrap();
+        let kwic_json = serialize_cookie_json(&kwic_client.cookie_store.lock().unwrap()).unwrap();
+        assert!(luna_json.contains("luna"));
+        assert!(!luna_json.contains("kwic"));
+        assert!(kwic_json.contains("kwic"));
+        assert!(!kwic_json.contains("luna"));
+        assert!(!std::sync::Arc::ptr_eq(
+            &luna_client.cookie_store,
+            &kwic_client.cookie_store
+        ));
+    }
+
+    #[test]
+    fn deleting_the_jar_forgets_the_unchanged_payload_hash() {
+        let key = "test-cookie-hash-forget";
+        let payload = r#"[{"name":"sid"}]"#;
+        super::remember_cookie_payload(key, payload);
+        assert!(super::cookie_payload_unchanged(key, payload));
+        super::forget_cookie_payload(key);
+        assert!(!super::cookie_payload_unchanged(key, payload));
     }
 }

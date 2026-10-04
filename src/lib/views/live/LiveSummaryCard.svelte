@@ -173,7 +173,7 @@
   .summary-pt-text {
     min-width: 0;
     /* Editorial serif for the knowledge text, set apart from the sans UI. */
-    font-family: "Shippori Mincho B1", "Hiragino Mincho ProN", "YuMincho",
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", "YuMincho",
       "Songti SC", serif;
     font-size: 14.5px;
     font-weight: 600;

@@ -43,8 +43,6 @@ export default defineConfig({
         // Split heavy vendor libs into their own chunk so the browser can
         // parse them in parallel with the main app bundle on cold start.
         manualChunks(id) {
-          if (id.endsWith("/src/lib/api.ts")) return "api";
-          if (id.endsWith("/src/lib/stores.ts")) return "stores";
           if (id.includes("node_modules")) {
             if (id.includes("/svelte/")) return "vendor-svelte";
             if (id.includes("/@tauri-apps/api/")) return "vendor-tauri-api";

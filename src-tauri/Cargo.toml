@@ -39,7 +39,7 @@ urlencoding = "2.1.3"
 dirs = "6"
 lopdf = "0.35"
 pdfium-render = { version = "0.8", features = ["image"] }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 cookie_store = "0.21"
 reqwest_cookie_store = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

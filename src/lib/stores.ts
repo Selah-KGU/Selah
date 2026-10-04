@@ -5,7 +5,10 @@ import type { LiveTodoSuggestion } from "./api";
 import {
   DETAIL_GENERATED_TODO_KEY,
   LIVE_GENERATED_TODO_KEY,
-  repairMailSourceUrl,
+  mergeDetailTodosIntoLunaTodos,
+  mergeGeneratedTodosIntoLunaTodos,
+  mergeGeneratedTodosIntoSchedule,
+  repairDetailGeneratedTodoSourceUrls,
 } from "./generatedTodoSupport";
 
 interface AuthState {
@@ -465,30 +468,42 @@ function notifyTaskListeners() {
 //   1. Add TTL to CACHE_TTLS (optional, defaults to 5 min)
 //   2. Add key to DISK_CACHE_KEYS if it should persist across restarts
 
-const cache = new Map<string, { data: any; ts: number }>();
+export type CacheStamp = string | number;
+
+interface MemoryCacheEntry {
+  data: any;
+  ts: number;
+  stamp?: CacheStamp;
+}
+
+const cache = new Map<string, MemoryCacheEntry>();
+const rawCache = new Map<string, { updatedAt: number; parsed: unknown }>();
 const inflight = new Map<string, Promise<any>>();
 
 const DEFAULT_TTL = 5 * 60 * 1000; // 5 minutes
+// Memory TTL mirrors the Rust cache max-age. SQLite is authoritative; a shorter
+// TTL here only causes backend_refresh_now calls that the backend then skips.
+// Keep these in sync with background_refresh.rs / notifier.rs.
 const CACHE_TTLS: Record<string, number> = {
-  // KG-Course
-  schedule_data: 30 * 60 * 1000,
+  // KG-Course. schedule: SCHEDULE_CACHE_MAX_AGE_SECS (6h)
+  schedule_data: 6 * 60 * 60 * 1000,
   grades: 72 * 60 * 60 * 1000,
-  exams: 30 * 60 * 1000,
+  exams: 12 * 60 * 60 * 1000,
   registration: 72 * 60 * 60 * 1000,
-  cancellations: 5 * 60 * 1000,
-  makeup: 5 * 60 * 1000,
-  rooms: 5 * 60 * 1000,
-  notifications: 5 * 60 * 1000,
-  profile: 60 * 60 * 1000,
+  // STABLE_CACHE_MAX_AGE_SECS
+  cancellations: 12 * 60 * 60 * 1000,
+  makeup: 12 * 60 * 60 * 1000,
+  rooms: 12 * 60 * 60 * 1000,
+  // KGC_NOTIFICATION_MAX_AGE_SECS
+  notifications: 12 * 60 * 60 * 1000,
+  profile: 12 * 60 * 60 * 1000,
+  student_profile: 12 * 60 * 60 * 1000,
   favorites: 10 * 60 * 1000,
-  // Luna
+  // FAST_CACHE_MAX_AGE_SECS / FAST_SOURCE_MAX_AGE_SECS
   luna_todo: 5 * 60 * 1000,
   luna_updates: 5 * 60 * 1000,
-  // Weather
   weather: 60 * 60 * 1000,
-  // Mail
   mail_inbox: 5 * 60 * 1000,
-  // KWIC
   kwic_home: 5 * 60 * 1000,
 };
 
@@ -553,10 +568,68 @@ function notifySwr(key: string, data: any) {
   swrListeners.get(key)?.forEach((cb) => { try { cb(data); } catch { /* ignore */ } });
 }
 
-function persistCacheValue<T>(key: string, data: T, ts: number, notify: boolean) {
-  cache.set(key, { data, ts });
-  if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
-  if (notify) notifySwr(key, data);
+function stableCacheJson(data: unknown): string | null {
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return null;
+  }
+}
+
+export function isCacheFresh(key: string, ttl?: number): boolean {
+  const entry = cache.get(key);
+  if (!entry) return false;
+  const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
+  return Date.now() - entry.ts < effectiveTtl;
+}
+
+export function hasMemoryCache(key: string): boolean {
+  return cache.has(key);
+}
+
+export function getCacheStamp(key: string): CacheStamp | null {
+  const stamp = cache.get(key)?.stamp;
+  return stamp == null ? null : stamp;
+}
+
+export function touchCacheTimestamp(key: string, ts = Date.now()): boolean {
+  const entry = cache.get(key);
+  if (!entry) return false;
+  cache.set(key, { ...entry, ts });
+  return true;
+}
+
+export function rememberRawCache(key: string, updatedAt: number, parsed: unknown): void {
+  rawCache.set(key, { updatedAt, parsed });
+}
+
+export function readRawCache<T>(key: string): T | null {
+  const entry = rawCache.get(key);
+  return entry ? entry.parsed as T : null;
+}
+
+export function hasRawCache(key: string): boolean {
+  return rawCache.has(key);
+}
+
+export function knownRawUpdatedAt(key: string): number | null {
+  const entry = rawCache.get(key);
+  return entry ? entry.updatedAt : null;
+}
+
+function persistCacheValue<T>(key: string, data: T, ts: number, notify: boolean, stamp?: CacheStamp) {
+  const prev = cache.get(key);
+  const stampUnchanged = stamp !== undefined && prev?.stamp !== undefined && prev.stamp === stamp;
+  if (stampUnchanged && prev) {
+    cache.set(key, { ...prev, ts });
+    return;
+  }
+  const prevJson = prev ? stableCacheJson(prev.data) : null;
+  const nextJson = stableCacheJson(data);
+  const changed = prevJson == null || nextJson == null || prevJson !== nextJson;
+  cache.set(key, { data, ts, stamp: stamp !== undefined ? stamp : prev?.stamp });
+  if (changed && DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
+  if (notify && changed) notifySwr(key, data);
 }
 
 function isEmptySchedulePayload(data: any): boolean {
@@ -611,148 +684,70 @@ async function loadLiveGeneratedTodos(): Promise<any[]> {
   }
 }
 
-async function repairDetailGeneratedTodoSourceUrls(items: any[]): Promise<any[]> {
-  if (!items.some((item) => String(item?.source_url || "").startsWith("mail://"))) return items;
-  const inboxJson = await invoke<string | null>("get_data_cache", { key: "mail_inbox" });
-  if (!inboxJson) return items;
-  let messages: any[] = [];
-  try {
-    const parsed = JSON.parse(inboxJson);
-    if (Array.isArray(parsed)) messages = parsed;
-  } catch {
-    return items;
-  }
-  if (messages.length === 0) return items;
+async function readDataCache(key: string): Promise<string | null> {
+  return invoke<string | null>("get_data_cache", { key });
+}
 
-  let changed = false;
-  const repaired = items.map((item) => {
-    const nextSourceUrl = repairMailSourceUrl(item?.source_url || "", messages);
-    if (nextSourceUrl === (item?.source_url || "")) return item;
-    changed = true;
-    return { ...item, source_url: nextSourceUrl };
-  });
-  if (changed) {
-    await invoke("save_data_cache", {
-      key: DETAIL_GENERATED_TODO_KEY,
-      json: JSON.stringify(repaired),
-    });
-  }
-  return repaired;
+async function writeDataCache(key: string, json: string): Promise<void> {
+  await invoke("save_data_cache", { key, json });
 }
 
 async function loadDetailGeneratedTodos(): Promise<any[]> {
   try {
-    const json = await invoke<string | null>("get_data_cache", { key: DETAIL_GENERATED_TODO_KEY });
+    const json = await readDataCache(DETAIL_GENERATED_TODO_KEY);
     if (!json) return [];
     const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? await repairDetailGeneratedTodoSourceUrls(parsed) : [];
+    return Array.isArray(parsed)
+      ? await repairDetailGeneratedTodoSourceUrls(parsed, readDataCache, writeDataCache)
+      : [];
   } catch {
     return [];
   }
 }
 
-function detailGeneratedTodoToLunaTodo(item: any) {
-  return {
-    course_name: item.course_name || "",
-    content_type: item.content_type || "課題",
-    content_name: item.title || "",
-    url: `detail-generated://${encodeURIComponent(item.id || "")}`,
-    deadline: item.deadline || "",
-    status: "未提出",
-    feedback: item.note ? `マグネット: ${item.note}` : "マグネットで追加",
-    source: "detail",
-    local_id: item.id || "",
-    source_path: item.source_url || "",
-    source_excerpt: item.source_excerpt || "",
-  };
-}
-
-function mergeDetailTodosIntoLunaTodos(base: any, generated: any[]): any[] {
-  const list = Array.isArray(base)
-    ? base.filter((item) => item?.source !== "detail" && !String(item?.url || "").startsWith("detail-generated://"))
-    : [];
-  const seen = new Set(list.map(normalizedGeneratedTodoKey));
-  const merged = [...list];
-  for (const item of generated) {
-    if (!item?.title) continue;
-    if (item.completed_at || item.archived_at) continue;
-    const key = normalizedGeneratedTodoKey(item);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(detailGeneratedTodoToLunaTodo(item));
+async function backendRowAgeMs(key: string, data?: unknown): Promise<number | null> {
+  if (key === "schedule_data") {
+    const updated = (data as { snapshot_updated_at?: number } | null)?.snapshot_updated_at;
+    if (typeof updated === "number" && updated > 0) return Date.now() - updated * 1000;
+    return null;
   }
-  return merged;
-}
-
-function normalizedGeneratedTodoKey(item: { course_name?: string; title?: string; content_name?: string; deadline?: string }): string {
-  return [item.course_name, item.title ?? item.content_name, item.deadline]
-    .map((part) => String(part || "").trim().toLowerCase().replace(/\s+/g, " "))
-    .join("|");
-}
-
-function generatedTodoToLunaTodo(item: any) {
-  return {
-    course_name: item.course_name || "",
-    content_type: item.content_type || "課題",
-    content_name: item.title || "",
-    url: `live-generated://${encodeURIComponent(item.id || "")}`,
-    deadline: item.deadline || "",
-    status: "未提出",
-    feedback: item.note ? `Liveから追加: ${item.note}` : "Liveから追加",
-    source: "live",
-    local_id: item.id || "",
-    source_path: item.source_path || "",
-    source_excerpt: item.source_excerpt || "",
-  };
-}
-
-function mergeGeneratedTodosIntoLunaTodos(base: any, generated: any[]): any[] {
-  const list = Array.isArray(base)
-    ? base.filter((item) => item?.source !== "live" && !String(item?.url || "").startsWith("live-generated://") && !String(item?.feedback || "").startsWith("Liveから追加"))
-    : [];
-  const seen = new Set(list.map(normalizedGeneratedTodoKey));
-  const merged = [...list];
-  for (const item of generated) {
-    if (!item?.title) continue;
-    if (item.completed_at || item.archived_at) continue;
-    const key = normalizedGeneratedTodoKey(item);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(generatedTodoToLunaTodo(item));
+  const dbKey = BACKEND_CACHE_DB_KEYS[key] ?? key;
+  try {
+    const updatedAt = await invoke<number | null>("get_data_cache_updated_at", { key: dbKey });
+    if (typeof updatedAt === "number" && updatedAt > 0) return Date.now() - updatedAt * 1000;
+  } catch {
+    return null;
   }
-  return merged;
+  return null;
 }
 
-function generatedAssignmentLabel(item: any): string {
-  const type = item.content_type || "課題";
-  const deadline = item.deadline ? ` (締切: ${item.deadline})` : "";
-  return `Live追加 ${type}: ${item.title}${deadline}`;
+async function sqliteRowNewerThan(dbKey: string, diskTs: number): Promise<boolean> {
+  try {
+    const updatedAt = await invoke<number | null>("get_data_cache_updated_at", { key: dbKey });
+    if (typeof updatedAt !== "number" || updatedAt <= 0) return false;
+    // updated_at is whole seconds. A row written after this localStorage
+    // snapshot is strictly newer; the same write is not.
+    return updatedAt * 1000 > diskTs;
+  } catch {
+    return false;
+  }
 }
 
-function mergeGeneratedTodosIntoSchedule(base: any, generated: any[]): any {
-  if (!base?.ai_result) return base;
-  const cloned = JSON.parse(JSON.stringify(base));
-  const mergeWeek = (items: any[]) => {
-    if (!Array.isArray(items)) return;
-    for (const cell of items) {
-      if (Array.isArray(cell.assignments)) {
-        cell.assignments = cell.assignments.filter((label: unknown) => !String(label).startsWith("Live追加 "));
-      }
-      for (const todo of generated) {
-        if (!todo?.title) continue;
-        if (todo.completed_at || todo.archived_at) continue;
-        const matchesCourse = todo.course_name && cell.course_name === todo.course_name;
-        const matchesSlot = todo.day > 0 && todo.period > 0 && cell.day === todo.day && cell.period === todo.period;
-        if (!matchesCourse && !matchesSlot) continue;
-        const label = generatedAssignmentLabel(todo);
-        if (!Array.isArray(cell.assignments)) cell.assignments = [];
-        if (!cell.assignments.includes(label)) cell.assignments.push(label);
-      }
-    }
-  };
-  mergeWeek(cloned.ai_result.current_week);
-  mergeWeek(cloned.ai_result.next_week);
-  return cloned;
+async function sqliteCacheNewerThan(key: string, diskTs: number): Promise<boolean> {
+  const dbKeys = key === "luna_todo"
+    ? [BACKEND_CACHE_DB_KEYS[key] ?? key, LIVE_GENERATED_TODO_KEY, DETAIL_GENERATED_TODO_KEY]
+    : [BACKEND_CACHE_DB_KEYS[key] ?? key];
+  for (const dbKey of dbKeys) {
+    if (await sqliteRowNewerThan(dbKey, diskTs)) return true;
+  }
+  return false;
+}
+
+function refreshBackendIfStale<T>(key: string, data: T, ttl: number) {
+  void backendRowAgeMs(key, data).then((age) => {
+    if (age != null && age < ttl) return;
+    void queueBackendManagedRefresh<T>(key, false, data);
+  });
 }
 
 function queueBackendManagedRefresh<T>(key: string, force: boolean, fallback?: T): Promise<T> {
@@ -806,15 +801,18 @@ export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<
   const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
   const entry = cache.get(key);
   if (key === "schedule_data") {
+    // Memory is enough while fresh. Backend writes emit backend-cache-updated,
+    // which reloads the snapshot; revisiting home should not rebuild it.
+    if (entry && Date.now() - entry.ts < effectiveTtl) {
+      return entry.data as T;
+    }
     const loaded = await loadBackendManagedCache<T>(key);
     if (!loaded) {
+      if (entry) return entry.data as T;
       throw new Error("時間割スナップショットを読み込めませんでした");
     }
-    const fresh = !!entry && Date.now() - entry.ts < effectiveTtl;
-    persistCacheValue(key, loaded.data, loaded.ts, true);
-    if (!fresh) {
-      void queueBackendManagedRefresh<T>(key, false, loaded.data);
-    }
+    persistCacheValue(key, loaded.data, Date.now(), true);
+    refreshBackendIfStale(key, loaded.data, effectiveTtl);
     return loaded.data;
   }
   if (entry && Date.now() - entry.ts < effectiveTtl) {
@@ -829,6 +827,18 @@ export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<
   if (DISK_CACHE_KEYS.has(key)) {
     const disk = loadDiskCache(key);
     if (disk) {
+      if (Date.now() - disk.ts < effectiveTtl && !(await sqliteCacheNewerThan(key, disk.ts))) {
+        persistCacheValue(key, disk.data as T, disk.ts, false);
+        return disk.data as T;
+      }
+      // localStorage can lag SQLite. A fresh backend row must replace the
+      // stale disk payload even when that row is too new to need a network refresh.
+      const loaded = await loadBackendManagedCache<T>(key);
+      if (loaded) {
+        persistCacheValue(key, loaded.data, loaded.ts, true);
+        refreshBackendIfStale(key, loaded.data, effectiveTtl);
+        return loaded.data;
+      }
       persistCacheValue(key, disk.data as T, disk.ts, false);
       void queueBackendManagedRefresh<T>(key, false, disk.data as T);
       return disk.data as T;
@@ -838,7 +848,7 @@ export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<
   const loaded = await loadBackendManagedCache<T>(key);
   if (loaded) {
     persistCacheValue(key, loaded.data, loaded.ts, false);
-    void queueBackendManagedRefresh<T>(key, false, loaded.data);
+    refreshBackendIfStale(key, loaded.data, effectiveTtl);
     return loaded.data;
   }
 
@@ -1004,10 +1014,13 @@ export function invalidateCache(key?: string) {
   if (key) {
     cache.delete(key);
     inflight.delete(key);
+    rawCache.delete(key);
+    rawCache.delete(BACKEND_CACHE_DB_KEYS[key] ?? key);
     localStorage.removeItem(DISK_PREFIX + key);
   } else {
     cache.clear();
     inflight.clear();
+    rawCache.clear();
     for (const k of DISK_CACHE_KEYS) localStorage.removeItem(DISK_PREFIX + k);
   }
 }
@@ -1018,15 +1031,13 @@ export function updateCacheEntry<T>(key: string, updater: (data: T) => T): void 
   if (!entry) return;
   const updated = updater(entry.data as T);
   const now = Date.now();
-  cache.set(key, { data: updated, ts: now });
+  cache.set(key, { data: updated, ts: now, stamp: entry.stamp });
   if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, updated, now);
   notifySwr(key, updated);
 }
 
-export function replaceCacheEntry<T>(key: string, data: T, ts: number = Date.now()): void {
-  cache.set(key, { data, ts });
-  if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
-  notifySwr(key, data);
+export function replaceCacheEntry<T>(key: string, data: T, ts: number = Date.now(), stamp?: CacheStamp): void {
+  persistCacheValue(key, data, ts, true, stamp);
 }
 
 /**
@@ -1073,7 +1084,7 @@ export function splitByFaculty<T extends { department: string }>(
 
 export interface AiConfig {
   ai_enabled: boolean;
-  provider: "local" | "openai" | "gemini";
+  provider: "local" | "openai" | "openrouter" | "deepseek" | "gemini";
   local_model: string;
   api_key: string;
   model: string;

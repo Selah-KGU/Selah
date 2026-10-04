@@ -55,6 +55,7 @@
 
   // Track which tabs have been visited (lazy mount: create once, then keep alive)
   let visited = $state(new Set<string>(["home"]));
+  let enteredTabs = $state(new Set<string>([get(activeTab)]));
   let lazyViews = $state<Record<string, any>>({});
   let lazyErrors = $state<Record<string, string>>({});
   const loadingViews = new Set<string>();
@@ -82,6 +83,9 @@
     const tab = $activeTab;
     if (!visited.has(tab)) {
       visited = new Set([...visited, tab]);
+    }
+    if (!enteredTabs.has(tab)) {
+      enteredTabs = new Set([...enteredTabs, tab]);
     }
     void ensureViewLoaded(tab);
     // Resume onboarding when leaving Settings with a pending resume token
@@ -212,78 +216,78 @@
   <div class="main-area">
     <Titlebar />
     <div class="content">
-      <div class="view-panel" class:active={$activeTab === "home"}>
+      <div class="view-panel" class:active={$activeTab === "home"} class:enter={enteredTabs.has("home")}>
         <HomePage />
       </div>
       {#if visited.has("mail")}
         {@const MailView = lazyViews.mail}
-        <div class="view-panel" class:active={$activeTab === "mail"}>
+        <div class="view-panel" class:active={$activeTab === "mail"} class:enter={enteredTabs.has("mail")}>
           {#if MailView}<MailView />{:else}<div class="lazy-view-status">{lazyErrors.mail || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("ict-tools")}
         {@const IctTools = lazyViews["ict-tools"]}
-        <div class="view-panel" class:active={$activeTab === "ict-tools"}>
+        <div class="view-panel" class:active={$activeTab === "ict-tools"} class:enter={enteredTabs.has("ict-tools")}>
           {#if IctTools}<IctTools />{:else}<div class="lazy-view-status">{lazyErrors["ict-tools"] || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("timetable")}
         {@const Timetable = lazyViews.timetable}
-        <div class="view-panel" class:active={$activeTab === "timetable"}>
+        <div class="view-panel" class:active={$activeTab === "timetable"} class:enter={enteredTabs.has("timetable")}>
           {#if Timetable}<Timetable />{:else}<div class="lazy-view-status">{lazyErrors.timetable || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("live")}
         {@const Live = lazyViews.live}
-        <div class="view-panel" class:active={$activeTab === "live"}>
+        <div class="view-panel" class:active={$activeTab === "live"} class:enter={enteredTabs.has("live")}>
           {#if Live}<Live />{:else}<div class="lazy-view-status">{lazyErrors.live || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("todo")}
         {@const LunaTodo = lazyViews.todo}
-        <div class="view-panel" class:active={$activeTab === "todo"}>
+        <div class="view-panel" class:active={$activeTab === "todo"} class:enter={enteredTabs.has("todo")}>
           {#if LunaTodo}<LunaTodo />{:else}<div class="lazy-view-status">{lazyErrors.todo || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("grades")}
         {@const GradesView = lazyViews.grades}
-        <div class="view-panel" class:active={$activeTab === "grades"}>
+        <div class="view-panel" class:active={$activeTab === "grades"} class:enter={enteredTabs.has("grades")}>
           {#if GradesView}<GradesView />{:else}<div class="lazy-view-status">{lazyErrors.grades || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("registration")}
         {@const Registration = lazyViews.registration}
-        <div class="view-panel" class:active={$activeTab === "registration"}>
+        <div class="view-panel" class:active={$activeTab === "registration"} class:enter={enteredTabs.has("registration")}>
           {#if Registration}<Registration />{:else}<div class="lazy-view-status">{lazyErrors.registration || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("syllabus")}
         {@const Syllabus = lazyViews.syllabus}
-        <div class="view-panel" class:active={$activeTab === "syllabus"}>
+        <div class="view-panel" class:active={$activeTab === "syllabus"} class:enter={enteredTabs.has("syllabus")}>
           {#if Syllabus}<Syllabus />{:else}<div class="lazy-view-status">{lazyErrors.syllabus || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("notifications")}
         {@const NotificationsUnified = lazyViews.notifications}
-        <div class="view-panel" class:active={$activeTab === "notifications"}>
+        <div class="view-panel" class:active={$activeTab === "notifications"} class:enter={enteredTabs.has("notifications")}>
           {#if NotificationsUnified}<NotificationsUnified />{:else}<div class="lazy-view-status">{lazyErrors.notifications || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("changes")}
         {@const ChangeInfo = lazyViews.changes}
-        <div class="view-panel" class:active={$activeTab === "changes"}>
+        <div class="view-panel" class:active={$activeTab === "changes"} class:enter={enteredTabs.has("changes")}>
           {#if ChangeInfo}<ChangeInfo />{:else}<div class="lazy-view-status">{lazyErrors.changes || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("agent")}
         {@const AgentChat = lazyViews.agent}
-        <div class="view-panel" class:active={$activeTab === "agent"}>
+        <div class="view-panel" class:active={$activeTab === "agent"} class:enter={enteredTabs.has("agent")}>
           {#if AgentChat}<AgentChat />{:else}<div class="lazy-view-status">{lazyErrors.agent || "読み込み中…"}</div>{/if}
         </div>
       {/if}
       {#if visited.has("settings")}
         {@const Settings = lazyViews.settings}
-        <div class="view-panel" class:active={$activeTab === "settings"}>
+        <div class="view-panel" class:active={$activeTab === "settings"} class:enter={enteredTabs.has("settings")}>
           {#if Settings}<Settings />{:else}<div class="lazy-view-status">{lazyErrors.settings || "読み込み中…"}</div>{/if}
         </div>
       {/if}
@@ -300,9 +304,7 @@
 
   .sidebar {
     width: 210px;
-    background: var(--bg-sidebar);
-    backdrop-filter: var(--glass-blur) var(--glass-saturate);
-    -webkit-backdrop-filter: var(--glass-blur) var(--glass-saturate);
+    background: var(--bg-primary);
     border-right: 0.5px solid var(--glass-border);
     flex-shrink: 0;
     padding-top: 20px; /* space for macOS traffic lights */
@@ -358,7 +360,7 @@
     font-weight: 400;
     color: var(--text-primary);
     background: transparent;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     width: 100%;
     text-align: left;
     border: 0.5px solid transparent;
@@ -369,9 +371,7 @@
   }
 
   .nav-item.active {
-    background: var(--glass-bg);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    background: var(--bg-active);
     color: var(--accent);
     font-weight: 500;
     box-shadow: var(--glass-highlight), 0 1px 4px rgba(0, 0, 0, 0.04);
@@ -431,6 +431,9 @@
 
   .view-panel.active {
     display: block;
+  }
+
+  .view-panel.enter {
     animation: view-enter 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
 

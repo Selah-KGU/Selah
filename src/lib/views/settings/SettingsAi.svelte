@@ -55,25 +55,37 @@
   }
 
   const OPENAI_DEFAULT_MODEL = "gpt-6-luna";
-  const RETIRED_OPENAI_MODELS = new Set(["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]);
+  const RETIRED_PRESETS = new Set([
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "moonshotai/kimi-k2.6",
+    "anthropic/claude-opus-4.8",
+    "minimax/minimax-m3",
+  ]);
 
   const MODEL_PRESETS: Record<string, string[]> = {
     openai: [OPENAI_DEFAULT_MODEL],
     openrouter: [
-      "moonshotai/kimi-k2.6",
-      "anthropic/claude-opus-4.8",
-      "minimax/minimax-m3",
+      "openai/gpt-6-luna",
+      "qwen/qwen3.8-max-0902",
     ],
-    gemini: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview"],
+    deepseek: ["deepseek-flash"],
+    gemini: ["gemini-3.8-flash"],
   };
   const PROVIDER_HINTS: Record<string, string> = {
     openai: "OpenAI API キーは platform.openai.com で取得できます。",
-    openrouter: "OpenRouter の API キーは openrouter.ai/keys で取得できます。画像認識には視覚対応モデル（例: moonshotai/kimi-k2.6、minimax/minimax-m3）を選んでください。",
-    gemini: "Google AI Studio (aistudio.google.com) で API キーを取得できます。",
+    openrouter: "OpenRouter の API キーは openrouter.ai/keys で取得できます。画像認識には視覚対応モデル（例: openai/gpt-6-luna、qwen/qwen3.8-max-0902）を選んでください。",
+    deepseek: "DeepSeek の API キーは platform.deepseek.com/api_keys で取得できます。既定モデル deepseek-flash は DeepSeek-V4.1-Flash です。",
+    gemini: "Google AI Studio (aistudio.google.com) で API キーを取得できます。既定モデルは gemini-3.8-flash です。",
   };
   const DEFAULT_URLS: Record<string, string> = {
     openai: "https://api.openai.com/v1",
     openrouter: "https://openrouter.ai/api/v1",
+    deepseek: "https://api.deepseek.com",
     gemini: "",
   };
   const isWindows = navigator.userAgent.includes('Windows');
@@ -377,7 +389,7 @@
       .flatMap(([, list]) => list);
     if (
       presets.length &&
-      (!model.trim() || foreignPresets.includes(model.trim()) || RETIRED_OPENAI_MODELS.has(model.trim()))
+      (!model.trim() || foreignPresets.includes(model.trim()) || RETIRED_PRESETS.has(model.trim()))
     ) {
       model = presets[0];
     }
@@ -503,7 +515,7 @@
       selectedLocalModel = APPLE_INTELLIGENCE_MODEL_ID;
       apiKey = c.api_key || "";
       model = c.model || "";
-      if (RETIRED_OPENAI_MODELS.has(model.trim())) model = OPENAI_DEFAULT_MODEL;
+      if (RETIRED_PRESETS.has(model.trim())) model = (MODEL_PRESETS[aiProvider] || [OPENAI_DEFAULT_MODEL])[0];
 
       baseUrl = c.base_url || "";
       maxTokens = c.max_tokens != null ? c.max_tokens : 0;
@@ -795,6 +807,7 @@
           {#if supportsLocalAi}<option value="local">Apple Intelligence</option>{/if}
           <option value="openai">OpenAI API</option>
           <option value="openrouter">OpenRouter</option>
+          <option value="deepseek">DeepSeek API</option>
           <option value="gemini">Google Gemini API</option>
         </select>
         {#if !supportsLocalAi && localAiUnsupportedReason}
@@ -841,7 +854,7 @@
       <div class="row">
         <span class="row-label">モデル名</span>
         <div class="row-input">
-          <input type="text" bind:value={model} placeholder="gpt-6-luna" spellcheck="false" />
+          <input type="text" bind:value={model} placeholder={(MODEL_PRESETS[aiProvider] || [OPENAI_DEFAULT_MODEL])[0]} spellcheck="false" />
           <div class="presets">
             {#each (MODEL_PRESETS[aiProvider] || []) as preset}
               <button class="preset" onclick={() => (model = preset)}>{preset}</button>

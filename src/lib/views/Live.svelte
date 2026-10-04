@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from "svelte";
+  import { get } from "svelte/store";
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -42,7 +43,7 @@
   import type { ScheduleResponse } from "../types";
   import { PERIOD_TIMES } from "../types";
   import { buildCourseSlots, type CourseSlot } from "../schedule";
-  import { computeWhiteboardLayout, whiteboardTopics } from "../whiteboardLayout";
+  import { computeWhiteboardLayout, whiteboardLayoutReady, whiteboardTopics } from "../whiteboardLayout";
   import type {
     LiveControlModel,
     NoticeAction,
@@ -125,6 +126,11 @@
   let overallSummaryAt = $state(""); // "HH:MM" the overall summary was generated
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
   let scheduleFocusTimer: ReturnType<typeof setInterval> | null = null;
+  let liveMounted = false;
+  let liveWindowHidden = $state(typeof document !== "undefined" && document.hidden);
+  let liveSurfaceWasVisible = false;
+  let sttBindToken = 0;
+  let sttListenersBound = false;
   let aiReplyLanguage = $state("ja");
   let timeTimer: ReturnType<typeof setInterval> | null = null;
   let now = $state(new Date());
@@ -409,7 +415,10 @@
   // Topic switcher: a dense board carries several main topics; the bottom bar
   // lets the user show one (default) or several at a time instead of cramming
   // every topic onto one canvas.
-  const whiteboardTopicList = $derived(whiteboardTopics(rawWhiteboard));
+  const whiteboardTopicList = $derived.by(() => {
+    void $whiteboardLayoutReady;
+    return whiteboardTopics(rawWhiteboard);
+  });
   let selectedTopicIds = $state<string[]>([]);
   // Reset the selection only when the *set* of topics changes — the board
   // object is re-derived on every transcript tick, but as long as the topic
@@ -424,21 +433,23 @@
       selectedTopicIds = kept.length ? kept : ids.slice(0, 1);
     });
   });
-  const activeWhiteboardLayout = $derived.by(() =>
-    computeWhiteboardLayout(rawWhiteboard, {
+  const activeWhiteboardLayout = $derived.by(() => {
+    void $whiteboardLayoutReady;
+    return computeWhiteboardLayout(rawWhiteboard, {
       fallbackBoardTitle: termFloatLabels.boardTitle,
       externalNodeLabel: termFloatLabels.externalNode,
       topicIds: whiteboardTopicList.length > 1 ? selectedTopicIds : undefined,
-    })
-  );
+    });
+  });
   // The rail preview is an overview — it always shows the whole board; topic
   // filtering only applies inside the expanded overlay.
-  const previewWhiteboardLayout = $derived(
-    computeWhiteboardLayout(rawWhiteboard, {
+  const previewWhiteboardLayout = $derived.by(() => {
+    void $whiteboardLayoutReady;
+    return computeWhiteboardLayout(rawWhiteboard, {
       fallbackBoardTitle: termFloatLabels.boardTitle,
       externalNodeLabel: termFloatLabels.externalNode,
-    })
-  );
+    });
+  });
   function toggleWhiteboardTopic(id: string) {
     if (selectedTopicIds.includes(id)) {
       // Keep at least one topic selected.
@@ -1337,7 +1348,157 @@
     }
   }
 
+  function onLiveVisibilityChange() {
+    liveWindowHidden = document.hidden;
+  }
+
+  function stopScheduleFocusTimer() {
+    if (scheduleFocusTimer) {
+      clearInterval(scheduleFocusTimer);
+      scheduleFocusTimer = null;
+    }
+  }
+
+  function unbindLiveSttListeners() {
+    sttBindToken += 1;
+    sttListenersBound = false;
+    unlistenPartial?.();
+    unlistenFinal?.();
+    unlistenState?.();
+    unlistenError?.();
+    unlistenInfo?.();
+    unlistenPartial = null;
+    unlistenFinal = null;
+    unlistenState = null;
+    unlistenError = null;
+    unlistenInfo = null;
+  }
+
+  async function bindLiveSttListeners() {
+    if (sttListenersBound) return;
+    const token = sttBindToken;
+    sttListenersBound = true;
+    const bound: Array<() => void> = [];
+    try {
+    const partialUnlisten = await listen<{ text: string; caller: string; seq?: number }>("stt-partial", (event) => {
+      if (event.payload.caller !== "live") return;
+      const seq = event.payload.seq ?? 0;
+      if (seq > 0 && seq < lastPartialSeq) return;
+      if (seq > 0) lastPartialSeq = seq;
+      partialText = event.payload.text || "";
+    });
+    bound.push(partialUnlisten);
+    const finalUnlisten = await listen<{ text: string; caller: string; seq?: number }>("stt-final", async (event) => {
+      if (event.payload.caller !== "live") return;
+      if (!snapshot.active) return;
+      const seq = event.payload.seq ?? 0;
+      // An older final can finish after a newer partial. Keep the live line,
+      // but still commit the finished sentence to the transcript.
+      if (seq === 0 || seq >= lastPartialSeq) {
+        if (seq > 0) lastPartialSeq = seq;
+        partialText = "";
+      }
+      try {
+        // The backend also emits `live-session-updated`; we apply the
+        // return value and let the listener be an idempotent no-op via
+        // the line-length fingerprint check below.
+        snapshot = await liveAppendTranscript(event.payload.text || "");
+        lastAppliedLen = snapshot.transcript_lines.length;
+        markEffectiveSpeech();
+      } catch (e: any) {
+        setMessage("error", e?.message || String(e));
+      }
+    });
+    bound.push(finalUnlisten);
+    const stateUnlisten = await listen<{ state: string; caller: string }>("stt-state", (event) => {
+      if (event.payload.caller !== "live") return;
+      const wasListening = sttListening;
+      sttListening = event.payload.state === "initializing" || event.payload.state === "listening";
+      if (event.payload.state === "initializing") {
+        sttPhase = "initializing";
+        setSttNotice("マイクと音声認識を初期化中…");
+      } else if (event.payload.state === "listening") {
+        sttPhase = "listening";
+        clearSttNotice();
+        cancelSessionOnStartFailure = false;
+        // No green "開始/再開" confirmation bar — the capsule flips to REC.
+        if (!wasListening) markLiveListeningStarted();
+      } else {
+        sttPhase = "idle";
+        clearSttNotice();
+        if (snapshot.active) markLivePaused();
+      }
+      if (sttListening && !wasListening) autoFollow = true;
+    });
+    bound.push(stateUnlisten);
+    const errorUnlisten = await listen<{ message: string; caller: string }>("stt-error", (event) => {
+      if (event.payload.caller !== "live") return;
+      const wasStarting = sttPhase === "starting" || sttPhase === "initializing";
+      sttListening = false;
+      sttPhase = "idle";
+      clearSttNotice();
+      if (snapshot.active) markLivePaused();
+      setMessage("error", event.payload.message);
+      if (wasStarting && cancelSessionOnStartFailure) {
+        cancelSessionOnStartFailure = false;
+        void (async () => {
+          try {
+            await liveCancelSession();
+            snapshot = await liveGetSession();
+            partialText = "";
+          } catch {}
+        })();
+      }
+    });
+    bound.push(errorUnlisten);
+    const infoUnlisten = await listen<{ message: string; caller: string }>("stt-info", (event) => {
+      if (event.payload.caller !== "live") return;
+      setMessage("success", event.payload.message);
+    });
+    bound.push(infoUnlisten);
+    if (token !== sttBindToken) {
+      for (const unlisten of bound) unlisten();
+      return;
+    }
+    unlistenPartial = partialUnlisten;
+    unlistenFinal = finalUnlisten;
+    unlistenState = stateUnlisten;
+    unlistenError = errorUnlisten;
+    unlistenInfo = infoUnlisten;
+    } catch (err) {
+      for (const unlisten of bound) unlisten();
+      if (token === sttBindToken) {
+        console.warn("[Live] STT listener bind failed:", err);
+        unbindLiveSttListeners();
+      }
+    }
+  }
+
+  function applyLiveSurfacePolicy(onLive: boolean, hidden: boolean, sessionActive: boolean) {
+    const visible = onLive && !hidden;
+    if (!visible) stopScheduleFocusTimer();
+    else if (!scheduleFocusTimer) {
+      scheduleFocusTimer = setInterval(refreshFocusedCoursesFromClock, 60_000);
+    }
+    if (!onLive && hidden && !sessionActive) unbindLiveSttListeners();
+    else void bindLiveSttListeners();
+    if (visible && !liveSurfaceWasVisible) {
+      void refreshLiveSttState();
+      refreshFocusedCoursesFromClock();
+    }
+    liveSurfaceWasVisible = visible;
+  }
+
+  $effect(() => {
+    const onLive = $activeTab === "live";
+    const hidden = liveWindowHidden;
+    const sessionActive = snapshot.active;
+    if (!liveMounted) return;
+    applyLiveSurfacePolicy(onLive, hidden, sessionActive);
+  });
+
   onMount(async () => {
+    document.addEventListener("visibilitychange", onLiveVisibilityChange);
     try {
       snapshot = await liveGetSession();
       await Promise.all([refreshSchedule(false), refreshReadiness()]);
@@ -1345,79 +1506,6 @@
 
       unlistenScheduleCache = onCacheUpdate<ScheduleResponse>("schedule_data", (fresh) => {
         applyScheduleSnapshot(fresh, new Date(), true);
-      });
-      scheduleFocusTimer = setInterval(refreshFocusedCoursesFromClock, 60_000);
-
-      unlistenPartial = await listen<{ text: string; caller: string; seq?: number }>("stt-partial", (event) => {
-        if (event.payload.caller !== "live") return;
-        const seq = event.payload.seq ?? 0;
-        if (seq > 0 && seq < lastPartialSeq) return;
-        if (seq > 0) lastPartialSeq = seq;
-        partialText = event.payload.text || "";
-      });
-      unlistenFinal = await listen<{ text: string; caller: string; seq?: number }>("stt-final", async (event) => {
-        if (event.payload.caller !== "live") return;
-        if (!snapshot.active) return;
-        const seq = event.payload.seq ?? 0;
-        // An older final can finish after a newer partial. Keep the live line,
-        // but still commit the finished sentence to the transcript.
-        if (seq === 0 || seq >= lastPartialSeq) {
-          if (seq > 0) lastPartialSeq = seq;
-          partialText = "";
-        }
-        try {
-          // The backend also emits `live-session-updated`; we apply the
-          // return value and let the listener be an idempotent no-op via
-          // the line-length fingerprint check below.
-          snapshot = await liveAppendTranscript(event.payload.text || "");
-          lastAppliedLen = snapshot.transcript_lines.length;
-          markEffectiveSpeech();
-        } catch (e: any) {
-          setMessage("error", e?.message || String(e));
-        }
-      });
-      unlistenState = await listen<{ state: string; caller: string }>("stt-state", (event) => {
-        if (event.payload.caller !== "live") return;
-        const wasListening = sttListening;
-        sttListening = event.payload.state === "initializing" || event.payload.state === "listening";
-        if (event.payload.state === "initializing") {
-          sttPhase = "initializing";
-          setSttNotice("マイクと音声認識を初期化中…");
-        } else if (event.payload.state === "listening") {
-          sttPhase = "listening";
-          clearSttNotice();
-          cancelSessionOnStartFailure = false;
-          // No green "開始/再開" confirmation bar — the capsule flips to REC.
-          if (!wasListening) markLiveListeningStarted();
-        } else {
-          sttPhase = "idle";
-          clearSttNotice();
-          if (snapshot.active) markLivePaused();
-        }
-        if (sttListening && !wasListening) autoFollow = true;
-      });
-      unlistenError = await listen<{ message: string; caller: string }>("stt-error", (event) => {
-        if (event.payload.caller !== "live") return;
-        const wasStarting = sttPhase === "starting" || sttPhase === "initializing";
-        sttListening = false;
-        sttPhase = "idle";
-        clearSttNotice();
-        if (snapshot.active) markLivePaused();
-        setMessage("error", event.payload.message);
-        if (wasStarting && cancelSessionOnStartFailure) {
-          cancelSessionOnStartFailure = false;
-          void (async () => {
-            try {
-              await liveCancelSession();
-              snapshot = await liveGetSession();
-              partialText = "";
-            } catch {}
-          })();
-        }
-      });
-      unlistenInfo = await listen<{ message: string; caller: string }>("stt-info", (event) => {
-        if (event.payload.caller !== "live") return;
-        setMessage("success", event.payload.message);
       });
       unlistenLive = await listen<LiveSessionSnapshot>("live-session-updated", (event) => {
         const len = event.payload.transcript_lines.length;
@@ -1477,17 +1565,17 @@
       refreshSchedule(true).catch(() => {});
       closeSubtitleOverlay().catch(() => {});
     });
+    liveMounted = true;
+    applyLiveSurfacePolicy(get(activeTab) === "live", liveWindowHidden, snapshot.active);
   });
 
   onDestroy(() => {
     stopLiveAutoGuardTimer();
     if (timeTimer) clearInterval(timeTimer);
     clearNoticeTimer();
-    unlistenPartial?.();
-    unlistenFinal?.();
-    unlistenState?.();
-    unlistenError?.();
-    unlistenInfo?.();
+    document.removeEventListener("visibilitychange", onLiveVisibilityChange);
+    liveMounted = false;
+    unbindLiveSttListeners();
     unlistenLive?.();
     unlistenSaved?.();
     unlistenFinishProgress?.();
@@ -1496,7 +1584,7 @@
     unlistenScheduleCache?.();
     unlistenWinFocus?.();
     unlistenWinBlur?.();
-    if (scheduleFocusTimer) clearInterval(scheduleFocusTimer);
+    stopScheduleFocusTimer();
     // Live ページを離れたら浮窗を再表示
     openSubtitleOverlay().catch(() => {});
   });

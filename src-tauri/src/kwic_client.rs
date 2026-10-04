@@ -2,7 +2,8 @@ use reqwest::Client;
 use std::sync::Arc;
 
 use crate::client::{
-    build_http_client, delete_cookie_jar, load_cookie_jar, new_cookie_client, save_cookie_jar,
+    fresh_cookie_client_clearing, new_cookie_client, save_service_cookie_jar,
+    try_restore_cookie_client,
 };
 
 pub(crate) const KWIC_COOKIES_KEY: &str = "kwic_cookie_jar";
@@ -46,36 +47,30 @@ impl KwicClient {
 
     /// Save KWIC Portal cookies to disk
     pub fn save_session(&self) {
-        if !self.authenticated {
-            log::warn!("KWIC save_session skipped: not authenticated");
-            return;
-        }
-        match save_cookie_jar(&self.cookie_store, KWIC_COOKIES_KEY) {
-            Ok(()) => log::info!("KWIC Portal cookies saved securely"),
-            Err(e) => log::warn!("Failed to save KWIC Portal cookies securely: {}", e),
-        }
+        save_service_cookie_jar(
+            self.authenticated,
+            &self.cookie_store,
+            KWIC_COOKIES_KEY,
+            "KWIC Portal",
+        );
     }
 
     /// Try to restore session from disk
     pub fn try_restore_session(&mut self) -> bool {
-        match load_cookie_jar(KWIC_COOKIES_KEY) {
-            Some(store) => {
-                let cookie_store = Arc::new(reqwest_cookie_store::CookieStoreMutex::new(store));
-                self.http = build_http_client(cookie_store.clone());
-                self.cookie_store = cookie_store;
-                self.authenticated = true;
-                log::info!("KWIC Portal session restored from disk");
-                true
-            }
-            None => false,
-        }
+        let Some(parts) = try_restore_cookie_client(KWIC_COOKIES_KEY) else {
+            return false;
+        };
+        self.http = parts.http;
+        self.cookie_store = parts.cookie_store;
+        self.authenticated = true;
+        log::info!("KWIC Portal session restored from disk");
+        true
     }
 
     pub fn clear(&mut self) {
         self.authenticated = false;
-        delete_cookie_jar(KWIC_COOKIES_KEY);
-        let (cookie_store, http) = new_cookie_client();
-        self.http = http;
-        self.cookie_store = cookie_store;
+        let parts = fresh_cookie_client_clearing(KWIC_COOKIES_KEY);
+        self.http = parts.http;
+        self.cookie_store = parts.cookie_store;
     }
 }

@@ -6,7 +6,7 @@ Selah は macOS の Apple Intelligence とクラウド API に対応した AI �
 設定画面からプロバイダを選択してください。
 
 - **Apple Intelligence（macOS）**: システム内蔵モデルを端末内で実行します。macOS 26 以降で Apple Intelligence が有効である必要があります。モデルのダウンロードは不要です。
-- **クラウド**: OpenAI API キーまたは Google Gemini API キーを登録。キーは OS のキーチェーン / クレデンシャルストアに安全に保存されます。
+- **クラウド**: OpenAI / OpenRouter / DeepSeek / Google Gemini の API キーを登録。キーは OS のキーチェーン / クレデンシャルストアに安全に保存されます。
 :::
 
 ## Selah Agent
@@ -57,7 +57,9 @@ Selah は macOS の Apple Intelligence とクラウド API に対応した AI �
 | プロバイダ | 対応モデル | 通信 |
 |---|---|---|
 | Apple Intelligence (macOS) | システム内蔵モデル | 不要 |
-| OpenAI | GPT 系 | API 直接 |
-| Google | Gemini 系 | API 直接 |
+| OpenAI | GPT-6 Luna（`gpt-6-luna`） | API 直接 |
+| OpenRouter | GPT-6 Luna（`openai/gpt-6-luna`）、Qwen 3.8 Max（`qwen/qwen3.8-max-0902`） | API 直接 |
+| DeepSeek | DeepSeek-V4.1-Flash（`deepseek-flash`） | API 直接 |
+| Google | Gemini 3.8 Flash（`gemini-3.8-flash`） | API 直接 |
 
 クラウド側のモデルは設定画面から選択できます。Apple Intelligence はシステムのオンデバイスモデルをそのまま使います。コンテキストは約 4096 トークンで、指示・入力・応答が同じ窓を共有します。長い入力は古い文脈から切り詰め、応答トークン数は残りの窓に合わせて止まるので、上限に達してもそこまでの応答は残します。JSON は文字の途中では切らず、配列の要素を落とすか、対応するブロックごと残します。Windows 版はクラウド API のみです。

@@ -146,7 +146,7 @@ Selah は関西学院大学の教務システム **KWIC** と学習管理シス�
 - **セッション自動管理** — セッション有効期限の自動検証、期限切れ時の自動再ログイン
 - **バックグラウンドポーリング** — 時間割・お知らせ・TODO・メールなどを定期的に取得し、キャッシュを自動更新
 - **ローカル DB キャッシュ** — SQLite (WAL モード) による永続キャッシュと SWR 方式での高速起動、ネットワーク不通時のオフラインフォールバック
-- **ローカル AI（macOS）** — Apple Intelligence のオンデバイスモデルを Swift ブリッジ経由で実行。モデルのダウンロードは不要です。Windows 版は OpenAI / OpenRouter / Google Gemini などの API を使用します
+- **ローカル AI（macOS）** — Apple Intelligence のオンデバイスモデルを Swift ブリッジ経由で実行。モデルのダウンロードは不要です。Windows 版は OpenAI / OpenRouter / DeepSeek / Google Gemini などの API を使用します
 - **統合設定画面** — AI・セッション・メール・カレンダー・通知・ダウンロード先をすべてアプリ内で設定可能（デバッグコンソールはバージョン表記を 7 回タップでアンロック）
 - **トレイステータス** — メニューバー / タスクトレイに現在の授業・次の授業・未提出課題などをサイクル表示。クリックでポップアップに詳細を表示
 - **デモモード** — 実データを用いず匿名サンプルデータでアプリを体験可能
@@ -163,7 +163,7 @@ Selah は関西学院大学の教務システム **KWIC** と学習管理シス�
 | バックエンド | Rust (reqwest, scraper, tokio, rusqlite) |
 | 認証 | SSO セッション連携 (WKWebView / WebView2) |
 | キャッシュ | SQLite (WAL モード) |
-| AI 統合 | macOS: Apple Intelligence（オンデバイス） / Windows: OpenAI / OpenRouter / Google Gemini |
+| AI 統合 | macOS: Apple Intelligence（オンデバイス） / Windows: OpenAI / OpenRouter / DeepSeek / Google Gemini |
 | 音声認識 (STT) | sherpa-onnx + SenseVoice（オンデバイス、日英対応） |
 | ビルドツール | [Vite](https://vitejs.dev/) |
 | パッケージ | macOS: DMG / .app (universal binary) / Mac App Store ／ Windows: NSIS / Microsoft Store |
@@ -257,7 +257,7 @@ Selah が通信を行う外部サービスは以下のみです。いずれも�
 | Luna (`luna.kwansei.ac.jp`) | LMS データの取得 | 課題・通知・シラバス等 |
 | Microsoft 365 (`graph.microsoft.com`) | 大学メールの取得 | OAuth 認証、Mail.ReadWrite スコープ |
 | Google Calendar API | カレンダー同期 | ユーザーが同期を有効にした場合のみ |
-| OpenAI / Google Gemini API | クラウド AI アシスト機能 | ユーザーがプロバイダを選び API キーを設定した場合のみ |
+| OpenAI / OpenRouter / DeepSeek / Google Gemini API | クラウド AI アシスト機能 | ユーザーがプロバイダを選び API キーを設定した場合のみ |
 | Open-Meteo API | 天気情報の取得 | 大学キャンパスの固定座標のみ送信（位置情報は取得しません） |
 
 ### データの保存
@@ -278,7 +278,7 @@ Selah が通信を行う外部サービスは以下のみです。いずれも�
 AI アシスト機能（履修分析・学習計画・通知サマリー・Selah Agent）は、ユーザーが選択したプロバイダに応じて以下のいずれかで動作します。
 
 - **Apple Intelligence（macOS）**: システム内蔵モデルで端末内推論します。プロンプトは Selah のサーバーへ送信しません。Windows 版はローカル AI を搭載せず、設定したクラウド API を使用します。
-- **クラウド (OpenAI / Gemini)**: ユーザーが設定した API キーで直接プロバイダに接続。開発者のサーバーを経由することはありません。
+- **クラウド (OpenAI / OpenRouter / DeepSeek / Gemini)**: ユーザーが設定した API キーで直接プロバイダに接続。開発者のサーバーを経由することはありません。
 
 AI への送信内容は時間割・シラバス・成績などの学術データに限られます。API キーは OS のキーチェーンに安全に保存されます。
 

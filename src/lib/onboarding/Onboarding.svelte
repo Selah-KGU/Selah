@@ -35,7 +35,7 @@
   let purposes = $state<OnboardingPurpose[]>([]);
 
   // AI step state
-  type Provider = "openai" | "openrouter" | "gemini";
+  type Provider = "openai" | "openrouter" | "deepseek" | "gemini";
   let provider = $state<Provider>("openai");
   let apiKey = $state("");
   let testing = $state(false);
@@ -51,16 +51,22 @@
       hint: "OpenAI API キーは platform.openai.com で取得できます。",
     },
     openrouter: {
-      model: "moonshotai/kimi-k2.6",
+      model: "openai/gpt-6-luna",
       baseUrl: "https://openrouter.ai/api/v1",
       keyUrl: "https://openrouter.ai/keys",
-      hint: "OpenRouter の API キーは openrouter.ai/keys で取得できます。1つのキーで Kimi・Claude・MiniMax 等を利用できます。",
+      hint: "OpenRouter の API キーは openrouter.ai/keys で取得できます。1つのキーで GPT-6 Luna・Qwen 3.8 Max 等を利用できます。",
+    },
+    deepseek: {
+      model: "deepseek-flash",
+      baseUrl: "https://api.deepseek.com",
+      keyUrl: "https://platform.deepseek.com/api_keys",
+      hint: "DeepSeek の API キーは platform.deepseek.com/api_keys で取得できます。既定モデル deepseek-flash は DeepSeek-V4.1-Flash です。",
     },
     gemini: {
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.8-flash",
       baseUrl: "",
       keyUrl: "https://aistudio.google.com/app/apikey",
-      hint: "Google AI Studio で API キーを取得できます。",
+      hint: "Google AI Studio で API キーを取得できます。既定モデルは Gemini 3.8 Flash です。",
     },
   };
 
@@ -372,19 +378,23 @@
             {/each}
           </div>
         {:else if step === "provider"}
-          <p class="lead">AI 推論の提供元を選びます。どちらも API キーを入力するだけで使えます。</p>
+          <p class="lead">AI 推論の提供元を選びます。API キーを入力するだけで使えます。</p>
           <div class="provider-grid">
             <button class="provider-card" class:selected={provider === "openai"} onclick={() => { provider = "openai"; }}>
               <div class="provider-name">OpenAI <span class="badge">推奨</span></div>
-              <div class="provider-desc">GPT-5.4 系。応答が速く、ほとんどの機能で安定して動作します。</div>
+              <div class="provider-desc">既定は GPT-6 Luna。応答が速く、ほとんどの機能で安定して動作します。</div>
             </button>
             <button class="provider-card" class:selected={provider === "openrouter"} onclick={() => { provider = "openrouter"; }}>
               <div class="provider-name">OpenRouter</div>
-              <div class="provider-desc">1つのキーで Kimi・Claude・MiniMax 等を切替。多くが画像認識に対応。</div>
+              <div class="provider-desc">1つのキーで GPT-6 Luna・Qwen 3.8 Max 等を切替。多くが画像認識に対応。</div>
+            </button>
+            <button class="provider-card" class:selected={provider === "deepseek"} onclick={() => { provider = "deepseek"; }}>
+              <div class="provider-name">DeepSeek</div>
+              <div class="provider-desc">既定は DeepSeek-V4.1-Flash。OpenAI 互換 API で、画像入力にも対応します。</div>
             </button>
             <button class="provider-card" class:selected={provider === "gemini"} onclick={() => { provider = "gemini"; }}>
               <div class="provider-name">Google Gemini</div>
-              <div class="provider-desc">無料枠あり。日本語の長文要約に強い傾向があります。</div>
+              <div class="provider-desc">既定は Gemini 3.8 Flash。日本語の長文要約に強い傾向があります。</div>
             </button>
           </div>
           <button class="link-quiet" onclick={() => jumpToSettings("ai", "checklist")}>

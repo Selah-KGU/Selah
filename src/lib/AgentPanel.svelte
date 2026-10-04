@@ -114,8 +114,19 @@
   );
   marked.setOptions({ breaks: true, gfm: true });
 
+  const renderCache = new Map<string, string>();
+  const RENDER_CACHE_MAX = 256;
+
   function renderMessage(content: string): string {
-    return DOMPurify.sanitize(marked.parse(content || "") as string);
+    const cached = renderCache.get(content);
+    if (cached !== undefined) return cached;
+    const out = DOMPurify.sanitize(marked.parse(content || "") as string);
+    if (renderCache.size >= RENDER_CACHE_MAX) {
+      const firstKey = renderCache.keys().next().value;
+      if (firstKey !== undefined) renderCache.delete(firstKey);
+    }
+    renderCache.set(content, out);
+    return out;
   }
 
   function toolLabel(name: string): string {

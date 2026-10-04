@@ -1,9 +1,54 @@
 // Thin typed wrapper around the global WhiteboardLayout module
-// (static/whiteboard-layout.js). The module is loaded by a <script> tag in
-// index.html before the Svelte bundle, so window.WhiteboardLayout is
-// guaranteed to exist by the time anything imports this file.
+// (static/whiteboard-layout.js). The script is inserted on demand so auxiliary
+// windows and cold start do not parse it. Callers that compute layout inside
+// $derived must also read whiteboardLayoutReady; a late script load does not
+// otherwise invalidate the derived.
 
+import { writable } from "svelte/store";
 import type { LiveWhiteboard } from "./api";
+
+export const whiteboardLayoutReady = writable(false);
+
+let whiteboardLayoutPromise: Promise<void> | null = null;
+
+export function ensureWhiteboardLayout(): Promise<void> {
+  if (typeof window === "undefined" || typeof document === "undefined") return Promise.resolve();
+  if (window.WhiteboardLayout) {
+    whiteboardLayoutReady.set(true);
+    return Promise.resolve();
+  }
+  if (whiteboardLayoutPromise) return whiteboardLayoutPromise;
+  whiteboardLayoutPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-whiteboard-layout="1"]');
+    const script = existing instanceof HTMLScriptElement ? existing : document.createElement("script");
+    script.src = "/whiteboard-layout.js";
+    script.async = true;
+    script.dataset.whiteboardLayout = "1";
+    const fail = (err: Error) => {
+      whiteboardLayoutPromise = null;
+      reject(err);
+    };
+    script.addEventListener("load", () => {
+      if (window.WhiteboardLayout) {
+        whiteboardLayoutReady.set(true);
+        resolve();
+        return;
+      }
+      fail(new Error("whiteboard-layout.js loaded without WhiteboardLayout"));
+    }, { once: true });
+    script.addEventListener("error", () => {
+      fail(new Error("whiteboard-layout.js failed to load"));
+    }, { once: true });
+    if (!existing) document.head.appendChild(script);
+  });
+  return whiteboardLayoutPromise;
+}
+
+if (typeof window !== "undefined") {
+  void ensureWhiteboardLayout().catch((err) => {
+    console.warn("[Selah] whiteboard layout failed to load:", err);
+  });
+}
 
 export type WhiteboardLayoutChip = {
   label: string;
