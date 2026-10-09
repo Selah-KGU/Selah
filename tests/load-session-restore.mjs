@@ -1,36 +1,35 @@
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
-
+import { resolve } from 'node:path';
 let instance = 0;
-// Run the exact production restoration function with only its IO/store
-// dependencies replaced. Already issued native work is not simulated as canceled.
 export async function loadSessionRestore() {
-  const source = await readFile(process.env.SELAH_RESTORE_STARTUP_BEFORE || 'src/lib/api.ts', 'utf8');
-  const restore = source.match(/export async function restoreAllSessions\([\s\S]*?\n}\n/)?.[0];
-  if (!restore) throw new Error('Session restoration function missing');
+  const source = await readFile('src/lib/api.ts', 'utf8');
+  const functions = ['restoreAllSessions','applyUniversitySnapshot','applyRecoveryReport'].map(name => {
+    const match = source.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([^]*?\\n}\\n`));
+    if (!match) throw new Error(`Missing production function ${name}`);
+    return match[0];
+  }).join('\n');
   const result = await build({ stdin: { contents: `
-    type SessionStatus = { valid: boolean; username: string; display_name?: string; student_id?: string; faculty?: string; department?: string };
-    export const calls = [], state = { auth: null, expired: null, mail: null }, storage = new Map();
+    import { universitySessionLifetime } from ${JSON.stringify(resolve('src/lib/sessionLifetime.ts'))};
+    import { projectUniversitySession } from ${JSON.stringify(resolve('src/lib/universitySession.ts'))};
+    export { universitySessionLifetime };
+    export const calls = [], state = { auth: null, expired: null, mail: null, luna: null, kwic: null };
     let config = {};
     export const configure = value => { config = value; };
-    const localStorage = { setItem: (key, value) => storage.set(key, value) };
-    const EVER_AUTH_KEY = 'selah-ever-auth';
-    const debugLog = () => {}, _isDemo = () => !!config.demo;
-    const authState = { set: value => { calls.push(['auth', value]); state.auth = value; } };
-    const sessionExpired = { set: value => { calls.push(['expired', value]); state.expired = value; } };
-    const mailAuthState = { set: value => { calls.push(['mail', value]); state.mail = value; } };
-    const serviceRegistry = Object.fromEntries(['luna','kwic'].map(key => [key, {
-      onRecovered: () => calls.push(['recovered', key]), onReset: () => calls.push(['reset', key]),
-    }]));
-    function setAuthFromSession(value) { calls.push(['setAuthFromSession', value]); state.auth = value; }
-    async function getKgcSessionSnapshot() { calls.push(['snapshot']); return config.snapshot ? config.snapshot() : { valid: true, username: 'user', display_name: 'ユーザー' }; }
-    async function getStoredSessionStates() { calls.push(['stored']); return config.stored ? config.stored() : { kgc: true, luna: true, kwic: true }; }
-    async function lunaCheckSession() { calls.push(['validate','luna']); return config.validate ? config.validate('luna') : true; }
-    async function kwicCheckSession() { calls.push(['validate','kwic']); return config.validate ? config.validate('kwic') : true; }
-    async function syncSession(key) { calls.push(['sync',key]); return config.sync ? config.sync(key) : true; }
+    const _isDemo = () => !!config.demo;
+    const store = key => ({ set(value) { calls.push([key,value]); state[key] = value; } });
+    const universityLoginPersistencePending = store('persistencePending');
+    const sessionExpired = store('expired'), lunaAuthState = store('luna'), kwicAuthState = store('kwic'), mailAuthState = store('mail');
+    function setAuthFromSession(value) { calls.push(['auth',value]); state.auth = value; }
+    async function invoke(command) { calls.push(['invoke',command]); return config.restore(); }
     async function mailCheckSession() { calls.push(['mailCheck']); return config.mail ? config.mail() : { authenticated: true, email: 'full@example.test', display_name: '完全な名前' }; }
-    ${restore}
-  `, loader: 'ts' }, bundle: true, write: false, platform: 'node', format: 'esm',
-    define: { 'console.warn': 'ignoredWarning' }, banner: { js: 'function ignoredWarning() {}' } });
-  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}#session-restore-${++instance}`);
+    ${functions}
+  `, loader:'ts', resolveDir:process.cwd() }, bundle:true, write:false, platform:'node', format:'esm',
+    define:{'console.warn':'ignoredWarning'}, banner:{js:'function ignoredWarning() {}'} });
+  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}#restore-${++instance}`);
+}
+export const identity = { username:'full', display_name:'完全な名前', student_id:'123', faculty:'理工', department:'情報' };
+export function report({ who = identity, health = 'valid', generation = 0, revision = 1, present = true, proof = true, signedOut = false } = {}) {
+  return { identity: who, results: [], snapshot: { generation, revision, signed_out:signedOut,
+    services:['kgc','luna','kwic'].map(service => ({service,state:health,credentials_present:present,last_verified_at:proof ? 100 : null,last_attempt_at:null})) } };
 }

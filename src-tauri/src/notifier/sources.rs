@@ -10,7 +10,10 @@ pub(in crate::notifier) fn sync_kgc_notifications(
     run: &mut SyncRunDebug,
 ) {
     let source = "kgc";
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
+    if db.ensure_current_account().is_err() {
+        return;
+    }
     let current_ids: Vec<String> = data
         .entries
         .iter()
@@ -96,7 +99,10 @@ pub(in crate::notifier) fn sync_luna_notifications(
     run: &mut SyncRunDebug,
 ) {
     let source = "luna";
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
+    if db.ensure_current_account().is_err() {
+        return;
+    }
     let current_ids: Vec<String> = items.iter().map(luna_revision_key).collect();
     let (initialized, mut seen_ids, mut seen_set) = load_seen_state(&db, source);
     let mut object_entries = crate::read_state::get_luna_notif_seen_entries(&db);
@@ -222,7 +228,10 @@ pub(in crate::notifier) fn sync_kwic_notifications(
     run: &mut SyncRunDebug,
 ) {
     let source = "kwic";
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
+    if db.ensure_current_account().is_err() {
+        return;
+    }
     let current_ids: Vec<String> = home
         .sections
         .iter()
@@ -306,13 +315,16 @@ pub(in crate::notifier) fn sync_kwic_notifications(
 
 pub(in crate::notifier) fn sync_mail_notifications(
     app: &AppHandle,
+    db: &Database,
     cfg: &NotificationConfig,
     items: Vec<MailMessage>,
     suppress_push: bool,
     run: &mut SyncRunDebug,
 ) {
     let source = "mail";
-    let db = app.state::<Database>();
+    if db.ensure_current_mail().is_err() {
+        return;
+    }
     let current_ids: Vec<String> = items
         .iter()
         .filter_map(|item| (!item.id.is_empty()).then_some(item.id.clone()))

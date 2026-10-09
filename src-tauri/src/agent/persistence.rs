@@ -6,9 +6,9 @@ async fn with_database<R: Send + 'static>(
     conv_id: &str,
     work: impl FnOnce(&Database, &str) -> Result<R, AgentError> + Send + 'static,
 ) -> Result<R, AgentError> {
-    let app = app.clone();
+    let db = app.state::<Database>().scope();
     let conv_id = conv_id.to_owned();
-    prepare::blocking(move || work(&app.state::<Database>(), &conv_id)).await
+    prepare::blocking(move || work(&db, &conv_id)).await
 }
 
 pub(super) async fn load_planning_history(

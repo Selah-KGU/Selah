@@ -6,6 +6,7 @@ pub(super) static STORAGE: LazyLock<Arc<VoiceStorage>> =
     LazyLock::new(|| Arc::new(VoiceStorage::default()));
 
 pub(super) struct VoiceInput {
+    pub(super) account: crate::db::AccountContext,
     pub(super) conversation_id: String,
     pub(super) text: String,
 }
@@ -29,6 +30,7 @@ pub(super) struct VoiceAttempt {
 impl VoiceStorage {
     pub(super) fn accept(self: &Arc<Self>, conversation_id: String, text: String) -> VoiceAttempt {
         let input = Arc::new(VoiceInput {
+            account: crate::db::capture_account(),
             conversation_id,
             text,
         });

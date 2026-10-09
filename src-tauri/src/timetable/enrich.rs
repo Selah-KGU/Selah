@@ -21,7 +21,7 @@ static ENRICHMENT_RUNNING: AtomicBool = AtomicBool::new(false);
 pub async fn enrich_schedule(
     state: State<'_, KgcState>,
     luna_state: State<'_, LunaState>,
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
 ) -> Result<(), String> {
     if ENRICHMENT_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -191,7 +191,7 @@ async fn fetch_luna_course_snapshot(
 #[tauri::command]
 pub async fn refresh_luna_counts(
     state: State<'_, LunaState>,
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
 ) -> Result<i32, String> {
     refresh_luna_counts_internal(&state, &db, false).await
 }
@@ -218,11 +218,11 @@ pub async fn refresh_luna_counts_internal(
     }
 
     let luna_http = {
-        let luna = state.client.lock().await;
-        if !luna.authenticated {
+        let luna = state.session();
+        if !luna.has_credentials() {
             return Err("Luna not authenticated".into());
         }
-        luna.http.clone()
+        luna.http().clone()
     };
 
     log::info!(
@@ -283,7 +283,7 @@ pub(super) async fn enrich_schedule_inner(
     // Session plans from KGC syllabus pages (not timetable detail pages)
     let plan_targets = db.kgc_codes_needing_plans()?;
     log::info!("enrich_schedule: {} courses need plans", plan_targets.len());
-    if !plan_targets.is_empty() && kgc.client.lock().await.is_authenticated() {
+    if !plan_targets.is_empty() && kgc.session().has_credentials() {
         let batch_results = batch_fetch_syllabi(kgc, &plan_targets).await;
         for (kgc_code, result) in batch_results {
             match result {

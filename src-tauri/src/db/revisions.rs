@@ -85,7 +85,7 @@ pub(super) fn init(conn: &Connection) -> Result<(), String> {
 impl Database {
     pub fn cache_revision(&self, key: &str) -> Option<i64> {
         let conn = self.conn.lock().ok()?;
-        conn.query_row("SELECT revision FROM data_cache INDEXED BY idx_data_cache_metadata WHERE cache_key = ?1", params![key], |row| row.get(0)).ok()
+        conn.query_row("SELECT revision FROM data_cache INDEXED BY idx_data_cache_metadata WHERE cache_key = ?1", params![self.cache_storage_key(key)], |row| row.get(0)).ok()
     }
 
     pub fn schedule_snapshot_version(&self) -> Result<(i64, i64), String> {

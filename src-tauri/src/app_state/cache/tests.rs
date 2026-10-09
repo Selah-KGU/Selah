@@ -22,18 +22,17 @@ impl Drop for Temporary {
 
 // Frozen synchronous commands provide wire-format and argument-error evidence.
 mod legacy {
-    use crate::db::Database;
     #[tauri::command]
-    pub fn get_data_cache(db: tauri::State<'_, Database>, key: String) -> Option<String> {
+    pub fn get_data_cache(db: crate::db::AccountDb, key: String) -> Option<String> {
         db.get_data_cache(&key).ok().flatten().map(|(json, _)| json)
     }
     #[tauri::command]
-    pub fn get_data_cache_updated_at(db: tauri::State<'_, Database>, key: String) -> Option<i64> {
+    pub fn get_data_cache_updated_at(db: crate::db::AccountDb, key: String) -> Option<i64> {
         db.cache_updated_at(&key)
     }
     #[tauri::command]
     pub fn save_data_cache(
-        db: tauri::State<'_, Database>,
+        db: crate::db::AccountDb,
         key: String,
         json: String,
     ) -> Result<(), String> {
@@ -43,21 +42,19 @@ mod legacy {
         db.save_data_cache(&key, &json)
     }
     #[tauri::command]
-    pub fn mark_notification_read(db: tauri::State<'_, Database>, source: String, id: String) {
+    pub fn mark_notification_read(db: crate::db::AccountDb, source: String, id: String) {
         crate::read_state::errors_before::mark_read(&db, &source, &id);
     }
     #[tauri::command]
     pub fn mark_batch_notification_read(
-        db: tauri::State<'_, Database>,
+        db: crate::db::AccountDb,
         source: String,
         ids: Vec<String>,
     ) {
         crate::read_state::errors_before::mark_batch_read(&db, &source, ids);
     }
     #[tauri::command]
-    pub fn get_read_notifications(
-        db: tauri::State<'_, Database>,
-    ) -> crate::read_state::ReadIdsResponse {
+    pub fn get_read_notifications(db: crate::db::AccountDb) -> crate::read_state::ReadIdsResponse {
         crate::read_state::errors_before::get_all_read_ids(&db)
     }
 }
@@ -105,6 +102,7 @@ fn app(temporary: &Temporary, queue: Option<Arc<Queue>>) -> tauri::App<MockRunti
 fn seed_read_state(app: &tauri::App<MockRuntime>) {
     // Never consult the user's file migration path from these IPC fixtures.
     app.state::<Database>()
+        .scope()
         .save_data_cache("read_state", r#"{"kgc":[],"luna":[],"kwic":[]}"#)
         .unwrap();
 }
@@ -309,10 +307,12 @@ fn persistence_errors_reach_ipc_and_retries_preserve_every_source() {
     let view = webview(&app, "main");
     let initial = json!({"kgc":["kgc seed"],"luna":["luna seed"],"kwic":["kwic seed"]});
     app.state::<Database>()
+        .scope()
         .save_data_cache("read_state", &initial.to_string())
         .unwrap();
     let before = app
         .state::<Database>()
+        .scope()
         .get_data_cache("read_state")
         .unwrap();
     let conn = temporary.connection();
@@ -333,6 +333,7 @@ fn persistence_errors_reach_ipc_and_retries_preserve_every_source() {
     assert!(batch.as_str().unwrap().contains("fixture commit failure"));
     assert_eq!(
         app.state::<Database>()
+            .scope()
             .get_data_cache("read_state")
             .unwrap(),
         before
@@ -360,8 +361,13 @@ fn persistence_errors_reach_ipc_and_retries_preserve_every_source() {
         final_ids,
         json!({"kgc":["kgc seed"],"luna":["luna seed","new single"],"kwic":["kwic seed","new batch"]})
     );
-    let saved = app.state::<Database>().cache_payload("read_state").unwrap();
+    let saved = app
+        .state::<Database>()
+        .scope()
+        .cache_payload("read_state")
+        .unwrap();
     app.state::<Database>()
+        .scope()
         .save_data_cache("read_state", "invalid cached JSON")
         .unwrap();
     let read = call(&view, "get_read_notifications", json!({})).unwrap_err();
@@ -374,11 +380,13 @@ fn persistence_errors_reach_ipc_and_retries_preserve_every_source() {
     .is_err());
     assert_eq!(
         app.state::<Database>()
+            .scope()
             .cache_payload("read_state")
             .as_deref(),
         Some("invalid cached JSON")
     );
     app.state::<Database>()
+        .scope()
         .save_data_cache("read_state", &saved)
         .unwrap();
     assert_eq!(
@@ -436,6 +444,7 @@ fn previous_commands_falsely_acknowledge_failed_writes_and_overwrite_unreadable_
             .execute_batch("DROP TRIGGER reject_read_commit;")
             .unwrap();
         app.state::<Database>()
+            .scope()
             .save_data_cache("read_state", "invalid cached JSON")
             .unwrap();
     }
@@ -463,6 +472,7 @@ fn previous_commands_falsely_acknowledge_failed_writes_and_overwrite_unreadable_
         canonical_ids(
             old_app
                 .state::<Database>()
+                .scope()
                 .cache_payload("read_state")
                 .unwrap()
         ),
@@ -471,6 +481,7 @@ fn previous_commands_falsely_acknowledge_failed_writes_and_overwrite_unreadable_
     assert_eq!(
         new_app
             .state::<Database>()
+            .scope()
             .cache_payload("read_state")
             .as_deref(),
         Some("invalid cached JSON")
@@ -676,7 +687,11 @@ fn admission_is_nonblocking_and_cache_order_survives_reverse_waits_and_dropped_r
         call(&a, "unrelated_ping", json!({})).unwrap(),
         "\"responsive\""
     );
-    assert!(app.state::<Database>().cache_payload("ordered").is_none());
+    assert!(app
+        .state::<Database>()
+        .scope()
+        .cache_payload("ordered")
+        .is_none());
     for (receiver, _) in &replies {
         assert!(receiver.try_recv().is_err());
     }
@@ -687,7 +702,10 @@ fn admission_is_nonblocking_and_cache_order_survives_reverse_waits_and_dropped_r
         assert_eq!(result.unwrap(), expected);
     }
     assert_eq!(
-        app.state::<Database>().cache_payload("ordered").unwrap(),
+        app.state::<Database>()
+            .scope()
+            .cache_payload("ordered")
+            .unwrap(),
         "31: full data 🌕"
     );
 }

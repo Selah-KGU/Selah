@@ -4,7 +4,7 @@ use super::*;
 
 #[tauri::command]
 pub fn course_automation_get(
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
     luna_id: String,
     course_name: String,
 ) -> Result<CourseAutomationView, String> {
@@ -13,7 +13,7 @@ pub fn course_automation_get(
 
 #[tauri::command]
 pub fn course_automation_set_enabled(
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
     luna_id: String,
     course_name: String,
     enabled: bool,
@@ -33,7 +33,7 @@ pub async fn course_automation_run_now(
     luna_id: String,
     course_name: String,
 ) -> Result<CourseAutomationView, String> {
-    if !load_config(&app.state::<Database>(), &luna_id, &course_name).enabled {
+    if !load_config(&app.state::<Database>().scope(), &luna_id, &course_name).enabled {
         return Err("このコースの SenseA を先に有効にしてください".into());
     }
     enqueue_job(
@@ -52,7 +52,7 @@ pub async fn course_automation_reanalyze_all(
     luna_id: String,
     course_name: String,
 ) -> Result<CourseAutomationView, String> {
-    if !load_config(&app.state::<Database>(), &luna_id, &course_name).enabled {
+    if !load_config(&app.state::<Database>().scope(), &luna_id, &course_name).enabled {
         return Err("このコースの SenseA を先に有効にしてください".into());
     }
     enqueue_job(
@@ -71,7 +71,7 @@ pub async fn course_automation_rebuild_memory(
     luna_id: String,
     course_name: String,
 ) -> Result<CourseAutomationView, String> {
-    if !load_config(&app.state::<Database>(), &luna_id, &course_name).enabled {
+    if !load_config(&app.state::<Database>().scope(), &luna_id, &course_name).enabled {
         return Err("このコースの SenseA を先に有効にしてください".into());
     }
     enqueue_job(&app, luna_id, course_name, "manual", JobKind::RebuildMemory).await
@@ -87,7 +87,7 @@ pub async fn course_automation_set_item_state(
     id: String,
     state: String,
 ) -> Result<CourseAutomationView, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let id = id.trim().to_string();
     if id.is_empty() {
         return Err("項目が指定されていません".into());
@@ -118,7 +118,7 @@ pub async fn course_automation_organize_now(
     luna_id: String,
     course_name: String,
 ) -> Result<CourseAutomationView, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     if !load_config(&db, &luna_id, &course_name).enabled {
         return Err("このコースの SenseA を先に有効にしてください".into());
     }
@@ -149,7 +149,7 @@ pub async fn course_automation_undo_organize(
     luna_id: String,
     course_name: String,
 ) -> Result<CourseAutomationView, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let automation = app.state::<CourseAutomationState>();
     let _shared = automation.cycle_lock.read().await;
     let _write = automation.status_write.lock().await;
@@ -177,7 +177,7 @@ pub async fn course_automation_confirm_print(
     course_name: String,
     category: String,
 ) -> Result<CourseAutomationView, String> {
-    if !load_config(&app.state::<Database>(), &luna_id, &course_name).enabled {
+    if !load_config(&app.state::<Database>().scope(), &luna_id, &course_name).enabled {
         return Err("このコースの SenseA を先に有効にしてください".into());
     }
     enqueue_job(
@@ -197,7 +197,7 @@ pub async fn course_automation_reanalyze_document(
     course_name: String,
     document_id: String,
 ) -> Result<CourseAutomationView, String> {
-    if !load_config(&app.state::<Database>(), &luna_id, &course_name).enabled {
+    if !load_config(&app.state::<Database>().scope(), &luna_id, &course_name).enabled {
         return Err("このコースの SenseA を先に有効にしてください".into());
     }
     enqueue_job(

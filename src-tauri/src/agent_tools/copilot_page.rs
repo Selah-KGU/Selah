@@ -125,7 +125,7 @@ pub(super) async fn open_copilot_page(
         "luna_course" => {
             let query = context.ok_or("luna_courseにはcontext(科目名)が必要です")?;
             let needle = normalize_text(query);
-            let db = app.state::<Database>();
+            let db = app.state::<Database>().scope();
             let courses = db.get_luna_courses().unwrap_or_default();
             let candidates = courses
                 .iter()
@@ -156,7 +156,7 @@ pub(super) async fn open_copilot_page(
         "luna_activity" => {
             let query = context.ok_or("luna_activityにはcontextが必要です")?;
             let needle = normalize_text(query);
-            let db = app.state::<Database>();
+            let db = app.state::<Database>().scope();
             let activities = db.get_all_luna_activities().unwrap_or_default();
             let candidates = activities
                 .iter()
@@ -202,7 +202,7 @@ pub(super) async fn open_copilot_page(
         }
         "kwic_notification" => {
             let needle = context.map(normalize_text);
-            let db = app.state::<Database>();
+            let db = app.state::<Database>().scope();
             let (json_str, _) = db
                 .get_data_cache("kwic_home")
                 .map_err(|e| e.to_string())?
@@ -265,7 +265,7 @@ pub(super) async fn open_copilot_page(
         }
         "kgc_notification" => {
             let needle = context.map(normalize_text);
-            let db = app.state::<Database>();
+            let db = app.state::<Database>().scope();
             let (json_str, _) = db
                 .get_data_cache("notifications")
                 .map_err(|e| e.to_string())?

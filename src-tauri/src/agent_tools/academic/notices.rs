@@ -4,7 +4,7 @@ use super::*;
 // ── Luna activity tools ──
 
 pub async fn list_luna_todos(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let acts = db.get_all_luna_activities().unwrap_or_default();
     // Name lookup for luna courses
     let luna_courses = db.get_luna_courses().unwrap_or_default();
@@ -40,7 +40,7 @@ pub async fn list_luna_announcements(
     app: &tauri::AppHandle,
     args: &Value,
 ) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let acts = db.get_all_luna_activities().unwrap_or_default();
     let luna_courses = db.get_luna_courses().unwrap_or_default();
     let limit = args
@@ -86,7 +86,7 @@ pub async fn get_notification_detail(
     let title =
         sanitize_text_arg(args, "title", 200).ok_or_else(|| "title が空です".to_string())?;
     let needle = normalize_text(&title);
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
 
     // 1) KWIC portal items — call live detail fetch with stored data attrs.
     if let Ok(Some((json_str, _))) = db.get_data_cache("kwic_home") {
@@ -219,7 +219,7 @@ pub async fn list_recent_notifications(
     app: &tauri::AppHandle,
     args: &Value,
 ) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let keyword = args
         .get("keyword")
         .and_then(|v| v.as_str())
@@ -358,7 +358,7 @@ pub async fn get_course_detail(app: &tauri::AppHandle, args: &Value) -> Result<V
     if code.is_empty() {
         return Err("kgc_code が空です".into());
     }
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let detail = db.get_kgc_course_detail(&code)?;
     let plans = db
         .get_all_session_plans()

@@ -12,6 +12,7 @@ async fn get_backend_task_timestamps<R: tauri::Runtime>(
 ) -> Result<CacheTimestampBatch, String> {
     tokio::task::spawn_blocking(move || {
         app.state::<Database>()
+            .scope()
             .cache_timestamps(&keys, include_schedule)
     })
     .await

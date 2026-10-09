@@ -53,6 +53,22 @@
     return html;
   }
 
+  let displayedConnection: string | null | undefined;
+  $effect(() => {
+    const connection = $mailAuthState.connectionId;
+    if (connection === displayedConnection) return;
+    displayedConnection = connection;
+    detailRequestId += 1;
+    messages = [];
+    selectedMessage = null;
+    pendingDetailMessage = null;
+    attachments = [];
+    pendingMailOpenId = null;
+    sanitizedBodyCache.clear();
+    page = 0;
+    if ($mailAuthState.authenticated) void loadInbox();
+  });
+
   // SWR: pick up background poll refreshes
   const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (fresh) => {
     if (fresh && !selectedMessage && page === 0) {
@@ -69,25 +85,22 @@
       void flushPendingMailOpen();
     });
 
-    unlistenLogin = await listen<{ email: string; displayName: string }>("mail-login-success", async (event) => {
-      mailAuthState.set({
-        authenticated: true,
-        email: event.payload.email,
-        displayName: event.payload.displayName,
-      });
+    unlistenLogin = await listen("mail-login-success", async () => {
       await loadInbox();
     });
 
     try {
       const status = await mailCheckSession();
       if (status.authenticated) {
-        mailAuthState.set({ authenticated: true, email: status.email, displayName: status.display_name });
+        mailAuthState.set({ authenticated: true, email: status.email, displayName: status.display_name, connectionId: status.connection_id });
         // Fetch profile in background for display info
         mailFetchProfile().then(profile => {
+          if ($mailAuthState.connectionId !== status.connection_id) return;
           mailAuthState.set({
             authenticated: true,
             email: profile.mail || profile.userPrincipalName || "",
             displayName: profile.displayName || "",
+            connectionId: status.connection_id,
           });
         }).catch(() => {});
         await loadInbox();

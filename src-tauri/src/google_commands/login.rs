@@ -16,15 +16,15 @@ pub async fn gcal_open_login(
         .map_err(|e| format!("ポート取得失敗: {}", e))?
         .port();
 
+    state.cancellation.cancel();
     let attempt = {
-        let gcal = state.client.lock().await;
+        let mut gcal = state.client.lock().await;
         gcal.begin_login(port)?
     };
+    let lifetime = attempt.lifetime.clone();
     let auth_url = attempt.url.clone();
-    let verifier = attempt.verifier;
-    let redirect_uri = attempt.redirect_uri;
-    let expected_state = attempt.state;
-    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let expected_state = attempt.state.clone();
+    let cancel = lifetime.cancel.clone();
     let cancel_for_wait = cancel.clone();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
@@ -94,12 +94,14 @@ pub async fn gcal_open_login(
         .map_err(|e| format!("認証コールバック待ちに失敗: {}", e))?;
     match callback {
         Ok((auth_code, stream)) => {
+            let exchanged = attempt.exchange_code(&auth_code).await;
             let app_state = app.state::<GCalState>();
             let mut gcal = app_state.client.lock().await;
-            match gcal
-                .exchange_code(&auth_code, &verifier, &redirect_uri)
-                .await
-            {
+            if let Err(error) = gcal.lifecycle.ensure(&lifetime) {
+                send_oauth_response(&stream, false, Some(&error), None);
+                return Err(error);
+            }
+            match exchanged.and_then(|token| gcal.accept_login(&attempt, token)) {
                 Ok(()) => {
                     log::info!("Google Calendar login successful");
                     send_oauth_response(&stream, true, None, None);
@@ -115,6 +117,8 @@ pub async fn gcal_open_login(
             }
         }
         Err((e, stream)) => {
+            let gcal = state.client.lock().await;
+            gcal.lifecycle.ensure(&lifetime)?;
             log::error!("Google OAuth callback error: {}", e);
             if let Some(stream) = stream.as_ref() {
                 send_oauth_response(stream, false, Some(&e), None);

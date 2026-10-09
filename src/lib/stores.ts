@@ -28,6 +28,9 @@ export const authState = writable<AuthState>({
 /** True while a user-visible university login flow is in progress. */
 export const reloginInProgress = writable(false);
 
+/** Authentication is usable, but the current login is not yet durable. */
+export const universityLoginPersistencePending = writable(false);
+
 /** True when Luna or KWIC is unavailable and user action may be required. */
 export const sessionExpired = writable(false);
 
@@ -42,7 +45,7 @@ export const kwicAuthState = writable<{ authenticated: boolean }>({
 });
 
 /** Microsoft 365 Mail authentication state */
-export const mailAuthState = writable<{ authenticated: boolean; email: string; displayName: string }>({
+export const mailAuthState = writable<{ authenticated: boolean; email: string; displayName: string; connectionId?: string | null }>({
   authenticated: false,
   email: "",
   displayName: "",

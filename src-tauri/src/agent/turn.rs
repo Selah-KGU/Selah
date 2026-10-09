@@ -157,7 +157,7 @@ fn prepare_turn(
     owner: &crate::agent_turn_scope::Turn,
     documents: &[crate::agent_attachments::DocumentPart],
 ) -> Result<PreparedTurn, AgentError> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope_for(owner.account_context());
     let (committed, provider, history) = prepare::persisted_turn(
         || {
             let mut committed = input.persist_with(conv_id, |text, images| {

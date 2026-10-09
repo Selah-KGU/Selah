@@ -38,7 +38,7 @@ impl Database {
         let now = epoch_secs();
         let existing = conn.query_row(
             "SELECT data_json = ?2 FROM data_cache WHERE cache_key = ?1",
-            params![key, json],
+            params![self.cache_storage_key(key), json],
             |row| row.get::<_, bool>(0),
         );
         match existing {
@@ -46,7 +46,7 @@ impl Database {
                 if touch_if_same {
                     conn.execute(
                         "UPDATE data_cache SET updated_at = ?1 WHERE cache_key = ?2",
-                        params![now, key],
+                        params![now, self.cache_storage_key(key)],
                     )
                     .map_err(|e| format!("DB touch cache: {}", e))?;
                 }
@@ -57,7 +57,7 @@ impl Database {
                     "INSERT INTO data_cache (cache_key, data_json, updated_at)
                      VALUES (?1, ?2, ?3)
                      ON CONFLICT(cache_key) DO UPDATE SET data_json=?2, updated_at=?3",
-                    params![key, json, now],
+                    params![self.cache_storage_key(key), json, now],
                 )
                 .map_err(|e| format!("DB save cache: {}", e))?;
                 Ok(true)
@@ -78,7 +78,7 @@ impl Database {
         let conn = self.conn.lock().ok()?;
         conn.query_row(
             "SELECT updated_at FROM data_cache INDEXED BY idx_data_cache_metadata WHERE cache_key = ?1",
-            params![key],
+            params![self.cache_storage_key(key)],
             |row| row.get(0),
         )
         .ok()
@@ -88,7 +88,7 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         conn.execute(
             "UPDATE data_cache SET updated_at = ?1 WHERE cache_key = ?2",
-            params![epoch_secs(), key],
+            params![epoch_secs(), self.cache_storage_key(key)],
         )
         .map_err(|e| format!("DB touch cache: {}", e))?;
         Ok(())
@@ -106,7 +106,7 @@ impl Database {
         };
         conn.query_row(
             "SELECT 1 FROM data_cache WHERE cache_key = ?1",
-            params![key],
+            params![self.cache_storage_key(key)],
             |_| Ok(()),
         )
         .is_ok()
@@ -135,9 +135,10 @@ impl Database {
             )
             .map_err(|e| format!("DB prepare oversized cache: {}", e))?;
         let rows = stmt
-            .query_map(params![format!("{prefix}%"), min_bytes], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
+            .query_map(
+                params![format!("{}%", self.cache_storage_key(prefix)), min_bytes],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
             .map_err(|e| format!("DB query oversized cache: {}", e))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("DB read oversized cache: {}", e))
@@ -148,7 +149,7 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let result = conn.query_row(
             "SELECT data_json, updated_at FROM data_cache WHERE cache_key = ?1",
-            params![key],
+            params![self.cache_storage_key(key)],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         );
         match result {
@@ -172,7 +173,7 @@ impl Database {
                  ORDER BY cache_key",
             )
             .map_err(|e| format!("DB prepare cache prefix: {}", e))?;
-        let pattern = format!("{}%", prefix);
+        let pattern = format!("{}%", self.cache_storage_key(prefix));
         let rows = stmt
             .query_map(params![pattern], |row| {
                 Ok((
@@ -200,7 +201,7 @@ impl Database {
             .prepare("SELECT data_json, updated_at FROM data_cache WHERE cache_key = ?1")
             .map_err(|e| format!("DB prepare cache batch: {}", e))?;
         for key in keys {
-            match stmt.query_row(params![key], |row| {
+            match stmt.query_row(params![self.cache_storage_key(key)], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             }) {
                 Ok(pair) => {
@@ -229,7 +230,7 @@ impl Database {
             .map_err(|e| e.to_string())?;
         let mut rows = Vec::with_capacity(queries.len());
         for (key, known_revision) in queries {
-            let stamp = metadata.query_row(params![key], |row| {
+            let stamp = metadata.query_row(params![self.cache_storage_key(key)], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
             });
             let (updated_at, revision, exists) = match stamp {
@@ -241,7 +242,9 @@ impl Database {
             let json = if exists && !unchanged {
                 Some(
                     payload
-                        .query_row(params![key], |row| row.get::<_, String>(0))
+                        .query_row(params![self.cache_storage_key(key)], |row| {
+                            row.get::<_, String>(0)
+                        })
                         .map_err(|e| format!("DB cache payload: {e}"))?,
                 )
             } else {
@@ -261,8 +264,11 @@ impl Database {
     /// Delete a cached entry by key (used to invalidate stale HTML cache).
     pub fn delete_data_cache(&self, key: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        conn.execute("DELETE FROM data_cache WHERE cache_key = ?1", params![key])
-            .map_err(|e| format!("DB delete cache: {}", e))?;
+        conn.execute(
+            "DELETE FROM data_cache WHERE cache_key = ?1",
+            params![self.cache_storage_key(key)],
+        )
+        .map_err(|e| format!("DB delete cache: {}", e))?;
         Ok(())
     }
 }

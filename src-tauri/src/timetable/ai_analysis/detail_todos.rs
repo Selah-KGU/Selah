@@ -312,7 +312,7 @@ fn normalize_detail_todo_source_urls(
 
 #[tauri::command]
 pub async fn ai_extract_detail_todos(
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
     force: bool,
 ) -> Result<Vec<DetailTodoSuggestion>, String> {
     let config = ai::load_ai_config();

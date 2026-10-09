@@ -100,29 +100,31 @@ impl super::GoogleCalendarClient {
         let max_results = max_results.clamp(1, 100).to_string();
         let resp = self
             .http
-            .get(format!(
-                "{}/calendars/{}/events",
-                GCAL_API_BASE,
-                urlencoding::encode(&cal_id)
-            ))
-            .bearer_auth(&token)
-            .query(&[
-                ("timeMin", time_min.as_str()),
-                ("timeMax", time_max.as_str()),
-                ("singleEvents", "true"),
-                ("orderBy", "startTime"),
-                ("maxResults", max_results.as_str()),
-            ])
-            .send()
+            .send(
+                self.http
+                    .client
+                    .get(format!(
+                        "{}/calendars/{}/events",
+                        GCAL_API_BASE,
+                        urlencoding::encode(&cal_id)
+                    ))
+                    .bearer_auth(&token)
+                    .query(&[
+                        ("timeMin", time_min.as_str()),
+                        ("timeMax", time_max.as_str()),
+                        ("singleEvents", "true"),
+                        ("orderBy", "startTime"),
+                        ("maxResults", max_results.as_str()),
+                    ]),
+            )
             .await
             .map_err(|e| format!("予定取得失敗: {}", e))?;
         if !resp.status().is_success() {
-            let err: serde_json::Value = resp.json().await.unwrap_or_default();
+            let err: serde_json::Value = resp.json().unwrap_or_default();
             return Err(format!("予定取得失敗: {}", err));
         }
         let body: serde_json::Value = resp
             .json()
-            .await
             .map_err(|e| format!("予定レスポンス解析失敗: {}", e))?;
         let events = body["items"]
             .as_array()

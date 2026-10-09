@@ -121,7 +121,7 @@ pub(super) fn load_existing_course_todos(
 pub(super) async fn refresh_luna_todo_cache_for_agent(app: &AppHandle) {
     match crate::luna_commands::luna_fetch_todo(
         app.state::<crate::LunaState>(),
-        app.state::<Database>(),
+        app.state::<Database>().scope(),
     )
     .await
     {

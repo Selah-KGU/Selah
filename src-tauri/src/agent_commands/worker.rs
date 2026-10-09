@@ -5,7 +5,8 @@ pub(super) async fn with_database<R: Send + 'static>(
     app: AppHandle,
     work: impl FnOnce(&Database) -> Result<R, String> + Send + 'static,
 ) -> Result<R, String> {
-    run(move || work(&app.state::<Database>())).await
+    let db = app.state::<Database>().scope();
+    run(move || work(&db)).await
 }
 
 async fn run<R: Send + 'static>(

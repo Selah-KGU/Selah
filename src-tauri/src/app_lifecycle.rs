@@ -1,6 +1,6 @@
 use tauri::Manager;
 
-use super::app_state::{GCalState, KgcState, KwicState, LunaState, MailState};
+use super::app_state::{GCalState, MailState};
 #[cfg(target_os = "macos")]
 use super::macos_fullscreen_exit;
 use super::stt;
@@ -59,31 +59,27 @@ pub(crate) fn run_event_panic_message(payload: &(dyn std::any::Any + Send)) -> S
 }
 
 fn persist_sessions_before_exit(app: &tauri::AppHandle) {
-    // Persist all session cookies on exit so they survive restarts.
-    // Use try_lock to avoid deadlock if another task holds the lock.
-    let kgc = app.state::<KgcState>();
-    match kgc.client.try_lock() {
-        Ok(c) => c.save_session(),
-        Err(_) => log::warn!("Exit: KGC mutex held, session not saved"),
-    };
-    let luna = app.state::<LunaState>();
-    match luna.client.try_lock() {
-        Ok(l) => l.save_session(),
-        Err(_) => log::warn!("Exit: Luna mutex held, session not saved"),
-    };
-    let kwic = app.state::<KwicState>();
-    match kwic.client.try_lock() {
-        Ok(k) => k.save_session(),
-        Err(_) => log::warn!("Exit: KWIC mutex held, session not saved"),
-    };
+    if let Err(error) = crate::session_coordinator::SESSIONS
+        .checkpoint_and_commit(&crate::session_coordinator::signout_marker())
+    {
+        log::warn!("Exit session checkpoint failed: {error}");
+    }
     let mail = app.state::<MailState>();
     match mail.client.try_lock() {
-        Ok(m) => m.save_token(),
+        Ok(m) => {
+            if let Err(error) = m.save_token() {
+                log::warn!("Exit token persistence failed: {error}");
+            }
+        }
         Err(_) => log::warn!("Exit: Mail mutex held, token not saved"),
     };
     let gcal = app.state::<GCalState>();
     match gcal.client.try_lock() {
-        Ok(g) => g.save_token(),
+        Ok(g) => {
+            if let Err(error) = g.save_token() {
+                log::warn!("Exit token persistence failed: {error}");
+            }
+        }
         Err(_) => log::warn!("Exit: GCal mutex held, token not saved"),
     };
 }

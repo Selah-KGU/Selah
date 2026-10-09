@@ -30,7 +30,7 @@
     "facility-rsv-ct",
     "settings",
     "md-reader-*",
-    "mail-login",
+    "mail-login-*",
     "gcal-login",
     "tray-popup",
     "ext-*"

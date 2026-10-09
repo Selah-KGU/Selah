@@ -30,10 +30,11 @@ pub struct ScheduleResponse {
 pub async fn get_schedule_snapshot<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<tauri::ipc::Response, String> {
+    let db = app.state::<Database>().scope();
     crate::background_ipc::respond(
         "時間割スナップショットの読み込みに失敗しました",
         "時間割応答の変換に失敗しました",
-        move || build_schedule_snapshot(&app),
+        move || build_schedule_snapshot_from_db(&db),
     )
     .await
 }
@@ -41,7 +42,10 @@ pub async fn get_schedule_snapshot<R: tauri::Runtime>(
 pub(crate) fn build_schedule_snapshot<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<ScheduleResponse, String> {
-    let db = app.state::<Database>();
+    build_schedule_snapshot_from_db(&app.state::<Database>().scope())
+}
+
+pub(crate) fn build_schedule_snapshot_from_db(db: &Database) -> Result<ScheduleResponse, String> {
     let saved_snapshot = db.get_snapshot_state()?;
     let has_saved_snapshot = saved_snapshot.is_some();
     let snap = saved_snapshot.unwrap_or_default();

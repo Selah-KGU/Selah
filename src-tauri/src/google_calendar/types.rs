@@ -41,6 +41,8 @@ pub struct TokenData {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: i64,
+    #[serde(default)]
+    pub connection_id: String,
 }
 
 /// Tracks which events we have synced.
@@ -51,9 +53,30 @@ pub struct TokenData {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SyncState {
     pub calendar_id: String,
+    #[serde(default)]
+    pub auto_sync_binding: Option<AutoSyncBinding>,
     pub event_map: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub agent_event_map: std::collections::HashMap<String, AgentEventMeta>,
+}
+
+/// Explicit consent for one university account, OAuth connection and calendar.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoSyncBinding {
+    pub university_username: String,
+    pub connection_id: String,
+    pub calendar_id: String,
+}
+
+impl AutoSyncBinding {
+    pub fn matches(&self, username: Option<&str>, connection: &str, calendar: &str) -> bool {
+        !connection.is_empty()
+            && !calendar.is_empty()
+            && username
+                .is_some_and(|name| !name.trim().is_empty() && name == self.university_username)
+            && connection == self.connection_id
+            && calendar == self.calendar_id
+    }
 }
 
 /// Metadata stored locally for each agent-created calendar event.
@@ -83,9 +106,14 @@ pub struct GoogleCalStatus {
     pub authenticated: bool,
     pub calendar_exists: bool,
     pub synced_events: usize,
+    pub calendar_id: String,
+    pub auto_sync_ready: bool,
 }
 
 pub struct OAuthLoginAttempt {
+    pub(crate) http: crate::oauth_http::Http,
+    pub(crate) config: GoogleCalConfig,
+    pub(crate) lifetime: crate::oauth_lifecycle::Attempt,
     pub url: String,
     pub verifier: String,
     pub redirect_uri: String,

@@ -112,13 +112,10 @@ pub(super) async fn todo(
     app: tauri::AppHandle,
     ended_at: DateTime<Local>,
 ) -> Result<Prepared, String> {
+    let db = app.state::<crate::db::Database>().scope();
     prepare(input, move |input| {
         let cfg = live_ai_config()?;
-        let context = live_todo_course_plan_context(
-            &app.state::<crate::db::Database>(),
-            &input.course,
-            ended_at,
-        );
+        let context = live_todo_course_plan_context(&db, &input.course, ended_at);
         let messages = todo_messages(&cfg, input, &context);
         Ok(Prepared { cfg, messages })
     })

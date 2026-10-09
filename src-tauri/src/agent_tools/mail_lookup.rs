@@ -102,7 +102,7 @@ pub(super) async fn read_mail(app: &tauri::AppHandle, args: &Value) -> Result<Va
 }
 
 pub(super) async fn get_student_profile(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (json_str, _) = db
         .get_data_cache("student_profile")?
         .ok_or_else(|| "学生プロフィールがまだ取得されていません".to_string())?;
@@ -124,7 +124,7 @@ pub(super) async fn get_student_profile(app: &tauri::AppHandle) -> Result<Value,
 }
 
 pub(super) async fn get_mail_profile(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (json_str, _) = db
         .get_data_cache("mail_profile")?
         .ok_or_else(|| "メールプロフィールがまだ取得されていません".to_string())?;
@@ -141,7 +141,7 @@ pub(super) async fn list_syllabus_favorites(
     app: &tauri::AppHandle,
     args: &Value,
 ) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (json_str, _) = db
         .get_data_cache("syllabus_favorites")?
         .ok_or_else(|| "お気に入りシラバスがまだ取得されていません".to_string())?;

@@ -5,10 +5,9 @@ use super::sources::{
     save_memory, truncate_chars,
 };
 use super::types::{CampaignChapter, DetectiveCaseResult, DetectiveDoubt, MemoryItem};
-use crate::db::Database;
 
 pub(super) fn detective_save_doubts(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     doubts: Vec<DetectiveDoubt>,
 ) -> Result<(), String> {
     let json = serde_json::to_string(&doubts).map_err(|e| format!("Detective doubts JSON: {e}"))?;
@@ -16,7 +15,7 @@ pub(super) fn detective_save_doubts(
 }
 
 pub(super) fn detective_save_included_courses(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     included: Vec<String>,
 ) -> Result<(), String> {
     let mut clean: Vec<String> = included
@@ -32,7 +31,7 @@ pub(super) fn detective_save_included_courses(
 }
 
 pub(super) fn detective_save_case_result(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     result: DetectiveCaseResult,
 ) -> Result<Vec<DetectiveCaseResult>, String> {
     let anchor_key = result
@@ -112,7 +111,7 @@ pub(super) fn detective_save_case_result(
 /// Record per-session outcomes that drive cross-session continuity. The
 /// frontend calls this once the player closes a session (win or loss).
 pub(super) fn detective_save_memory_outcome(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     busted_topics: Vec<String>,
     missed_topics: Vec<String>,
     course_name: String,

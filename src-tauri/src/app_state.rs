@@ -1,10 +1,7 @@
 use tauri::Emitter;
 use tokio::sync::Mutex;
 
-use super::client;
 use super::google_calendar;
-use super::kwic_client;
-use super::luna_client;
 use super::mail;
 
 #[path = "app_state/cache.rs"]
@@ -15,7 +12,6 @@ pub(crate) use cache::{admission_handler, drain_cache, reopen_cache, seal_cache}
 
 /// KG-Course (KGC) service state.
 pub struct KgcState {
-    pub client: Mutex<client::KgcClient>,
     /// Serializes KGC HTTP requests to prevent Struts token races.
     ///
     /// Struts 1 stores ONE token per HTTP session (server-side). Any KGC page
@@ -27,22 +23,34 @@ pub struct KgcState {
 }
 
 /// Luna LMS service state.
-pub struct LunaState {
-    pub client: Mutex<luna_client::LunaClient>,
-}
+pub struct LunaState;
 
-/// KWIC Portal service state.
-pub struct KwicState {
-    pub client: Mutex<kwic_client::KwicClient>,
+/// KWIC Portal service handle. University credentials belong to SESSIONS.
+pub struct KwicState;
+
+macro_rules! session_handle {
+    ($ty:ty, $service:ident) => {
+        impl $ty {
+            pub(crate) fn session(&self) -> crate::session_coordinator::SessionLease {
+                crate::session_coordinator::SESSIONS
+                    .lease(crate::session_coordinator::Service::$service)
+            }
+        }
+    };
 }
+session_handle!(KgcState, Kgc);
+session_handle!(LunaState, Luna);
+session_handle!(KwicState, Kwic);
 
 /// Microsoft 365 Mail service state.
 pub struct MailState {
+    pub(crate) cancellation: crate::oauth_http::Cancellation,
     pub client: Mutex<mail::MailClient>,
 }
 
 /// Google Calendar service state.
 pub struct GCalState {
+    pub(crate) cancellation: crate::oauth_http::Cancellation,
     pub client: Mutex<google_calendar::GoogleCalendarClient>,
 }
 

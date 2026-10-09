@@ -37,37 +37,68 @@ fn day_offset(day: &str) -> i64 {
 impl super::GoogleCalendarClient {
     /// Find or create the "Selah 時間割" calendar
     pub(super) async fn ensure_calendar(&mut self) -> Result<String, String> {
+        self.ensure_calendar_with_replacement(true).await
+    }
+
+    pub(super) async fn ensure_calendar_with_replacement(
+        &mut self,
+        replace: bool,
+    ) -> Result<String, String> {
         if !self.sync_state.calendar_id.is_empty() {
             let token = self.ensure_token().await?;
             let resp = self
                 .http
-                .get(format!(
-                    "{}/calendars/{}",
-                    GCAL_API_BASE,
-                    urlencoding::encode(&self.sync_state.calendar_id)
-                ))
-                .bearer_auth(&token)
-                .send()
+                .send(
+                    self.http
+                        .client
+                        .get(format!(
+                            "{}/calendars/{}",
+                            GCAL_API_BASE,
+                            urlencoding::encode(&self.sync_state.calendar_id)
+                        ))
+                        .bearer_auth(&token),
+                )
                 .await
                 .map_err(|e| format!("カレンダー確認失敗: {}", e))?;
             if resp.status().is_success() {
                 return Ok(self.sync_state.calendar_id.clone());
             }
+            if !matches!(
+                resp.status(),
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+            ) {
+                return Err(format!(
+                    "カレンダーを確認できません: HTTP {}",
+                    resp.status()
+                ));
+            }
+            if !replace {
+                return Err(
+                    "確認済みのカレンダーが見つかりません。同期先を設定し直してください".into(),
+                );
+            }
             self.sync_state.calendar_id.clear();
             self.sync_state.event_map.clear();
+            self.sync_state.agent_event_map.clear();
+            self.sync_state.auto_sync_binding = None;
         }
 
         let token = self.ensure_token().await?;
         let resp = self
             .http
-            .get(format!("{}/users/me/calendarList", GCAL_API_BASE))
-            .bearer_auth(&token)
-            .send()
+            .send(
+                self.http
+                    .client
+                    .get(format!("{}/users/me/calendarList", GCAL_API_BASE))
+                    .bearer_auth(&token),
+            )
             .await
             .map_err(|e| format!("カレンダー一覧取得失敗: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("カレンダー一覧取得失敗: HTTP {}", resp.status()));
+        }
         let body: serde_json::Value = resp
             .json()
-            .await
             .map_err(|e| format!("カレンダー一覧レスポンス解析失敗: {}", e))?;
         if let Some(items) = body["items"].as_array() {
             for item in items {
@@ -82,21 +113,18 @@ impl super::GoogleCalendarClient {
         }
 
         let token = self.ensure_token().await?;
-        let resp = self
-            .http
+        let resp = self.http.send(self.http.client
             .post(format!("{}/calendars", GCAL_API_BASE))
             .bearer_auth(&token)
-            .json(&serde_json::json!({ "summary": CALENDAR_SUMMARY, "timeZone": "Asia/Tokyo" }))
-            .send()
+            .json(&serde_json::json!({ "summary": CALENDAR_SUMMARY, "timeZone": "Asia/Tokyo" })))
             .await
             .map_err(|e| format!("カレンダー作成失敗: {}", e))?;
         if !resp.status().is_success() {
-            let err: serde_json::Value = resp.json().await.unwrap_or_default();
+            let err: serde_json::Value = resp.json().unwrap_or_default();
             return Err(format!("カレンダー作成失敗: {}", err));
         }
         let body: serde_json::Value = resp
             .json()
-            .await
             .map_err(|e| format!("カレンダー作成レスポンス解析失敗: {}", e))?;
         let cal_id = body["id"]
             .as_str()
@@ -117,8 +145,19 @@ impl super::GoogleCalendarClient {
         entries: Vec<CalendarSyncEntry>,
         week_label: String,
     ) -> Result<String, String> {
-        let monday = parse_week_start(&week_label)?;
+        parse_week_start(&week_label)?;
         let cal_id = self.ensure_calendar().await?;
+        self.sync_to_calendar(entries, week_label, cal_id).await
+    }
+
+    pub(super) async fn sync_to_calendar(
+        &mut self,
+        entries: Vec<CalendarSyncEntry>,
+        week_label: String,
+        cal_id: String,
+    ) -> Result<String, String> {
+        self.http.ensure_current()?;
+        let monday = parse_week_start(&week_label)?;
 
         // Build desired events: key = "YYYY-MM-DD-period"
         let mut desired: std::collections::HashMap<String, &CalendarSyncEntry> =
@@ -153,9 +192,13 @@ impl super::GoogleCalendarClient {
         let mut deleted = 0usize;
         for key in &old_keys {
             if !desired.contains_key(key) {
-                if let Some(event_id) = self.sync_state.event_map.remove(key) {
-                    let _ = self.delete_event(&cal_id, &event_id).await;
-                    deleted += 1;
+                if let Some(event_id) = self.sync_state.event_map.get(key).cloned() {
+                    let result = self.delete_event(&cal_id, &event_id).await;
+                    self.http.ensure_current()?;
+                    if result.is_ok() {
+                        self.sync_state.event_map.remove(key);
+                        deleted += 1;
+                    }
                 }
             }
         }
@@ -164,6 +207,7 @@ impl super::GoogleCalendarClient {
         let mut created = 0usize;
         let mut updated = 0usize;
         for (key, entry) in &desired {
+            self.http.ensure_current()?;
             let date_str = &key[..10];
             let times = crate::config::PERIOD_TIMES;
             let idx = (entry.period - 1).clamp(0, 6) as usize;
@@ -184,6 +228,7 @@ impl super::GoogleCalendarClient {
                         updated += 1;
                     }
                     Err(_) => {
+                        self.http.ensure_current()?;
                         self.sync_state.event_map.remove(key);
                         if let Ok(id) = self.create_event(&cal_id, &event_body).await {
                             self.sync_state.event_map.insert(key.clone(), id);
@@ -197,6 +242,7 @@ impl super::GoogleCalendarClient {
             }
         }
 
+        self.http.ensure_current()?;
         save_sync_state(&self.sync_state)?;
         let week_count = self
             .sync_state
@@ -222,25 +268,28 @@ impl super::GoogleCalendarClient {
         body: &serde_json::Value,
     ) -> Result<String, String> {
         let token = self.ensure_token().await?;
+        super::binding::ensure_sync_owner()?;
         let resp = self
             .http
-            .post(format!(
-                "{}/calendars/{}/events",
-                GCAL_API_BASE,
-                urlencoding::encode(cal_id)
-            ))
-            .bearer_auth(&token)
-            .json(body)
-            .send()
+            .send(
+                self.http
+                    .client
+                    .post(format!(
+                        "{}/calendars/{}/events",
+                        GCAL_API_BASE,
+                        urlencoding::encode(cal_id)
+                    ))
+                    .bearer_auth(&token)
+                    .json(body),
+            )
             .await
             .map_err(|e| format!("イベント作成失敗: {}", e))?;
         if !resp.status().is_success() {
-            let err: serde_json::Value = resp.json().await.unwrap_or_default();
+            let err: serde_json::Value = resp.json().unwrap_or_default();
             return Err(format!("イベント作成失敗: {}", err));
         }
         let result: serde_json::Value = resp
             .json()
-            .await
             .map_err(|e| format!("イベント作成レスポンス解析失敗: {}", e))?;
         Ok(result["id"].as_str().unwrap_or("").to_string())
     }
@@ -252,21 +301,25 @@ impl super::GoogleCalendarClient {
         body: &serde_json::Value,
     ) -> Result<(), String> {
         let token = self.ensure_token().await?;
+        super::binding::ensure_sync_owner()?;
         let resp = self
             .http
-            .put(format!(
-                "{}/calendars/{}/events/{}",
-                GCAL_API_BASE,
-                urlencoding::encode(cal_id),
-                urlencoding::encode(event_id)
-            ))
-            .bearer_auth(&token)
-            .json(body)
-            .send()
+            .send(
+                self.http
+                    .client
+                    .put(format!(
+                        "{}/calendars/{}/events/{}",
+                        GCAL_API_BASE,
+                        urlencoding::encode(cal_id),
+                        urlencoding::encode(event_id)
+                    ))
+                    .bearer_auth(&token)
+                    .json(body),
+            )
             .await
             .map_err(|e| format!("イベント更新失敗: {}", e))?;
         if !resp.status().is_success() {
-            let err: serde_json::Value = resp.json().await.unwrap_or_default();
+            let err: serde_json::Value = resp.json().unwrap_or_default();
             return Err(format!("イベント更新失敗: {}", err));
         }
         Ok(())
@@ -278,55 +331,72 @@ impl super::GoogleCalendarClient {
         event_id: &str,
     ) -> Result<(), String> {
         let token = self.ensure_token().await?;
+        super::binding::ensure_sync_owner()?;
         let resp = self
             .http
-            .delete(format!(
-                "{}/calendars/{}/events/{}",
-                GCAL_API_BASE,
-                urlencoding::encode(cal_id),
-                urlencoding::encode(event_id)
-            ))
-            .bearer_auth(&token)
-            .send()
+            .send(
+                self.http
+                    .client
+                    .delete(format!(
+                        "{}/calendars/{}/events/{}",
+                        GCAL_API_BASE,
+                        urlencoding::encode(cal_id),
+                        urlencoding::encode(event_id)
+                    ))
+                    .bearer_auth(&token),
+            )
             .await
             .map_err(|e| format!("イベント削除失敗: {}", e))?;
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::GONE {
-            let err: serde_json::Value = resp.json().await.unwrap_or_default();
+            let err: serde_json::Value = resp.json().unwrap_or_default();
             return Err(format!("イベント削除失敗: {}", err));
         }
         Ok(())
     }
 
     pub async fn clear_calendar(&mut self, delete_calendar: bool) -> Result<String, String> {
+        self.http.ensure_current()?;
         let cal_id = self.sync_state.calendar_id.clone();
         if cal_id.is_empty() {
             return Ok("Google Calendarは未作成です".into());
         }
         if delete_calendar {
             let token = self.ensure_token().await?;
+            super::binding::ensure_sync_owner()?;
             let resp = self
                 .http
-                .delete(format!(
-                    "{}/calendars/{}",
-                    GCAL_API_BASE,
-                    urlencoding::encode(&cal_id)
-                ))
-                .bearer_auth(&token)
-                .send()
+                .send(
+                    self.http
+                        .client
+                        .delete(format!(
+                            "{}/calendars/{}",
+                            GCAL_API_BASE,
+                            urlencoding::encode(&cal_id)
+                        ))
+                        .bearer_auth(&token),
+                )
                 .await
                 .map_err(|e| format!("カレンダー削除失敗: {}", e))?;
             if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-                let err: serde_json::Value = resp.json().await.unwrap_or_default();
+                let err: serde_json::Value = resp.json().unwrap_or_default();
                 return Err(format!("カレンダー削除失敗: {}", err));
             }
             self.sync_state = SyncState::default();
             save_sync_state(&self.sync_state)?;
             Ok("Google Calendarを削除しました".into())
         } else {
-            let event_ids: Vec<(String, String)> = self.sync_state.event_map.drain().collect();
+            let event_ids: Vec<(String, String)> = self
+                .sync_state
+                .event_map
+                .iter()
+                .map(|(key, id)| (key.clone(), id.clone()))
+                .collect();
             let mut deleted = 0;
-            for (_, eid) in &event_ids {
-                if self.delete_event(&cal_id, eid).await.is_ok() {
+            for (key, eid) in &event_ids {
+                let result = self.delete_event(&cal_id, eid).await;
+                self.http.ensure_current()?;
+                if result.is_ok() {
+                    self.sync_state.event_map.remove(key);
                     deleted += 1;
                 }
             }

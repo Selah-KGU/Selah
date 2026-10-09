@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -24,19 +24,10 @@ const INITIAL_REFRESH_DELAY: Duration = Duration::from_secs(15);
 const REFRESH_TICK: Duration = Duration::from_secs(5 * 60);
 pub(crate) const FOCUSED_FAST_CACHE_MAX_AGE_SECS: i64 = 5 * 60;
 pub(crate) const IDLE_FAST_CACHE_MAX_AGE_SECS: i64 = 15 * 60;
-pub(crate) const SESSION_PROBE_REUSE_SECS: i64 = 90;
 const WEATHER_CACHE_MAX_AGE_SECS: i64 = 60 * 60;
 const STABLE_CACHE_MAX_AGE_SECS: i64 = 12 * 60 * 60;
 const ACADEMIC_RECORD_CACHE_MAX_AGE_SECS: i64 = 72 * 60 * 60;
 const SCHEDULE_CACHE_MAX_AGE_SECS: i64 = 6 * 60 * 60;
-const SESSION_RENEW_THRESHOLD_SECS: i64 = 5 * 60;
-// Time-based "keep-alive" for the core Luna/KWIC sessions. KGC is deliberately
-// excluded because its cookies are sensitive to proactive renewal timing.
-const SESSION_KEEPALIVE_INTERVAL_SECS: i64 = 6 * 60 * 60;
-const SESSION_RENEW_MIN_INTERVAL_SECS: i64 = 30 * 60;
-const SESSION_RECOVERY_SUCCESS_COOLDOWN_SECS: i64 = 30 * 60;
-const SESSION_RECOVERY_BASE_DELAY_SECS: i64 = 10 * 60;
-const SESSION_RECOVERY_MAX_DELAY_SECS: i64 = 2 * 60 * 60;
 const GCAL_AUTO_SYNC_LAST_RUN_KEY: &str = "gcal_auto_sync_last_run";
 const GCAL_SYNC_MIN_HOURS: u32 = 6;
 const GCAL_SYNC_MAX_HOURS: u32 = 72;
@@ -44,30 +35,13 @@ const GCAL_SYNC_DEFAULT_HOURS: u32 = 12;
 
 pub struct BackendRefreshState {
     running: AtomicBool,
-    session_sync_running: AtomicBool,
-    // Epoch seconds of the last headless keep-alive attempt.
-    last_session_keepalive: AtomicI64,
-    recovery: Mutex<[SessionRecoveryState; 2]>,
     last_emitted_session: Mutex<Option<BackendSessionStatusPayload>>,
-}
-
-#[derive(Clone, Copy, Default)]
-struct SessionRecoveryState {
-    last_attempt: i64,
-    failures: u32,
 }
 
 impl BackendRefreshState {
     pub fn new() -> Self {
         Self {
             running: AtomicBool::new(false),
-            session_sync_running: AtomicBool::new(false),
-            // Allow a genuinely near-expiry cookie to renew at startup, but do
-            // not make the fixed-cadence keep-alive immediately due.
-            last_session_keepalive: AtomicI64::new(
-                epoch_secs().saturating_sub(SESSION_RENEW_MIN_INTERVAL_SECS),
-            ),
-            recovery: Mutex::new([SessionRecoveryState::default(); 2]),
             last_emitted_session: Mutex::new(None),
         }
     }
@@ -87,56 +61,6 @@ impl BackendRefreshState {
             .unwrap_or_else(|err| err.into_inner());
         *last = Some(payload);
     }
-
-    fn recovery_due(&self, service: SessionService, now: i64) -> bool {
-        let recovery = self.recovery.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = recovery[service.index()];
-        if entry.last_attempt == 0 {
-            return true;
-        }
-        now.saturating_sub(entry.last_attempt) >= recovery_delay_secs(entry.failures)
-    }
-
-    fn record_recovery(&self, service: SessionService, now: i64, succeeded: bool) {
-        let mut recovery = self.recovery.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = &mut recovery[service.index()];
-        entry.last_attempt = now;
-        entry.failures = if succeeded {
-            0
-        } else {
-            entry.failures.saturating_add(1)
-        };
-    }
-}
-
-#[derive(Clone, Copy)]
-enum SessionService {
-    Luna,
-    Kwic,
-}
-
-impl SessionService {
-    fn index(self) -> usize {
-        match self {
-            Self::Luna => 0,
-            Self::Kwic => 1,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Luna => "luna",
-            Self::Kwic => "kwic",
-        }
-    }
-}
-
-fn recovery_delay_secs(failures: u32) -> i64 {
-    if failures == 0 {
-        return SESSION_RECOVERY_SUCCESS_COOLDOWN_SECS;
-    }
-    let multiplier = 1_i64 << failures.saturating_sub(1).min(3);
-    (SESSION_RECOVERY_BASE_DELAY_SECS * multiplier).min(SESSION_RECOVERY_MAX_DELAY_SECS)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +70,9 @@ pub struct BackendCacheUpdatePayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct BackendSessionStatusPayload {
+    pub(crate) university: Option<crate::session_coordinator::SessionDiagnostics>,
+    pub generation: u64,
+    pub signed_out: bool,
     pub kgc_session_present: bool,
     pub session_expired: bool,
     pub username: String,
@@ -156,6 +83,8 @@ pub struct BackendSessionStatusPayload {
     pub luna_authenticated: bool,
     pub kwic_authenticated: bool,
     pub mail_authenticated: bool,
+    pub mail_generation: u64,
+    pub mail_connection_id: Option<String>,
     pub mail_email: String,
     pub mail_display_name: String,
 }
@@ -219,19 +148,12 @@ pub(crate) fn fast_cache_max_age_secs(focused: bool) -> i64 {
     }
 }
 
-pub(crate) fn recent_success_covers_probe(updated_at: Option<i64>, now: i64) -> bool {
-    matches!(
-        updated_at,
-        Some(ts) if now.saturating_sub(ts) < SESSION_PROBE_REUSE_SECS
-    )
-}
-
 pub fn start_background_refresh_loop(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let compact_app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let db = compact_app.state::<crate::db::Database>();
+            let db = compact_app.state::<crate::db::Database>().scope();
             let compacted = crate::kwic_commands::compact_cached_kwic_details(&db);
             if compacted > 0 {
                 log::info!(
@@ -254,10 +176,14 @@ pub fn start_background_refresh_loop(app: &AppHandle) {
         // grow stale forever.
         let hidden_skip_max: u32 = 5; // 5 ticks = 25 min of skipping, then force one refresh
         let mut hidden_streak: u32 = 0;
+        let mut last_tick = epoch_secs();
         loop {
             interval.tick().await;
+            let now = epoch_secs();
+            let woke = now.saturating_sub(last_tick) > (REFRESH_TICK.as_secs() * 2) as i64;
+            last_tick = now;
             let visible = is_main_window_visible(&app);
-            if !visible && hidden_streak < hidden_skip_max {
+            if !woke && !visible && hidden_streak < hidden_skip_max {
                 hidden_streak = hidden_streak.saturating_add(1);
                 continue;
             }
@@ -298,18 +224,11 @@ fn dedup_keys(keys: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fast_cache_max_age_secs, recent_success_covers_probe};
+    use super::fast_cache_max_age_secs;
 
     #[test]
     fn idle_window_polls_slower_than_focused_window() {
         assert_eq!(fast_cache_max_age_secs(true), 5 * 60);
         assert_eq!(fast_cache_max_age_secs(false), 15 * 60);
-    }
-
-    #[test]
-    fn recent_fetch_suppresses_only_a_duplicate_probe() {
-        assert!(!recent_success_covers_probe(None, 1_000));
-        assert!(recent_success_covers_probe(Some(950), 1_000));
-        assert!(!recent_success_covers_probe(Some(800), 1_000));
     }
 }

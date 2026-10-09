@@ -13,9 +13,14 @@ use crate::luna_parser;
 ///   session_plans    – parsed 授業計画 keyed by kgc_code
 ///   luna_counts      – Luna LMS activity counts keyed by luna_id
 ///   ai_schedule_cache – cached AI-generated schedule JSON
+#[derive(Clone)]
 pub struct Database {
-    conn: Mutex<Connection>,
+    conn: account::AccountConnection,
 }
+#[path = "db/account.rs"]
+mod account;
+pub(crate) use account::AccountDb;
+pub(crate) use account::{account_work, capture_account, AccountContext};
 
 #[path = "db/agent_store.rs"]
 mod agent_store;

@@ -23,7 +23,7 @@ impl Drop for WidgetSnapshotGuard<'_> {
 pub async fn sync_schedule_data(
     kgc: State<'_, KgcState>,
     luna_state: State<'_, LunaState>,
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
 ) -> Result<ScheduleResponse, String> {
     let _widget_snapshot = WidgetSnapshotGuard(db.inner());
     // Logged-out KGC skips the Struts gate so Luna can refresh immediately.
@@ -34,17 +34,18 @@ pub async fn sync_schedule_data(
     let mut next_week_label = previous.next_week_label.clone();
     let mut kgc_fetched = false;
 
-    let kgc_authenticated = kgc.client.lock().await.is_authenticated();
+    let kgc_authenticated = kgc.session().has_credentials();
     if !kgc_authenticated {
         log::warn!("sync_schedule_data: KGC not authenticated; continuing with Luna");
         kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
     } else {
         // Struts 1 keeps one token per session, so KGC fetches stay serial.
         let _kgc_gate = kgc.gate.lock().await;
+        let lease = kgc.session();
         let http = {
-            let client = kgc.client.lock().await;
-            if client.is_authenticated() {
-                Some(client.http.clone())
+            let client = &lease;
+            if client.has_credentials() {
+                Some(client.http().clone())
             } else {
                 None
             }
@@ -94,7 +95,7 @@ pub async fn sync_schedule_data(
                                 }
                             }
                             Err(error) => {
-                                clear_kgc_if_expired(&kgc, &error).await;
+                                clear_kgc_if_expired(&lease, &error).await;
                                 log::warn!("sync_schedule_data: next week failed: {}", error);
                                 kgc_warning = KGC_NEXT_WEEK_WARNING.to_string();
                             }
@@ -103,7 +104,7 @@ pub async fn sync_schedule_data(
                     }
                 }
                 Err(error) => {
-                    clear_kgc_if_expired(&kgc, &error).await;
+                    clear_kgc_if_expired(&lease, &error).await;
                     log::warn!("sync_schedule_data: KGC current week failed: {}", error);
                     kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
                 }
@@ -186,8 +187,9 @@ pub async fn sync_schedule_data(
     store_kgc_warning(&db, &kgc_warning);
 
     if kgc_fetched {
+        let lease = kgc.session();
         if let Err(e) = enrich_schedule_inner(&kgc, &luna_state, &db).await {
-            clear_kgc_if_expired(&kgc, &e).await;
+            clear_kgc_if_expired(&lease, &e).await;
             log::warn!("sync_schedule_data: enrichment failed: {}", e);
         }
     }

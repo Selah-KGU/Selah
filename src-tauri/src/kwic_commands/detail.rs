@@ -44,7 +44,7 @@ pub async fn kwic_fetch_detail_internal(
 #[tauri::command]
 pub async fn kwic_fetch_detail(
     state: State<'_, KwicState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     information_id: String,
     information_type: String,
     person_category_cd: String,

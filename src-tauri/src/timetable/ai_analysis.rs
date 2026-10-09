@@ -1,7 +1,6 @@
 use super::safe_preview;
 use crate::ai;
 use crate::db::{AiScheduleResult, Database, SnapshotState};
-use tauri::State;
 
 #[path = "ai_analysis/detail_todos.rs"]
 mod detail_todos;
@@ -27,7 +26,7 @@ const TODO_AI_CACHE_MAX_AGE: i64 = 12 * 3600; // 12 hours
 
 #[tauri::command]
 pub async fn ai_generate_schedule(
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
     current_week_label: String,
     next_week_label: String,
     force: bool,
@@ -116,7 +115,7 @@ pub async fn ai_generate_schedule_internal(
 
 #[tauri::command]
 pub async fn ai_analyze_todo(
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
     force: bool,
 ) -> Result<serde_json::Value, String> {
     ai_analyze_todo_internal(&db, force).await

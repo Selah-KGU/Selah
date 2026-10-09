@@ -7,44 +7,19 @@ use crate::KwicState;
 
 /// Check KWIC Portal session
 #[tauri::command]
-pub async fn kwic_check_session(state: State<'_, KwicState>) -> Result<bool, String> {
-    let (http, authenticated) = {
-        let kwic = state.client.lock().await;
-        (kwic.http.clone(), kwic.authenticated)
-    };
-    if !authenticated {
-        return Ok(false);
-    }
-    // Validate against server without holding the lock
-    let url = format!("{}/portal/home", crate::config::KWIC_BASE);
-    match crate::client::fetch_with_redirect(
-        &http,
-        &url,
-        crate::config::KWIC_BASE,
-        crate::kwic_client::KWIC_SESSION_EXPIRED_MSG,
-        crate::kwic_client::is_kwic_session_expired,
-    )
-    .await
-    {
-        Ok(_) => {
-            let kwic = state.client.lock().await;
-            kwic.save_session();
-            Ok(true)
-        }
-        Err(e) if e == crate::kwic_client::KWIC_SESSION_EXPIRED_MSG => {
-            let mut kwic = state.client.lock().await;
-            kwic.authenticated = false;
-            Ok(false)
-        }
-        Err(e) => Err(e),
-    }
+pub(crate) async fn kwic_check_session(
+    _state: State<'_, KwicState>,
+) -> Result<crate::session_coordinator::ServiceStatus, crate::session_coordinator::SessionError> {
+    let service = crate::session_coordinator::Service::Kwic;
+    crate::session_coordinator::verify(service).await?;
+    Ok(crate::session_coordinator::SESSIONS.snapshot().services[service.index()].clone())
 }
 
 /// Fetch and parse the KWIC Portal home page
 #[tauri::command]
 pub async fn kwic_fetch_home(
     state: State<'_, KwicState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<KwicPortalHome, String> {
     match kwic_http(&state).await {
         Ok(http) => match kwic_get(&http, "/portal/home").await {

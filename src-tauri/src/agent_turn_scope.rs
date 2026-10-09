@@ -17,6 +17,7 @@ tokio::task_local! { pub(crate) static CURRENT: Arc<Turn>; }
 
 pub(crate) struct Turn {
     conversation: String,
+    account: crate::db::AccountContext,
     generation: String,
     request: String,
     current: AtomicBool,
@@ -33,6 +34,9 @@ pub(crate) struct History {
 }
 
 impl Turn {
+    pub(crate) fn account_context(&self) -> crate::db::AccountContext {
+        self.account.clone()
+    }
     pub(crate) fn set_input_message(&self, id: i64) -> Result<(), crate::agent_error::AgentError> {
         if id <= 0
             || self
@@ -123,6 +127,7 @@ impl RunningTurn {
         let generation = uuid::Uuid::new_v4().to_string();
         let turn = Arc::new(Turn {
             conversation: conversation.into(),
+            account: crate::db::capture_account(),
             request: request
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| generation.clone()),
@@ -285,3 +290,9 @@ pub(crate) async fn until_cancelled<T>(
 #[cfg(test)]
 #[path = "agent_turn_scope/tests.rs"]
 mod tests;
+
+/// Preserve the account that admitted an inference across its later tools and
+/// persistence operations, even if a different login is now active.
+pub(crate) fn account_context() -> Option<crate::db::AccountContext> {
+    CURRENT.try_with(|turn| turn.account.clone()).ok()
+}

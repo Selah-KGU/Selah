@@ -50,7 +50,7 @@ pub async fn refresh_on_window_focus(app: &AppHandle) {
     if !focus_catch_up_allowed(crate::db::epoch_secs()) {
         return;
     }
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let max_age = super::fast_cache_max_age_secs(true);
     let keys = ["luna_todo", "luna_updates", "kwic_home", "mail_inbox"]
         .into_iter()
@@ -101,7 +101,11 @@ async fn refresh_backend_data_with_request(
     }
     let _guard = RunningGuard(&state.running);
 
-    refresh_backend_data_inner(app, request).await
+    crate::db::account_work(
+        crate::db::capture_account(),
+        refresh_backend_data_inner(app, request),
+    )
+    .await
 }
 
 async fn refresh_backend_data_inner(
@@ -110,7 +114,7 @@ async fn refresh_backend_data_inner(
 ) -> Result<Vec<String>, String> {
     super::session::maybe_renew_sessions(app).await;
 
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let session_status = super::session::sync_backend_session_status_for_refresh(app).await?;
     let mut kgc_authenticated = session_status.kgc_session_present;
     let luna_authenticated = session_status.luna_authenticated;
@@ -131,7 +135,7 @@ async fn refresh_backend_data_inner(
         let before = db.cache_payload("luna_todo");
         match crate::luna_commands::luna_fetch_todo(
             app.state::<LunaState>(),
-            app.state::<Database>(),
+            app.state::<Database>().scope(),
         )
         .await
         {
@@ -166,7 +170,7 @@ async fn refresh_backend_data_inner(
         match crate::timetable::sync_schedule_data(
             app.state::<KgcState>(),
             app.state::<LunaState>(),
-            app.state::<Database>(),
+            app.state::<Database>().scope(),
         )
         .await
         {
@@ -199,8 +203,11 @@ async fn refresh_backend_data_inner(
         if request.wants("grades")
             && (request.force || cache_is_stale(&db, "grades", ACADEMIC_RECORD_CACHE_MAX_AGE_SECS))
         {
-            match crate::commands::fetch_grades(app.state::<KgcState>(), app.state::<Database>())
-                .await
+            match crate::commands::fetch_grades(
+                app.state::<KgcState>(),
+                app.state::<Database>().scope(),
+            )
+            .await
             {
                 Ok(_) => updated_keys.push("grades".to_string()),
                 Err(e) => log::warn!("background refresh: grades failed: {}", e),
@@ -212,7 +219,7 @@ async fn refresh_backend_data_inner(
         {
             match crate::commands::fetch_registration(
                 app.state::<KgcState>(),
-                app.state::<Database>(),
+                app.state::<Database>().scope(),
             )
             .await
             {
@@ -225,7 +232,7 @@ async fn refresh_backend_data_inner(
         {
             match crate::commands::fetch_cancellations(
                 app.state::<KgcState>(),
-                app.state::<Database>(),
+                app.state::<Database>().scope(),
             )
             .await
             {
@@ -238,7 +245,7 @@ async fn refresh_backend_data_inner(
         {
             match crate::commands::fetch_makeup_classes(
                 app.state::<KgcState>(),
-                app.state::<Database>(),
+                app.state::<Database>().scope(),
             )
             .await
             {
@@ -251,7 +258,7 @@ async fn refresh_backend_data_inner(
         {
             match crate::commands::fetch_room_changes(
                 app.state::<KgcState>(),
-                app.state::<Database>(),
+                app.state::<Database>().scope(),
             )
             .await
             {
@@ -264,7 +271,7 @@ async fn refresh_backend_data_inner(
         {
             match crate::commands::fetch_student_profile(
                 app.state::<KgcState>(),
-                app.state::<Database>(),
+                app.state::<Database>().scope(),
             )
             .await
             {
@@ -277,7 +284,7 @@ async fn refresh_backend_data_inner(
         {
             match crate::commands::fetch_exam_timetable(
                 app.state::<KgcState>(),
-                app.state::<Database>(),
+                app.state::<Database>().scope(),
             )
             .await
             {

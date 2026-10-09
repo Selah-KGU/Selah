@@ -8,11 +8,12 @@
     lunaCheckSession,
     kwicCheckSession,
     resetUniversityLogin,
-    serviceRegistry,
     syncSession,
     validateSession,
     type SavedCookieSummary,
   } from "../../api";
+
+  import { serviceVerified, type RecoveryReport, type ServiceStatus } from "../../universitySession";
 
   type SvcState = { state: "loading" | "saved" | "ok" | "ng" | "error"; label: string };
   type ServiceKey = "kgc" | "luna" | "kwic";
@@ -25,11 +26,22 @@
   let repairBusy = $state(false);
   let kgcRefreshBusy = $state(false);
   let resetBusy = $state(false);
+  let repairResults = $state<RecoveryReport["results"]>([]);
+  let repairUnavailable = $state(false);
   let resetArmed = $state(false);
   let statusMsg = $state("");
   let statusColor = $state("");
   let cookieSummaries = $state<SavedCookieSummary[]>([]);
   let cookieSummaryError = $state(false);
+  type SecretStoreStatus = { backend: string; state: string; last_error: string | null };
+  let secretStatus = $state<SecretStoreStatus | null>(null);
+  let secretRetryBusy = $state(false);
+  let loginPersistencePending = $state(false);
+  type SecretRecovery = { status: SecretStoreStatus; results: { component: string; outcome: string; error: { kind: string; message: string } | null }[] };
+  let secretRecoveryErrors = $state<string[]>([]);
+  type ServiceHealth = ServiceStatus;
+  let health = $state<ServiceHealth[]>([]);
+  let ssoEvidence = $state(false);
   let resetTimer: ReturnType<typeof setTimeout> | null = null;
 
   let disconnectedCore = $derived([
@@ -63,7 +75,8 @@
   async function checkLuna(): Promise<boolean | null> {
     luna = { state: "loading", label: "確認中..." };
     try {
-      const ok = await lunaCheckSession();
+      const result = await lunaCheckSession();
+      const ok = result.state === "valid";
       luna = { state: ok ? "ok" : "ng", label: ok ? "有効" : "無効・未接続" };
       return ok;
     } catch {
@@ -75,7 +88,8 @@
   async function checkKwic(): Promise<boolean | null> {
     kwic = { state: "loading", label: "確認中..." };
     try {
-      const ok = await kwicCheckSession();
+      const result = await kwicCheckSession();
+      const ok = result.state === "valid";
       kwic = { state: ok ? "ok" : "ng", label: ok ? "有効" : "無効・未接続" };
       return ok;
     } catch {
@@ -111,6 +125,7 @@
   async function loadStoredStates() {
     try {
       const states = await getStoredSessionStates();
+      ssoEvidence = states.sso === true;
       kg = states.kgc
         ? { state: "saved", label: "保存済み・未確認" }
         : { state: "ng", label: "未接続" };
@@ -135,6 +150,66 @@
       cookieSummaries = [];
       cookieSummaryError = true;
     }
+    await loadSecretStatus();
+    await loadSessionHealth();
+  }
+
+  async function loadSessionHealth() {
+    if (isDemoActive()) return;
+    try {
+      const result = await invoke<{ services: ServiceHealth[]; login_persistence_pending?: boolean }>("get_session_diagnostics");
+      health = result.services;
+      loginPersistencePending = result.login_persistence_pending === true;
+      ssoEvidence = (await getStoredSessionStates()).sso === true;
+      for (const service of health) {
+        let next: SvcState | null = null;
+        if (service.state === "unverified") next = { state: service.credentials_present ? "saved" : "ng", label: service.credentials_present ? "保存済み・未確認" : "未接続" };
+        if (service.state === "valid") next = { state: "ok", label: "有効・確認済み" };
+        if (service.state === "refreshing") next = { state: "loading", label: "復旧中..." };
+        if (service.state === "unavailable") next = { state: "error", label: "通信状態により確認できません" };
+        if (service.state === "needs_login") next = { state: "ng", label: "再認証が必要です" };
+        if (service.state === "signed_out") next = { state: "ng", label: "サインアウト済み" };
+        if (!next) continue;
+        if (service.service === "kgc") kg = next;
+        if (service.service === "luna") luna = next;
+        if (service.service === "kwic") kwic = next;
+      }
+    } catch { health = []; }
+  }
+
+  async function loadSecretStatus() {
+    if (isDemoActive()) return;
+    try { secretStatus = await invoke<SecretStoreStatus>("get_secret_store_status"); }
+    catch { secretStatus = { backend: "", state: "unavailable", last_error: null }; }
+  }
+
+  async function retrySecretStore() {
+    secretRetryBusy = true;
+    try {
+      const report = await invoke<SecretRecovery>("retry_secret_store");
+      secretStatus = report.status;
+      secretRecoveryErrors = report.results.filter(item => item.error).map(item => `${secretComponentLabel(item.component)}: ${item.error!.message}`);
+      await loadStoredStates();
+      await loadCookieSummaries();
+    } catch (error) {
+      secretRecoveryErrors = [String(error)];
+      await loadSecretStatus();
+    } finally { secretRetryBusy = false; }
+  }
+
+  function secretComponentLabel(component: string): string {
+    const labels: Record<string, string> = { kgc: "KGC", luna: "Luna", kwic: "KWIC", session_checkpoint: "大学ログイン情報の保存", sso_cookies: "SSO Cookieの復元", mail: "Microsoft 365 メール", gcal: "Google カレンダー", gcal_config: "Google カレンダー設定" };
+    return labels[component] ?? component;
+  }
+
+  function storageLabel(state: string): string {
+    if (state === "ready") return "保存先は利用可能です";
+    if (state === "erased") return "認証情報は削除されました。アプリを再起動してください。";
+    if (state === "locked") return "資格情報ストアを開けません。ロック解除後に再試行してください。";
+    if (state === "write_failed") return "最新の認証情報を保存できていません。アプリを終了する前に再試行してください。";
+    if (state === "corrupt") return "保存データを検証できませんでした。元のデータは保持しています。";
+    if (state === "cleanup_failed") return "保存先の切り替え後、旧データの削除が完了していません。再試行してください。";
+    return "保存先の状態を確認できません。再試行してください。";
   }
 
   function cookieSummary(service: ServiceKey): SavedCookieSummary | undefined {
@@ -164,16 +239,30 @@
     if (service === "kwic") kwic = { state: "loading", label: "復旧中..." };
   }
 
-  function setRepairResult(service: ServiceKey, ok: boolean) {
-    const next: SvcState = {
-      state: ok ? "ok" : "ng",
-      label: ok ? "有効・復旧済み" : "復旧できませんでした",
-    };
-    if (ok) serviceRegistry[service].onRecovered();
-    else serviceRegistry[service].onReset();
-    if (service === "kgc") kg = next;
-    if (service === "luna") luna = next;
-    if (service === "kwic") kwic = next;
+  async function repair(service: ServiceKey): Promise<boolean> {
+    setRepairing(service);
+    try {
+      const report = await syncSession(service);
+      repairResults.push(...report.results);
+      await loadSessionHealth();
+      const result = report.results.find(result => result.service === service);
+      if (result?.outcome === "deferred") {
+        statusMsg = "前回の試行後の待機中です。少し待ってから再試行してください。";
+      } else if (result?.outcome === "unavailable") {
+        statusMsg = "通信または保存先を確認できません。接続情報は保持しています。";
+      }
+      return serviceVerified(report, service);
+    } catch {
+      repairUnavailable = true;
+      await loadSessionHealth();
+      return false;
+    }
+  }
+
+  function recoveryFailureMessage() {
+    if (repairUnavailable || repairResults.some(result => result.outcome === "unavailable")) return "通信または保存先を確認できません。接続情報は保持しています。";
+    if (repairResults.some(result => result.outcome === "deferred")) return "前回の試行後の待機中です。少し待ってから再試行してください。";
+    return "再認証が必要です。完全再ログインを試してください。";
   }
 
   async function repairDisconnected() {
@@ -183,14 +272,13 @@
     }
 
     repairBusy = true;
+    repairResults = []; repairUnavailable = false;
     statusColor = "var(--text-secondary)";
     statusMsg = "Luna・KWIC の接続を復旧しています...";
     const targets = [...disconnectedCore];
     try {
       for (const service of targets) {
-        setRepairing(service);
-        const ok = await syncSession(service).catch(() => false);
-        setRepairResult(service, ok);
+        await repair(service);
       }
       if (luna.state === "ok" && kwic.state === "ok") {
         statusColor = "var(--green)";
@@ -199,7 +287,7 @@
           : "主要サービスを復旧しました。KG Course は引き続き未接続です";
       } else {
         statusColor = "var(--orange, #ff9500)";
-        statusMsg = "主要サービスを復旧できませんでした。完全再ログインを試してください";
+        statusMsg = recoveryFailureMessage();
       }
     } finally {
       repairBusy = false;
@@ -210,32 +298,30 @@
 
   async function refreshKgcAndCore() {
     kgcRefreshBusy = true;
+    repairResults = []; repairUnavailable = false;
     statusColor = "var(--text-secondary)";
     statusMsg = "KG Course を更新しています...";
     setRepairing("kgc");
     try {
-      const kgcOk = await syncSession("kgc").catch(() => false);
-      setRepairResult("kgc", kgcOk);
+      const kgcOk = await repair("kgc");
       if (!kgcOk) {
         statusColor = "var(--orange, #ff9500)";
-        statusMsg = "KG Course を更新できませんでした。Luna・KWIC は変更していません";
+        statusMsg = recoveryFailureMessage();
         return;
       }
 
       statusMsg = "KG Course を更新しました。Luna・KWIC の Cookie を更新しています...";
       setRepairing("luna");
       setRepairing("kwic");
-      const lunaOk = await syncSession("luna").catch(() => false);
-      setRepairResult("luna", lunaOk);
-      const kwicOk = await syncSession("kwic").catch(() => false);
-      setRepairResult("kwic", kwicOk);
+      const lunaOk = await repair("luna");
+      const kwicOk = await repair("kwic");
 
       if (lunaOk && kwicOk) {
         statusColor = "var(--green)";
         statusMsg = "KG Course・Luna・KWIC の Cookie を更新しました";
       } else {
         statusColor = "var(--orange, #ff9500)";
-        statusMsg = "KG Course は更新しましたが、一部の主要サービスを更新できませんでした";
+        statusMsg = recoveryFailureMessage();
       }
     } finally {
       kgcRefreshBusy = false;
@@ -322,6 +408,8 @@
       secStatusColor = "var(--red)";
       secStatusMsg = "保存失敗: " + String(e);
     }
+    await loadSecurityConfig();
+    await loadSecretStatus();
     setTimeout(() => { secStatusMsg = ""; }, 4000);
   }
 
@@ -350,7 +438,7 @@
   </div>
   <div class="hero-text">
     <h2 class="panel-title">セッション</h2>
-    <p class="panel-desc">Luna と KWIC を主要サービスとして監視します。KG Course は自動復旧せず、状態行の更新操作で KG Course に続けて Luna・KWIC の Cookie を更新します。</p>
+    <p class="panel-desc">Luna と KWIC を主要サービスとして監視します。KG Course は必要なデータを取得するときに復旧を試みます。通信エラーと再認証が必要な状態を区別します。</p>
   </div>
 </div>
 
@@ -402,22 +490,25 @@
 
 <div class="card-label">保存済み Cookie の概要</div>
 <div class="card cookie-summary-card">
+  <div class="hint">SSO 復旧用データ: {ssoEvidence ? "あり（有効性は復旧時に確認）" : "未確認・なし"}</div>
   {#each [
     { key: "kgc" as const, label: "KG Course" },
     { key: "luna" as const, label: "Luna LMS" },
     { key: "kwic" as const, label: "KWIC Portal" },
   ] as service}
     {@const summary = cookieSummary(service.key)}
+    {@const verified = health.find(item => item.service === service.key)?.last_verified_at}
     <div class="cookie-summary-row">
       <strong class="cookie-service-name">{service.label}</strong>
       <div class="cookie-summary-detail">
         {#if summary?.saved}
           <span>{formatDateTime(summary.saved_at)}</span>
           <span>{summary.active_cookie_count} 件{summary.session_cookie_count ? `（セッション型 ${summary.session_cookie_count} 件）` : ""}</span>
-          <span>期限: {expiryLabel(summary)}</span>
+          <span>最短 Cookie 期限: {expiryLabel(summary)}（ログイン期限とは異なります）</span>
         {:else}
           <span>保存内容なし</span>
         {/if}
+        {#if verified}<span>最終確認: {formatDateTime(verified)}</span>{/if}
       </div>
       <span class:saved={summary?.saved} class="cookie-save-state">
         {summary?.saved ? "保存済み" : "未保存"}
@@ -427,7 +518,7 @@
   {#if cookieSummaryError}
     <div class="hint cookie-summary-error">Cookie の概要を読み込めませんでした。</div>
   {:else}
-    <div class="hint cookie-summary-note">Cookie はシステムの資格情報ストアに保存します。名前・値・ドメイン・パスなどの認証情報は表示しません。</div>
+    <div class="hint cookie-summary-note">最後に保存できた Cookie の概要です。保存済みでも、大学側のセッションが有効とは限りません。認証情報の内容は表示しません。</div>
   {/if}
 </div>
 
@@ -437,10 +528,26 @@
     <span class="row-label">保存先</span>
     <div class="row-input sec-store">
       <select bind:value={secretStore} onchange={saveSecurityConfig}>
-        <option value="keychain">キーチェーン</option>
-        <option value="file">暗号化ファイル</option>
+        <option value="keychain">OSで鍵を保護（推奨）</option>
+        <option value="file">端末情報で暗号化</option>
       </select>
-      <div class="hint">APIキー・トークン・Cookie の保存先を選びます。「キーチェーン」は OS のキーチェーンにのみ保存します（既定・推奨。保存先を切り替えると中身も移行します）。「暗号化ファイル」はキーチェーンを一切使わず、端末固有キーで暗号化したファイルのみに保存します（キーチェーンの確認ダイアログを避けたい場合向け。ただしファイルは同一ユーザーのプロセスからは復号され得ます）。</div>
+      <div class="hint">APIキー・トークン・Cookie は暗号化して保存します。推奨設定では、ランダムな暗号鍵を OS の資格情報ストアで保護します。「端末情報で暗号化」はキーチェーンを使用しませんが、同一ユーザーのプロセスから復号され得ます。切り替えは移行先への保存が完了してから適用します。</div>
+      {#if secretStatus}
+        <div class="hint" role="status" style:color={secretStatus.state === "ready" ? "var(--green)" : "var(--red)"}>
+          {storageLabel(secretStatus.state)}
+        </div>
+        {#if loginPersistencePending}
+          <div class="hint" role="status">ログイン済みですが、認証情報の保存は未完了です。再試行すると保存とログインの確定を続行します。</div>
+        {/if}
+        {#each secretRecoveryErrors as error}
+          <div class="hint" role="status" style:color="var(--red)">{error}</div>
+        {/each}
+        {#if secretStatus.state !== "ready" || secretRecoveryErrors.length > 0 || loginPersistencePending}
+          <button class="btn-test" disabled={secretRetryBusy} onclick={retrySecretStore}>
+            {secretRetryBusy ? "再試行中..." : "保存先を再確認"}
+          </button>
+        {/if}
+      {/if}
       {#if secStatusMsg}
         <div class="hint" style="color:{secStatusColor};">{secStatusMsg}</div>
       {/if}

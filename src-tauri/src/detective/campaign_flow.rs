@@ -5,7 +5,6 @@ use super::generate::{
 use super::prompts::{finale_system_prompt, finale_user_prompt};
 use super::sources::{chapter_case_key, load_campaign, save_campaign};
 use super::types::DetectiveCampaign;
-use crate::db::Database;
 use serde::Deserialize;
 
 /// Generate (or fetch the cached) campaign bible for a single course. With
@@ -13,7 +12,7 @@ use serde::Deserialize;
 /// meta-arc / finale onto an older campaign) while carrying over the player's
 /// meta_progress and played chapters; reveals are re-unlocked to match.
 pub(super) async fn detective_generate_campaign(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
     force: Option<bool>,
 ) -> Result<DetectiveCampaign, String> {
@@ -56,7 +55,7 @@ pub(super) async fn detective_generate_campaign(
 /// static guess written at bible time. Only fires once a campaign hits 100%;
 /// the frontend calls this when a chapter clear pushes progress to completion.
 pub(super) async fn detective_finalize_finale(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
 ) -> Result<DetectiveCampaign, String> {
     let Some(mut campaign) = load_campaign(&db, &course_key) else {

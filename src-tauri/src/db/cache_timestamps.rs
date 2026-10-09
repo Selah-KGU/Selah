@@ -32,7 +32,9 @@ impl Database {
             .map(|key| CacheTimestampRow {
                 key: key.clone(),
                 // Preserve the single-key timestamp reader's per-row null fallback.
-                updated_at: metadata.query_row(params![key], |row| row.get(0)).ok(),
+                updated_at: metadata
+                    .query_row(params![self.cache_storage_key(key)], |row| row.get(0))
+                    .ok(),
             })
             .collect();
         let schedule_updated_at = if include_schedule {

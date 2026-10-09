@@ -82,6 +82,7 @@ pub(super) async fn maybe_auto_sync_calendars(
     schedule_changed: bool,
     force: bool,
 ) {
+    let account = crate::db::capture_account();
     let cal_cfg = crate::commands::load_calendar_config();
     if !cal_cfg.gcal_auto_sync {
         return;
@@ -125,7 +126,7 @@ pub(super) async fn maybe_auto_sync_calendars(
 
     let gcal_state = app.state::<crate::GCalState>();
     let mut gcal = gcal_state.client.lock().await;
-    if !gcal.status().authenticated {
+    if db.ensure_current_account().is_err() || !gcal.auto_sync_allowed(&account) {
         return;
     }
 
@@ -133,7 +134,10 @@ pub(super) async fn maybe_auto_sync_calendars(
         if entries.is_empty() {
             continue;
         }
-        if let Err(e) = gcal.sync_timetable(entries, label).await {
+        if let Err(e) = gcal
+            .sync_timetable_automatically(entries, label, &account)
+            .await
+        {
             log::warn!("background refresh: gcal auto-sync failed: {}", e);
             return;
         }

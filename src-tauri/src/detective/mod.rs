@@ -28,13 +28,13 @@ pub(crate) use types::*;
 pub(crate) use validate::*;
 
 #[tauri::command]
-pub fn detective_get_context(db: tauri::State<'_, Database>) -> Result<DetectiveContext, String> {
+pub fn detective_get_context(db: crate::db::AccountDb) -> Result<DetectiveContext, String> {
     context::build_context(&db)
 }
 
 #[tauri::command]
 pub async fn detective_generate_campaign(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
     force: Option<bool>,
 ) -> Result<DetectiveCampaign, String> {
@@ -43,7 +43,7 @@ pub async fn detective_generate_campaign(
 
 #[tauri::command]
 pub fn detective_get_chapters(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
 ) -> Result<Vec<DetectiveChapterInfo>, String> {
     chapters::detective_get_chapters(db, course_key)
@@ -51,7 +51,7 @@ pub fn detective_get_chapters(
 
 #[tauri::command]
 pub async fn detective_generate_chapter(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
     live_id: String,
     force: Option<bool>,
@@ -61,7 +61,7 @@ pub async fn detective_generate_chapter(
 
 #[tauri::command]
 pub fn detective_save_doubts(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     doubts: Vec<DetectiveDoubt>,
 ) -> Result<(), String> {
     saves::detective_save_doubts(db, doubts)
@@ -69,7 +69,7 @@ pub fn detective_save_doubts(
 
 #[tauri::command]
 pub fn detective_save_included_courses(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     included: Vec<String>,
 ) -> Result<(), String> {
     saves::detective_save_included_courses(db, included)
@@ -77,7 +77,7 @@ pub fn detective_save_included_courses(
 
 #[tauri::command]
 pub fn detective_save_case_result(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     result: DetectiveCaseResult,
 ) -> Result<Vec<DetectiveCaseResult>, String> {
     saves::detective_save_case_result(db, result)
@@ -85,7 +85,7 @@ pub fn detective_save_case_result(
 
 #[tauri::command]
 pub fn detective_save_memory_outcome(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     busted_topics: Vec<String>,
     missed_topics: Vec<String>,
     course_name: String,
@@ -102,7 +102,7 @@ pub fn detective_save_memory_outcome(
 
 #[tauri::command]
 pub async fn detective_finalize_finale(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
 ) -> Result<DetectiveCampaign, String> {
     campaign_flow::detective_finalize_finale(db, course_key).await

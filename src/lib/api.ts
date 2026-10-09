@@ -1,3 +1,4 @@
+import { projectUniversitySession, type UniversityService, type UniversitySnapshot, type RecoveryReport, type RecoveryTrigger, type ServiceStatus } from "./universitySession";
 import { syncBackendManagedKeys } from "./backendCacheSync";
 import { BACKEND_CACHE_DB_KEYS as BACKEND_CACHE_DB_KEY } from "./backendCacheKeys";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,6 +8,7 @@ import { openExternalUrl } from "./system";
 import { startTrayStatus, stopTrayStatus } from "./trayStatus";
 import { waitForVisibleLogin, type UniversityLoginComplete } from "./visibleLogin";
 import { BackgroundRefresh } from "./backgroundRefresh";
+import { universitySessionLifetime } from "./sessionLifetime";
 import { CoalescedStatusRead } from "./coalescedStatusRead";
 import { BackendTaskStatusReader, type BackendTaskTimestampBatch } from "./backendTaskStatus";
 import {
@@ -33,7 +35,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis, LunaTodoItem } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, requestedMailMessageId } from "./stores";
+import { universityLoginPersistencePending, authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, requestedMailMessageId } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 import type { LiveGeneratedTodo, LiveTodoSuggestion } from "./liveSessionApi";
@@ -83,39 +85,48 @@ const backendSessionStatusRead = new CoalescedStatusRead(
 // Each WebView is its own realm, so this guard does not stop auxiliary windows
 // from subscribing. Those windows import api helpers but must not fan out
 // app-wide cache sync on every backend emit.
+let mailRequestRevision = 0;
+let mailGeneration = -1;
+let mailConnection: string | null = null;
+function clearMailProjection() {
+  mailRequestRevision += 1;
+  invalidateCache("mail_inbox");
+  replaceCacheEntry("mail_inbox", [], 0);
+  requestedMailMessageId.set(null);
+}
+function applyMailStatus(status: MailSessionStatus) {
+  const generation = status.generation ?? 0;
+  if (generation < mailGeneration) return;
+  const connection = status.connection_id ?? null;
+  if (connection !== mailConnection) clearMailProjection();
+  mailGeneration = generation;
+  mailConnection = connection;
+  mailAuthState.set({ authenticated: status.authenticated, email: status.email, displayName: status.display_name, connectionId: connection });
+}
+async function refreshMailProjection() {
+  const revision = mailRequestRevision;
+  const status = await mailCheckSession();
+  if (revision === mailRequestRevision) applyMailStatus(status);
+}
+
 if (!isAuxiliarySurface() && !__selahGlobal[__SELAH_LISTENERS_KEY]) {
   __selahGlobal[__SELAH_LISTENERS_KEY] = true;
 
-  listen("luna-login-success", () => {
-    lunaAuthState.set({ authenticated: true });
-  });
-
-  listen("kwic-login-success", () => {
-    kwicAuthState.set({ authenticated: true });
-  });
-
-  // Handle login phase 2/3 failures — undo premature auth state
-  listen("luna-login-error", () => {
-    lunaAuthState.set({ authenticated: false });
-  });
-
-  listen("kwic-login-error", () => {
-    kwicAuthState.set({ authenticated: false });
-  });
-
-  listen<UniversityLoginComplete>("university-login-complete", (event) => {
-    lunaAuthState.set({ authenticated: event.payload.luna_authenticated });
-    kwicAuthState.set({ authenticated: event.payload.kwic_authenticated });
-    sessionExpired.set(!(event.payload.luna_authenticated && event.payload.kwic_authenticated));
-  });
-
-  listen<{ email: string; displayName: string }>("mail-login-success", (event) => {
-    mailAuthState.set({
-      authenticated: true,
-      email: event.payload.email,
-      displayName: event.payload.displayName,
+  for (const event of ["luna-login-success", "kwic-login-success", "university-login-complete", "university-login-persistence"]) {
+    listen<{ generation?: number }>(event, ({ payload }) => {
+      if (payload.generation !== undefined && !universitySessionLifetime.accept(payload.generation)) return;
+      refreshUniversityProjection().catch(() => {});
     });
+  }
+
+  listen<{ generation?: number }>("mail-session-changed", ({ payload }) => {
+    if ((payload?.generation ?? 0) < mailGeneration) return;
+    mailGeneration = payload?.generation ?? mailGeneration;
+    clearMailProjection();
+    mailAuthState.set({ authenticated: false, email: "", displayName: "", connectionId: null });
+    void refreshMailProjection().catch(() => {});
   });
+  listen("mail-login-success", () => { void refreshMailProjection().catch(() => {}); });
 
   listen("gcal-login-success", () => {
     gcalAuthState.update(s => ({ ...s, authenticated: true }));
@@ -136,7 +147,7 @@ if (!isAuxiliarySurface() && !__selahGlobal[__SELAH_LISTENERS_KEY]) {
   });
 
   listen("mail-login-error", () => {
-    mailAuthState.set({ authenticated: false, email: "", displayName: "" });
+    void refreshMailProjection().catch(() => {});
   });
 
   // Refresh AI readiness whenever AI config/model state changes from any window.
@@ -173,14 +184,11 @@ if (!isAuxiliarySurface() && !__selahGlobal[__SELAH_LISTENERS_KEY]) {
 }
 
 function applyBackendSessionStatus(status: BackendSessionStatus) {
-  lunaAuthState.set({ authenticated: status.luna_authenticated });
-  kwicAuthState.set({ authenticated: status.kwic_authenticated });
-  sessionExpired.set(status.session_expired);
-  mailAuthState.set({
-    authenticated: status.mail_authenticated,
-    email: status.mail_email,
-    displayName: status.mail_display_name,
-  });
+  if (!universitySessionLifetime.accept(status.generation)) return;
+  if (status.university && !universitySessionLifetime.acceptSnapshot(status.university.generation, status.university.revision)) return;
+  if (status.signed_out) return;
+  if (status.university) applyUniversitySnapshot(status.university);
+  applyMailStatus({ authenticated: status.mail_authenticated, email: status.mail_email, display_name: status.mail_display_name, generation: status.mail_generation, connection_id: status.mail_connection_id });
 
   if (status.kgc_session_present) {
     setAuthFromSession({
@@ -197,7 +205,28 @@ function applyBackendSessionStatus(status: BackendSessionStatus) {
 const __SELAH_SESSION_STATUS_KEY = Symbol.for("selah.api.backendSessionStatus");
 if (!(__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATUS_KEY]) {
   (__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATUS_KEY] = true;
+  listen<{ generation: number; signed_out: boolean }>("university-auth-generation", (event) => {
+    if (!universitySessionLifetime.accept(event.payload.generation)) return;
+    backendSessionStatusRead.invalidate();
+    universityLoginPersistencePending.set(false);
+    invalidateCache();
+    aiNotifStore.set(null);
+    aiTodoStore.set(null);
+    if (event.payload.signed_out) {
+      stopBackgroundPolling();
+      stopTrayStatus();
+      lunaAuthState.set({ authenticated: false });
+      kwicAuthState.set({ authenticated: false });
+      authState.update(s => ({ ...s, authenticated: false, loading: false }));
+      sessionExpired.set(false);
+      try {
+        localStorage.removeItem(EVER_AUTH_KEY);
+        localStorage.removeItem(EVER_AUTH_SOURCE_KEY);
+      } catch {}
+    }
+  });
   listen<BackendSessionStatus>("backend-session-status", (event) => {
+    if (!universitySessionLifetime.accept(event.payload.generation)) return;
     backendSessionStatusRead.invalidate();
     applyBackendSessionStatus(event.payload);
     markBackendTasksUpdated(["preemptive_renewal"], !event.payload.session_expired);
@@ -214,6 +243,9 @@ interface SessionStatus {
 }
 
 interface BackendSessionStatus {
+  university: UniversitySnapshot | null;
+  generation: number;
+  signed_out: boolean;
   kgc_session_present: boolean;
   session_expired: boolean;
   username: string;
@@ -224,6 +256,8 @@ interface BackendSessionStatus {
   luna_authenticated: boolean;
   kwic_authenticated: boolean;
   mail_authenticated: boolean;
+  mail_generation?: number;
+  mail_connection_id?: string | null;
   mail_email: string;
   mail_display_name: string;
 }
@@ -309,114 +343,53 @@ async function handleNotificationActivation(target: NotificationActivationTarget
   activeTab.set("notifications");
 }
 
-// ============ Unified Session Management ============
-//
-// All services share a single SSO (Okta) layer. Recovery strategy:
-//   1. Try headless refresh via hidden WebView (reuses Okta cookies)
-//   2. If Okta SSO itself expired, open visible login window
-//
-// To add a new service:
-//   1. Add an entry to `serviceRegistry`
-//   2. Add backend support for `sync_session` with the new key
-//   3. Use `withSessionGuard(() => invoke(...))` for its API calls
+// University recovery lives in the native manager. This adapter supplies the
+// service and trigger, applies versioned snapshots, and retires stale UI work.
+// Only explicit user actions open a visible login window.
 
-interface ServiceConfig {
-  /** Error substrings that indicate this service's session expired */
-  expiredMarkers: string[];
-  /** Called after successful session recovery */
-  onRecovered: () => void;
-  /** Called when recovery fails completely */
-  onReset: () => void;
-}
-
-export const serviceRegistry: Record<string, ServiceConfig> = {
-  // IMPORTANT: Luna/KWIC must be checked BEFORE kgc because kgc's
-  // generic markers ("ログインしてください", "セッションが期限切れです") are
-  // substrings of Luna/KWIC messages. identifyExpiredService() returns the
-  // FIRST match, so specific services must come first.
-  luna: {
-    expiredMarkers: [
-      "Lunaセッションが期限切れです",
-      "Lunaにログインしてください",
-    ],
-    onRecovered: () => lunaAuthState.set({ authenticated: true }),
-    onReset: () => lunaAuthState.set({ authenticated: false }),
-  },
-  kwic: {
-    expiredMarkers: [
-      "KWICセッションが期限切れです",
-      "KWICポータルにログインしてください",
-    ],
-    onRecovered: () => kwicAuthState.set({ authenticated: true }),
-    onReset: () => kwicAuthState.set({ authenticated: false }),
-  },
-  // IMPORTANT: mail must be checked BEFORE kgc because kgc's generic markers
-  // ("ログインしてください", "セッションが期限切れです") are substrings of mail messages.
-  mail: {
-    expiredMarkers: [
-      "メールセッションが期限切れです",
-      "メールにログインしてください",
-      "token lost after refresh",
-    ],
-    onRecovered: () => {}, // Mail uses OAuth — no headless recovery
-    onReset: () => {
-      mailAuthState.set({ authenticated: false, email: "", displayName: "" });
-    },
-  },
-  kgc: {
-    expiredMarkers: [
-      "セッションが期限切れです",
-      "セッションがタイムアウト",
-      "セッション切れ",
-      "認証されていません",
-      "ログインしてください",
-      "再ログインしてください",
-      "不正なアクセスです",
-      "SSO redirect detected",
-    ],
-    onRecovered: () => refreshKgcAuthState().catch(() => {}),
-    onReset: () => {
-      // KGC is an auxiliary service. Keep the cached user identity and app
-      // shell available; explicit logout is the only action that clears it.
-      debugLog("[Selah] kgc.onReset: keeping cached identity");
-    },
-  },
+export const serviceRegistry: Record<string, { onReset: () => void }> = {
+  luna: { onReset: () => lunaAuthState.set({ authenticated: false }) },
+  kwic: { onReset: () => kwicAuthState.set({ authenticated: false }) },
+  kgc: { onReset: () => {} }, // The offline identity is cleared by explicit logout.
+  mail: { onReset: () => mailAuthState.set({ authenticated: false, email: "", displayName: "" }) },
 };
 
-function isSessionExpiredError(err: unknown): boolean {
-  const msg = typeof err === "string" ? err : (err as any)?.message ?? String(err);
-  for (const svc of Object.values(serviceRegistry)) {
-    if (svc.expiredMarkers.some(m => msg.includes(m))) {
-      debugLog("[Selah] Session expired detected:", msg);
-      return true;
-    }
-  }
-  return false;
+function applyUniversitySnapshot(snapshot: UniversitySnapshot) {
+  if (!universitySessionLifetime.acceptSnapshot(snapshot.generation, snapshot.revision)) return;
+  universityLoginPersistencePending.set(snapshot.login_persistence_pending === true);
+  const projection = projectUniversitySession(snapshot);
+  lunaAuthState.set({ authenticated: projection.luna });
+  kwicAuthState.set({ authenticated: projection.kwic });
+  sessionExpired.set(projection.needsLogin);
 }
-
-/** Identify which service's session expired from the error message */
-function identifyExpiredService(err: unknown): string | null {
-  const msg = typeof err === "string" ? err : (err as any)?.message ?? String(err);
-  for (const [key, svc] of Object.entries(serviceRegistry)) {
-    if (svc.expiredMarkers.some(m => msg.includes(m))) return key;
-  }
-  return null;
+function applyRecoveryReport(report: RecoveryReport) {
+  if (!universitySessionLifetime.acceptSnapshot(report.snapshot.generation, report.snapshot.revision)) return false;
+  applyUniversitySnapshot(report.snapshot);
+  if (report.identity && !report.snapshot.signed_out) setAuthFromSession(report.identity);
+  return true;
 }
-
-const TRANSIENT_PATTERNS = [
-  "リクエスト失敗", "connection", "timeout", "timed out",
-  "network", "ECONNRESET", "ENOTFOUND", "リダイレクト失敗",
-];
-
-function isTransientError(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return TRANSIENT_PATTERNS.some(p => lower.includes(p.toLowerCase()));
+async function refreshUniversityProjection() {
+  const ticket = universitySessionLifetime.ticket();
+  const report = await invoke<RecoveryReport>("get_university_session_snapshot");
+  if (universitySessionLifetime.current(ticket)) applyRecoveryReport(report);
 }
 
 const EVER_AUTH_KEY = "selah-ever-auth";
 const EVER_AUTH_SOURCE_KEY = "selah-ever-auth-source";
 
-export function setAuthFromSession(session: { username: string; display_name?: string; student_id?: string; faculty?: string; department?: string }) {
+export function setAuthFromSession(session: { generation?: number; persistence_pending?: boolean; username: string; display_name?: string; student_id?: string; faculty?: string; department?: string }) {
+  if (session.generation !== undefined && !universitySessionLifetime.accept(session.generation)) return;
+  if (session.persistence_pending !== undefined) universityLoginPersistencePending.set(session.persistence_pending);
+  // Legacy browser caches have no owner. Never carry them into a different
+  // account, including the first launch after upgrading to account isolation.
+  try {
+    if (localStorage.getItem("selah-cache-owner") !== session.username) {
+      invalidateCache();
+      aiNotifStore.set(null);
+      aiTodoStore.set(null);
+    }
+    localStorage.setItem("selah-cache-owner", session.username);
+  } catch { invalidateCache(); aiNotifStore.set(null); aiTodoStore.set(null); }
   authState.set({
     authenticated: true,
     username: session.username,
@@ -435,15 +408,8 @@ export function setAuthFromSession(session: { username: string; display_name?: s
   } catch {}
 }
 
-/** Apply the KGC identity already verified and stored by a successful sync. */
-async function refreshKgcAuthState(): Promise<boolean> {
-  const status = await getKgcSessionSnapshot();
-  if (!status.valid) return false;
-  setAuthFromSession(status);
-  return true;
-}
-
 interface SessionStates {
+  sso: boolean;
   kgc: boolean;
   luna: boolean;
   kwic: boolean;
@@ -468,29 +434,11 @@ export async function getSavedCookieSummaries(): Promise<SavedCookieSummary[]> {
   return invoke<SavedCookieSummary[]>("get_saved_cookie_summaries");
 }
 
-/** Only one sync per key runs at once. All SAML work is also serialized through
- * `_samlSyncTail`, because the services share one upstream identity provider. */
-const _syncInFlight = new Map<string, Promise<boolean>>();
-let _samlSyncTail: Promise<void> = Promise.resolve();
-
-export async function syncSession(service: string): Promise<boolean> {
-  if (_isDemo()) return true;
-  const existing = _syncInFlight.get(service);
-  if (existing) return existing;
-
-  // Queue every SAML operation. Never reuse an "all" result for KGC: "all"
-  // intentionally means Luna + KWIC only.
-  const promise = _samlSyncTail
-    .catch(() => {})
-    .then(() => invoke<boolean>("sync_session", { service }));
-  _samlSyncTail = promise.then(() => {}, () => {});
-  promise.then(
-    () => { _syncInFlight.delete(service); },
-    () => { _syncInFlight.delete(service); },
-  );
-  _syncInFlight.set(service, promise);
-
-  return await promise;
+/** Per-realm coalescing; Rust also coalesces across windows and background tasks. */
+export async function syncSession(service: UniversityService | "all", trigger: RecoveryTrigger = "manual"): Promise<RecoveryReport> {
+  const report = await universitySessionLifetime.recover(`${service}:${trigger}`, () => invoke<RecoveryReport>("sync_session", { service, trigger }));
+  applyRecoveryReport(report);
+  return report;
 }
 
 let pendingRelogin: Promise<UniversityLoginComplete | null> | null = null;
@@ -540,6 +488,7 @@ export async function resetUniversityLogin(): Promise<{ deleted: number; core: U
   }
 
   stopBackgroundPolling();
+  universitySessionLifetime.retire();
   const deleted = await invoke<number>("reset_university_login");
   serviceRegistry.kgc.onReset();
   serviceRegistry.luna.onReset();
@@ -566,66 +515,36 @@ function openVisibleLogin(): Promise<UniversityLoginComplete> {
  * Service-aware: Luna/KWIC errors only trigger that service's recovery,
  * not a full re-login that opens 3 headless WebViews.
  */
-async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    const msg = typeof err === "string" ? err : (err as any)?.message ?? String(err);
-
-    // Transient network errors: retry once without recovery
-    if (isTransientError(msg)) {
-      debugLog("[Selah] Transient error, retrying once...");
-      try { return await fn(); } catch (retryErr) {
-        if (!isSessionExpiredError(retryErr)) throw retryErr;
-        // Fall through to recovery with the retry error
-        err = retryErr;
-      }
+async function withSessionGuard<T>(service: UniversityService | "mail", fn: () => Promise<T>, retryRead = true): Promise<T> {
+  const mailTicket = mailRequestRevision;
+  const assertMail = () => { if (service === "mail" && mailTicket !== mailRequestRevision) throw new Error("Mail connection changed"); };
+  const ticket = universitySessionLifetime.ticket();
+  const run = async () => {
+    universitySessionLifetime.assertCurrent(ticket);
+    assertMail();
+    const result = await fn();
+    universitySessionLifetime.assertCurrent(ticket);
+    assertMail();
+    return result;
+  };
+  try { return await run(); }
+  catch (error) {
+    universitySessionLifetime.assertCurrent(ticket);
+    assertMail();
+    if (service === "mail") {
+      const status = await mailCheckSession().catch(() => null);
+      universitySessionLifetime.assertCurrent(ticket);
+      assertMail();
+      if (status) applyMailStatus(status);
+      throw error;
     }
-
-    const expiredService = identifyExpiredService(err);
-    if (!expiredService) throw err;
-
-    // KGC is auxiliary. Recover it independently and never escalate its
-    // isolated failure into the app-wide re-authentication state.
-    if (expiredService === "kgc") {
-      try {
-        const ok = await syncSession("kgc");
-        if (ok) {
-          serviceRegistry.kgc.onRecovered();
-          return await fn();
-        }
-      } catch (recoveryErr) {
-        debugLog("[Selah] KGC targeted recovery failed:", recoveryErr);
-      }
-      serviceRegistry.kgc.onReset();
-      throw err;
-    }
-
-    // Mail expired → OAuth token revoked, no headless recovery possible
-    if (expiredService === "mail") {
-      debugLog("[Selah] Mail auth expired, resetting mail state");
-      serviceRegistry.mail.onReset();
-      throw err;
-    }
-
-    // Secondary service (Luna/KWIC) expired → try headless sync for just that service
-    const svc = serviceRegistry[expiredService];
-    debugLog(`[Selah] ${expiredService} session expired, trying targeted refresh...`);
-    try {
-      const ok = await syncSession(expiredService);
-      if (ok) {
-        svc.onRecovered();
-        return await fn();
-      }
-    } catch (e) {
-      console.warn(`[Selah] ${expiredService} headless refresh failed:`, e);
-    }
-    // Targeted refresh failed — reset only this service, don't escalate to full recovery
-    svc.onReset();
-    // Luna and KWIC are core services. A confirmed failure of either one
-    // exposes the global manual re-authentication action.
-    sessionExpired.set(true);
-    throw err;
+    // The native manager classifies the failure by probing its own service,
+    // retains credentials on transport failures, and decides whether to recover.
+    const report = await syncSession(service, "request_failure").catch(() => null);
+    universitySessionLifetime.assertCurrent(ticket);
+    assertMail();
+    if (retryRead && report?.results.some(result => result.service === service && result.recovered)) return run();
+    throw error;
   }
 }
 
@@ -635,138 +554,28 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
  * evidence exists. KGC itself is not contacted during startup restoration.
  */
 export async function restoreAllSessions(current: () => boolean = () => true): Promise<SessionStatus | null> {
+  const ownerCurrent = current;
+  let ticket = universitySessionLifetime.ticket();
+  current = () => ownerCurrent() && universitySessionLifetime.current(ticket);
   if (!current()) return null;
-  if (_isDemo()) {
-    return {
-      valid: true,
-      username: "demo_user",
-      display_name: "関学 太郎",
-      student_id: "12345678",
-      faculty: "理工学部",
-      department: "情報科学科",
-    };
-  }
-  const [initialStatus, states] = await Promise.all([
-    getKgcSessionSnapshot(),
-    getStoredSessionStates().catch(() => ({ kgc: false, luna: false, kwic: false })),
-  ]);
-  if (!current()) return null;
-  let status = initialStatus;
-  debugLog("[Selah] restoreAllSessions: stored KGC snapshot =", JSON.stringify(status));
-  debugLog("[Selah] restoreAllSessions: session states =", JSON.stringify(states));
-
-  // Restore only missing core services. KGC is never proactively renewed.
-  const secondaryTasks = [
-    { key: "luna" as const, hasSession: states.luna, validate: () => lunaCheckSession(), config: serviceRegistry.luna },
-    { key: "kwic" as const, hasSession: states.kwic, validate: () => kwicCheckSession(), config: serviceRegistry.kwic },
-  ];
-
-  // Validate secondary services that have disk cookies (fast, no WebView)
-  const secondaryValid: Record<string, boolean> = {};
-  await Promise.allSettled(secondaryTasks.map(async ({ key, hasSession, validate }) => {
-    if (hasSession) {
-      // A request error (including 429) is not proof that the session expired.
-      // The backend returns false only for a confirmed login redirect.
-      secondaryValid[key] = await validate().catch(() => true);
-    }
-  }));
-  if (!current()) return null;
-
-  // Collect services that need headless sync
-  const syncNeeded: string[] = [];
-  const hasSavedSession = states.kgc || states.luna || states.kwic
-    || !!(status.username || status.display_name || status.student_id);
-  for (const { key } of secondaryTasks) {
-    if (hasSavedSession && secondaryValid[key] !== true) syncNeeded.push(key);
-  }
-
-  if (syncNeeded.length > 0) {
-    debugLog(`[Selah] Disk sessions expired, syncing serially: ${syncNeeded.join(", ")}`);
-    // syncSession queues core-service SAML flows because they share the same IdP.
-    const results = await Promise.allSettled(syncNeeded.map(svc => syncSession(svc)));
-    if (!current()) return null;
-    for (let i = 0; i < syncNeeded.length; i++) {
-      const svc = syncNeeded[i];
-      const res = results[i];
-      const ok = res.status === "fulfilled" && res.value;
-      const config = serviceRegistry[svc];
-      secondaryValid[svc] = ok;
-      if (ok) config.onRecovered();
-      else config.onReset();
-    }
-  } else {
-    // All disk cookies were valid — mark secondary services
-    for (const { key, config } of secondaryTasks) {
-      if (secondaryValid[key]) config.onRecovered();
-    }
-  }
-
-  if (!status.valid) {
-    const coreReady = secondaryValid.luna === true && secondaryValid.kwic === true;
-    if (coreReady && !(status.username || status.display_name || status.student_id || states.kgc)) {
-      authState.set({
-        authenticated: true,
-        username: "",
-        displayName: "ユーザー",
-        studentId: "",
-        faculty: "",
-        department: "",
-        loading: false,
-        error: "",
-      });
-      try { localStorage.setItem(EVER_AUTH_KEY, "1"); } catch {}
-      sessionExpired.set(false);
-      debugLog("[Selah] restoreAllSessions: core services ready without KGC identity");
-      return status;
-    }
-    debugLog("[Selah] restoreAllSessions: no stored KGC identity; coreReady =", coreReady);
-    // KGC may naturally expire between uses. Keep the shell available whenever
-    // core services or cached identity prove this is a returning user.
-    if (status.username || status.display_name || status.student_id || states.kgc) {
-      if (status.username || status.display_name) {
-        setAuthFromSession(status);
-      } else {
-        // Edge case: disk session existed (states.kgc) but user info fields were empty.
-        // Set minimal auth so the dashboard with cached data is shown.
-        authState.set({
-          authenticated: true,
-          username: "",
-          displayName: "\u30e6\u30fc\u30b6\u30fc",
-          studentId: "",
-          faculty: "",
-          department: "",
-          loading: false,
-          error: "",
-        });
-        try { localStorage.setItem(EVER_AUTH_KEY, "1"); } catch {}
-      }
-      sessionExpired.set(!coreReady);
-      debugLog(
-        "[Selah] restoreAllSessions: showing cached Dashboard; coreReady =",
-        coreReady,
-      );
-      return status; // non-null: App.svelte will show Dashboard
-    }
-    debugLog("[Selah] restoreAllSessions: no disk session, returning null -> Login page");
-    return null;
-  }
+  if (_isDemo()) return { valid: true, username: "demo_user", display_name: "関学 太郎", student_id: "12345678", faculty: "理工学部", department: "情報科学科" };
+  const report = await invoke<RecoveryReport>("restore_university_sessions");
+  if (!current() || report.snapshot.signed_out) return null;
+  if (!applyRecoveryReport(report)) return null;
+  ticket = universitySessionLifetime.ticket();
+  const returningUser = report.identity || report.snapshot.services.some(service => service.credentials_present);
+  if (!returningUser) return null;
+  const status: SessionStatus = {
+    valid: report.snapshot.services.some(service => service.service === "kgc" && service.state === "valid"),
+    ...(report.identity ?? { username: "", display_name: "ユーザー", student_id: "", faculty: "", department: "" }),
+  };
+  // Showing the offline shell is separate from proving service authentication.
   setAuthFromSession(status);
-
-  // Restore mail session (OAuth token from disk)
   try {
     const mailStatus = await mailCheckSession();
     if (!current()) return null;
-    if (mailStatus.authenticated) {
-      mailAuthState.set({
-        authenticated: true,
-        email: mailStatus.email,
-        displayName: mailStatus.display_name,
-      });
-    }
-  } catch (e) {
-    if (current()) console.warn("[Selah] Mail session restore failed:", e);
-  }
-
+    mailAuthState.set({ authenticated: mailStatus.authenticated, email: mailStatus.email, displayName: mailStatus.display_name });
+  } catch (error) { if (current()) console.warn("[Selah] Mail session restore failed:", error); }
   return current() ? status : null;
 }
 
@@ -793,7 +602,7 @@ export async function lunaInvoke<T>(
         throw new Error(`[Demo] Unsupported Luna command: ${command}`);
     }
   }
-  return withSessionGuard(() => invoke<T>(command, args));
+  return withSessionGuard("luna", () => invoke<T>(command, args), /^luna_(fetch|check|get)_/.test(command));
 }
 
 /** Convenience wrapper for KWIC Portal invoke calls with session guard */
@@ -801,7 +610,7 @@ async function kwicInvoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  return withSessionGuard(() => invoke<T>(command, args));
+  return withSessionGuard("kwic", () => invoke<T>(command, args), /^kwic_(fetch|check|get)_/.test(command));
 }
 
 // ---------- KWIC Portal API ----------
@@ -876,14 +685,16 @@ export interface KwicCabinetReference {
   raw_html_debug?: string;
 }
 
-export async function lunaCheckSession(): Promise<boolean> {
-  if (_isDemo()) return true;
-  return invoke<boolean>("luna_check_session");
+export async function lunaCheckSession(): Promise<ServiceStatus> {
+  if (_isDemo()) return { service: "luna", state: "valid", credentials_present: true, last_verified_at: Date.now() / 1000, last_checked_at: Date.now() / 1000, last_attempt_at: null };
+  try { return await invoke<ServiceStatus>("luna_check_session"); }
+  finally { await refreshUniversityProjection(); }
 }
 
-export async function kwicCheckSession(): Promise<boolean> {
-  if (_isDemo()) return true;
-  return invoke<boolean>("kwic_check_session");
+export async function kwicCheckSession(): Promise<ServiceStatus> {
+  if (_isDemo()) return { service: "kwic", state: "valid", credentials_present: true, last_verified_at: Date.now() / 1000, last_checked_at: Date.now() / 1000, last_attempt_at: null };
+  try { return await invoke<ServiceStatus>("kwic_check_session"); }
+  finally { await refreshUniversityProjection(); }
 }
 
 export async function kwicFetchHome(): Promise<KwicPortalHome> {
@@ -1041,6 +852,8 @@ export async function openLunaTodoItem(item: LunaTodoItem): Promise<void> {
 // ---------- Microsoft 365 Mail API ----------
 
 interface MailSessionStatus {
+  generation?: number;
+  connection_id?: string | null;
   authenticated: boolean;
   email: string;
   display_name: string;
@@ -1084,7 +897,10 @@ interface MailProfile {
 
 export async function mailCheckSession(): Promise<MailSessionStatus> {
   if (_isDemo()) return { authenticated: true, email: "taro@kwansei.ac.jp", display_name: "\u95A2\u5B66 \u592A\u90CE" };
-  return invoke<MailSessionStatus>("mail_check_session");
+  const revision = mailRequestRevision;
+  const status = await invoke<MailSessionStatus>("mail_check_session");
+  if (revision !== mailRequestRevision) throw new Error("Mail connection changed");
+  return status;
 }
 
 export async function mailOpenLogin(): Promise<void> {
@@ -1094,7 +910,7 @@ export async function mailOpenLogin(): Promise<void> {
 
 export async function mailFetchProfile(): Promise<MailProfile> {
   if (_isDemo()) return { displayName: "\u95A2\u5B66 \u592A\u90CE", mail: "taro@kwansei.ac.jp", userPrincipalName: "taro@kwansei.ac.jp" };
-  return invoke<MailProfile>("mail_fetch_profile");
+  return withSessionGuard("mail", () => invoke<MailProfile>("mail_fetch_profile"));
 }
 
 export async function mailFetchInbox(top?: number, skip?: number): Promise<MailMessage[]> {
@@ -1105,7 +921,7 @@ export async function mailFetchInbox(top?: number, skip?: number): Promise<MailM
     const end = start + (top ?? 20);
     return all.slice(start, end);
   }
-  return withSessionGuard(() => invoke<MailMessage[]>("mail_fetch_inbox", { top: top ?? 20, skip: skip ?? 0 }));
+  return withSessionGuard("mail", () => invoke<MailMessage[]>("mail_fetch_inbox", { top: top ?? 20, skip: skip ?? 0 }));
 }
 
 export async function mailFetchMessage(messageId: string): Promise<MailDetail> {
@@ -1124,7 +940,7 @@ export async function mailFetchMessage(messageId: string): Promise<MailDetail> {
       ccRecipients: [],
     };
   }
-  return withSessionGuard(() => invoke<MailDetail>("mail_fetch_message", { messageId }));
+  return withSessionGuard("mail", () => invoke<MailDetail>("mail_fetch_message", { messageId }));
 }
 
 export async function mailFetchAttachments(messageId: string): Promise<MailAttachment[]> {
@@ -1132,12 +948,12 @@ export async function mailFetchAttachments(messageId: string): Promise<MailAttac
     const { demoMailAttachments } = await import("./demo");
     return demoMailAttachments(messageId);
   }
-  return withSessionGuard(() => invoke<MailAttachment[]>("mail_fetch_attachments", { messageId }));
+  return withSessionGuard("mail", () => invoke<MailAttachment[]>("mail_fetch_attachments", { messageId }));
 }
 
 export async function mailDownloadAttachment(messageId: string, attachmentId: string, fileName: string): Promise<string> {
   if (_isDemo()) return `/DemoDownloads/${fileName}`;
-  return withSessionGuard(() => invoke<string>("mail_download_attachment", { messageId, attachmentId, fileName }));
+  return withSessionGuard("mail", () => invoke<string>("mail_download_attachment", { messageId, attachmentId, fileName }));
 }
 
 // ============ Google Calendar ============
@@ -1147,6 +963,7 @@ interface GcalStatus {
   calendar_exists: boolean;
   synced_events: number;
   calendar_id: string;
+  auto_sync_ready?: boolean;
 }
 
 interface GcalSyncEntry {
@@ -1312,6 +1129,8 @@ function syncForegroundSessionStatus() {
 
 export async function openLoginWindow(): Promise<void> {
   if (_isDemo()) return;
+  universitySessionLifetime.retire();
+  backendSessionStatusRead.invalidate();
   await invoke("open_login_window");
 }
 
@@ -1345,6 +1164,7 @@ export async function logout(): Promise<void> {
   }
 
   stopBackgroundPolling();
+  universitySessionLifetime.retire();
   await invoke("logout");
   stopTrayStatus();
   sessionExpired.set(false);
@@ -1362,7 +1182,8 @@ async function getKgcSessionSnapshot(): Promise<SessionStatus> {
 }
 
 async function checkSession(): Promise<SessionStatus> {
-  return await invoke<SessionStatus>("check_session");
+  try { return await invoke<SessionStatus>("check_session"); }
+  finally { await refreshUniversityProjection(); }
 }
 
 export async function validateSession(): Promise<SessionStatus> {
@@ -1391,7 +1212,7 @@ export async function getScheduleSnapshot(): Promise<ScheduleResponse> {
 
 export async function syncScheduleData(): Promise<ScheduleResponse> {
   if (_isDemo()) return getScheduleSnapshot();
-  return withSessionGuard(() => invoke<ScheduleResponse>("sync_schedule_data"));
+  return withSessionGuard("luna", () => invoke<ScheduleResponse>("sync_schedule_data"));
 }
 
 export async function enrichSchedule(): Promise<void> {
@@ -1452,7 +1273,7 @@ export async function fetchGrades(): Promise<GradesData> {
     const { demoGrades } = await import("./demo");
     return demoGrades();
   }
-  return withSessionGuard(() => invoke<GradesData>("fetch_grades"));
+  return withSessionGuard("kgc", () => invoke<GradesData>("fetch_grades"));
 }
 
 export async function fetchCancellations(): Promise<CancellationsData> {
@@ -1460,7 +1281,7 @@ export async function fetchCancellations(): Promise<CancellationsData> {
     const { demoCancellations } = await import("./demo");
     return demoCancellations();
   }
-  return withSessionGuard(() => invoke<CancellationsData>("fetch_cancellations"));
+  return withSessionGuard("kgc", () => invoke<CancellationsData>("fetch_cancellations"));
 }
 
 export async function fetchMakeupClasses(): Promise<MakeupData> {
@@ -1468,7 +1289,7 @@ export async function fetchMakeupClasses(): Promise<MakeupData> {
     const { demoMakeup } = await import("./demo");
     return demoMakeup();
   }
-  return withSessionGuard(() => invoke<MakeupData>("fetch_makeup_classes"));
+  return withSessionGuard("kgc", () => invoke<MakeupData>("fetch_makeup_classes"));
 }
 
 export async function fetchRoomChanges(): Promise<RoomChangesData> {
@@ -1476,7 +1297,7 @@ export async function fetchRoomChanges(): Promise<RoomChangesData> {
     const { demoRoomChanges } = await import("./demo");
     return demoRoomChanges();
   }
-  return withSessionGuard(() => invoke<RoomChangesData>("fetch_room_changes"));
+  return withSessionGuard("kgc", () => invoke<RoomChangesData>("fetch_room_changes"));
 }
 
 export async function fetchRegistration(): Promise<RegistrationData> {
@@ -1484,7 +1305,7 @@ export async function fetchRegistration(): Promise<RegistrationData> {
     const { demoRegistration } = await import("./demo");
     return demoRegistration();
   }
-  return withSessionGuard(() => invoke<RegistrationData>("fetch_registration"));
+  return withSessionGuard("kgc", () => invoke<RegistrationData>("fetch_registration"));
 }
 
 export async function fetchExamTimetable(): Promise<ExamTimetableData> {
@@ -1492,7 +1313,7 @@ export async function fetchExamTimetable(): Promise<ExamTimetableData> {
     const { demoExams } = await import("./demo");
     return demoExams();
   }
-  return withSessionGuard(() => invoke<ExamTimetableData>("fetch_exam_timetable"));
+  return withSessionGuard("kgc", () => invoke<ExamTimetableData>("fetch_exam_timetable"));
 }
 
 export async function fetchNotifications(): Promise<NotificationsData> {
@@ -1500,7 +1321,7 @@ export async function fetchNotifications(): Promise<NotificationsData> {
     const { demoNotifications } = await import("./demo");
     return demoNotifications();
   }
-  return withSessionGuard(() => invoke<NotificationsData>("fetch_notifications"));
+  return withSessionGuard("kgc", () => invoke<NotificationsData>("fetch_notifications"));
 }
 
 export async function fetchPage(path: string): Promise<string> {
@@ -1508,7 +1329,7 @@ export async function fetchPage(path: string): Promise<string> {
     const { demoFetchPage } = await import("./demo");
     return demoFetchPage(path);
   }
-  return withSessionGuard(() => invoke<string>("fetch_page", { path }));
+  return withSessionGuard("kgc", () => invoke<string>("fetch_page", { path }));
 }
 
 export async function fetchStudentProfile(): Promise<StudentInfo> {
@@ -1516,7 +1337,7 @@ export async function fetchStudentProfile(): Promise<StudentInfo> {
     const { demoStudentProfile } = await import("./demo");
     return demoStudentProfile();
   }
-  return withSessionGuard(() => invoke<StudentInfo>("fetch_student_profile"));
+  return withSessionGuard("kgc", () => invoke<StudentInfo>("fetch_student_profile"));
 }
 
 export async function searchSyllabus(params: SyllabusSearchParams): Promise<SyllabusSearchResult> {
@@ -1524,7 +1345,7 @@ export async function searchSyllabus(params: SyllabusSearchParams): Promise<Syll
     const { demoSearchSyllabus } = await import("./demo");
     return demoSearchSyllabus(params);
   }
-  return withSessionGuard(() => invoke<SyllabusSearchResult>("search_syllabus", { params }));
+  return withSessionGuard("kgc", () => invoke<SyllabusSearchResult>("search_syllabus", { params }));
 }
 
 export async function fetchSyllabusFavorites(): Promise<SyllabusSearchResult> {
@@ -1532,7 +1353,7 @@ export async function fetchSyllabusFavorites(): Promise<SyllabusSearchResult> {
     const { demoSyllabusFavorites } = await import("./demo");
     return demoSyllabusFavorites();
   }
-  return withSessionGuard(() => invoke<SyllabusSearchResult>("fetch_syllabus_favorites"));
+  return withSessionGuard("kgc", () => invoke<SyllabusSearchResult>("fetch_syllabus_favorites"));
 }
 
 export async function toggleSyllabusBookmark(classCode: string): Promise<boolean> {
@@ -1547,12 +1368,12 @@ export async function toggleSyllabusBookmark(classCode: string): Promise<boolean
     } catch {}
     return next;
   }
-  return withSessionGuard(() => invoke<boolean>("toggle_syllabus_bookmark", { classCode }));
+  return withSessionGuard("kgc", () => invoke<boolean>("toggle_syllabus_bookmark", { classCode }), false);
 }
 
 export async function openSyllabusDetail(classCode: string, courseName: string): Promise<void> {
   if (_isDemo()) return;
-  return withSessionGuard(() => invoke<void>("open_syllabus_detail", { classCode, courseName }));
+  return withSessionGuard("kgc", () => invoke<void>("open_syllabus_detail", { classCode, courseName }), false);
 }
 
 // ---------- AI API ----------
@@ -2021,7 +1842,13 @@ const backgroundRefresh = new BackgroundRefresh({
   visible: () => document.visibilityState === "visible",
   subscribe: callback => {
     document.addEventListener("visibilitychange", callback);
-    return () => document.removeEventListener("visibilitychange", callback);
+    window.addEventListener("online", callback);
+    window.addEventListener("focus", callback);
+    return () => {
+      document.removeEventListener("visibilitychange", callback);
+      window.removeEventListener("online", callback);
+      window.removeEventListener("focus", callback);
+    };
   },
   hydrate: hydrateBackgroundStatuses,
   catchUp: handlePollVisibility,

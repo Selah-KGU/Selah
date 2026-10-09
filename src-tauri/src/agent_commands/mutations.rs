@@ -99,8 +99,9 @@ pub(super) fn admit(kind: Kind, invoke: Invoke) -> bool {
     let app: AppHandle = invoke.message.webview_ref().app_handle().clone();
     // The job is queued synchronously before the completion future is polled.
     // Reads and model workers are independent of this small mutation lane.
+    let db = app.state::<Database>().scope();
     let completion = QUEUE.submit(move || {
-        apply(&app.state::<Database>(), mutation, |name, id| {
+        apply(&db, mutation, |name, id| {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if name == "agent-conversation-deleted" {
                 crate::native_agent_events::conversation_deleted(&app, id);

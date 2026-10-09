@@ -41,7 +41,7 @@ pub fn start_ai_refresh_loop(app: &AppHandle) {
 
 #[tauri::command]
 pub async fn get_backend_ai_refresh_status(
-    db: State<'_, Database>,
+    db: crate::db::AccountDb,
     state: State<'_, AiRefreshState>,
 ) -> Result<AiRefreshStatus, String> {
     let mut status = load_status(&db);
@@ -61,7 +61,7 @@ pub async fn backend_ai_refresh_now(
 
 async fn run_due_ai_refresh(app: &AppHandle) -> Result<(), String> {
     let config = ai::load_ai_config();
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let mut status = load_status(&db);
     status.interval_minutes = config.ai_refresh_interval;
 
@@ -105,16 +105,29 @@ async fn run_ai_refresh(
     request: AiRefreshRequest,
     trigger: &str,
 ) -> Result<AiRefreshStatus, String> {
+    crate::db::account_work(
+        crate::db::capture_account(),
+        run_ai_refresh_inner(app, force, request, trigger),
+    )
+    .await
+}
+
+async fn run_ai_refresh_inner(
+    app: &AppHandle,
+    force: bool,
+    request: AiRefreshRequest,
+    trigger: &str,
+) -> Result<AiRefreshStatus, String> {
     let state = app.state::<AiRefreshState>();
     if state.running.swap(true, Ordering::SeqCst) {
-        let db = app.state::<Database>();
+        let db = app.state::<Database>().scope();
         let mut status = load_status(&db);
         status.running = true;
         status.interval_minutes = ai::load_ai_config().ai_refresh_interval;
         return Ok(status);
     }
 
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let config = ai::load_ai_config();
     let mut status = load_status(&db);
     let record_scheduler_status = request.is_all();

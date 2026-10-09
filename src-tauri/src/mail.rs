@@ -1,15 +1,19 @@
 #[path = "mail/auth.rs"]
 mod auth;
+#[path = "mail/cache.rs"]
+pub(crate) mod cache;
 #[path = "mail/config.rs"]
 mod config;
 #[path = "mail/graph.rs"]
 mod graph;
 #[path = "mail/messages.rs"]
 mod messages;
+#[path = "mail/oauth.rs"]
+pub(crate) mod oauth;
 #[path = "mail/types.rs"]
 mod types;
 
-use reqwest::Client;
+use crate::oauth_http::Http;
 
 #[allow(unused_imports)]
 pub use config::{load_config, save_config, MailConfig};
@@ -23,7 +27,10 @@ pub use types::{
 };
 
 pub struct MailClient {
-    http: Client,
+    http: Http,
+    pub(crate) lifecycle: crate::oauth_lifecycle::Lifecycle,
+    new_login: bool,
+    logout_requested: bool,
     pub token: Option<TokenData>,
     pub config: MailConfig,
 }

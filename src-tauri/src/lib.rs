@@ -29,6 +29,7 @@ mod computer_control;
 pub(crate) mod config;
 mod cookie_bridge;
 mod course_automation;
+mod data_reset;
 mod db;
 mod detective;
 mod document_tabs;
@@ -70,17 +71,21 @@ mod native_agent_state;
 mod native_agent_submission;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native_capture;
+mod native_notification;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod native_shortcut;
-mod native_notification;
 mod notifier;
 #[cfg(any(target_os = "windows", all(target_os = "macos", test)))]
 mod owned_ui_jobs;
 mod paper_check;
 mod parser;
+mod paths;
 mod pending_persistence;
 mod power;
 mod read_state;
+mod secret_recovery;
+mod session_coordinator;
+mod session_persistence;
 mod stt;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod subtitle_events;
@@ -123,3 +128,6 @@ pub(crate) fn should_dump_debug_html() -> bool {
 #[cfg(test)]
 #[path = "frontend_cache/legacy_commands.rs"]
 mod cache_reply_legacy;
+
+mod oauth_http;
+mod oauth_lifecycle;

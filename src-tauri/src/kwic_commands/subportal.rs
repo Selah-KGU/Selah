@@ -9,7 +9,7 @@ use crate::KwicState;
 #[tauri::command]
 pub async fn kwic_fetch_subportal(
     state: State<'_, KwicState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     tag_cd: String,
 ) -> Result<KwicSubportalData, String> {
     if !tag_cd.chars().all(|c| c.is_ascii_digit()) {
@@ -65,7 +65,7 @@ pub async fn kwic_fetch_subportal(
 #[tauri::command]
 pub async fn kwic_fetch_cabinet_reference(
     state: State<'_, KwicState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<KwicCabinetReference, String> {
     let cache_key = "kwic_cabinet_reference";
     match kwic_http(&state).await {

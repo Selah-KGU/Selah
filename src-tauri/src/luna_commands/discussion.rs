@@ -6,7 +6,7 @@ use super::*;
 #[tauri::command]
 pub async fn luna_fetch_discussion_detail(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
     if url.starts_with("http") || !url.starts_with('/') {
@@ -297,7 +297,7 @@ pub async fn luna_reply_discussion(
 #[tauri::command]
 pub async fn luna_fetch_thread_posts(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     url: String,
 ) -> Result<luna_parser::LunaDiscussionThread, String> {
     if url.starts_with("http") || !url.starts_with('/') {

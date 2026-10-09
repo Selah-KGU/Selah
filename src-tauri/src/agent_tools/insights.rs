@@ -43,7 +43,7 @@ fn wmo_description(code: i32) -> &'static str {
 }
 
 pub(super) async fn get_weekly_summary(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (cache, _ts) = db
         .get_ai_schedule_cache()?
         .ok_or_else(|| "週間サマリーがまだ生成されていません".to_string())?;
@@ -70,7 +70,7 @@ pub(super) async fn get_weekly_summary(app: &tauri::AppHandle) -> Result<Value, 
 }
 
 pub(super) async fn get_todo_guide(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (json_str, ts) = db.get_data_cache("ai_todo_analysis")?.ok_or_else(|| {
         "課題ガイドがまだ生成されていません。ホーム画面で課題一覧を取得してください。".to_string()
     })?;
@@ -85,7 +85,7 @@ pub(super) async fn get_todo_guide(app: &tauri::AppHandle) -> Result<Value, Stri
 }
 
 pub(super) async fn get_upcoming_deadlines(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let acts = db.get_all_luna_activities().unwrap_or_default();
     let luna_courses = db.get_luna_courses().unwrap_or_default();
     let now = chrono::Local::now();
@@ -147,7 +147,7 @@ pub(super) async fn get_upcoming_deadlines(app: &tauri::AppHandle) -> Result<Val
 }
 
 pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let now = chrono::Local::now();
     use chrono::Datelike;
     let dow = now.weekday().number_from_monday() as i32;
@@ -272,7 +272,7 @@ pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, Str
 pub(super) async fn refresh_data(app: &tauri::AppHandle) -> Result<Value, String> {
     let started = std::time::Instant::now();
     let luna_state = app.state::<crate::LunaState>();
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let updated = crate::timetable::refresh_luna_counts_internal(&luna_state, &db, true)
         .await
         .map_err(|e| format!("データ更新失敗: {}", e))?;
@@ -297,7 +297,7 @@ pub(super) async fn get_luna_activity_detail(
         .and_then(|v| v.as_str())
         .map(|s| s.trim());
 
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let acts = db.get_all_luna_activities().unwrap_or_default();
     if acts.is_empty() {
         return Err("Luna活動データがまだ同期されていません".into());
@@ -397,7 +397,7 @@ pub(super) async fn get_luna_activity_detail(
 async fn fetch_and_parse_detail(
     app: &tauri::AppHandle,
     row: &crate::db::LunaActivityRow,
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
 ) -> Result<Value, String> {
     let luna_courses = db.get_luna_courses().unwrap_or_default();
     let course_name = luna_courses

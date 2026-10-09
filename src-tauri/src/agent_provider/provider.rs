@@ -24,6 +24,8 @@ impl AgentProvider {
     /// Resolve the correct provider from the user's current AiConfig.
     pub fn resolve() -> Result<Self, AgentError> {
         let cfg = crate::ai::load_ai_config();
+        cfg.ensure_credentials_readable()
+            .map_err(AgentError::config)?;
         if !cfg.ai_enabled {
             return Err(AgentError::config(
                 "AI機能が無効になっています。設定画面で有効にしてください。",

@@ -6,7 +6,10 @@ import { loadLogin } from './load-login.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const aiStatus = (running = false, last_run = 42) => ({ running, last_run, last_ok: true, interval_minutes: 5 });
-const sessionStatus = (name = 'current') => ({ luna_authenticated: true, kwic_authenticated: false, session_expired: true,
+const sessionStatus = (name = 'current') => ({ generation: 0, signed_out: false, university: { generation: 0, revision: 1, signed_out: false, services: [
+  { service: 'luna', state: 'valid', credentials_present: true, last_verified_at: 1 },
+  { service: 'kwic', state: 'needs_login', credentials_present: false, last_verified_at: null },
+]}, luna_authenticated: true, kwic_authenticated: false, session_expired: true,
   mail_authenticated: true, mail_email: 'example@test.invalid', mail_display_name: name, kgc_session_present: true,
   username: name, display_name: name, student_id: '1', faculty: 'F', department: 'D' });
 function complete(request, ts = 42) {
@@ -151,7 +154,7 @@ test('session push wins over a pending foreground snapshot, including full ident
   h.callbacks.get('backend-session-status')({payload:sessionStatus('pushed')});
   h.requests[0].resolve(sessionStatus('obsolete')); await old;
   assert.deepEqual(h.state.identity,{username:'pushed',display_name:'pushed',student_id:'1',faculty:'F',department:'D'});
-  assert.deepEqual(h.state.session.mail,{authenticated:true,email:'example@test.invalid',displayName:'pushed'});
+  assert.deepEqual(h.state.session.mail,{authenticated:true,email:'example@test.invalid',displayName:'pushed',connectionId:null});
   assert.deepEqual(h.state.session.kwic,{authenticated:false});
   assert.equal(h.state.session.expired,true);
 });
@@ -412,4 +415,26 @@ test('demo task status reads remain local and preserve the synthetic schedule ti
   assert.equal(h.state.updates.length,14);
   assert.ok(h.state.updates.every(([key,value]) => key === 'schedule_data'
     ? value.lastRunTs === 100000000 && value.lastOk === true : value.lastRunTs === null && value.lastOk === null));
+});
+
+
+test('old native generation cannot overwrite pushed session status', async () => {
+  const h = await loadBackgroundRefresh();
+  h.universitySessionLifetime.accept(2);
+  h.callbacks.get('backend-session-status')({payload:{generation:2,luna_authenticated:true,kwic_authenticated:true,session_expired:false}});
+  const before = structuredClone(h.state.session);
+  const updates = h.state.updates.length;
+  h.callbacks.get('backend-session-status')({payload:{generation:1,luna_authenticated:false,kwic_authenticated:false,session_expired:true}});
+  assert.deepEqual(h.state.session, before);
+  assert.equal(h.state.updates.length, updates);
+});
+
+test('connectivity and focus catch-up share the session cooldown and release listeners on stop', async () => {
+  const h = await loadBackgroundRefresh();
+  h.startBackgroundPolling();
+  h.window.emit('online'); h.window.emit('focus');
+  await tick();
+  assert.equal(h.requests.filter(r => r.name === 'backend_sync_session_status_now').length, 1);
+  h.stopBackgroundPolling();
+  assert.equal(h.window.listeners.size, 0);
 });

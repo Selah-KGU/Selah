@@ -1,6 +1,9 @@
+import { universitySessionLifetime } from "./sessionLifetime";
 import { ResourceScope, acquireResourceGroup, type Cleanup } from "./resourceScope";
 
 export interface UniversityIdentity {
+  generation?: number;
+  persistence_pending?: boolean;
   username: string;
   display_name: string;
   student_id: string;
@@ -9,6 +12,7 @@ export interface UniversityIdentity {
 }
 
 export interface UniversityLoginComplete {
+  generation?: number;
   luna_authenticated: boolean;
   kwic_authenticated: boolean;
 }
@@ -41,6 +45,7 @@ export function waitForVisibleLogin(deps: VisibleLoginDependencies): Promise<Uni
     async function initialize() {
       await acquireResourceGroup(resources, [
         group => deps.listen<UniversityIdentity>("login-success", group.guard(event => {
+          if (event.payload.generation !== undefined && !universitySessionLifetime.accept(event.payload.generation)) return;
           try {
             deps.onIdentity(event.payload);
           } catch (error) {
@@ -48,6 +53,7 @@ export function waitForVisibleLogin(deps: VisibleLoginDependencies): Promise<Uni
           }
         })),
         group => deps.listen<UniversityLoginComplete>("university-login-complete", group.guard(event => {
+          if (event.payload.generation !== undefined && !universitySessionLifetime.accept(event.payload.generation)) return;
           finish({ value: event.payload });
         })),
         group => deps.listen<string>("login-error", group.guard(() => {

@@ -9,7 +9,7 @@ use super::{is_safe_param, luna_get, luna_http};
 #[tauri::command]
 pub async fn luna_fetch_course_detail(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     idnumber: String,
 ) -> Result<luna_parser::LunaCourseContents, String> {
     if !is_safe_param(&idnumber) {

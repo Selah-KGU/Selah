@@ -3,7 +3,7 @@ use crate::config;
 use crate::db::{Database, SnapshotState};
 use crate::luna_client;
 use crate::luna_parser;
-use crate::{KgcState, LunaState};
+use crate::LunaState;
 
 pub(super) struct LunaSnapshotFields {
     pub(super) communities: Vec<luna_parser::LunaCommunity>,
@@ -33,9 +33,9 @@ pub(super) async fn sync_luna_timetable(
     previous: &SnapshotState,
 ) -> Result<LunaSnapshotFields, String> {
     let http = {
-        let luna = luna_state.client.lock().await;
-        if luna.authenticated {
-            Some(luna.http.clone())
+        let luna = luna_state.session();
+        if luna.has_credentials() {
+            Some(luna.http().clone())
         } else {
             None
         }
@@ -263,9 +263,16 @@ pub(super) fn is_luna_auth_error(error: &str) -> bool {
     error == luna_client::LUNA_SESSION_EXPIRED_MSG || error.contains("Lunaセッションが期限切れ")
 }
 
-pub(super) async fn clear_kgc_if_expired(kgc: &KgcState, error: &str) {
+pub(super) async fn clear_kgc_if_expired(
+    lease: &crate::session_coordinator::SessionLease,
+    error: &str,
+) {
     if error == client::SESSION_EXPIRED_MSG {
-        kgc.client.lock().await.clear_session();
+        let _ = crate::session_coordinator::SESSIONS.validated(
+            lease,
+            crate::session_coordinator::Health::NeedsLogin,
+            None,
+        );
         log::info!("KGC session expired during schedule sync; stopped background KGC requests");
     }
 }

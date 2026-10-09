@@ -31,7 +31,9 @@ pub fn start_course_automation_loop(app: &AppHandle) {
                 let job_app = dispatch_app.clone();
                 tauri::async_runtime::spawn(async move {
                     let _permit = permit;
-                    let result = process_job(&job_app, &job).await;
+                    let result =
+                        crate::db::account_work(job.account.clone(), process_job(&job_app, &job))
+                            .await;
                     if let Some(tx) = job.respond {
                         let _ = tx.send(result);
                     } else if let Err(error) = result {
@@ -67,7 +69,7 @@ pub fn start_course_automation_loop(app: &AppHandle) {
 /// Clears any persisted `running` flag at startup. A run can only be active
 /// after this point via the live queue, so a stored `true` is always stale.
 fn reset_stale_running_flags(app: &AppHandle) {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let Ok(rows) = db.list_data_cache_prefix(STATUS_PREFIX) else {
         return;
     };
@@ -93,7 +95,7 @@ async fn run_due_courses(app: &AppHandle) -> Result<(), String> {
     if !luna_is_authenticated(app).await {
         return Ok(());
     }
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let configs = db.list_data_cache_prefix(CONFIG_PREFIX)?;
     let now = epoch_secs();
     for (_, raw, _) in configs {
@@ -109,6 +111,7 @@ async fn run_due_courses(app: &AppHandle) -> Result<(), String> {
         }
         // Hand the due course to the unified queue; the worker logs failures.
         let _ = app.state::<CourseAutomationState>().job_tx.send(Job {
+            account: crate::db::capture_account(),
             luna_id: config.luna_id,
             course_name: config.course_name,
             trigger: "scheduled".to_string(),
@@ -121,11 +124,13 @@ async fn run_due_courses(app: &AppHandle) -> Result<(), String> {
 
 pub(super) fn schedule_deferred_delta_followup(app: &AppHandle, luna_id: &str, course_name: &str) {
     let app = app.clone();
+    let account = crate::db::capture_account();
     let luna_id = luna_id.to_string();
     let course_name = course_name.to_string();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(DEFERRED_DELTA_FOLLOWUP_SECS)).await;
         let job = Job {
+            account,
             luna_id,
             course_name,
             trigger: "deferred".into(),
@@ -168,11 +173,7 @@ pub(super) fn is_automatic_trigger(trigger: &str) -> bool {
 /// user is logged in to Luna. Automatic cycles are skipped entirely when logged
 /// out; manual jobs are left to fail loudly if the session is gone.
 pub(super) async fn luna_is_authenticated(app: &AppHandle) -> bool {
-    app.state::<crate::LunaState>()
-        .client
-        .lock()
-        .await
-        .authenticated
+    app.state::<crate::LunaState>().session().has_credentials()
 }
 
 pub(super) fn should_skip_automatic_cycle(

@@ -20,21 +20,33 @@ export async function loadBackgroundRefresh() {
     return handler;
   }).join('\n');
   const result = await build({ stdin: { loader: 'ts', resolveDir: process.cwd(), contents: `
+    import { projectUniversitySession } from "/Users/hitomi/GitHub/Selah/src/lib/universitySession.ts";
+    import { universitySessionLifetime } from ${JSON.stringify(resolve("src/lib/sessionLifetime.ts"))};
     import { BackgroundRefresh } from ${JSON.stringify(resolve('src/lib/backgroundRefresh.ts'))};
     import { CoalescedStatusRead } from ${JSON.stringify(resolve('src/lib/coalescedStatusRead.ts'))};
     import { BackendTaskStatusReader } from ${JSON.stringify(resolve('src/lib/backendTaskStatus.ts'))};
     import { configure, calls, requests, callbacks, state, warnings, document, localStorage, listen, invoke,
       _isDemo, getScheduleSnapshot, syncBackendManagedKeys, BACKEND_CACHE_DB_KEY, registerTask, updateTask,
       updateTaskInterval, aiRefreshing, lunaAuthState, kwicAuthState, sessionExpired, mailAuthState,
-      setAuthFromSession } from 'test-background-boundaries';
+      universityLoginPersistencePending, setAuthFromSession } from 'test-background-boundaries';
+    const window = {
+      listeners: new Map(),
+      addEventListener(name, callback) { this.listeners.set(name, callback); },
+      removeEventListener(name, callback) { if(this.listeners.get(name) === callback) this.listeners.delete(name); },
+      emit(name) { this.listeners.get(name)?.(); }
+    };
+    let mailRequestRevision = 0, mailGeneration = -1, mailConnection = null;
+    const invalidateCache = () => {}, replaceCacheEntry = () => {};
+    const requestedMailMessageId = { set() {} };
+    ${['clearMailProjection', 'applyMailStatus'].map(fn).join('\n')}
     ${owners}
-    ${['applyBackendAiRefreshStatus', 'applyBackendSessionStatus', 'getBackendAiRefreshStatus', 'backendAiRefreshNow',
+    ${['applyBackendAiRefreshStatus', 'applyBackendSessionStatus', 'applyUniversitySnapshot', 'getBackendAiRefreshStatus', 'backendAiRefreshNow',
       'refreshBackendAiTaskStatus', 'getDataCacheUpdatedAt', 'refreshVisibleBackendCaches',
       'syncBackendSessionStatusNow', 'syncForegroundSessionStatus'].map(fn).join('\n')}
     ${sessionCooldown}
     const TASK_LABELS:${background}
     ${events}
-    export { configure, calls, requests, callbacks, state, warnings, document, syncBackendSessionStatusNow };
+    export { configure, calls, requests, callbacks, state, warnings, document, window, universitySessionLifetime, syncBackendSessionStatusNow };
   ` }, bundle: true, write: false, platform: 'node', format: 'esm',
     define: { 'console.warn': 'backgroundWarning', 'Date.now': 'foregroundNow' }, inject: ['test-background-console'],
     plugins: [{ name: 'background-boundaries', setup(plugin) {
@@ -75,6 +87,7 @@ export async function loadBackgroundRefresh() {
           export const aiRefreshing = { set(value) { state.ai = value; config.ai?.(value); } };
           const store = key => ({set(value) {state.session[key] = value;}});
           export const lunaAuthState = store('luna'), kwicAuthState = store('kwic'), sessionExpired = store('expired'), mailAuthState = store('mail');
+          export const universityLoginPersistencePending = store('persistencePending');
           export const setAuthFromSession = value => { state.identity = value; };
         ` }));
     } }],

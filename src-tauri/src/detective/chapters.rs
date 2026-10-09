@@ -17,7 +17,7 @@ use std::collections::HashSet;
 /// chapter reports whether it has been generated and/or played. New lectures
 /// surface here automatically as fresh (ungenerated) chapters.
 pub(super) fn detective_get_chapters(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
 ) -> Result<Vec<DetectiveChapterInfo>, String> {
     let context = build_context(&db)?;
@@ -110,7 +110,7 @@ pub(super) fn detective_get_chapters(
 /// case is set inside the course's campaign world. Cached after first build so
 /// replays are instant; pass `force: true` to regenerate from scratch.
 pub(super) async fn detective_generate_chapter(
-    db: tauri::State<'_, Database>,
+    db: crate::db::AccountDb,
     course_key: String,
     live_id: String,
     force: Option<bool>,

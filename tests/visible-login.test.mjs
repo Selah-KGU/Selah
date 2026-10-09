@@ -123,3 +123,17 @@ test('demo re-login retains its result and expiry reset without native subscript
   assert.deepEqual(await h.initiateRelogin(), complete); assert.equal(h.state.expired, false);
   assert.equal(h.listeners.length, 0); assert.deepEqual(h.calls, [['expired',false]]);
 });
+
+
+test('older native login notifications cannot overwrite a new identity or complete its attempt', async () => {
+  const h = await loadVisibleLogin();
+  const run = h.initiateRelogin(); await flush();
+  emit(h, 'login-success', { username: 'new', generation: 2 });
+  emit(h, 'login-success', { username: 'old', generation: 1 });
+  emit(h, 'university-login-complete', { ...complete, generation: 1 });
+  await flush();
+  assert.equal(h.state.identity.username, 'new');
+  assert.equal(h.state.running, true);
+  emit(h, 'university-login-complete', { ...complete, generation: 2 });
+  assert.equal((await run).generation, 2);
+});

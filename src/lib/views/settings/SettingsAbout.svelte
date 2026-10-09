@@ -55,7 +55,8 @@
   async function logoutAndReturn() {
     try {
       await logout();
-      location.reload();
+      // Native state, open DB handles and retired secret writers need a fresh process.
+      await invoke("request_app_restart");
     } catch (e) {
       console.error("logout failed:", e);
     }
@@ -102,7 +103,8 @@
     try {
       await invoke("delete_all_local_data");
       try { localStorage.clear(); } catch { /* noop */ }
-      location.reload();
+      // Native state, open DB handles and retired secret writers need a fresh process.
+      await invoke("request_app_restart");
     } catch (e) {
       deleteErr = "データの削除に失敗しました: " + String(e);
     }
@@ -262,14 +264,14 @@
       <span style="color:var(--red);font-weight:500;">すべてのローカルデータを削除</span>
     </div>
     <div class="delete-warn">
-      データベース、設定、Cookie、キーチェーンの秘密情報など、アプリが保存したすべてのデータを完全に削除します。この操作は取り消せません。
+      データベース、設定、Cookie、キーチェーンの秘密情報など、アプリが保存したすべてのデータを完全に削除します。削除後にアプリを再起動します。この操作は取り消せません。
     </div>
   </div>
 {:else}
   <div class="card delete-confirm" style="margin-top:10px;padding:12px;">
     <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:6px;">本当に削除しますか？</div>
     <div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;line-height:1.4;">
-      すべてのローカルデータ（データベース、設定ファイル、Cookie、キーチェーンの秘密情報など）が完全に削除されます。この操作は取り消せません。
+      すべてのローカルデータ（データベース、設定ファイル、Cookie、キーチェーンの秘密情報など）が完全に削除されます。削除後にアプリを再起動します。この操作は取り消せません。
     </div>
     {#if deleteErr}
       <div style="font-size:11px;color:var(--red);margin-bottom:8px;">{deleteErr}</div>

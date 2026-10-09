@@ -1,31 +1,31 @@
 use super::*;
 
 impl Database {
+    /// Unscoped database for explicit local stores and isolated tests.
     pub fn open(data_dir: &PathBuf) -> Result<Self, String> {
-        std::fs::create_dir_all(data_dir)
-            .map_err(|e| format!("Failed to create data dir: {}", e))?;
-        let db_path = data_dir.join("courses.db");
-        let conn = Connection::open(&db_path).map_err(|e| format!("Failed to open DB: {}", e))?;
-        // WAL mode: allows concurrent reads while writing, reduces lock contention.
-        // mmap_size enables memory-mapped reads (32 MB) which avoids syscall overhead
-        // for hot pages; temp_store=MEMORY keeps temp tables off disk during queries.
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;\
-             PRAGMA synchronous=NORMAL;\
-             PRAGMA temp_store=MEMORY;\
-             PRAGMA mmap_size=33554432;",
-        )
-        .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
-        db.init_tables()?;
-        Ok(db)
+        Ok(Self {
+            conn: super::account::AccountConnection::local(data_dir.clone())?,
+        })
     }
 
-    fn init_tables(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+    /// Application business data is partitioned by university account. Legacy
+    /// unowned courses.db remains on disk; it is never assigned to a new login.
+    pub fn open_accounts(data_dir: &PathBuf) -> Result<Self, String> {
+        Ok(Self {
+            conn: super::account::AccountConnection::accounts(data_dir.clone())?,
+        })
+    }
 
+    pub(super) fn open_connection(data_dir: &std::path::Path) -> Result<Connection, String> {
+        std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+        let conn = Connection::open(data_dir.join("courses.db")).map_err(|e| e.to_string())?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA mmap_size=33554432;")
+            .map_err(|e| e.to_string())?;
+        Self::init_connection(&conn)?;
+        Ok(conn)
+    }
+
+    fn init_connection(conn: &Connection) -> Result<(), String> {
         // Migration: refresh the schedule-derived tables and keep generic
         // data_cache intact. data_cache now contains durable user/app state
         // (SenseA memory, generated todos, preferences) that cannot be safely

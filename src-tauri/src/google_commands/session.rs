@@ -9,8 +9,11 @@ pub async fn gcal_check_session(state: State<'_, GCalState>) -> Result<GoogleCal
 }
 
 #[tauri::command]
-pub async fn gcal_get_config(state: State<'_, GCalState>) -> Result<GoogleCalConfig, String> {
+pub async fn gcal_get_config(
+    state: State<'_, GCalState>,
+) -> Result<GoogleCalConfig, crate::keychain::StoreError> {
     let gcal = state.client.lock().await;
+    gcal.ensure_config()?;
     Ok(gcal.config.clone())
 }
 
@@ -19,19 +22,26 @@ pub async fn gcal_save_config(
     state: State<'_, GCalState>,
     config: GoogleCalConfig,
 ) -> Result<(), String> {
+    state.cancellation.cancel();
     let mut gcal = state.client.lock().await;
-    // Empty fields mean "use built-in default" — persist the user's choice
-    // (empty on disk) but keep the resolved defaults in memory so OAuth works
-    // immediately without a restart.
+    gcal.cancel_requests();
+    let next = crate::google_calendar::resolve_with_defaults(config.clone());
+    // Retire credentials before committing a different OAuth client. A failed
+    // save may leave the old configuration, but never a new client with old tokens.
+    if next.client_id != gcal.config.client_id || next.client_secret != gcal.config.client_secret {
+        gcal.disconnect()?;
+    }
     crate::google_calendar::save_config(&config)?;
-    gcal.config = crate::google_calendar::resolve_with_defaults(config);
+    gcal.config = next;
+    gcal.config_error = None;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn gcal_disconnect(state: State<'_, GCalState>) -> Result<(), String> {
+    state.cancellation.cancel();
     let mut gcal = state.client.lock().await;
-    gcal.disconnect();
+    gcal.disconnect()?;
     log::info!("Google Calendar disconnected");
     Ok(())
 }

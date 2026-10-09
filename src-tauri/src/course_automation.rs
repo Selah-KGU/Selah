@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 mod artifacts;
 mod commands;
@@ -93,6 +93,7 @@ enum JobKind {
 }
 
 struct Job {
+    account: crate::db::AccountContext,
     luna_id: String,
     course_name: String,
     trigger: String,

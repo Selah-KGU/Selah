@@ -128,7 +128,9 @@ fn save_attempt(
     attempt: storage::VoiceAttempt,
 ) -> Result<crate::agent::SavedVoiceInput, String> {
     attempt.persist_with(|input, retry| {
-        let db = app.state::<crate::db::Database>();
+        let db = app
+            .state::<crate::db::Database>()
+            .scope_for(input.account.clone());
         if retry {
             crate::agent::retry_voice_input(&db, input.conversation_id.clone(), input.text.clone())
         } else {

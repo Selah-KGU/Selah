@@ -94,7 +94,10 @@ fn apply<'a>(
             // Decode both arguments before checking the reserved namespace,
             // just as the generated command wrapper did. Borrow large strings.
             let json = argument("json")?;
-            if key.starts_with("seen_notifs_") {
+            if key.starts_with("seen_notifs_")
+                || key.starts_with("mail_")
+                || key.starts_with("mail-connection/")
+            {
                 return Err("reserved cache key".into());
             }
             db.save_data_cache(key, json)?;
@@ -133,6 +136,7 @@ fn handler<R: Runtime>(
             return other(invoke);
         };
         let app = invoke.message.webview_ref().app_handle().clone();
+        let db = app.state::<Database>().scope();
         let message = invoke.message;
         let acl = invoke.acl;
         // Submit before polling the response. Later cache reads see prior
@@ -146,7 +150,7 @@ fn handler<R: Runtime>(
                 acl: &acl,
             };
             Ok(apply(
-                &app.state::<Database>(),
+                &db,
                 kind,
                 |key| CacheArgument::from_command(item(key)).map(|argument| argument.0),
                 || Vec::<CacheArgument>::from_command(item("ids")),

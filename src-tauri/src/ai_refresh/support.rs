@@ -38,6 +38,9 @@ pub(in crate::ai_refresh) fn fresh_course_names(db: &Database) -> Result<String,
         .join("、"))
 }
 pub(in crate::ai_refresh) fn ai_unavailable_reason(config: &AiConfig) -> Option<String> {
+    if let Err(error) = config.ensure_credentials_readable() {
+        return Some(error);
+    }
     if !config.ai_enabled {
         return Some("AI機能が無効です".to_string());
     }

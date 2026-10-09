@@ -7,7 +7,7 @@ use super::{luna_get, luna_http};
 /// Fetch a Luna page, parse it, and cache with fallback.
 pub(super) async fn luna_fetch_cached<T: serde::Serialize + serde::de::DeserializeOwned>(
     state: &State<'_, LunaState>,
-    db: &State<'_, crate::db::Database>,
+    db: &crate::db::AccountDb,
     path: &str,
     cache_key: &str,
     parse: fn(&str) -> T,

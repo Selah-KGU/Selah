@@ -98,7 +98,9 @@ fn submit(
     // Queue submission is synchronous; IO and ownership conversion are not.
     queue.submit(move || match decode()? {
         Request::Read => {
-            crate::background_ipc::json_response("AI設定の変換に失敗しました", &load())
+            let config = load();
+            config.ensure_credentials_readable()?;
+            crate::background_ipc::json_response("AI設定の変換に失敗しました", &config)
                 .map(Prepared::Reply)
         }
         Request::Save(config) => {

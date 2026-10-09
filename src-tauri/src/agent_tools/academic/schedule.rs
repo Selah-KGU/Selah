@@ -3,7 +3,7 @@ use super::*;
 // ── Schedule tools ──
 
 pub async fn list_today_classes(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (week, dow) = current_week_and_dow(&db)?;
     let classes = collect_classes(&db, &week, Some(dow))?;
     Ok(json!({
@@ -14,7 +14,7 @@ pub async fn list_today_classes(app: &tauri::AppHandle) -> Result<Value, String>
 }
 
 pub async fn list_week_classes(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let offset = args.get("offset").and_then(|v| v.as_i64()).unwrap_or(0);
     let snap = db
         .get_snapshot_state()?

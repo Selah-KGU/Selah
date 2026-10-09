@@ -9,11 +9,15 @@ use crate::KwicState;
 pub(in crate::kwic_commands) async fn kwic_http(
     state: &KwicState,
 ) -> Result<reqwest::Client, String> {
-    let kwic = state.client.lock().await;
-    if !kwic.authenticated {
+    if crate::session_coordinator::SESSIONS.signed_out() {
+        return Err(crate::session_coordinator::CANCELLED.into());
+    }
+
+    let kwic = state.session();
+    if !kwic.has_credentials() {
         return Err(kwic_client::KWIC_AUTH_REQUIRED_MSG.into());
     }
-    Ok(kwic.http.clone())
+    Ok(kwic.http().clone())
 }
 
 /// KWIC GET: fetch a page without holding the lock.

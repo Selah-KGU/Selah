@@ -95,6 +95,9 @@ pub(in crate::notifier) fn dispatch_notification(
     body: String,
     target: Option<NotificationClickTarget>,
 ) {
+    if crate::db::capture_account() != crate::session_coordinator::SESSIONS.account_context() {
+        return;
+    }
     let result = if let Some(target) = target {
         send_actionable_native_notification(app, &title, &body, target)
     } else {

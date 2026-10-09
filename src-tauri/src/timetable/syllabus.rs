@@ -21,13 +21,13 @@ pub(super) async fn batch_fetch_syllabi(
     for code in codes {
         let gate = kgc.gate.lock().await;
         let http_owned = {
-            let client = kgc.client.lock().await;
-            if !client.is_authenticated() {
+            let client = kgc.session();
+            if !client.has_credentials() {
                 drop(gate);
                 results.push((code.clone(), Err("KGC not authenticated".into())));
                 break;
             }
-            client.http.clone()
+            client.http().clone()
         };
         let http = &http_owned;
         let mut found = false;

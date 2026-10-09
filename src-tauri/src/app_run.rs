@@ -14,7 +14,6 @@ use super::app_menu;
 use super::app_state::{GCalState, KgcState, KwicState, LunaState, MailState, ThemeState};
 use super::app_updates;
 use super::background_refresh;
-use super::client;
 use super::commands;
 use super::cookie_bridge;
 use super::course_automation;
@@ -24,10 +23,8 @@ use super::document_tabs;
 use super::google_calendar;
 use super::google_commands;
 use super::keychain;
-use super::kwic_client;
 use super::kwic_commands;
 use super::live;
-use super::luna_client;
 use super::luna_commands;
 #[cfg(target_os = "macos")]
 use super::macos_fullscreen_exit;
@@ -74,6 +71,11 @@ fn admit_ai_and_cache(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Purge before constructing WebViews or opening SQLite (Windows locks).
+    if let Err(error) = crate::data_reset::finish_pending() {
+        eprintln!("Selah could not complete the requested data deletion: {error}");
+        return;
+    }
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
 
@@ -133,34 +135,37 @@ pub fn run() {
                     .build(),
             )?;
             protect_log_storage(app.handle())?;
-            // Unlock the secret bundle once now (Touch ID on macOS) so the
-            // prompt fires at launch rather than from a background task later;
-            // the session restores below then read from the in-memory copy.
+            // Load the vault key once; session restoration then reads the
+            // committed in-memory snapshot. Failed unlocks remain retryable.
             keychain::prewarm();
-            let mut luna = luna_client::LunaClient::new();
-            luna.try_restore_session();
-            let mut kwic = kwic_client::KwicClient::new();
-            kwic.try_restore_session();
-            let mut kgc = client::KgcClient::new();
-            kgc.try_restore_session();
+            for service in [
+                crate::session_coordinator::Service::Kgc,
+                crate::session_coordinator::Service::Luna,
+                crate::session_coordinator::Service::Kwic,
+            ] {
+                if let Err(error) = crate::session_coordinator::SESSIONS.restore(service) {
+                    log::warn!("{} restore deferred: {error}", service.name());
+                }
+            }
             let mut mail_client = mail::MailClient::new();
-            mail_client.try_restore_token();
+            if let Err(error) = mail_client.try_restore_token() {
+                log::warn!("Token restoration pending: {error}");
+            }
             let mut gcal_client = google_calendar::GoogleCalendarClient::new();
-            gcal_client.try_restore_token();
+            if let Err(error) = gcal_client.try_restore_token() {
+                log::warn!("Token restoration pending: {error}");
+            }
             app.manage(KgcState {
-                client: Mutex::new(kgc),
                 gate: Mutex::new(()),
             });
-            app.manage(LunaState {
-                client: Mutex::new(luna),
-            });
-            app.manage(KwicState {
-                client: Mutex::new(kwic),
-            });
+            app.manage(LunaState);
+            app.manage(KwicState);
             app.manage(MailState {
+                cancellation: mail_client.cancellation(),
                 client: Mutex::new(mail_client),
             });
             app.manage(GCalState {
+                cancellation: gcal_client.cancellation(),
                 client: Mutex::new(gcal_client),
             });
             app.manage(commands::SyllabusDetailData(std::sync::Mutex::new(
@@ -177,7 +182,7 @@ pub fn run() {
             let data_dir = dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("com.kgu.selah");
-            let database = db::Database::open(&data_dir)
+            let database = db::Database::open_accounts(&data_dir)
                 .map_err(|e| format!("Failed to open timetable database: {}", e))?;
             widget_bridge::publish(&database);
             widget_bridge::ensure_host_registered();
@@ -192,9 +197,12 @@ pub fn run() {
                 // present a valid SSO session / device token.
                 let restore_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    cookie_bridge::restore_sso_cookies(&restore_handle).await;
+                    if let Err(error) = cookie_bridge::restore_sso_cookies(&restore_handle).await {
+                        log::warn!("SSO startup restoration deferred: {error}");
+                    }
                 });
                 tray::start_tray_cycle(app.handle(), tray_status);
+                crate::session_persistence::start(app.handle());
                 background_refresh::start_background_refresh_loop(app.handle());
                 ai_refresh::start_ai_refresh_loop(app.handle());
                 course_automation::start_course_automation_loop(app.handle());
@@ -323,7 +331,10 @@ pub fn run() {
                 commands::get_syllabus_detail,
                 commands::get_kgc_syllabus_fields,
                 commands::sync_session,
+                commands::restore_university_sessions,
+                crate::session_coordinator::get_university_session_snapshot,
                 commands::get_session_states,
+                crate::session_coordinator::get_session_diagnostics,
                 commands::get_saved_cookie_summaries,
                 luna_commands::university_open_detail_window,
                 luna_commands::luna_open_detail_window,
@@ -453,6 +464,8 @@ pub fn run() {
                 commands::get_download_config,
                 commands::save_download_config,
                 commands::select_download_dir,
+                crate::secret_recovery::get_secret_store_status,
+                crate::secret_recovery::retry_secret_store,
                 commands::get_security_config,
                 commands::save_security_config,
                 commands::get_notification_config,

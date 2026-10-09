@@ -81,15 +81,18 @@ impl super::MailClient {
         let body = serde_json::json!({"isRead": true});
         let resp = self
             .http
-            .patch(&url)
-            .bearer_auth(&access_token)
-            .json(&body)
-            .send()
+            .send(
+                self.http
+                    .client
+                    .patch(&url)
+                    .bearer_auth(&access_token)
+                    .json(&body),
+            )
             .await
             .map_err(|e| format!("既読設定失敗: {}", e))?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text();
             log::warn!("mark_as_read failed: HTTP {} - {}", status, body);
             return Err(format!("既読設定失敗: HTTP {}", status));
         }

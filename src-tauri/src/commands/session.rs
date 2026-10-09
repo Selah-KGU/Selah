@@ -5,138 +5,33 @@ use crate::cookie_bridge;
 use crate::kwic_client;
 use crate::luna_client;
 use crate::parser;
+use crate::session_coordinator::{
+    Health, RecoveryOutcome, RecoveryReport, RecoveryTrigger, Service, ServiceRecovery,
+    SessionError, SESSIONS,
+};
 use crate::{KgcState, KwicState, LunaState};
 use serde::Serialize;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::LazyLock;
 use tauri::{Manager, State};
 
-static SESSION_SYNC_GATE: LazyLock<tokio::sync::Mutex<()>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(()));
-static SESSION_SYNC_LAST_START: LazyLock<std::sync::Mutex<Option<std::time::Instant>>> =
-    LazyLock::new(|| std::sync::Mutex::new(None));
-const SESSION_SYNC_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(2);
-const KGC_AUTO_RECOVERY_COOLDOWN_SECS: i64 = 30 * 60;
-const KGC_AUTO_PREFLIGHT_REUSE_SECS: i64 = 60;
-static KGC_AUTO_RECOVERY_LAST_ATTEMPT: AtomicI64 = AtomicI64::new(0);
-static KGC_AUTO_PREFLIGHT_LAST_SUCCESS: AtomicI64 = AtomicI64::new(0);
-static KGC_AUTO_PREFLIGHT_GATE: LazyLock<tokio::sync::Mutex<()>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(()));
-
-pub(super) async fn lock_session_sync() -> tokio::sync::MutexGuard<'static, ()> {
-    SESSION_SYNC_GATE.lock().await
+pub(super) async fn lock_session_sync() -> tokio::sync::OwnedMutexGuard<()> {
+    SESSIONS.lock().await
 }
 
-async fn pace_session_sync() {
-    let wait = {
-        let last = SESSION_SYNC_LAST_START
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        last.and_then(|started| SESSION_SYNC_MIN_GAP.checked_sub(started.elapsed()))
-    };
-    if let Some(wait) = wait {
-        tokio::time::sleep(wait).await;
-    }
-    let mut last = SESSION_SYNC_LAST_START
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *last = Some(std::time::Instant::now());
-}
-
-/// Allow an automatic KGC data task to make one hidden-login attempt when the
-/// short-lived KGC session is absent. The shared cooldown prevents the data and
-/// notification loops from repeatedly opening competing SAML flows.
-pub(crate) async fn auto_recover_kgc_session_once(app: &tauri::AppHandle) -> bool {
-    if app
-        .state::<KgcState>()
-        .client
-        .lock()
-        .await
-        .is_authenticated()
-    {
-        return true;
-    }
-
-    let now = crate::db::epoch_secs();
-    let previous = KGC_AUTO_RECOVERY_LAST_ATTEMPT.swap(now, Ordering::SeqCst);
-    if previous > 0 && now.saturating_sub(previous) < KGC_AUTO_RECOVERY_COOLDOWN_SECS {
-        log::info!("KGC automatic recovery skipped during cooldown");
-        return false;
-    }
-
-    log::info!("KGC automatic data request: attempting one hidden login");
-    match sync_session(
-        app.clone(),
-        app.state::<KgcState>(),
-        app.state::<LunaState>(),
-        app.state::<KwicState>(),
-        "kgc".to_string(),
-    )
-    .await
-    {
-        Ok(true) => true,
-        Ok(false) => {
-            log::warn!("KGC automatic recovery did not establish a session");
-            false
+pub(crate) async fn ensure_kgc_session_for_automatic_request(app: &tauri::AppHandle) -> bool {
+    match recover_sessions(app, &[Service::Kgc], RecoveryTrigger::AutomaticRequest).await {
+        Ok(report) => {
+            report.verified(Service::Kgc) || SESSIONS.lease(Service::Kgc).has_credentials()
         }
         Err(error) => {
-            log::warn!("KGC automatic recovery failed: {}", error);
+            log::warn!("KGC automatic session check: {error}");
             false
         }
     }
-}
-
-/// Confirm KGC immediately before an automatic KGC-backed data run. Validation
-/// is request-driven rather than periodic; a server-confirmed expiry may cause
-/// one hidden-login attempt, while transient validation errors retain the
-/// existing session and let the real data request decide.
-pub(crate) async fn ensure_kgc_session_for_automatic_request(app: &tauri::AppHandle) -> bool {
-    let _preflight_gate = KGC_AUTO_PREFLIGHT_GATE.lock().await;
-    let now = crate::db::epoch_secs();
-    if app
-        .state::<KgcState>()
-        .client
-        .lock()
-        .await
-        .is_authenticated()
-    {
-        let last_success = KGC_AUTO_PREFLIGHT_LAST_SUCCESS.load(Ordering::Relaxed);
-        if last_success > 0 && now.saturating_sub(last_success) < KGC_AUTO_PREFLIGHT_REUSE_SECS {
-            return true;
-        }
-        match crate::commands::check_session(app.state::<KgcState>()).await {
-            Ok(status) if status.valid => {
-                KGC_AUTO_PREFLIGHT_LAST_SUCCESS.store(now, Ordering::Relaxed);
-                return true;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                log::warn!("KGC automatic preflight validation failed: {}", error);
-            }
-        }
-
-        // check_session only clears the stored session after a server-confirmed
-        // expiry. Retain it after transient validation failures.
-        if app
-            .state::<KgcState>()
-            .client
-            .lock()
-            .await
-            .is_authenticated()
-        {
-            return true;
-        }
-    }
-
-    let recovered = auto_recover_kgc_session_once(app).await;
-    if recovered {
-        KGC_AUTO_PREFLIGHT_LAST_SUCCESS.store(crate::db::epoch_secs(), Ordering::Relaxed);
-    }
-    recovered
 }
 
 #[derive(Debug, Serialize)]
 pub struct SessionStates {
+    pub sso: bool,
     pub kgc: bool,
     pub luna: bool,
     pub kwic: bool,
@@ -144,18 +39,29 @@ pub struct SessionStates {
 
 #[tauri::command]
 pub async fn get_session_states(
-    state: State<'_, KgcState>,
-    luna_state: State<'_, LunaState>,
-    kwic_state: State<'_, KwicState>,
+    app: tauri::AppHandle,
+    _state: State<'_, KgcState>,
+    _luna_state: State<'_, LunaState>,
+    _kwic_state: State<'_, KwicState>,
 ) -> Result<SessionStates, String> {
-    let kgc = state.client.lock().await.is_authenticated();
-    let luna = luna_state.client.lock().await.authenticated;
-    let kwic = kwic_state.client.lock().await.authenticated;
-    Ok(SessionStates { kgc, luna, kwic })
+    let snapshot = SESSIONS.snapshot();
+    let kgc = snapshot.services[Service::Kgc.index()].credentials_present;
+    let luna = snapshot.services[Service::Luna.index()].credentials_present;
+    let kwic = snapshot.services[Service::Kwic.index()].credentials_present;
+    let sso = !crate::session_coordinator::SESSIONS.signed_out()
+        && cookie_bridge::has_sso_evidence(&app).await?;
+    SESSIONS.ensure_current(snapshot.generation)?;
+    Ok(SessionStates {
+        kgc,
+        luna,
+        kwic,
+        sso,
+    })
 }
 
 #[tauri::command]
-pub fn get_saved_cookie_summaries() -> Vec<client::SavedCookieSummary> {
+pub fn get_saved_cookie_summaries(
+) -> Result<Vec<client::SavedCookieSummary>, crate::keychain::StoreError> {
     [
         ("kgc", client::KGC_COOKIES_KEY),
         ("luna", luna_client::LUNA_COOKIES_KEY),
@@ -176,27 +82,23 @@ async fn headless_saml_refresh(
     verify_url: &str,
     cookie_store: &reqwest_cookie_store::CookieStoreMutex,
     http: &reqwest::Client,
-    session_expired_msg: &str,
     is_session_expired: fn(&str) -> bool,
-) -> Result<bool, String> {
+) -> Result<bool, SessionError> {
     log::info!("headless_{}: starting (Cookie Bridge)", label);
 
-    let win = match cookie_bridge::headless_saml_window(app, label, saml_url, sp_domain, 20).await?
+    let win = match cookie_bridge::headless_saml_window(app, label, saml_url, sp_domain, 20)
+        .await
+        .map_err(SessionError::Unavailable)?
     {
         Some(w) => w,
         None => return Ok(false),
     };
 
-    cookie_bridge::extract_and_inject(app, sp_domain, cookie_store, base_url).await?;
+    cookie_bridge::extract_and_inject(app, sp_domain, cookie_store, base_url)
+        .await
+        .map_err(SessionError::Unavailable)?;
 
-    let result = client::fetch_with_redirect(
-        http,
-        verify_url,
-        base_url,
-        session_expired_msg,
-        is_session_expired,
-    )
-    .await;
+    let result = client::fetch_session_page(http, verify_url, base_url, is_session_expired).await;
     let _ = win.close();
 
     match result {
@@ -215,7 +117,11 @@ async fn headless_saml_refresh(
     }
 }
 
-async fn headless_kgc_refresh(app: &tauri::AppHandle, state: &KgcState) -> Result<bool, String> {
+async fn headless_kgc_refresh(
+    app: &tauri::AppHandle,
+    state: &KgcState,
+    generation: u64,
+) -> Result<bool, SessionError> {
     log::info!("headless_kgc_refresh: starting (Cookie Bridge)");
     let _kgc_gate = state.gate.lock().await;
 
@@ -227,38 +133,45 @@ async fn headless_kgc_refresh(app: &tauri::AppHandle, state: &KgcState) -> Resul
         "kg-course.kwansei.ac.jp",
         20,
     )
-    .await?
+    .await
+    .map_err(SessionError::Unavailable)?
     {
         Some(w) => w,
         None => return Ok(false),
     };
 
-    let cookie_store = state.client.lock().await.cookie_store.clone();
+    let (cookie_store, http) = client::new_cookie_client();
     cookie_bridge::extract_and_inject(
         app,
         "kg-course.kwansei.ac.jp",
         &cookie_store,
         config::KG_COURSE_BASE,
     )
-    .await?;
+    .await
+    .map_err(SessionError::Unavailable)?;
 
-    let http = state.client.lock().await.http.clone();
     let verify_url = format!(
         "{}/uniasv2/ARF010.do?REQ_PRFR_MNU_ID=MNUIDSTD0102014",
         config::KG_COURSE_BASE
     );
-    match crate::client::fetch_page_with(&http, &verify_url).await {
+    match crate::client::fetch_session_page(
+        &http,
+        &verify_url,
+        config::KG_COURSE_BASE,
+        client::is_session_expired_body,
+    )
+    .await
+    {
         Ok(html) => {
             let info = parser::parse_student_info(&html);
             if info.student_id.is_empty() && info.name.is_empty() {
-                log::warn!(
-                    "headless_kgc_refresh: page returned empty student info (stale session)"
-                );
+                log::warn!("headless_kgc_refresh: unrecognized verification page");
                 let _ = win.close();
-                return Ok(false);
+                return Err(SessionError::Unavailable(
+                    "KGC returned an unrecognized verification page".into(),
+                ));
             }
-            let mut client = state.client.lock().await;
-            client.session = Some(auth::AuthSession {
+            let identity = auth::AuthSession {
                 username: info.student_id.clone(),
                 display_name: if info.name.is_empty() {
                     "ユーザー".to_string()
@@ -268,27 +181,36 @@ async fn headless_kgc_refresh(app: &tauri::AppHandle, state: &KgcState) -> Resul
                 student_id: info.student_id,
                 faculty: info.faculty,
                 department: info.department,
-            });
-            client.save_session();
+            };
+            crate::session_coordinator::SESSIONS
+                .accept_verified(
+                    generation,
+                    crate::session_coordinator::Service::Kgc,
+                    client::CookieClientParts { http, cookie_store },
+                    Some(identity),
+                )
+                .map_err(|_| SessionError::Cancelled)?;
             log::info!("headless_kgc_refresh: succeeded");
             let _ = win.close();
             Ok(true)
         }
         Err(e) => {
-            let mut client = state.client.lock().await;
-            client.clear_session();
-            log::warn!("headless_kgc_refresh: session verification failed: {}", e);
+            log::warn!(
+                "headless_kgc_refresh: candidate session verification failed: {}",
+                e
+            );
             let _ = win.close();
             Err(e)
         }
     }
 }
 
-async fn headless_luna_refresh(app: &tauri::AppHandle, state: &LunaState) -> Result<bool, String> {
-    let luna = state.client.lock().await;
-    let cookie_store = luna.cookie_store.clone();
-    let http = luna.http.clone();
-    drop(luna);
+async fn headless_luna_refresh(
+    app: &tauri::AppHandle,
+    _state: &LunaState,
+    generation: u64,
+) -> Result<bool, SessionError> {
+    let (cookie_store, http) = client::new_cookie_client();
 
     let verify_url = format!("{}/lms/timetable", config::LUNA_BASE);
     let ok = headless_saml_refresh(
@@ -300,23 +222,28 @@ async fn headless_luna_refresh(app: &tauri::AppHandle, state: &LunaState) -> Res
         &verify_url,
         &cookie_store,
         &http,
-        luna_client::LUNA_SESSION_EXPIRED_MSG,
         luna_client::is_luna_session_expired,
     )
     .await?;
     if ok {
-        let mut luna = state.client.lock().await;
-        luna.authenticated = true;
-        luna.save_session();
+        crate::session_coordinator::SESSIONS
+            .accept_verified(
+                generation,
+                crate::session_coordinator::Service::Luna,
+                client::CookieClientParts { http, cookie_store },
+                None,
+            )
+            .map_err(|_| SessionError::Cancelled)?;
     }
     Ok(ok)
 }
 
-async fn headless_kwic_refresh(app: &tauri::AppHandle, state: &KwicState) -> Result<bool, String> {
-    let kwic = state.client.lock().await;
-    let cookie_store = kwic.cookie_store.clone();
-    let http = kwic.http.clone();
-    drop(kwic);
+async fn headless_kwic_refresh(
+    app: &tauri::AppHandle,
+    _state: &KwicState,
+    generation: u64,
+) -> Result<bool, SessionError> {
+    let (cookie_store, http) = client::new_cookie_client();
 
     let verify_url = format!("{}/portal/home", config::KWIC_BASE);
     let ok = headless_saml_refresh(
@@ -328,57 +255,214 @@ async fn headless_kwic_refresh(app: &tauri::AppHandle, state: &KwicState) -> Res
         &verify_url,
         &cookie_store,
         &http,
-        kwic_client::KWIC_SESSION_EXPIRED_MSG,
         kwic_client::is_kwic_session_expired,
     )
     .await?;
     if ok {
-        let mut kwic = state.client.lock().await;
-        kwic.authenticated = true;
-        kwic.save_session();
+        crate::session_coordinator::SESSIONS
+            .accept_verified(
+                generation,
+                crate::session_coordinator::Service::Kwic,
+                client::CookieClientParts { http, cookie_store },
+                None,
+            )
+            .map_err(|_| SessionError::Cancelled)?;
     }
     Ok(ok)
 }
 
 #[tauri::command]
-pub async fn sync_session(
+pub(crate) async fn sync_session(
     app: tauri::AppHandle,
-    kgc_state: State<'_, KgcState>,
-    luna_state: State<'_, LunaState>,
-    kwic_state: State<'_, KwicState>,
     service: String,
-) -> Result<bool, String> {
-    // Startup restoration and the first SAML sync can race. Ensure the
-    // identity-provider backup has been restored exactly once before opening
-    // any hidden authentication window.
-    cookie_bridge::restore_sso_cookies(&app).await;
-    let _sync_gate = lock_session_sync().await;
-    pace_session_sync().await;
-    log::info!("sync_session: service={}", service);
-    let result = match service.as_str() {
-        "kgc" => headless_kgc_refresh(&app, kgc_state.inner()).await,
-        "luna" => headless_luna_refresh(&app, luna_state.inner()).await,
-        "kwic" => headless_kwic_refresh(&app, kwic_state.inner()).await,
-        "all" => {
-            // "all" means all core services. KGC is excluded from proactive
-            // batch renewal because its cookies are sensitive to timing.
-            let luna_ok = headless_luna_refresh(&app, luna_state.inner())
-                .await
-                .unwrap_or(false);
-            tokio::time::sleep(SESSION_SYNC_MIN_GAP).await;
-            let kwic_ok = headless_kwic_refresh(&app, kwic_state.inner())
-                .await
-                .unwrap_or(false);
-            log::info!("sync_session(all core): luna={}, kwic={}", luna_ok, kwic_ok);
-            Ok(luna_ok || kwic_ok)
-        }
-        _ => Err(format!("Unknown service: {}", service)),
+    trigger: Option<RecoveryTrigger>,
+) -> Result<RecoveryReport, SessionError> {
+    let services = if service == "all" {
+        vec![Service::Luna, Service::Kwic]
+    } else {
+        vec![Service::parse(&service)
+            .ok_or_else(|| SessionError::InvalidService(service.clone()))?]
     };
-    // A successful headless refresh means a valid SSO session is in the webview
-    // store — back it up (incl. the long-lived device token) so it survives a
-    // webview-store wipe and stays fresh.
-    if matches!(&result, Ok(true)) {
-        cookie_bridge::persist_sso_cookies(&app).await;
+    recover_sessions(&app, &services, trigger.unwrap_or(RecoveryTrigger::Manual)).await
+}
+
+/// All automatic/manual callers submit a trigger. This application boundary
+/// owns validation, evidence gathering, candidate flows, and partial results.
+pub(crate) async fn recover_sessions(
+    app: &tauri::AppHandle,
+    services: &[Service],
+    trigger: RecoveryTrigger,
+) -> Result<RecoveryReport, SessionError> {
+    let generation = SESSIONS.generation();
+    let requested = std::time::Instant::now();
+    let _sync_gate = SESSIONS.lock().await;
+    SESSIONS
+        .ensure_current(generation)
+        .map_err(|_| SessionError::Cancelled)?;
+    if SESSIONS.signed_out() {
+        return Ok(RecoveryReport {
+            results: services
+                .iter()
+                .map(|service| ServiceRecovery::new(*service, RecoveryOutcome::SignedOut))
+                .collect(),
+            snapshot: SESSIONS.snapshot(),
+            identity: None,
+        });
     }
-    result
+    let work = async {
+        let mut results = Vec::new();
+        let mut evidence = None;
+        for &target in services {
+            if target == Service::Kgc && !trigger.may_recover_kgc() {
+                continue;
+            }
+            if let Some(result) = SESSIONS.completed_since(generation, target, requested) {
+                results.push(result);
+                continue;
+            }
+            let before = SESSIONS.lease(target);
+            if trigger.probes() && before.has_credentials() {
+                if !SESSIONS.probe_due(target, trigger) {
+                    results.push(ServiceRecovery::new(
+                        target,
+                        if before.is_verified() {
+                            RecoveryOutcome::Verified
+                        } else {
+                            RecoveryOutcome::Unavailable
+                        },
+                    ));
+                    continue;
+                }
+                let probe = match target {
+                    Service::Kgc => {
+                        let state = app.state::<KgcState>();
+                        let _gate = state.gate.lock().await;
+                        crate::session_coordinator::verify(target).await
+                    }
+                    _ => crate::session_coordinator::verify(target).await,
+                };
+                match probe {
+                    Ok(lease) if lease.is_verified() => {
+                        results.push(ServiceRecovery::new(target, RecoveryOutcome::Verified));
+                        continue;
+                    }
+                    Err(SessionError::Cancelled) => return Err(SessionError::Cancelled),
+                    Err(error) => {
+                        results.push(ServiceRecovery::unavailable(target, error));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(result) = SESSIONS.recovery_result(generation, target, requested, trigger) {
+                results.push(result);
+                continue;
+            }
+            let has_evidence = if let Some(value) = evidence {
+                value
+            } else {
+                let value = match cookie_bridge::has_sso_evidence(app).await {
+                    Ok(value) => value,
+                    Err(error) => {
+                        SESSIONS.record(generation, target, Health::Unavailable);
+                        results.push(ServiceRecovery::unavailable(target, error));
+                        continue;
+                    }
+                };
+                evidence = Some(value);
+                value
+            };
+            if !has_evidence {
+                let outcome = if crate::keychain::get_secret_store_status().state == "ready" {
+                    RecoveryOutcome::NeedsLogin
+                } else {
+                    RecoveryOutcome::Unavailable
+                };
+                if !SESSIONS.lease(target).has_credentials() {
+                    SESSIONS.record(
+                        generation,
+                        target,
+                        if outcome == RecoveryOutcome::NeedsLogin {
+                            Health::NeedsLogin
+                        } else {
+                            Health::Unavailable
+                        },
+                    );
+                }
+                results.push(ServiceRecovery::new(target, outcome));
+                continue;
+            }
+            if let Err(error) = cookie_bridge::restore_sso_cookies(app).await {
+                log::warn!("SSO backup unavailable; checking native SSO: {error}");
+            }
+            SESSIONS.pace_flow().await;
+            SESSIONS.record(generation, target, Health::Refreshing);
+            let attempt = match target {
+                Service::Kgc => {
+                    headless_kgc_refresh(app, app.state::<KgcState>().inner(), generation).await
+                }
+                Service::Luna => {
+                    headless_luna_refresh(app, app.state::<LunaState>().inner(), generation).await
+                }
+                Service::Kwic => {
+                    headless_kwic_refresh(app, app.state::<KwicState>().inner(), generation).await
+                }
+            };
+            SESSIONS
+                .ensure_current(generation)
+                .map_err(|_| SessionError::Cancelled)?;
+            let result = match attempt {
+                Ok(true) => ServiceRecovery {
+                    recovered: true,
+                    ..ServiceRecovery::new(target, RecoveryOutcome::Verified)
+                },
+                Ok(false) | Err(SessionError::NeedsLogin) => {
+                    ServiceRecovery::new(target, RecoveryOutcome::NeedsLogin)
+                }
+                Err(SessionError::Cancelled) => return Err(SessionError::Cancelled),
+                Err(error) => ServiceRecovery::unavailable(target, error),
+            };
+            if result.outcome != RecoveryOutcome::Verified {
+                let health = if result.outcome == RecoveryOutcome::NeedsLogin
+                    && !SESSIONS.lease(target).has_credentials()
+                {
+                    Health::NeedsLogin
+                } else {
+                    Health::Unavailable
+                };
+                SESSIONS.record(generation, target, health);
+            }
+            SESSIONS.finish_recovery(generation, target, &result);
+            results.push(result);
+        }
+        if results.iter().any(|result| result.recovered) {
+            cookie_bridge::persist_sso_cookies(app).await;
+        }
+        SESSIONS
+            .ensure_current(generation)
+            .map_err(|_| SessionError::Cancelled)?;
+        let (snapshot, identity) = SESSIONS.overview();
+        Ok(RecoveryReport {
+            results,
+            snapshot,
+            identity,
+        })
+    };
+    tokio::select! {
+        biased;
+        _ = SESSIONS.cancelled(generation) => Err(SessionError::Cancelled),
+        result = work => result,
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn restore_university_sessions(
+    app: tauri::AppHandle,
+) -> Result<RecoveryReport, SessionError> {
+    recover_sessions(
+        &app,
+        &[Service::Luna, Service::Kwic],
+        RecoveryTrigger::Startup,
+    )
+    .await
 }

@@ -162,7 +162,7 @@ pub async fn search_syllabus(
 #[tauri::command]
 pub async fn fetch_syllabus_favorites(
     kgc_state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<crate::syllabus::SyllabusSearchResult, String> {
     let _kgc_gate = kgc_state.gate.lock().await;
     let http = match kgc_http(kgc_state.inner()).await {
@@ -496,7 +496,7 @@ pub async fn get_syllabus_detail(
 
 #[tauri::command]
 pub async fn get_kgc_syllabus_fields(
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     kgc_code: String,
 ) -> Result<Option<serde_json::Value>, String> {
     Ok(db.get_kgc_course_detail(&kgc_code)?.map(|d| {

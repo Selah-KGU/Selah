@@ -35,6 +35,8 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
                     secure: c.isSecure(),
                     http_only: c.isHTTPOnly(),
                     expires_unix,
+                    same_site: c.sameSitePolicy().map(|site| site.to_string()),
+                    host_only: Some(!c.domain().to_string().starts_with('.')),
                 });
             }
             if let Some(sender) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -46,45 +48,41 @@ pub(super) async fn extract_all_cookies(app: &tauri::AppHandle) -> Result<Vec<Co
     })
     .map_err(|e| format!("Main thread dispatch failed: {}", e))?;
 
-    rx.await
+    tokio::time::timeout(std::time::Duration::from_secs(10), rx)
+        .await
+        .map_err(|_| "Cookie extraction timed out".to_string())?
         .map_err(|_| "Cookie extraction failed: channel closed".to_string())
 }
 
-/// Delete every cookie under the Kwansei Gakuin domain family.
+/// Delete all university cookies and await each native completion callback.
 pub(super) async fn delete_university_cookies(app: &tauri::AppHandle) -> Result<usize, String> {
-    let (tx, rx) = tokio::sync::oneshot::channel::<usize>();
-    let tx = std::sync::Mutex::new(Some(tx));
-
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.run_on_main_thread(move || {
-        // SAFETY: run_on_main_thread guarantees we're on the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         let data_store = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
         let store = unsafe { data_store.httpCookieStore() };
         let delete_store = store.clone();
-
         let block = block2::RcBlock::new(move |cookies_ptr: NonNull<NSArray<NSHTTPCookie>>| {
             let cookies = unsafe { cookies_ptr.as_ref() };
-            let mut count = 0usize;
             for i in 0..cookies.count() {
                 let cookie = cookies.objectAtIndex(i);
-                let domain = cookie.domain().to_string();
-                if super::is_university_cookie(&domain) {
-                    // SAFETY: store is a valid WKHTTPCookieStore on the main thread.
-                    unsafe { delete_store.deleteCookie_completionHandler(&cookie, None) };
-                    count += 1;
+                if super::is_university_cookie(&cookie.domain().to_string()) {
+                    let done = tx.clone();
+                    let completion = block2::RcBlock::new(move || {
+                        let _ = done.send(Ok(()));
+                    });
+                    unsafe {
+                        delete_store.deleteCookie_completionHandler(&cookie, Some(&completion))
+                    };
                 }
             }
-            if let Some(sender) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                let _ = sender.send(count);
-            }
+            // WebKit releases this block after the callback, then only the
+            // per-cookie completions retain senders.
         });
-
         unsafe { store.getAllCookies(&block) };
     })
-    .map_err(|e| format!("Main thread dispatch failed: {}", e))?;
-
-    rx.await
-        .map_err(|_| "delete cookies: channel closed".to_string())
+    .map_err(|e| format!("Main thread dispatch failed: {e}"))?;
+    super::await_cookie_completions(rx).await
 }
 
 /// Write cookies into the default WKHTTPCookieStore. Each `CookieData` is turned
@@ -95,8 +93,7 @@ pub(super) async fn set_all_cookies(
     cookies: &[CookieData],
 ) -> Result<usize, String> {
     let cookies = cookies.to_vec();
-    let (tx, rx) = tokio::sync::oneshot::channel::<usize>();
-    let tx = std::sync::Mutex::new(Some(tx));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
     app.run_on_main_thread(move || {
         // SAFETY: run_on_main_thread guarantees we're on the main thread
@@ -110,13 +107,15 @@ pub(super) async fn set_all_cookies(
             .unwrap_or(0.0);
         let key = NSString::from_str("Set-Cookie");
 
-        let mut count = 0usize;
         for c in &cookies {
             let bare_domain = c.domain.trim_start_matches('.');
-            let mut header = format!(
-                "{}={}; Domain={}; Path={}",
-                c.name, c.value, c.domain, c.path
-            );
+            let mut header = format!("{}={}; Path={}", c.name, c.value, c.path);
+            if !c.is_host_only() {
+                header.push_str(&format!("; Domain={}", c.domain));
+            }
+            if let Some(site) = c.normalized_same_site() {
+                header.push_str(&format!("; SameSite={site}"));
+            }
             if c.secure {
                 header.push_str("; Secure");
             }
@@ -131,23 +130,24 @@ pub(super) async fn set_all_cookies(
             let dict = NSDictionary::<NSString, NSString>::from_slices(&[&*key], &[&*header_ns]);
             let url_ns = NSString::from_str(&format!("https://{}/", bare_domain));
             let Some(url) = NSURL::URLWithString(&url_ns) else {
+                let _ = tx.send(Err("Invalid cookie origin".into()));
                 continue;
             };
             let parsed = NSHTTPCookie::cookiesWithResponseHeaderFields_forURL(&dict, &url);
+            if parsed.count() == 0 {
+                let _ = tx.send(Err("WebKit rejected an SSO cookie".into()));
+            }
             for i in 0..parsed.count() {
                 let cookie = parsed.objectAtIndex(i);
-                // SAFETY: store is a valid WKHTTPCookieStore on the main thread.
-                unsafe { store.setCookie_completionHandler(&cookie, None) };
-                count += 1;
+                let done = tx.clone();
+                let completion = block2::RcBlock::new(move || {
+                    let _ = done.send(Ok(()));
+                });
+                unsafe { store.setCookie_completionHandler(&cookie, Some(&completion)) };
             }
-        }
-
-        if let Some(sender) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            let _ = sender.send(count);
         }
     })
     .map_err(|e| format!("Main thread dispatch failed: {}", e))?;
 
-    rx.await
-        .map_err(|_| "set cookies: channel closed".to_string())
+    super::await_cookie_completions(rx).await
 }

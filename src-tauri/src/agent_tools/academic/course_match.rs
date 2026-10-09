@@ -167,7 +167,7 @@ fn course_match_json(aggregate: &CourseAggregate) -> Value {
 
 pub async fn search_courses(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
     let query = sanitize_text_arg(args, "query", 80).ok_or_else(|| "query が空です".to_string())?;
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let mut matches: Vec<(i32, CourseAggregate)> = build_course_aggregates(&db)?
         .into_iter()
         .map(|aggregate| (score_course_match(&query, &aggregate), aggregate))
@@ -184,7 +184,7 @@ pub async fn search_courses(app: &tauri::AppHandle, args: &Value) -> Result<Valu
 
 pub async fn get_course_context(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {
     let query = sanitize_text_arg(args, "query", 80).ok_or_else(|| "query が空です".to_string())?;
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let mut matches: Vec<(i32, CourseAggregate)> = build_course_aggregates(&db)?
         .into_iter()
         .map(|aggregate| (score_course_match(&query, &aggregate), aggregate))

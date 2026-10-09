@@ -1,81 +1,73 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadSessionRestore } from './load-session-restore.mjs';
+import { loadSessionRestore, report, identity } from './load-session-restore.mjs';
+function deferred() { let resolve,reject; const promise=new Promise((a,b)=>{resolve=a;reject=b;}); return {promise,resolve,reject}; }
+async function flush() { for(let i=0;i<30;i++) await Promise.resolve(); }
+const mutations = h => h.calls.filter(([name])=>['auth','expired','mail','luna','kwic'].includes(name));
 
-function deferred() {
-  let resolve, reject;
-  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
-  return { promise, resolve, reject };
-}
-async function flush() { for (let i = 0; i < 100; i++) await Promise.resolve(); }
-const identity = { valid: true, username: 'full', display_name: '完全な名前', student_id: '123', faculty: '理工', department: '情報' };
-const changed = h => h.calls.filter(([name]) => ['auth','expired','mail','recovered','reset','setAuthFromSession'].includes(name));
+test('obsolete restoration performs no IO, including demo activation', async()=>{
+  for(const demo of [false,true]) { const h=await loadSessionRestore(); h.configure({demo}); assert.equal(await h.restoreAllSessions(()=>false),null); assert.deepEqual(h.calls,[]); }
+});
+test('startup submits one native recovery intent and projects full identity and proof', async()=>{
+  const h=await loadSessionRestore(); h.configure({restore:()=>report()});
+  assert.deepEqual(await h.restoreAllSessions(), {valid:true,...identity});
+  assert.deepEqual(h.calls.filter(([name])=>name==='invoke'),[['invoke','restore_university_sessions']]);
+  assert.deepEqual(h.state.luna,{authenticated:true}); assert.equal(h.state.expired,false);
+  assert.equal(h.state.mail.email,'full@example.test');
+});
 
-test('obsolete restoration performs no IO, including demo activation', async () => {
-  for (const demo of [false, true]) {
-    const h = await loadSessionRestore(); h.configure({ demo });
-    assert.equal(await h.restoreAllSessions(() => false), null);
-    assert.deepEqual(h.calls, []); assert.deepEqual(changed(h), []);
+test('persistence completion clears the warning without losing authenticated identity', async()=>{
+  const h=await loadSessionRestore();
+  let current=report(); current.snapshot.login_persistence_pending=true;
+  h.configure({restore:()=>current});
+  await h.restoreAllSessions();
+  assert.equal(h.state.persistencePending,true);
+  assert.equal(h.state.auth.username,identity.username);
+  current=report(); current.snapshot.revision=1; current.snapshot.login_persistence_pending=false;
+  await h.restoreAllSessions();
+  assert.equal(h.state.persistencePending,false);
+  assert.equal(h.state.auth.username,identity.username);
+});
+test('owner cancellation while native restoration completes discards every UI mutation', async()=>{
+  const h=await loadSessionRestore(), native=deferred(); let current=true;
+  h.configure({restore:()=>native.promise}); const pending=h.restoreAllSessions(()=>current); await flush(); current=false; native.resolve(report());
+  assert.equal(await pending,null); assert.deepEqual(mutations(h),[]); assert.equal(h.calls.some(([name])=>name==='mailCheck'),false);
+});
+test('a native logout retires pending startup restoration without an owner callback', async()=>{
+  const h=await loadSessionRestore(), native=deferred(); h.configure({restore:()=>native.promise});
+  const pending=h.restoreAllSessions(); await flush(); h.universitySessionLifetime.accept(1); native.resolve(report());
+  assert.equal(await pending,null); assert.deepEqual(mutations(h),[]);
+});
+test('mail completion and failures after cancellation cannot change the new owner', async()=>{
+  for(const failed of [false,true]) { const h=await loadSessionRestore(), mail=deferred(); let current=true;
+    h.configure({restore:()=>report(),mail:()=>mail.promise}); const pending=h.restoreAllSessions(()=>current); await flush();
+    const before=structuredClone(mutations(h)); current=false;
+    if(failed) mail.reject('offline'); else mail.resolve({authenticated:true,email:'stale',display_name:'stale'});
+    assert.equal(await pending,null); assert.deepEqual(mutations(h),before);
   }
 });
-
-test('canceling during initial disk reads prevents validation, headless sync and all store writes', async () => {
-  const h = await loadSessionRestore(), snapshot = deferred(), stored = deferred(); let current = true;
-  h.configure({ snapshot: () => snapshot.promise, stored: () => stored.promise });
-  const run = h.restoreAllSessions(() => current); await flush(); current = false;
-  snapshot.resolve(identity); stored.resolve({ kgc: true, luna: false, kwic: false });
-  assert.equal(await run, null); assert.deepEqual(h.calls, [['snapshot'], ['stored']]);
-  assert.deepEqual(changed(h), []); assert.equal(h.storage.size, 0);
+test('unverified disk credentials allow the offline shell without inventing login proof', async()=>{
+  const h=await loadSessionRestore(); h.configure({restore:()=>report({health:'unverified',proof:false})});
+  assert.deepEqual(await h.restoreAllSessions(),{valid:false,...identity});
+  assert.deepEqual(h.state.luna,{authenticated:false}); assert.deepEqual(h.state.kwic,{authenticated:false}); assert.equal(h.state.expired,false);
 });
-
-test('canceling during secondary validation never starts the subsequent headless sync', async () => {
-  const h = await loadSessionRestore(), validators = [deferred(), deferred()]; let current = true;
-  h.configure({ validate: key => validators[key === 'luna' ? 0 : 1].promise });
-  const run = h.restoreAllSessions(() => current); await flush(); current = false;
-  validators.forEach(item => item.resolve(false)); assert.equal(await run, null);
-  assert.deepEqual(h.calls, [['snapshot'], ['stored'], ['validate','luna'], ['validate','kwic']]);
-  assert.deepEqual(changed(h), []);
-});
-
-test('canceling while an issued sync completes discards both recovered/reset notifications and identity writes', async () => {
-  const h = await loadSessionRestore(), sync = [deferred(), deferred()]; let current = true;
-  h.configure({ validate: () => false, sync: key => sync[key === 'luna' ? 0 : 1].promise });
-  const run = h.restoreAllSessions(() => current); await flush();
-  assert.equal(h.calls.filter(([name]) => name === 'sync').length, 2); current = false;
-  sync[0].resolve(true); sync[1].resolve(false); assert.equal(await run, null);
-  assert.deepEqual(changed(h), []); assert.equal(h.calls.some(([name]) => name === 'mailCheck'), false);
-});
-
-test('canceling during mail restoration discards late mail state without undoing earlier current results', async () => {
-  for (const failure of [false, true]) {
-    const h = await loadSessionRestore(), mail = deferred(); let current = true;
-    h.configure({ mail: () => mail.promise }); const run = h.restoreAllSessions(() => current); await flush();
-    assert.ok(h.state.auth); const before = structuredClone(changed(h)); current = false;
-    if (failure) mail.reject(new Error('late mail'));
-    else mail.resolve({ authenticated: true, email: 'stale@example.test', display_name: 'stale' });
-    assert.equal(await run, null); assert.deepEqual(changed(h), before); assert.equal(h.state.mail, null);
+test('unavailable preserves previous proof while confirmed expiry exposes reauthentication', async()=>{
+  for(const health of ['unavailable','needs_login']) { const h=await loadSessionRestore();
+    h.configure({restore:()=>report({health,present:health==='unavailable',proof:health==='unavailable'})}); await h.restoreAllSessions();
+    assert.equal(h.state.luna.authenticated,health==='unavailable'); assert.equal(h.state.expired,health==='needs_login');
   }
 });
-
-test('normal recovery retains complete identity and service semantics across stored-session combinations', async () => {
-  for (const valid of [false, true]) for (const savedIdentity of [false, true]) for (const secondary of [false, true]) {
-    const h = await loadSessionRestore();
-    const status = savedIdentity ? { ...identity, valid } : { valid, username: '', display_name: '', student_id: '' };
-    h.configure({ snapshot: () => status, stored: () => ({ kgc: savedIdentity, luna: secondary, kwic: secondary }) });
-    const result = await h.restoreAllSessions();
-    const ready = secondary || savedIdentity || valid;
-    // An identity, validated secondary sessions, or existing KGC validity keeps
-    // the original Dashboard behavior; no input fields are removed or capped.
-    assert.deepEqual(result, ready ? status : null);
-    if (valid || savedIdentity) assert.deepEqual(h.state.auth, status);
-    if (!valid && !savedIdentity && secondary) assert.equal(h.state.auth.authenticated, true);
-    assert.equal(h.state.mail?.email ?? null, valid ? 'full@example.test' : null);
+test('core-only recovery works without KGC identity, but SSO evidence alone is not authentication', async()=>{
+  for(const present of [false,true]) { const h=await loadSessionRestore(); h.configure({restore:()=>report({who:null,present,proof:present,health:present?'valid':'needs_login'})});
+    assert.equal((await h.restoreAllSessions())!==null,present);
+    if(present) assert.equal(h.state.auth.display_name,'ユーザー'); else assert.equal(h.state.auth,null);
   }
 });
-
-test('secondary validation errors preserve sessions and default callers need no lifetime argument', async () => {
-  const h = await loadSessionRestore(); h.configure({ validate: () => Promise.reject(new Error('429')) });
-  const restored = await h.restoreAllSessions(); assert.equal(restored.username, 'user');
-  assert.deepEqual(h.calls.filter(([name]) => name === 'recovered'), [['recovered','luna'], ['recovered','kwic']]);
-  assert.equal(h.calls.some(([name]) => name === 'sync'), false);
+test('fresh WebView adopts the current native generation without canceling its own startup', async()=>{
+  const h=await loadSessionRestore(); h.configure({restore:()=>report({generation:7})});
+  assert.deepEqual(await h.restoreAllSessions(),{valid:true,...identity}); assert.equal(h.state.mail.email,'full@example.test');
+});
+test('signed-out snapshots never restore identity or service state', async()=>{
+  const h=await loadSessionRestore(); h.configure({restore:()=>report({signedOut:true})});
+  assert.equal(await h.restoreAllSessions(),null); assert.deepEqual(mutations(h),[]);
 });

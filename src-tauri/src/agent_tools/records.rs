@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) async fn get_grades(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (json_str, _) = db
         .get_data_cache("grades")?
         .ok_or_else(|| "成績データがまだ取得されていません".to_string())?;
@@ -62,7 +62,7 @@ fn read_cache_entries(
 }
 
 pub(super) async fn get_cancellations(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     read_cache_entries(
         &db,
         "cancellations",
@@ -80,7 +80,7 @@ pub(super) async fn get_cancellations(app: &tauri::AppHandle) -> Result<Value, S
 }
 
 pub(super) async fn get_makeup_classes(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     read_cache_entries(
         &db,
         "makeup",
@@ -98,7 +98,7 @@ pub(super) async fn get_makeup_classes(app: &tauri::AppHandle) -> Result<Value, 
 }
 
 pub(super) async fn get_room_changes(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     read_cache_entries(
         &db,
         "rooms",
@@ -116,7 +116,7 @@ pub(super) async fn get_room_changes(app: &tauri::AppHandle) -> Result<Value, St
 }
 
 pub(super) async fn get_registration(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let (json_str, _) = db
         .get_data_cache("registration")?
         .ok_or_else(|| "履修データがまだ取得されていません".to_string())?;
@@ -163,7 +163,7 @@ pub(super) async fn get_registration(app: &tauri::AppHandle) -> Result<Value, St
 }
 
 pub(super) async fn get_exam_timetable(app: &tauri::AppHandle) -> Result<Value, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     read_cache_entries(
         &db,
         "exam_timetable",

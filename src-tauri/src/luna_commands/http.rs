@@ -5,11 +5,15 @@ use crate::LunaState;
 
 /// Briefly lock Luna client, check auth and clone http. Releases lock immediately.
 pub(super) async fn luna_http(state: &LunaState) -> Result<reqwest::Client, String> {
-    let luna = state.client.lock().await;
-    if !luna.authenticated {
+    if crate::session_coordinator::SESSIONS.signed_out() {
+        return Err(crate::session_coordinator::CANCELLED.into());
+    }
+
+    let luna = state.session();
+    if !luna.has_credentials() {
         return Err(luna_client::LUNA_AUTH_REQUIRED_MSG.into());
     }
-    Ok(luna.http.clone())
+    Ok(luna.http().clone())
 }
 
 /// Luna GET: fetch a page without holding the lock.

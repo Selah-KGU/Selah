@@ -7,6 +7,8 @@ pub struct TokenData {
     pub refresh_token: String,
     /// Unix timestamp (seconds) when access_token expires
     pub expires_at: i64,
+    #[serde(default)]
+    pub connection_id: String,
 }
 
 /// A single mail message from Graph API

@@ -37,11 +37,15 @@ pub use weather::*;
 
 /// Briefly lock KGC client, check auth and clone http. Releases lock immediately.
 async fn kgc_http(state: &KgcState) -> Result<reqwest::Client, String> {
-    let client = state.client.lock().await;
-    if !client.is_authenticated() {
+    if crate::session_coordinator::SESSIONS.signed_out() {
+        return Err(crate::session_coordinator::CANCELLED.into());
+    }
+
+    let client = state.session();
+    if !client.has_credentials() {
         return Err(config::KGC_AUTH_REQUIRED_MSG.into());
     }
-    Ok(client.http.clone())
+    Ok(client.http().clone())
 }
 
 /// KGC GET: fetch a page without holding the lock.
@@ -78,16 +82,13 @@ pub(crate) async fn kgc_post(
 /// KGC fetch with gate + auth check, returning raw HTML (no early-return on error).
 async fn kgc_try_fetch(state: &KgcState, path: &str) -> Result<String, String> {
     let _kgc_gate = state.gate.lock().await;
-    let (http, is_auth) = {
-        let client = state.client.lock().await;
-        (client.http.clone(), client.is_authenticated())
-    };
-    if !is_auth {
+    let lease = state.session();
+    if !lease.has_credentials() {
         return Err(config::KGC_AUTH_REQUIRED_MSG.into());
     }
     let url = format!("{}{}", config::KG_COURSE_BASE, path);
     let result = client::fetch_with_redirect(
-        &http,
+        lease.http(),
         &url,
         config::KG_COURSE_BASE,
         client::SESSION_EXPIRED_MSG,
@@ -98,12 +99,20 @@ async fn kgc_try_fetch(state: &KgcState, path: &str) -> Result<String, String> {
         // KGC is intentionally short-lived. Once the server confirms expiry,
         // clear the stored session so background cache/notification loops stop
         // repeatedly hitting it. Cached data remains available to the UI.
-        state.client.lock().await.clear_session();
+        crate::session_coordinator::SESSIONS.validated(
+            &lease,
+            crate::session_coordinator::Health::NeedsLogin,
+            None,
+        )?;
         log::info!("KGC session expired; stopped background KGC requests");
     } else if result.is_ok() {
         // Persist any Set-Cookie values/timestamps returned by this successful
         // request. No expiry is fabricated or extended locally.
-        state.client.lock().await.save_session();
+        crate::session_coordinator::SESSIONS.validated(
+            &lease,
+            crate::session_coordinator::Health::Valid,
+            None,
+        )?;
     }
     result
 }
@@ -163,7 +172,7 @@ macro_rules! kgc_fetch_cached {
 #[tauri::command]
 pub async fn fetch_grades(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::GradesData, String> {
     kgc_fetch_cached!(
         state,
@@ -178,7 +187,7 @@ pub async fn fetch_grades(
 #[tauri::command]
 pub async fn fetch_cancellations(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::CancellationsData, String> {
     kgc_fetch_cached!(
         state,
@@ -193,7 +202,7 @@ pub async fn fetch_cancellations(
 #[tauri::command]
 pub async fn fetch_makeup_classes(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::MakeupData, String> {
     kgc_fetch_cached!(
         state,
@@ -208,7 +217,7 @@ pub async fn fetch_makeup_classes(
 #[tauri::command]
 pub async fn fetch_room_changes(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::RoomChangesData, String> {
     kgc_fetch_cached!(
         state,
@@ -223,7 +232,7 @@ pub async fn fetch_room_changes(
 #[tauri::command]
 pub async fn fetch_registration(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::RegistrationData, String> {
     kgc_fetch_cached!(
         state,
@@ -238,7 +247,7 @@ pub async fn fetch_registration(
 #[tauri::command]
 pub async fn fetch_exam_timetable(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::ExamTimetableData, String> {
     kgc_fetch_cached!(
         state,
@@ -252,7 +261,7 @@ pub async fn fetch_exam_timetable(
 #[tauri::command]
 pub async fn fetch_notifications(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::NotificationsData, String> {
     const PATH: &str = "/uniasv2/CPA010PLS01Action.do?REQ_FUNCTION_JUMP_START_FLG=1&PRD_FLG=1&REQ_PRFR_FUNC_ID=CPA010";
     match kgc_try_fetch(&state, PATH).await {
@@ -325,7 +334,7 @@ pub async fn fetch_page(state: State<'_, KgcState>, path: String) -> Result<Stri
 #[tauri::command]
 pub async fn fetch_course_detail(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     path: String,
 ) -> Result<parser::CourseDetail, String> {
     if !path.starts_with("/uniasv2/") {
@@ -375,11 +384,11 @@ pub async fn open_detail_window(
 #[tauri::command]
 pub async fn fetch_student_profile(
     state: State<'_, KgcState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<parser::StudentInfo, String> {
     let (http, is_auth) = {
-        let client = state.client.lock().await;
-        (client.http.clone(), client.is_authenticated())
+        let client = state.session();
+        (client.http().clone(), client.has_credentials())
     };
     if !is_auth {
         // Try cache fallback
@@ -485,8 +494,8 @@ pub async fn debug_info(
     app: tauri::AppHandle,
     state: State<'_, KgcState>,
 ) -> Result<DebugInfo, String> {
-    let client = state.client.lock().await;
-    let (auth_status, username) = if let Some(session) = &client.session {
+    let client = state.session();
+    let (auth_status, username) = if let Some(session) = client.identity() {
         ("authenticated".to_string(), session.username.clone())
     } else {
         ("not_authenticated".to_string(), String::new())

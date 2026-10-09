@@ -37,11 +37,11 @@ async fn fetch_luna_attachment_bytes(
 ) -> Result<Vec<u8>, String> {
     let luna_state = app.state::<crate::LunaState>();
     let http = {
-        let luna = luna_state.client.lock().await;
-        if !luna.authenticated {
+        let luna = luna_state.session();
+        if !luna.has_credentials() {
             return Err(crate::luna_client::LUNA_AUTH_REQUIRED_MSG.into());
         }
-        luna.http.clone()
+        luna.http().clone()
     };
 
     let download_url = if attachment.url.is_empty() {
@@ -84,7 +84,7 @@ pub async fn resolve_luna_attachment_with_lid(
     attachment_name: &str,
     luna_id_filter: &str,
 ) -> Result<LunaAttachmentResolved, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let acts = db.get_all_luna_activities().unwrap_or_default();
 
     // Filter by luna_id if provided
@@ -144,7 +144,7 @@ pub async fn resolve_luna_attachment_with_lid(
             cache_age,
             row.detail_path
         );
-        let db = app.state::<Database>();
+        let db = app.state::<Database>().scope();
         let cache_key = format!("luna_detail_html:{}", row.detail_path);
         let _ = db.delete_data_cache(&cache_key);
 

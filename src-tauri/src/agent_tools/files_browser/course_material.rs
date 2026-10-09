@@ -80,11 +80,11 @@ pub async fn fetch_luna_course_contents_for_download(
 ) -> Result<crate::luna_parser::LunaCourseContents, String> {
     let luna_state = app.state::<crate::LunaState>();
     let http = {
-        let luna = luna_state.client.lock().await;
-        if !luna.authenticated {
+        let luna = luna_state.session();
+        if !luna.has_credentials() {
             return Err(crate::luna_client::LUNA_AUTH_REQUIRED_MSG.into());
         }
-        luna.http.clone()
+        luna.http().clone()
     };
 
     let course_url = format!(
@@ -126,7 +126,7 @@ pub async fn fetch_luna_course_contents_for_download(
     contents.surveys = surveys;
 
     if let Ok(json) = serde_json::to_string(&contents) {
-        let db = app.state::<Database>();
+        let db = app.state::<Database>().scope();
         let _ = db.save_data_cache(&format!("luna_course:{}", luna_id), &json);
     }
     Ok(contents)
@@ -137,7 +137,7 @@ async fn find_course_material_file(
     luna_id: &str,
     filename: &str,
 ) -> Result<Option<MatchedCourseMaterial>, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     if let Some(contents) = cached_luna_course_contents(&db, luna_id) {
         if let Some(matched) = match_material_file(&contents, filename) {
             return Ok(Some(matched));
@@ -157,7 +157,7 @@ pub async fn download_course_material_from_contents(
         return Ok(None);
     };
     if matched.course_name.trim().is_empty() {
-        let db = app.state::<Database>();
+        let db = app.state::<Database>().scope();
         matched.course_name = db
             .get_luna_courses()
             .unwrap_or_default()
@@ -227,7 +227,7 @@ pub async fn auto_download_missing_file(
         .and_then(|n| n.to_str())
         .unwrap_or_default();
 
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let acts = db.get_all_luna_activities().unwrap_or_default();
 
     let mut candidate_acts: Vec<_> = if !course_dir_name.is_empty() {
@@ -384,7 +384,7 @@ pub async fn download_course_material(
             }
         }
 
-        let db = app.state::<Database>();
+        let db = app.state::<Database>().scope();
         let sub_acts: Vec<_> = db
             .get_all_luna_activities()
             .unwrap_or_default()
@@ -420,7 +420,7 @@ pub async fn download_course_material(
     }
 
     // Last resort: scan all course-material caches, then fall back to the broad activity sweep.
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     for course in db.get_luna_courses().unwrap_or_default() {
         match download_course_material_from_contents(app, &course.luna_id, &filename).await {
             Ok(Some(value)) => return Ok(value),

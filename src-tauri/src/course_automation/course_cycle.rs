@@ -19,7 +19,7 @@ pub(super) async fn run_course_inner(
     trigger: &str,
     force_all: bool,
 ) -> Result<(), String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let config = load_config(&db, luna_id, course_name_hint);
     let mut previous = load_status(&db, luna_id, course_name_hint);
     migrate_legacy_artifacts(&mut previous);

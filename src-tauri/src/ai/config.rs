@@ -12,6 +12,9 @@ pub struct AiConfig {
     pub provider: String, // "local" | "openai" | "openrouter" | "deepseek" | "gemini"
     pub local_model: String, // "apple-intelligence"; kept so saved configs stay valid
     pub api_key: String,
+    /// Runtime credential availability, never accepted from saved/user JSON.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub credential_error: Option<crate::keychain::StoreError>,
     pub model: String,
     pub base_url: String,
     pub max_tokens: u32,
@@ -121,6 +124,7 @@ impl Default for AiConfig {
             provider: "local".into(),
             local_model: crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID.into(),
             api_key: String::new(),
+            credential_error: None,
             model: OPENAI_DEFAULT_MODEL.into(),
             base_url: "https://api.openai.com/v1".into(),
             max_tokens: 0,
@@ -215,10 +219,12 @@ pub(in crate::ai) fn load_config() -> AiConfig {
             cfg.api_key = key; // keep in memory for this session
             persisted = true;
         }
-    } else if let Some(key) = crate::keychain::get_secret("ai_api_key") {
-        // Backed by the in-memory secret bundle (one keychain read per process),
-        // so calling this on every AI op no longer re-hits the keychain.
-        cfg.api_key = key;
+    } else {
+        match crate::keychain::get_secret("ai_api_key") {
+            Ok(Some(key)) => cfg.api_key = key,
+            Ok(None) => {}
+            Err(error) => cfg.credential_error = Some(error),
+        }
     }
 
     demote_unsupported_local_provider(&mut cfg);
@@ -254,10 +260,11 @@ pub(in crate::ai) fn save_config(config: &AiConfig) -> Result<(), String> {
     if !config.api_key.is_empty() {
         crate::keychain::set_secret("ai_api_key", &config.api_key)?;
     } else {
-        crate::keychain::delete_secret("ai_api_key");
+        crate::keychain::delete_secrets(&["ai_api_key"])?;
     }
 
     let mut disk_cfg = config.clone();
+    disk_cfg.credential_error = None;
     disk_cfg.api_key = String::new(); // strip secret from JSON
     save_config_to_disk(&disk_cfg)
 }
@@ -363,5 +370,44 @@ mod tests {
             custom.local_model,
             crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID
         );
+    }
+}
+
+impl AiConfig {
+    pub(crate) fn ensure_credentials_readable(&self) -> Result<(), String> {
+        if self.provider != "local" {
+            if let Some(error) = &self.credential_error {
+                return Err(error.to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+    #[test]
+    fn unreadable_remote_credential_is_explicit_and_not_persisted_as_input() {
+        let config = AiConfig {
+            provider: "openai".into(),
+            credential_error: Some(crate::keychain::StoreError::new(
+                "locked",
+                "unlock required",
+            )),
+            ..AiConfig::default()
+        };
+        assert_eq!(
+            config.ensure_credentials_readable().unwrap_err(),
+            "unlock required"
+        );
+        let json = serde_json::to_string(&config).unwrap();
+        let decoded: AiConfig = serde_json::from_str(&json).unwrap();
+        assert!(decoded.credential_error.is_none());
+        let local = AiConfig {
+            provider: "local".into(),
+            ..config
+        };
+        assert!(local.ensure_credentials_readable().is_ok());
     }
 }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::db::{CacheDeltaRow, Database};
-use crate::timetable::{build_schedule_snapshot, ScheduleResponse};
+use crate::timetable::{build_schedule_snapshot_from_db, ScheduleResponse};
 
 const LIVE_TODO_CACHE_KEY: &str = "live_generated_todo";
 
@@ -16,12 +16,10 @@ pub async fn get_backend_task_timestamps<R: tauri::Runtime>(
     keys: Vec<String>,
     include_schedule: bool,
 ) -> Result<tauri::ipc::Response, String> {
+    let db = app.state::<Database>().scope();
     reply(
         "更新時刻の読み込みに失敗しました",
-        move || {
-            app.state::<Database>()
-                .cache_timestamps(&keys, include_schedule)
-        },
+        move || db.cache_timestamps(&keys, include_schedule),
     )
     .await
 }
@@ -56,10 +54,11 @@ pub async fn get_frontend_cache_batch<R: tauri::Runtime>(
     include_schedule: bool,
     known_schedule_stamp: Option<String>,
 ) -> Result<tauri::ipc::Response, String> {
+    let db = app.state::<Database>().scope();
     // Read, rebuild, encode and dispose large rows on the same worker.
     reply(
         "キャッシュの読み込みに失敗しました",
-        move || load_frontend_cache_batch(&app, queries, include_schedule, known_schedule_stamp),
+        move || load_batch_from_db(&db, queries, include_schedule, known_schedule_stamp),
     )
     .await
 }
@@ -77,7 +76,20 @@ pub(crate) fn load_frontend_cache_batch<R: tauri::Runtime>(
     include_schedule: bool,
     known_schedule_stamp: Option<String>,
 ) -> Result<FrontendCacheBatch, String> {
-    let db = app.state::<Database>();
+    load_batch_from_db(
+        &app.state::<Database>().scope(),
+        queries,
+        include_schedule,
+        known_schedule_stamp,
+    )
+}
+
+fn load_batch_from_db(
+    db: &Database,
+    queries: Vec<CacheStampQuery>,
+    include_schedule: bool,
+    known_schedule_stamp: Option<String>,
+) -> Result<FrontendCacheBatch, String> {
     let mut requests: Vec<_> = queries
         .into_iter()
         .map(|query| (query.key, query.known_revision))
@@ -112,7 +124,7 @@ pub(crate) fn load_frontend_cache_batch<R: tauri::Runtime>(
         include_schedule && known_schedule_stamp.as_deref() == Some(schedule_stamp.as_str());
 
     let schedule = if include_schedule && !schedule_unchanged {
-        Some(build_schedule_snapshot(app)?)
+        Some(build_schedule_snapshot_from_db(db)?)
     } else {
         None
     };

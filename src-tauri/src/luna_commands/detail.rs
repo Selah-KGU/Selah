@@ -185,7 +185,7 @@ fn unstable_detail_error_message(kind: &str) -> String {
 #[tauri::command]
 pub async fn luna_fetch_detail(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     path: String,
     expected_title: Option<String>,
 ) -> Result<luna_parser::LunaDetailPage, String> {
@@ -336,7 +336,7 @@ pub async fn luna_fetch_detail(
 #[tauri::command]
 pub async fn luna_fetch_announcement_detail(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     idnumber: String,
     info_id: String,
     expected_title: Option<String>,

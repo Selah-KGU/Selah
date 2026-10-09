@@ -56,7 +56,7 @@ pub async fn debug_snapshot(app: &AppHandle) -> NotificationDebugInfo {
         is_kwic_authenticated(app),
         is_mail_authenticated(app)
     );
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let authenticated_sources: Vec<&str> = [
         ("kgc", kgc_authenticated),
         ("luna", luna_authenticated),
@@ -135,7 +135,11 @@ pub async fn sync_notification_sources(
     }
     let _guard = RunningGuard(&state.running);
 
-    sync_notifications_inner(app, keys, force).await
+    crate::db::account_work(
+        crate::db::capture_account(),
+        sync_notifications_inner(app, keys, force),
+    )
+    .await
 }
 
 fn source_wanted(keys: Option<&std::collections::BTreeSet<String>>, key: &str) -> bool {
@@ -188,7 +192,7 @@ async fn sync_notifications_inner(
         is_kwic_authenticated(app),
         is_mail_authenticated(app)
     );
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let now = epoch_secs();
     let fast_max_age = crate::background_refresh::fast_cache_max_age_secs(
         crate::background_refresh::is_app_focused(app),
@@ -347,7 +351,7 @@ async fn sync_notifications_inner(
             let before = db.cache_payload("mail_inbox");
             match crate::mail_commands::fetch_inbox_internal(app, 20, 0).await {
                 Ok(items) => {
-                    sync_mail_notifications(app, &cfg, items, suppress_push, &mut run);
+                    sync_mail_notifications(app, &db, &cfg, items, suppress_push, &mut run);
                     if db.cache_payload("mail_inbox") != before {
                         updated_keys.push("mail_inbox".to_string());
                     }
@@ -356,13 +360,13 @@ async fn sync_notifications_inner(
                     log::warn!("notification sync: mail fetch failed: {}", e);
                     run.fetch_failures.push(format!("mail: {}", e));
                     sync_cached_notifications(&db, "mail_inbox", |items: Vec<MailMessage>| {
-                        sync_mail_notifications(app, &cfg, items, suppress_push, &mut run);
+                        sync_mail_notifications(app, &db, &cfg, items, suppress_push, &mut run);
                     });
                 }
             }
         } else {
             sync_cached_notifications(&db, "mail_inbox", |items: Vec<MailMessage>| {
-                sync_mail_notifications(app, &cfg, items, suppress_push, &mut run);
+                sync_mail_notifications(app, &db, &cfg, items, suppress_push, &mut run);
             });
         }
     }
@@ -409,7 +413,8 @@ where
 }
 
 async fn fetch_kgc_notifications(app: &AppHandle) -> Result<NotificationsData, String> {
-    crate::commands::fetch_notifications(app.state::<KgcState>(), app.state::<Database>()).await
+    crate::commands::fetch_notifications(app.state::<KgcState>(), app.state::<Database>().scope())
+        .await
 }
 
 fn cache_updated_at(db: &Database, key: &str) -> Option<i64> {
@@ -419,28 +424,28 @@ fn cache_updated_at(db: &Database, key: &str) -> Option<i64> {
 async fn fetch_luna_notifications(
     app: &AppHandle,
 ) -> Result<Vec<crate::luna_parser::LunaNotification>, String> {
-    crate::luna_commands::luna_fetch_updates(app.state::<LunaState>(), app.state::<Database>())
-        .await
+    crate::luna_commands::luna_fetch_updates(
+        app.state::<LunaState>(),
+        app.state::<Database>().scope(),
+    )
+    .await
 }
 
 async fn fetch_kwic_home(app: &AppHandle) -> Result<KwicPortalHome, String> {
-    crate::kwic_commands::kwic_fetch_home(app.state::<KwicState>(), app.state::<Database>()).await
+    crate::kwic_commands::kwic_fetch_home(app.state::<KwicState>(), app.state::<Database>().scope())
+        .await
 }
 
 async fn is_kgc_authenticated(app: &AppHandle) -> bool {
-    app.state::<KgcState>()
-        .client
-        .lock()
-        .await
-        .is_authenticated()
+    app.state::<KgcState>().session().has_credentials()
 }
 
 async fn is_luna_authenticated(app: &AppHandle) -> bool {
-    app.state::<LunaState>().client.lock().await.authenticated
+    app.state::<LunaState>().session().has_credentials()
 }
 
 async fn is_kwic_authenticated(app: &AppHandle) -> bool {
-    app.state::<KwicState>().client.lock().await.authenticated
+    app.state::<KwicState>().session().has_credentials()
 }
 
 async fn is_mail_authenticated(app: &AppHandle) -> bool {

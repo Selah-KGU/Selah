@@ -3,8 +3,8 @@
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
   import { demoMode } from "./lib/demoStore";
-  import { authState, sessionExpired, invalidateCache, activeTab } from "./lib/stores";
-  import { restoreAllSessions, startBackgroundPolling, stopBackgroundPolling, serviceRegistry, liveHasActiveSession } from "./lib/api";
+  import { universityLoginPersistencePending, authState, sessionExpired, invalidateCache, activeTab } from "./lib/stores";
+  import { openSettingsWindow, restoreAllSessions, startBackgroundPolling, stopBackgroundPolling, serviceRegistry, liveHasActiveSession } from "./lib/api";
   import { ResourceScope } from "./lib/resourceScope";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
   import { startSilentUpdateCheck } from "./lib/updater";
@@ -162,10 +162,27 @@
     </div>
   </main>
 {:else}
-  <Dashboard />
+  {#if $universityLoginPersistencePending && !$demoMode}
+    <div class="login-persistence-notice" role="status">
+      ログイン済みですが、認証情報の保存は未完了です。
+      <button onclick={() => openSettingsWindow("session")}>設定で保存を再試行</button>
+    </div>
+  {/if}
+  <div class="dashboard-host"><Dashboard /></div>
 {/if}
 
 <style>
+  .login-persistence-notice {
+    padding: 8px 16px 8px 84px;
+    flex-shrink: 0;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    font-size: 12px;
+  }
+  .dashboard-host { flex: 1; min-height: 0; }
+  .dashboard-host :global(.dashboard) { height: 100%; min-height: 0; }
+  .login-persistence-notice button { margin-left: 8px; color: var(--blue); }
+
   .app-main {
     flex: 1;
     overflow: hidden;

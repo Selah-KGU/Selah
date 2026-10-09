@@ -33,6 +33,9 @@ use host::{macos_major, reload_timelines, write_snapshot};
 use snapshot::snapshot_from_db;
 
 pub fn publish(db: &Database) {
+    if db.ensure_current_account().is_err() {
+        return;
+    }
     if macos_major() < 14 {
         return;
     }

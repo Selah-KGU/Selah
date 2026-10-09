@@ -23,13 +23,14 @@ pub async fn fetch_luna_detail_html_fresh(
     app: &tauri::AppHandle,
     detail_path: &str,
 ) -> Result<String, String> {
+    let db = app.state::<Database>().scope();
     let luna_state = app.state::<crate::LunaState>();
     let http = {
-        let luna = luna_state.client.lock().await;
-        if !luna.authenticated {
+        let luna = luna_state.session();
+        if !luna.has_credentials() {
             return Err(crate::luna_client::LUNA_AUTH_REQUIRED_MSG.into());
         }
-        luna.http.clone()
+        luna.http().clone()
     };
     let url = format!("{}{}", crate::config::LUNA_BASE, detail_path);
     let html = crate::client::fetch_with_redirect(
@@ -41,7 +42,6 @@ pub async fn fetch_luna_detail_html_fresh(
     )
     .await
     .map_err(|error| format!("Luna取得失敗: {}", error))?;
-    let db = app.state::<Database>();
     let _ = db.save_data_cache(&format!("luna_detail_html:{}", detail_path), &html);
     Ok(html)
 }
@@ -50,7 +50,7 @@ async fn fetch_luna_detail_html_inner(
     app: &tauri::AppHandle,
     detail_path: &str,
 ) -> Result<(String, i64), String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let cache_key = format!("luna_detail_html:{}", detail_path);
 
     // Check SQLite cache first
@@ -66,9 +66,9 @@ async fn fetch_luna_detail_html_inner(
         // Try requesting online, but if session expired/offline, fallback to the expired cache instead of breaking!
         let luna_state = app.state::<crate::LunaState>();
         let http_opt = {
-            let luna = luna_state.client.lock().await;
-            if luna.authenticated {
-                Some(luna.http.clone())
+            let luna = luna_state.session();
+            if luna.has_credentials() {
+                Some(luna.http().clone())
             } else {
                 None
             }
@@ -99,11 +99,11 @@ async fn fetch_luna_detail_html_inner(
     // Cache miss, must resolve online
     let luna_state = app.state::<crate::LunaState>();
     let http = {
-        let luna = luna_state.client.lock().await;
-        if !luna.authenticated {
+        let luna = luna_state.session();
+        if !luna.has_credentials() {
             return Err(crate::luna_client::LUNA_AUTH_REQUIRED_MSG.into());
         }
-        luna.http.clone()
+        luna.http().clone()
     };
 
     let url = format!("{}{}", crate::config::LUNA_BASE, detail_path);

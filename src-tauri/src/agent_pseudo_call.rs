@@ -504,10 +504,9 @@ mod tests {
         // Detection accepts ASCII case variants; parsing remains case-sensitive.
         assert!(has_any("CALL:read_file {\"path\":\"/tmp/a.pdf\"}"));
         assert!(parse_any_raw("CALL:read_file {}").is_none());
-        let raw = parse_any_raw(
-            "<think>call:hidden</think>call:read_file {\"path\":\"/tmp/a.pdf\"}",
-        )
-        .unwrap();
+        let raw =
+            parse_any_raw("<think>call:hidden</think>call:read_file {\"path\":\"/tmp/a.pdf\"}")
+                .unwrap();
         assert_eq!(raw.name, "read_file");
         assert_eq!(raw.args["path"], "/tmp/a.pdf");
     }

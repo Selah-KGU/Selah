@@ -9,7 +9,7 @@ pub(super) async fn process_job(
     job: &Job,
 ) -> Result<CourseAutomationView, String> {
     let state = app.state::<CourseAutomationState>();
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     match &job.kind {
         JobKind::Cycle { force_all } => {
             // A full cycle rewrites the whole status from a snapshot, so it runs
@@ -93,6 +93,7 @@ pub(super) async fn enqueue_job(
 ) -> Result<CourseAutomationView, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let job = Job {
+        account: crate::db::capture_account(),
         luna_id,
         course_name,
         trigger: trigger.to_string(),
@@ -114,7 +115,7 @@ async fn reanalyze_one_document(
     course_name: &str,
     document_id: &str,
 ) -> Result<CourseAutomationView, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let status_snapshot = load_status(&db, luna_id, course_name);
     let existing = status_snapshot
         .document_analyses
@@ -215,7 +216,7 @@ async fn rebuild_memory(
     luna_id: &str,
     course_name: &str,
 ) -> Result<CourseAutomationView, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let status_snapshot = load_status(&db, luna_id, course_name);
     let analysed = status_snapshot
         .document_analyses
@@ -268,7 +269,7 @@ async fn confirm_print_category(
     course_name: &str,
     category: &str,
 ) -> Result<CourseAutomationView, String> {
-    let db = app.state::<Database>();
+    let db = app.state::<Database>().scope();
     let category = category.trim().to_string();
     if category.is_empty() {
         return Err("印刷タイプが指定されていません".into());
@@ -359,7 +360,7 @@ async fn run_course(
     // clear the running flag — otherwise the persisted status stays running and
     // the UI wedges with every button disabled.
     if let Err(error) = &outcome {
-        let db = app.state::<Database>();
+        let db = app.state::<Database>().scope();
         let mut status = load_status(&db, luna_id, course_name_hint);
         status.running = false;
         status.last_run = Some(epoch_secs());

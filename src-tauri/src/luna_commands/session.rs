@@ -33,44 +33,19 @@ pub async fn luna_fetch_page(state: State<'_, LunaState>, path: String) -> Resul
 
 /// Check if Luna session is valid
 #[tauri::command]
-pub async fn luna_check_session(state: State<'_, LunaState>) -> Result<bool, String> {
-    let (http, authenticated) = {
-        let luna = state.client.lock().await;
-        (luna.http.clone(), luna.authenticated)
-    };
-    if !authenticated {
-        return Ok(false);
-    }
-    // Validate against server without holding the lock
-    let url = format!("{}/lms/timetable", crate::config::LUNA_BASE);
-    match crate::client::fetch_with_redirect(
-        &http,
-        &url,
-        crate::config::LUNA_BASE,
-        crate::luna_client::LUNA_SESSION_EXPIRED_MSG,
-        crate::luna_client::is_luna_session_expired,
-    )
-    .await
-    {
-        Ok(_) => {
-            let luna = state.client.lock().await;
-            luna.save_session();
-            Ok(true)
-        }
-        Err(e) if e == crate::luna_client::LUNA_SESSION_EXPIRED_MSG => {
-            let mut luna = state.client.lock().await;
-            luna.authenticated = false;
-            Ok(false)
-        }
-        Err(e) => Err(e),
-    }
+pub(crate) async fn luna_check_session(
+    _state: State<'_, LunaState>,
+) -> Result<crate::session_coordinator::ServiceStatus, crate::session_coordinator::SessionError> {
+    let service = crate::session_coordinator::Service::Luna;
+    crate::session_coordinator::verify(service).await?;
+    Ok(crate::session_coordinator::SESSIONS.snapshot().services[service.index()].clone())
 }
 
 /// Fetch parsed TODO list
 #[tauri::command]
 pub async fn luna_fetch_todo(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<Vec<luna_parser::LunaTodoItem>, String> {
     luna_fetch_cached(
         &state,
@@ -86,7 +61,7 @@ pub async fn luna_fetch_todo(
 #[tauri::command]
 pub async fn luna_fetch_updates(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
 ) -> Result<Vec<luna_parser::LunaNotification>, String> {
     luna_fetch_cached(
         &state,

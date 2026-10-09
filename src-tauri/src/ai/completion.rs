@@ -225,6 +225,7 @@ pub(in crate::ai) async fn chat_completion(
     config: &AiConfig,
     messages: Vec<ChatMessage>,
 ) -> Result<String, String> {
+    config.ensure_credentials_readable()?;
     if !config.ai_enabled {
         return Err("AI機能が無効になっています。設定画面で有効にしてください。".into());
     }

@@ -223,7 +223,7 @@ fn schedule_builder_reads_and_decodes_saved_metadata_once() {
             .manage(db)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let db = app.state::<Database>();
+        let db = app.state::<Database>().scope();
         let observer = SnapshotReads::observe(&db);
         let response = crate::timetable::build_schedule_snapshot(app.handle()).unwrap();
         assert_eq!(observer.count(), 1, "saved={saved}");

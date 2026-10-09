@@ -6,7 +6,7 @@ use super::*;
 #[tauri::command]
 pub async fn luna_fetch_survey_detail(
     state: State<'_, LunaState>,
-    db: State<'_, crate::db::Database>,
+    db: crate::db::AccountDb,
     path: String,
 ) -> Result<luna_parser::LunaSurveyDetail, String> {
     if path.starts_with("http") || !path.starts_with('/') {

@@ -1,4 +1,4 @@
-use reqwest::Client;
+use crate::oauth_http::Http;
 
 use crate::config;
 
@@ -20,12 +20,13 @@ impl super::MailClient {
     ) -> Result<serde_json::Value, String> {
         let access_token = self.ensure_token().await?;
 
-        let mut req = self.http.get(url).bearer_auth(&access_token);
+        let mut req = self.http.client.get(url).bearer_auth(&access_token);
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
-        let resp = req
-            .send()
+        let resp = self
+            .http
+            .send(req)
             .await
             .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
 
@@ -39,31 +40,30 @@ impl super::MailClient {
                 .ok_or("token lost after refresh")?
                 .access_token
                 .clone();
-            let mut req2 = self.http.get(url).bearer_auth(&new_token);
+            let mut req2 = self.http.client.get(url).bearer_auth(&new_token);
             for (k, v) in headers {
                 req2 = req2.header(*k, *v);
             }
-            let resp2 = req2
-                .send()
+            let resp2 = self
+                .http
+                .send(req2)
                 .await
                 .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
             if !resp2.status().is_success() {
-                self.clear_token();
+                self.clear_token()?;
                 return Err(config::MAIL_SESSION_EXPIRED_MSG.into());
             }
             return resp2
                 .json()
-                .await
                 .map_err(|e| format!("レスポンス解析失敗: {}", e));
         }
 
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text();
             return Err(format!("Graph APIエラー ({}): {}", status, body));
         }
 
         resp.json()
-            .await
             .map_err(|e| format!("レスポンス解析失敗: {}", e))
     }
 
@@ -72,9 +72,7 @@ impl super::MailClient {
         let access_token = self.ensure_token().await?;
         let resp = self
             .http
-            .get(url)
-            .bearer_auth(&access_token)
-            .send()
+            .send(self.http.client.get(url).bearer_auth(&access_token))
             .await
             .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
         let status = resp.status();
@@ -88,36 +86,27 @@ impl super::MailClient {
                 .clone();
             let resp2 = self
                 .http
-                .get(url)
-                .bearer_auth(&new_token)
-                .send()
+                .send(self.http.client.get(url).bearer_auth(&new_token))
                 .await
                 .map_err(|e| format!("Graph APIリクエスト失敗: {}", e))?;
             if !resp2.status().is_success() {
-                self.clear_token();
+                self.clear_token()?;
                 return Err(config::MAIL_SESSION_EXPIRED_MSG.into());
             }
-            return resp2
-                .bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(|e| format!("レスポンス読み込み失敗: {}", e));
+            return Ok(resp2.bytes());
         }
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text();
             return Err(format!("Graph APIエラー ({}): {}", status, body));
         }
-        resp.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| format!("レスポンス読み込み失敗: {}", e))
+        Ok(resp.bytes())
     }
 }
 
 /// Lock-free Graph API GET. Returns Err((msg, needs_reauth)).
 /// On 401, returns Err with needs_reauth=true so callers can re-lock and retry.
 pub async fn graph_get_lockfree(
-    http: &Client,
+    http: &Http,
     url: &str,
     token: &str,
 ) -> Result<serde_json::Value, (String, bool)> {
@@ -127,17 +116,17 @@ pub async fn graph_get_lockfree(
 /// Same as [`graph_get_lockfree`] but allows passing extra request headers
 /// (e.g. `Prefer: outlook.body-content-type="text"` to fetch plain-text bodies).
 pub async fn graph_get_lockfree_with_headers(
-    http: &Client,
+    http: &Http,
     url: &str,
     token: &str,
     headers: &[(&str, &str)],
 ) -> Result<serde_json::Value, (String, bool)> {
-    let mut req = http.get(url).bearer_auth(token);
+    let mut req = http.client.get(url).bearer_auth(token);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let resp = req
-        .send()
+    let resp = http
+        .send(req)
         .await
         .map_err(|e| (format!("Graph APIリクエスト失敗: {}", e), false))?;
 
@@ -146,10 +135,9 @@ pub async fn graph_get_lockfree_with_headers(
         return Err((config::MAIL_SESSION_EXPIRED_MSG.into(), true));
     }
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text();
         return Err((format!("Graph APIエラー ({}): {}", status, body), false));
     }
     resp.json()
-        .await
         .map_err(|e| (format!("レスポンス解析失敗: {}", e), false))
 }

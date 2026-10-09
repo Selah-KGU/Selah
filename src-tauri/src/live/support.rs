@@ -157,6 +157,7 @@ pub(in crate::live) fn live_ai_config() -> Result<crate::ai::AiConfig, String> {
 pub(in crate::live) fn validate_live_ai_config(
     cfg: crate::ai::AiConfig,
 ) -> Result<crate::ai::AiConfig, String> {
+    cfg.ensure_credentials_readable()?;
     if !cfg.ai_enabled {
         return Err("Live要約にはAIを有効にしてください".into());
     }
