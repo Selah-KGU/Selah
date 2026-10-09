@@ -23,15 +23,14 @@ use objc2_foundation::{
     NSArray, NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect,
     NSSize, NSString,
 };
-use objc2_quartz_core::{kCAGradientLayerConic, CAGradientLayer, CAShapeLayer, CATransaction};
-use serde_json::Value;
+use objc2_quartz_core::{kCAGradientLayerConic, CAGradientLayer, CAShapeLayer};
 use std::ptr::NonNull;
 use tauri::{AppHandle, Emitter, Listener, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-use crate::agent;
 use crate::commands::NativeAgentConfig;
-use crate::db::Database;
+use crate::latest_ui_mailbox::{CurrentUiValue, LatestUiMailbox};
+use crate::macos_layer_transaction::suppress_implicit_animations;
 use crate::stt;
 
 #[path = "macos_native_agent/capsule_ui.rs"]
@@ -47,21 +46,18 @@ mod state;
 #[path = "macos_native_agent/theme.rs"]
 mod theme;
 
-use capsule_ui::{
-    apply_theme, close_panel, ensure_panel, start_listen_pulse_animation,
-    start_processing_dots_animation, update_border, update_text,
-};
+use capsule_ui::{apply_theme, close_panel, close_panel_if_current, enqueue_view_update};
 use markdown::{build_markdown_attributed, srgb};
 
 pub use flow::setup;
 use flow::{
-    cancel_auto_close, clear_agent_listener, ease_out_quart, submit_to_agent,
-    suppress_implicit_animations, transition_to_listening, transition_to_notice,
+    cancel_auto_close, capture_error, clear_agent_stream, compute_result_height, ease_out_quart,
+    schedule_close,
 };
 pub use shortcut::apply_config;
-use shortcut::schedule_release_finalize;
 use state::{
-    append_final_segment, consume_all_speech, listening_display_text, CapsuleMode, SHARED,
+    consume_all_speech, listening_display_text, CapsuleMode, NativeViewLease, NativeViewUpdate,
+    SHARED,
 };
 use theme::Theme;
 
@@ -114,8 +110,8 @@ const RESULT_AUTO_CLOSE_SECS: u64 = 14;
 const NOTICE_AUTO_CLOSE_MS: u64 = 1800;
 const FN_POLL_IDLE_MS: u64 = 100;
 // Held interval must stay well below SHORTCUT_HOLD_MS so a release polled
-// at the same instant the hold timer fires can race-update SHORTCUT_DOWN
-// before the timer reads it. 25ms preserves the original safety margin.
+// at the same instant the hold timer fires can invalidate the held intent
+// before admission. 25ms preserves the original safety margin.
 const FN_POLL_HELD_MS: u64 = 25;
 const SHORTCUT_HOLD_MS: u64 = 140;
 const RELEASE_FINALIZE_DELAY_MS: u64 = 180;
@@ -134,10 +130,19 @@ static BORDER_TOKEN: AtomicU64 = AtomicU64::new(0);
 static AUTO_CLOSE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static FN_PRESSED: AtomicBool = AtomicBool::new(false);
 static FN_POLL_TOKEN: AtomicU64 = AtomicU64::new(0);
-static SHORTCUT_DOWN: AtomicBool = AtomicBool::new(false);
-static SHORTCUT_ARM_TOKEN: AtomicU64 = AtomicU64::new(0);
 static RELEASE_FINALIZE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static DOTS_TOKEN: AtomicU64 = AtomicU64::new(0);
 static LISTEN_PULSE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static SHORTCUT_REGISTERED: std::sync::LazyLock<Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Native state → STT reservation lock order; no UI/IO inside this guard.
+pub(crate) fn with_capture_owner<T>(
+    input_id: &str,
+    reserve: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let state = SHARED
+        .lock()
+        .map_err(|_| "Native input state lock failed".to_string())?;
+    state.reserve_listening_capture(input_id, reserve)
+}

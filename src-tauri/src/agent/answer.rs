@@ -203,6 +203,7 @@ enum VisibleStreamMode {
 const VISIBLE_PSEUDO_HOLD_CHARS: usize = 64;
 
 struct VisibleAnswerGuard {
+    owner: Option<std::sync::Arc<crate::agent_turn_scope::Turn>>,
     app: AppHandle,
     conv_id: String,
     visible_chars: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -216,7 +217,9 @@ impl VisibleAnswerGuard {
         conv_id: String,
         visible_chars: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) -> Self {
+        let owner = crate::agent_turn_scope::current(&conv_id);
         Self {
+            owner,
             app,
             conv_id,
             visible_chars,
@@ -283,8 +286,7 @@ impl VisibleAnswerGuard {
     }
 
     fn emit(&self, ev: StreamEvent<'_>) {
-        let topic = format!("agent_stream:{}", self.conv_id);
-        let _ = self.app.emit(&topic, &ev);
+        emit_owned(&self.app, &self.conv_id, &ev, self.owner.as_deref());
     }
 }
 
@@ -354,7 +356,14 @@ pub(super) fn build_answer_messages(
     };
     let history_chars = if local { 220 } else { 1200 };
     let user_content = if local {
-        local_text(user_text, 400)
+        local_text(
+            user_text,
+            if turn_context.has_documents {
+                1800
+            } else {
+                400
+            },
+        )
     } else {
         user_text.to_string()
     };
@@ -385,12 +394,10 @@ pub(super) fn build_answer_messages(
         system.push_str("\n\n<tool_results>\n");
         let result_limit = if local { 3 } else { tool_results.len() };
         for (name, value) in tool_results.iter().take(result_limit) {
-            let sanitized = sanitize_answer_tool_result(value);
             let rendered = if local {
-                render_local_json(&sanitized, 180)
+                render_local_json(&sanitize_answer_tool_result(value), 180)
             } else {
-                let json_str = serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".into());
-                trim_to(&json_str, tool_result_chars)
+                tool_result::json_prefix(value, tool_result_chars)
             };
             system.push_str(&format!("[{}] {}\n", name, rendered));
         }
@@ -399,9 +406,9 @@ pub(super) fn build_answer_messages(
 
     let current_names: HashSet<&str> = tool_results.iter().map(|(n, _)| n.as_str()).collect();
     let recent_limit = if local { 1 } else { CFG.recent_tool_context };
-    let recent: Vec<(String, String)> = recent_tool_results(history, recent_limit)
+    let recent: Vec<(&str, &str)> = recent_tool_results(history, recent_limit)
         .into_iter()
-        .filter(|(name, _)| !current_names.contains(name.as_str()))
+        .filter(|(name, _)| !current_names.contains(name))
         .collect();
     if !recent.is_empty() {
         system.push_str("\n<recent_tool_results>\n");
@@ -412,11 +419,16 @@ pub(super) fn build_answer_messages(
                     Err(_) => local_text(json, 120),
                 }
             } else {
-                let sanitized = serde_json::from_str::<Value>(json)
-                    .map(|v| sanitize_answer_tool_result(&v))
-                    .unwrap_or_else(|_| Value::String(trim_to(json, recent_chars)));
-                let safe_json = serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".into());
-                trim_to(&safe_json, recent_chars)
+                match serde_json::from_str::<Value>(json) {
+                    Ok(value) => tool_result::json_prefix(&value, recent_chars),
+                    Err(_) => {
+                        // Preserve the existing literal fallback for malformed
+                        // history. Its input is already bounded before encoding.
+                        let text = Value::String(trim_to(json, recent_chars));
+                        let encoded = serde_json::to_string(&text).unwrap_or_else(|_| "{}".into());
+                        trim_to(&encoded, recent_chars)
+                    }
+                }
             };
             system.push_str(&format!("[{}] {}\n", name, rendered));
         }
@@ -500,10 +512,7 @@ pub(super) fn estimate_tokens(text: &str) -> usize {
     text.len() / 3 + 1
 }
 
-fn recent_tool_results(
-    history: &[crate::db::AgentMessageRow],
-    limit: usize,
-) -> Vec<(String, String)> {
+fn recent_tool_results(history: &[crate::db::AgentMessageRow], limit: usize) -> Vec<(&str, &str)> {
     history
         .iter()
         .rev()
@@ -511,7 +520,7 @@ fn recent_tool_results(
             if row.role != "tool" {
                 return None;
             }
-            Some((row.tool_name.clone()?, row.tool_result_json.clone()?))
+            Some((row.tool_name.as_deref()?, row.tool_result_json.as_deref()?))
         })
         .take(limit)
         .collect::<Vec<_>>()
@@ -525,16 +534,7 @@ pub(super) fn sanitize_answer_tool_result(value: &Value) -> Value {
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (key, val) in map {
-                if matches!(
-                    key.as_str(),
-                    "download_action"
-                        | "download_params"
-                        | "object_name"
-                        | "action"
-                        | "_cid"
-                        | "form_params"
-                        | "data_base64"
-                ) {
+                if tool_result::hidden_field(key) {
                     continue;
                 }
                 out.insert(key.clone(), sanitize_answer_tool_result(val));

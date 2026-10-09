@@ -44,13 +44,23 @@ fn is_text_preview_ext(path: &std::path::Path) -> bool {
 }
 
 #[tauri::command]
-pub fn get_download_preview(path: String) -> Result<Option<DownloadPreview>, String> {
+pub async fn get_download_preview(path: String) -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "Download preview worker failed",
+        "Download preview encoding failed",
+        move || {
+            let canonical = validate_downloads_path(&path)?;
+            preview_for_file(&canonical)
+        },
+    )
+    .await
+}
+
+fn preview_for_file(canonical: &std::path::Path) -> Result<Option<DownloadPreview>, String> {
     const IMAGE_PREVIEW_MAX_BYTES: u64 = 10 * 1024 * 1024;
     const TEXT_PREVIEW_MAX_BYTES: u64 = 512 * 1024;
-    const TEXT_PREVIEW_CHARS: usize = 700;
 
-    let canonical = validate_downloads_path(&path)?;
-    let meta = std::fs::metadata(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
+    let meta = std::fs::metadata(canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
     if !meta.is_file() {
         return Ok(None);
     }
@@ -75,16 +85,9 @@ pub fn get_download_preview(path: String) -> Result<Option<DownloadPreview>, Str
         }
         let bytes = std::fs::read(&canonical).map_err(|e| format!("読み込み失敗: {}", e))?;
         let raw = String::from_utf8_lossy(&bytes);
-        let preview = raw
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let text: String = preview.chars().take(TEXT_PREVIEW_CHARS).collect();
-        if text.trim().is_empty() {
+        let Some(text) = preview_text(&raw) else {
             return Ok(None);
-        }
+        };
         return Ok(Some(DownloadPreview {
             kind: "text".to_string(),
             mime: "text/plain".to_string(),
@@ -95,3 +98,31 @@ pub fn get_download_preview(path: String) -> Result<Option<DownloadPreview>, Str
 
     Ok(None)
 }
+
+// Match trimmed nonempty lines joined by LF and the first 700 Unicode scalars,
+// but stop at the visible prefix instead of allocating an intermediate document.
+fn preview_text(raw: &str) -> Option<String> {
+    let mut remaining = 700;
+    let mut text = String::with_capacity(raw.len().min(700 * 4));
+    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if !text.is_empty() {
+            text.push('\n');
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+        }
+        for ch in line.chars().take(remaining) {
+            text.push(ch);
+            remaining -= 1;
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    (!text.trim().is_empty()).then_some(text)
+}
+
+#[cfg(test)]
+#[path = "preview_tests.rs"]
+mod tests;

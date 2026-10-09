@@ -1,88 +1,125 @@
 //! Caption sequencing, width spring, and fade animation.
 
 use super::*;
-use serde_json::Value;
+use crate::main_thread_animation::MainThreadAnimation;
 use std::ptr::null;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tauri::Manager;
 use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
 use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
 
-pub(super) fn claim_caption_seq(seq: u64) -> bool {
-    let last = LAST_CAPTION_SEQ.load(Ordering::SeqCst);
-    if seq > 0 && seq < last {
-        return false;
-    }
-    if seq > 0 {
-        LAST_CAPTION_SEQ.store(seq, Ordering::SeqCst);
-        return true;
-    }
-    // Unsequenced echo of a line the page already committed. Once a sequenced
-    // caption has been shown, that echo must not cover a newer partial.
-    last == 0
-}
-
-pub(super) fn payload_seq(payload: &Value) -> u64 {
-    payload
-        .get("seq")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0)
-}
-
-fn morph_to(target_w: i32) {
-    let Some(snapshot) = frame_snapshot() else {
-        return;
-    };
-    let token = MORPH_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+fn morph_to(app: AppHandle, target_w: i32) {
+    let animation = MainThreadAnimation::start(&MORPH_TOKEN);
     tauri::async_runtime::spawn(async move {
+        let Some(Some(snapshot)) = animation.read(&app, frame_snapshot).await else {
+            return;
+        };
         let mut spring = Spring::new(snapshot.width as f64);
         spring.set_target(target_w as f64);
         spring.vel = (target_w - snapshot.width) as f64 * 2.5;
-
         for _ in 0..90 {
-            if MORPH_TOKEN.load(Ordering::Relaxed) != token {
+            if !animation.is_current() {
                 return;
             }
             if !spring.tick() {
                 break;
             }
-            apply_frame(spring.pos.round() as i32, snapshot.center_x, snapshot.top_y);
+            let width = spring.pos.round() as i32;
+            if !animation
+                .frame(&app, move || {
+                    apply_frame(width, snapshot.center_x, snapshot.top_y)
+                })
+                .await
+            {
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
         }
-        apply_frame(target_w, snapshot.center_x, snapshot.top_y);
+        animation
+            .frame(&app, move || {
+                apply_frame(target_w, snapshot.center_x, snapshot.top_y)
+            })
+            .await;
     });
 }
 
-// For partial updates: debounce the morph so rapid STT partials don't restart the
-// spring animation on every word. Text is already displayed; only the width animation
-// is delayed until the text stabilizes.
-// For final/immediate: cancels any pending debounce and morphs right away.
-fn trigger_morph(target_w: i32, debounce: bool) {
-    let token = MORPH_DEBOUNCE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+// Only a current debounce may claim a new width animation on the main thread.
+fn trigger_morph(app: AppHandle, target_w: i32, debounce: bool) {
+    let request = MainThreadAnimation::start(&MORPH_DEBOUNCE_TOKEN);
     if debounce {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_millis(MORPH_DEBOUNCE_MS)).await;
-            if MORPH_DEBOUNCE_TOKEN.load(Ordering::Relaxed) != token {
-                return;
-            }
-            morph_to(target_w);
+            let app_morph = app.clone();
+            request
+                .frame(&app, move || morph_to(app_morph, target_w))
+                .await;
         });
     } else {
-        morph_to(target_w);
+        morph_to(app, target_w);
     }
 }
 
-pub(super) fn show_text(app: &AppHandle, text: String, is_final: bool) {
-    HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);
-
-    if !OVERLAY_OPEN.load(Ordering::Relaxed) {
+pub(super) fn show_caption(app: &AppHandle, caption: Caption) {
+    if !captions_enabled() {
         return;
     }
-
+    let Some(ticket) = CAPTION_MAILBOX.push(caption) else {
+        return;
+    };
     ensure_overlay_window(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Creation runs on the Win32 thread. Retain only the mailbox ticket
+        // while it is pending, so the first caption is not lost during startup.
+        while !HWND_READY.load(Ordering::Acquire) {
+            if !captions_enabled() || !CAPTION_MAILBOX.is_scheduled(ticket) {
+                CAPTION_MAILBOX.cancel(ticket);
+                return;
+            }
+            if !CREATING.load(Ordering::SeqCst) {
+                // Publication may finish between the loop's READY read and
+                // CREATING read. Recheck before treating creation as failed.
+                if HWND_READY.load(Ordering::Acquire) {
+                    break;
+                }
+                CAPTION_MAILBOX.cancel(ticket);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
+        }
+        let app_update = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            if !captions_enabled() {
+                CAPTION_MAILBOX.cancel(ticket);
+                return;
+            }
+            let Some(caption) = CAPTION_MAILBOX.take(ticket) else {
+                return;
+            };
+            if !caption.is_current()
+                || !app_update
+                    .state::<crate::live::LiveState>()
+                    .is_session_current(&caption.session_id)
+            {
+                return;
+            }
+            apply_caption(&app_update, caption);
+        }) {
+            CAPTION_MAILBOX.cancel(ticket);
+            log::warn!("subtitle overlay: text dispatch failed: {error}");
+        }
+    });
+}
 
+fn apply_caption(app: &AppHandle, caption: Caption) {
+    HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);
+    let Caption {
+        text,
+        session_id,
+        is_final,
+        ..
+    } = caption;
     let target_w = estimate_text_w(&text);
     // Extract hwnd and update text while holding the lock, then release the lock
     // before making cross-thread Win32 calls (SendMessage-based calls while holding
@@ -93,6 +130,7 @@ pub(super) fn show_text(app: &AppHandle, text: String, is_final: bool) {
             return;
         }
         state.text = text;
+        state.displayed_session_id = Some(session_id.clone());
         state.hwnd
     };
     let hwnd = hwnd_from_raw(hwnd);
@@ -104,55 +142,108 @@ pub(super) fn show_text(app: &AppHandle, text: String, is_final: bool) {
     // Partials are debounced: the spring only fires after the text has been stable
     // for MORPH_DEBOUNCE_MS, preventing jitter from rapid sequential STT updates.
     // Final transcripts trigger immediately and also cancel any pending debounce.
-    trigger_morph(target_w, !is_final);
+    trigger_morph(app.clone(), target_w, !is_final);
 
-    let start_alpha = frame_snapshot().map(|s| s.alpha).unwrap_or(0);
-    let fade_tok = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    let fade = MainThreadAnimation::start(&FADE_TOKEN);
+    let app_fade = app.clone();
     tauri::async_runtime::spawn(async move {
-        if start_alpha >= 250 {
+        let Some(Some(snapshot)) = fade.read(&app_fade, frame_snapshot).await else {
+            return;
+        };
+        if snapshot.alpha >= 250 {
             return;
         }
         for i in 0..=FADE_FRAMES {
-            if FADE_TOKEN.load(Ordering::Relaxed) != fade_tok {
+            let alpha = snapshot.alpha as f64
+                + (255.0 - snapshot.alpha as f64) * ease_out_quart(i as f64 / FADE_FRAMES as f64);
+            if !fade
+                .frame(&app_fade, move || {
+                    set_alpha(alpha.round().clamp(0.0, 255.0) as u8)
+                })
+                .await
+            {
                 return;
             }
-            let alpha = start_alpha as f64
-                + (255.0 - start_alpha as f64) * ease_out_quart(i as f64 / FADE_FRAMES as f64);
-            set_alpha(alpha.round().clamp(0.0, 255.0) as u8);
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
         }
     });
 
     if is_final {
-        schedule_fade_out(SUB_FADE_DELAY_SECS);
+        schedule_fade_out(app, SUB_FADE_DELAY_SECS, Some(session_id));
     }
 }
 
-pub(super) fn schedule_fade_out(delay_secs: u64) {
-    let token = HIDE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+pub(super) fn schedule_fade_out(app: &AppHandle, delay_secs: u64, expected_owner: Option<String>) {
+    let hide = MainThreadAnimation::start(&HIDE_TOKEN);
+    let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(delay_secs)).await;
-        if HIDE_TOKEN.load(Ordering::Relaxed) != token {
-            return;
-        }
-        let Some(snapshot) = frame_snapshot() else {
+        let app_hide = app.clone();
+        let Some(Some((fade, snapshot))) = hide
+            .read(&app, move || {
+                if !captions_enabled()
+                    || app_hide
+                        .state::<crate::live::LiveState>()
+                        .active_session_id()
+                        != expected_owner
+                {
+                    return None;
+                }
+                let snapshot = frame_snapshot()?;
+                trigger_morph(app_hide, SUB_MIN_W, false);
+                Some((MainThreadAnimation::start(&FADE_TOKEN), snapshot))
+            })
+            .await
+        else {
             return;
         };
-
-        trigger_morph(SUB_MIN_W, false);
-
-        let fade_tok = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         for i in (0..=FADE_FRAMES).rev() {
-            if FADE_TOKEN.load(Ordering::Relaxed) != fade_tok {
-                return;
-            }
-            let alpha = (255.0 * ease_out_quart(i as f64 / FADE_FRAMES as f64))
+            let alpha = (snapshot.alpha as f64 * ease_out_quart(i as f64 / FADE_FRAMES as f64))
                 .round()
                 .clamp(0.0, 255.0) as u8;
-            set_alpha(alpha);
+            if !fade.frame(&app, move || set_alpha(alpha)).await {
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
         }
-        set_alpha(0);
-        apply_frame(SUB_MIN_W, snapshot.center_x, snapshot.top_y);
+    });
+}
+
+pub(super) fn status_changed(app: &AppHandle, active: bool) {
+    let app_update = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if !captions_enabled() {
+            return;
+        }
+        let owner = app_update
+            .state::<crate::live::LiveState>()
+            .active_session_id();
+        if !active {
+            if owner.is_none() {
+                schedule_fade_out(&app_update, SUB_FADE_DELAY_SECS, None);
+            }
+            return;
+        }
+        let Some(owner) = owner else {
+            return;
+        };
+        ensure_overlay_window(&app_update);
+        let changed = {
+            let mut state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+            if state.displayed_session_id.as_deref() == Some(&owner) {
+                false
+            } else {
+                state.displayed_session_id = Some(owner);
+                state.text.clear();
+                true
+            }
+        };
+        if changed {
+            HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);
+            FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
+            MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
+            MORPH_DEBOUNCE_TOKEN.fetch_add(1, Ordering::Relaxed);
+            set_alpha(0);
+        }
     });
 }

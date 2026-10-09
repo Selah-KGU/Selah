@@ -2,7 +2,10 @@
  * Tray status cycling: collects data from cache and sends cycling items to the backend tray.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+import { ResourceScope } from "./resourceScope";
+import { LatestViewRead } from "./latestViewRead";
+import { TrayStatusRefresh, TrayStatusWriter } from "./trayStatusRefresh";
 import { onCacheUpdate, getCached, registerTask, updateTask } from "./stores";
 import type { LunaTodoItem, ScheduleResponse, KgcCourseRow } from "./types";
 import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "./types";
@@ -11,14 +14,12 @@ import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "./types";
 
 let timetableData: ScheduleResponse | null = null;
 let todoItems: LunaTodoItem[] = [];
-let liveTrayStatus: { active: boolean; listening: boolean; startedAtMs: number | null } | null = null;
+let activeRun: ResourceScope | null = null;
+const statusWriter = new TrayStatusWriter(items => invoke("set_tray_status_items", { items }));
 
-let unsubscribers: (() => void)[] = [];
-let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
-let trayStatusStarted = false;
-
-interface LiveSessionSnapshot {
+interface LiveTrayStatus {
   active: boolean;
+  listening: boolean;
   started_at: string | null;
 }
 
@@ -99,11 +100,11 @@ function formatElapsedMinutes(startedAtMs: number | null, nowMs: number): string
   return `${hours}時間${String(rest).padStart(2, "0")}分`;
 }
 
-function buildLiveStatusItem(nowMs: number): string | null {
-  if (!liveTrayStatus?.active) return null;
-  const elapsed = formatElapsedMinutes(liveTrayStatus.startedAtMs, nowMs);
+function buildLiveStatusItem(nowMs: number, live: LiveTrayStatus): string | null {
+  if (!live.active) return null;
+  const elapsed = formatElapsedMinutes(parseLiveStartedAt(live.started_at), nowMs);
   const suffix = elapsed ? ` ${elapsed}` : "";
-  return liveTrayStatus.listening ? `Live記録中${suffix}` : `Live一時停止${suffix}`;
+  return live.listening ? `Live記録中${suffix}` : `Live一時停止${suffix}`;
 }
 
 const GENERIC_TODO_TITLES = new Set([
@@ -173,10 +174,10 @@ function buildActiveUpcomingTodos(now: Date): TrayTodoItem[] {
     .sort((a, b) => a.deadline.dueMs - b.deadline.dueMs);
 }
 
-function buildStatusItems(): string[] {
+function buildStatusItems(live: LiveTrayStatus): string[] {
   const items: string[] = [];
   const now = new Date();
-  const liveItem = buildLiveStatusItem(now.getTime());
+  const liveItem = buildLiveStatusItem(now.getTime(), live);
   if (liveItem) items.push(liveItem);
 
   const todayDay = jsToUnifiedDay(now.getDay());
@@ -269,94 +270,74 @@ function buildStatusItems(): string[] {
   return items;
 }
 
-async function refreshLiveTrayStatus() {
-  try {
-    const [snapshot, running, caller] = await Promise.all([
-      invoke<LiveSessionSnapshot>("live_get_session"),
-      invoke<boolean>("stt_is_running"),
-      invoke<string | null>("stt_get_active_caller"),
-    ]);
-    liveTrayStatus = snapshot.active
-      ? {
-          active: true,
-          listening: running && caller === "live",
-          startedAtMs: parseLiveStartedAt(snapshot.started_at),
-        }
-      : null;
-  } catch {
-    liveTrayStatus = null;
-  }
-}
-
-function scheduleRebuild() {
-  if (rebuildTimer) clearTimeout(rebuildTimer);
-  rebuildTimer = setTimeout(async () => {
-    if (!trayStatusStarted) return;
-    updateTask("tray_status", { running: true });
-    await refreshLiveTrayStatus();
-    if (!trayStatusStarted) return;
-    const items = buildStatusItems();
-    invoke("set_tray_status_items", { items }).then(
-      () => updateTask("tray_status", { running: false, lastRunTs: Date.now(), lastOk: true }),
-      () => updateTask("tray_status", { running: false, lastRunTs: Date.now(), lastOk: false }),
-    );
-  }, 300);
-}
-
-function addEventListener<T>(event: string, handler: (payload: T) => void) {
-  listen<T>(event, (ev) => handler(ev.payload))
-    .then((unlisten: UnlistenFn) => {
-      if (trayStatusStarted) {
-        unsubscribers.push(unlisten);
-      } else {
-        unlisten();
-      }
-    })
-    .catch(() => {});
-}
-
 // ============ Public API ============
 
 export function startTrayStatus() {
-  if (trayStatusStarted) return;
-  trayStatusStarted = true;
+  if (activeRun) return;
+  const scope = new ResourceScope();
+  activeRun = scope;
   registerTask("tray_status", "トレイ表示更新", "system", 90_000);
+  timetableData = getCached<ScheduleResponse>("schedule_data");
   todoItems = getCached<LunaTodoItem[]>("luna_todo") ?? [];
 
-  invoke<ScheduleResponse>("get_schedule_snapshot")
-    .then((data) => {
-      timetableData = data;
-      scheduleRebuild();
-    })
-    .catch(() => {});
-
-  unsubscribers.push(
-    onCacheUpdate<ScheduleResponse>("schedule_data", (data) => { timetableData = data; scheduleRebuild(); }),
-    onCacheUpdate<LunaTodoItem[]>("luna_todo", (data) => { todoItems = data ?? []; scheduleRebuild(); }),
-  );
-
-  addEventListener<LiveSessionSnapshot>("live-session-updated", () => scheduleRebuild());
-  addEventListener<{ state: string; caller: string }>("stt-state", (payload) => {
-    if (payload.caller === "live") scheduleRebuild();
+  const refresh = new TrayStatusRefresh(scope, {
+    read: () => invoke<LiveTrayStatus>("live_get_tray_status"),
+    build: buildStatusItems,
+    writer: statusWriter,
+    activity: patch => updateTask("tray_status", patch),
+    failed: error => console.warn("[Selah] tray status refresh failed:", error),
   });
-  addEventListener("live-session-saved", () => scheduleRebuild());
+  const scheduleRead = new LatestViewRead(scope,
+    () => invoke<ScheduleResponse>("get_schedule_snapshot"),
+    data => { timetableData = data; refresh.request(); });
 
-  // Rebuild periodically (every 90s) to update time-sensitive items like "current class"
-  const interval = setInterval(() => scheduleRebuild(), 90_000);
-  unsubscribers.push(() => clearInterval(interval));
+  scope.own(onCacheUpdate<ScheduleResponse>("schedule_data", scope.guard((data) => {
+    scheduleRead.invalidate();
+    timetableData = data;
+    refresh.request();
+  })));
+  scope.own(onCacheUpdate<LunaTodoItem[]>("luna_todo", scope.guard((data) => {
+    todoItems = data ?? [];
+    refresh.request();
+  })));
 
-  // Initial build from whatever is already cached
-  scheduleRebuild();
+  function subscribe<T>(name: string, handler: (payload: T) => void) {
+    // Both the pending registration and queued callbacks belong to this run;
+    // a restart must not adopt the old run's unlisten handle or callbacks.
+    void scope.acquire(() => listen<T>(name, scope.guard(event => handler(event.payload)))).catch(error => {
+      if (scope.active) console.warn("[Selah] tray subscription failed:", error);
+    });
+  }
+  subscribe("live-session-updated", () => refresh.request());
+  subscribe<{ caller: string }>("stt-state", payload => {
+    if (payload.caller === "live") refresh.request();
+  });
+  subscribe("live-surface-saved", () => refresh.request());
+  subscribe("live-surface-compact-saved", () => refresh.request());
+
+  // Managed caches normally supply the initial timetable. Only recover from
+  // the backend when it is absent, and never load a real schedule in demo mode.
+  let demo = false;
+  try { demo = localStorage.getItem("selah-demo-mode") === "1"; } catch {}
+  if (!timetableData && !demo) void scheduleRead.refresh().catch(error => {
+    if (scope.active) console.warn("[Selah] tray timetable recovery failed:", error);
+  });
+
+  const interval = setInterval(() => refresh.request(), 90_000);
+  scope.own(() => clearInterval(interval));
+  refresh.request();
 }
 
 export function stopTrayStatus() {
-  trayStatusStarted = false;
-  liveTrayStatus = null;
-  for (const unsub of unsubscribers) unsub();
-  unsubscribers = [];
-  if (rebuildTimer) {
-    clearTimeout(rebuildTimer);
-    rebuildTimer = null;
-  }
-  invoke("set_tray_status_items", { items: [] }).catch(() => {});
+  const scope = activeRun;
+  activeRun = null;
+  scope?.dispose();
+  timetableData = null;
+  todoItems = [];
+  updateTask("tray_status", { running: false });
+  // Clear after any already-issued write. An immediate restart can supersede
+  // this queued clear; its first current update will then publish in order.
+  void statusWriter.write([], () => activeRun === null).catch(error => {
+    if (!activeRun) console.warn("[Selah] tray status clear failed:", error);
+  });
 }

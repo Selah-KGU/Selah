@@ -1,8 +1,14 @@
+import { syncBackendManagedKeys } from "./backendCacheSync";
+import { BACKEND_CACHE_DB_KEYS as BACKEND_CACHE_DB_KEY } from "./backendCacheKeys";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isAuxiliarySurface } from "./surfaceKind";
 import { openExternalUrl } from "./system";
 import { startTrayStatus, stopTrayStatus } from "./trayStatus";
+import { waitForVisibleLogin, type UniversityLoginComplete } from "./visibleLogin";
+import { BackgroundRefresh } from "./backgroundRefresh";
+import { CoalescedStatusRead } from "./coalescedStatusRead";
+import { BackendTaskStatusReader, type BackendTaskTimestampBatch } from "./backendTaskStatus";
 import {
   DETAIL_GENERATED_TODO_KEY,
   LIVE_GENERATED_TODO_KEY,
@@ -27,7 +33,7 @@ import type {
   AiChatMessage,
 } from "./stores";
 import type { ScheduleResponse, AiScheduleResult, AiTodoAnalysis, LunaTodoItem } from "./types";
-import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, isCacheFresh, isEmptyNotificationsPayload, hasMemoryCache, getCacheStamp, touchCacheTimestamp, rememberRawCache, readRawCache, hasRawCache, knownRawUpdatedAt, requestedMailMessageId } from "./stores";
+import { authState, lunaAuthState, kwicAuthState, mailAuthState, gcalAuthState, invalidateCache, reloginInProgress, sessionExpired, refreshBackendManagedCache, registerTask, updateTask, updateTaskInterval, cacheStatus, aiNotifStore, aiTodoStore, aiRefreshing, aiReady, agentReady, activeTab, activeSettingsPanel, replaceCacheEntry, getCached, requestedMailMessageId } from "./stores";
 import type { RefreshItemStatus } from "./stores";
 import { get } from "svelte/store";
 import type { LiveGeneratedTodo, LiveTodoSuggestion } from "./liveSessionApi";
@@ -69,6 +75,11 @@ function writeDemoJson<T>(key: string, value: T): void {
 // re-imports do not stack duplicate handlers on the Tauri event bus.
 const __SELAH_LISTENERS_KEY = Symbol.for("selah.api.globalListeners");
 const __selahGlobal = globalThis as unknown as Record<symbol, boolean>;
+const backendAiStatusRead = new CoalescedStatusRead(getBackendAiRefreshStatus, applyBackendAiRefreshStatus);
+const backendSessionStatusRead = new CoalescedStatusRead(
+  async () => _isDemo() ? null : invoke<BackendSessionStatus>("backend_sync_session_status_now"),
+  status => { if (status) applyBackendSessionStatus(status); },
+);
 // Each WebView is its own realm, so this guard does not stop auxiliary windows
 // from subscribing. Those windows import api helpers but must not fan out
 // app-wide cache sync on every backend emit.
@@ -150,6 +161,7 @@ if (!isAuxiliarySurface() && !__selahGlobal[__SELAH_LISTENERS_KEY]) {
   });
 
   listen<BackendAiRefreshStatus>("backend-ai-refresh-status", (event) => {
+    backendAiStatusRead.invalidate();
     applyBackendAiRefreshStatus(event.payload);
   });
 
@@ -186,6 +198,7 @@ const __SELAH_SESSION_STATUS_KEY = Symbol.for("selah.api.backendSessionStatus");
 if (!(__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATUS_KEY]) {
   (__selahGlobal as unknown as Record<symbol, boolean>)[__SELAH_SESSION_STATUS_KEY] = true;
   listen<BackendSessionStatus>("backend-session-status", (event) => {
+    backendSessionStatusRead.invalidate();
     applyBackendSessionStatus(event.payload);
     markBackendTasksUpdated(["preemptive_renewal"], !event.payload.session_expired);
   });
@@ -213,11 +226,6 @@ interface BackendSessionStatus {
   mail_authenticated: boolean;
   mail_email: string;
   mail_display_name: string;
-}
-
-interface UniversityLoginComplete {
-  luna_authenticated: boolean;
-  kwic_authenticated: boolean;
 }
 
 interface BackendAiRefreshItemStatus {
@@ -485,26 +493,37 @@ export async function syncSession(service: string): Promise<boolean> {
   return await promise;
 }
 
+let pendingRelogin: Promise<UniversityLoginComplete | null> | null = null;
+
 /**
  * User-initiated re-login from the titlebar badge.
  * Opens a visible login window and on success clears sessionExpired + refreshes all data.
  */
-export async function initiateRelogin(): Promise<UniversityLoginComplete | null> {
+export function initiateRelogin(): Promise<UniversityLoginComplete | null> {
   if (_isDemo()) {
     sessionExpired.set(false);
-    return { luna_authenticated: true, kwic_authenticated: true };
+    return Promise.resolve({ luna_authenticated: true, kwic_authenticated: true });
   }
-  try {
-    const result = await openVisibleLogin();
-    // The completion event is emitted after KGC, Luna, and KWIC phases finish.
-    startBackgroundPolling();
-    return result;
-  } catch (e: any) {
-    if (e?.message !== "__login_cancelled__") {
-      console.warn("[Selah] User-initiated relogin failed:", e);
+  if (pendingRelogin) return pendingRelogin;
+  // Assign ownership before any store callback or native registration can
+  // re-enter this function. Every caller shares one result and one refresh.
+  const request = Promise.resolve().then(async () => {
+    try {
+      const result = await openVisibleLogin();
+      // Core-service SAML phases finish before this notification is delivered.
+      startBackgroundPolling(true);
+      return result;
+    } catch (e: any) {
+      if (e?.message !== "__login_cancelled__") {
+        console.warn("[Selah] User-initiated relogin failed:", e);
+      }
+      return null;
     }
-    return null;
-  }
+  }).finally(() => {
+    if (pendingRelogin === request) pendingRelogin = null;
+  });
+  pendingRelogin = request;
+  return request;
 }
 
 /**
@@ -532,50 +551,11 @@ export async function resetUniversityLogin(): Promise<{ deleted: number; core: U
 }
 
 function openVisibleLogin(): Promise<UniversityLoginComplete> {
-  return new Promise<UniversityLoginComplete>(async (resolve, reject) => {
-    reloginInProgress.set(true);
-
-    let unlisten: (() => void) | null = null;
-    let unlistenComplete: (() => void) | null = null;
-    let unlistenErr: (() => void) | null = null;
-    let unlistenCancel: (() => void) | null = null;
-    const cleanup = () => {
-      unlisten?.();
-      unlistenComplete?.();
-      unlistenErr?.();
-      unlistenCancel?.();
-      reloginInProgress.set(false);
-    };
-
-    try {
-      unlisten = await listen<{ username: string; display_name: string; student_id: string; faculty: string; department: string }>(
-        "login-success",
-        (event) => {
-          setAuthFromSession(event.payload);
-          // Core-service authentication continues in the same login window.
-        },
-      );
-
-      unlistenComplete = await listen<UniversityLoginComplete>("university-login-complete", (event) => {
-        cleanup();
-        resolve(event.payload);
-      });
-
-      unlistenErr = await listen<string>("login-error", (_event) => {
-        cleanup();
-        reject(new Error("再ログインに失敗しました"));
-      });
-
-      unlistenCancel = await listen<string>("login-cancelled", (_event) => {
-        cleanup();
-        reject(new Error("__login_cancelled__"));
-      });
-
-      await openLoginWindow();
-    } catch (e) {
-      cleanup();
-      reject(e);
-    }
+  return waitForVisibleLogin({
+    listen,
+    open: openLoginWindow,
+    onIdentity: setAuthFromSession,
+    setProgress: running => reloginInProgress.set(running),
   });
 }
 
@@ -654,7 +634,8 @@ async function withSessionGuard<T>(fn: () => Promise<T>): Promise<T> {
  * Returns the stored KGC identity snapshot, or null when no returning-user
  * evidence exists. KGC itself is not contacted during startup restoration.
  */
-export async function restoreAllSessions(): Promise<SessionStatus | null> {
+export async function restoreAllSessions(current: () => boolean = () => true): Promise<SessionStatus | null> {
+  if (!current()) return null;
   if (_isDemo()) {
     return {
       valid: true,
@@ -669,6 +650,7 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
     getKgcSessionSnapshot(),
     getStoredSessionStates().catch(() => ({ kgc: false, luna: false, kwic: false })),
   ]);
+  if (!current()) return null;
   let status = initialStatus;
   debugLog("[Selah] restoreAllSessions: stored KGC snapshot =", JSON.stringify(status));
   debugLog("[Selah] restoreAllSessions: session states =", JSON.stringify(states));
@@ -688,6 +670,7 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
       secondaryValid[key] = await validate().catch(() => true);
     }
   }));
+  if (!current()) return null;
 
   // Collect services that need headless sync
   const syncNeeded: string[] = [];
@@ -701,6 +684,7 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
     debugLog(`[Selah] Disk sessions expired, syncing serially: ${syncNeeded.join(", ")}`);
     // syncSession queues core-service SAML flows because they share the same IdP.
     const results = await Promise.allSettled(syncNeeded.map(svc => syncSession(svc)));
+    if (!current()) return null;
     for (let i = 0; i < syncNeeded.length; i++) {
       const svc = syncNeeded[i];
       const res = results[i];
@@ -771,6 +755,7 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
   // Restore mail session (OAuth token from disk)
   try {
     const mailStatus = await mailCheckSession();
+    if (!current()) return null;
     if (mailStatus.authenticated) {
       mailAuthState.set({
         authenticated: true,
@@ -779,10 +764,10 @@ export async function restoreAllSessions(): Promise<SessionStatus | null> {
       });
     }
   } catch (e) {
-    console.warn("[Selah] Mail session restore failed:", e);
+    if (current()) console.warn("[Selah] Mail session restore failed:", e);
   }
 
-  return status;
+  return current() ? status : null;
 }
 
 /** Convenience wrapper for Luna invoke calls with session guard */
@@ -1245,21 +1230,16 @@ export async function backendAiRefreshNow(force: boolean = true, keys?: string[]
     return { running: false, last_run: Math.floor(Date.now() / 1000), last_ok: true, interval_minutes: 0, items: [] };
   }
   const status = await invoke<BackendAiRefreshStatus>("backend_ai_refresh_now", { force, keys: keys ?? null });
-  if (!keys?.length) applyBackendAiRefreshStatus(status);
+  if (!keys?.length) {
+    backendAiStatusRead.invalidate();
+    applyBackendAiRefreshStatus(status);
+  }
   return status;
 }
 
-export async function refreshBackendAiTaskStatus(): Promise<void> {
-  const status = await getBackendAiRefreshStatus();
-  applyBackendAiRefreshStatus(status);
+export function refreshBackendAiTaskStatus(): Promise<void> {
+  return backendAiStatusRead.refresh();
 }
-
-const BACKEND_CACHE_DB_KEY: Record<string, string> = {
-  exams: "exam_timetable",
-};
-
-// AI 課題分析の有効期限（秒）。これを過ぎた結果は無効とみなし「再分析」が必要。
-const AI_TODO_ANALYSIS_TTL_SECS = 12 * 3600;
 
 async function loadBackendManagedCache(key: string): Promise<any | null> {
   if (_isDemo()) return null;
@@ -1295,214 +1275,6 @@ async function loadBackendManagedCache(key: string): Promise<any | null> {
 }
 
 
-interface CacheBatchRow {
-  key: string;
-  updated_at: number;
-  unchanged: boolean;
-  json?: string | null;
-}
-
-interface FrontendCacheBatch {
-  rows: CacheBatchRow[];
-  schedule_updated_at: number;
-  live_todo_updated_at: number;
-  schedule_unchanged: boolean;
-  schedule?: ScheduleResponse | null;
-}
-
-function cacheDbKey(key: string): string {
-  return BACKEND_CACHE_DB_KEY[key] ?? key;
-}
-
-function parseCacheJson<T>(json: string | null | undefined, key: string): T | null {
-  if (!json) return null;
-  try {
-    return JSON.parse(json) as T;
-  } catch (e) {
-    console.warn("[Selah] backend cache parse failed for " + key + ":", e);
-    return null;
-  }
-}
-
-function parseTodoArray(json: string | null | undefined): any[] {
-  const parsed = parseCacheJson<unknown>(json, "generated_todo");
-  return Array.isArray(parsed) ? parsed : [];
-}
-
-function rowByKey(rows: CacheBatchRow[], key: string): CacheBatchRow | undefined {
-  return rows.find((row) => row.key === key);
-}
-
-function knownScheduleStamp(): string | null {
-  if (!hasMemoryCache("schedule_data")) return null;
-  const stamp = getCacheStamp("schedule_data");
-  return typeof stamp === "string" ? stamp : null;
-}
-
-function knownUpdatedAtFor(dbKey: string, memoryKey: string): number | null {
-  if (!hasMemoryCache(memoryKey) || !hasRawCache(dbKey)) return null;
-  return knownRawUpdatedAt(dbKey);
-}
-
-function liveTodosFromRow(row: CacheBatchRow | undefined): any[] {
-  if (row && row.unchanged && hasRawCache(LIVE_GENERATED_TODO_KEY)) {
-    return readRawCache<any[]>(LIVE_GENERATED_TODO_KEY) ?? [];
-  }
-  if (!row || row.json == null) return readRawCache<any[]>(LIVE_GENERATED_TODO_KEY) ?? [];
-  const parsed = parseTodoArray(row.json);
-  rememberRawCache(LIVE_GENERATED_TODO_KEY, row.updated_at, parsed);
-  return parsed;
-}
-
-async function detailTodosFromRow(row: CacheBatchRow | undefined): Promise<any[]> {
-  if (row && row.unchanged && hasRawCache(DETAIL_GENERATED_TODO_KEY)) {
-    return readRawCache<any[]>(DETAIL_GENERATED_TODO_KEY) ?? [];
-  }
-  if (!row || row.json == null) return readRawCache<any[]>(DETAIL_GENERATED_TODO_KEY) ?? [];
-  const parsed = parseTodoArray(row.json);
-  const repaired = await repairDetailGeneratedTodoSourceUrls(parsed, getDataCache, saveDataCache);
-  rememberRawCache(DETAIL_GENERATED_TODO_KEY, row.updated_at, repaired);
-  return repaired;
-}
-
-async function syncBackendManagedKeys(keys: string[], onlyIfStale = false): Promise<void> {
-  const uniqueKeys = [...new Set(keys.filter(Boolean))];
-  if (!uniqueKeys.length || _isDemo()) return;
-  const pending = uniqueKeys.filter((key) => !(onlyIfStale && isCacheFresh(key, 5 * 60 * 1000)));
-  if (!pending.length) return;
-
-  const includeSchedule = pending.includes("schedule_data");
-  const needsLiveTodos = includeSchedule || pending.includes("luna_todo");
-  const needsDetailTodos = pending.includes("luna_todo");
-  const queries: Array<{ key: string; knownUpdatedAt: number | null }> = [];
-  const seenQuery = new Set<string>();
-  const pushQuery = (dbKey: string, knownUpdatedAt: number | null) => {
-    if (seenQuery.has(dbKey)) return;
-    seenQuery.add(dbKey);
-    queries.push({ key: dbKey, knownUpdatedAt });
-  };
-
-  for (const key of pending) {
-    if (key === "schedule_data") continue;
-    pushQuery(cacheDbKey(key), knownUpdatedAtFor(cacheDbKey(key), key));
-  }
-  if (needsLiveTodos) {
-    pushQuery(
-      LIVE_GENERATED_TODO_KEY,
-      hasRawCache(LIVE_GENERATED_TODO_KEY) ? knownRawUpdatedAt(LIVE_GENERATED_TODO_KEY) : null,
-    );
-  }
-  if (needsDetailTodos) {
-    pushQuery(
-      DETAIL_GENERATED_TODO_KEY,
-      hasRawCache(DETAIL_GENERATED_TODO_KEY) ? knownRawUpdatedAt(DETAIL_GENERATED_TODO_KEY) : null,
-    );
-  }
-
-  const batch = await invoke<FrontendCacheBatch>("get_frontend_cache_batch", {
-    queries,
-    includeSchedule,
-    knownScheduleStamp: includeSchedule ? knownScheduleStamp() : null,
-  });
-  const rows = batch.rows ?? [];
-
-  if (includeSchedule) {
-    const stamp = String(batch.schedule_updated_at) + ":" + String(batch.live_todo_updated_at);
-    if (batch.schedule_unchanged && hasMemoryCache("schedule_data")) {
-      touchCacheTimestamp("schedule_data");
-    } else if (batch.schedule) {
-      const generated = liveTodosFromRow(rowByKey(rows, LIVE_GENERATED_TODO_KEY));
-      replaceCacheEntry(
-        "schedule_data",
-        mergeGeneratedTodosIntoSchedule(batch.schedule, generated),
-        Date.now(),
-        stamp,
-      );
-    }
-  }
-
-  if (pending.includes("luna_todo")) {
-    const lunaRow = rowByKey(rows, "luna_todo");
-    const liveRow = rowByKey(rows, LIVE_GENERATED_TODO_KEY);
-    const detailRow = rowByKey(rows, DETAIL_GENERATED_TODO_KEY);
-    const liveChanged = !!liveRow && !liveRow.unchanged;
-    const detailChanged = !!detailRow && !detailRow.unchanged;
-    if (lunaRow?.unchanged && !liveChanged && !detailChanged && hasMemoryCache("luna_todo")) {
-      touchCacheTimestamp("luna_todo");
-    } else {
-      const generated = liveTodosFromRow(liveRow);
-      const detail = await detailTodosFromRow(detailRow);
-      let base: unknown = [];
-      if (lunaRow?.unchanged && hasMemoryCache("luna_todo")) {
-        base = getCached("luna_todo") ?? [];
-      } else if (lunaRow?.json) {
-        const parsed = parseCacheJson<unknown>(lunaRow.json, "luna_todo");
-        base = Array.isArray(parsed) ? parsed : [];
-        if (parsed != null) rememberRawCache("luna_todo", lunaRow.updated_at, parsed);
-      }
-      const nothingStored = !lunaRow?.json && !lunaRow?.unchanged && generated.length === 0 && detail.length === 0;
-      if (!nothingStored) {
-        const merged = mergeDetailTodosIntoLunaTodos(
-          mergeGeneratedTodosIntoLunaTodos(base, generated),
-          detail,
-        );
-        const stamp = String(lunaRow?.updated_at ?? 0) + ":" + String(liveRow?.updated_at ?? 0) + ":" + String(detailRow?.updated_at ?? 0);
-        replaceCacheEntry("luna_todo", merged, Date.now(), stamp);
-      }
-    }
-  }
-
-  for (const key of pending) {
-    if (key === "schedule_data" || key === "luna_todo") continue;
-    const dbKey = cacheDbKey(key);
-    const row = rowByKey(rows, dbKey);
-    if (!row) continue;
-    if (row.unchanged && hasMemoryCache(key)) {
-      touchCacheTimestamp(key);
-      if (key === "ai_todo_analysis") {
-        const ageSecs = row.updated_at ? Date.now() / 1000 - row.updated_at : Infinity;
-        if (ageSecs > AI_TODO_ANALYSIS_TTL_SECS) aiTodoStore.set(null);
-      }
-      continue;
-    }
-    if (!row.json) continue;
-    const data = parseCacheJson<any>(row.json, key);
-    if (data == null) continue;
-    if (
-      key === "notifications"
-      && isEmptyNotificationsPayload(data)
-      && hasMemoryCache(key)
-      && !isEmptyNotificationsPayload(getCached(key))
-    ) {
-      continue;
-    }
-    rememberRawCache(dbKey, row.updated_at, data);
-    if (key === "ai_notif_analysis") {
-      aiNotifStore.set({
-        result: data.result ?? data,
-        sources: Array.isArray(data.sources) ? data.sources : [],
-        timestamp: typeof data.generated_at === "number" ? data.generated_at * 1000 : Date.now(),
-      });
-      replaceCacheEntry(key, data, Date.now(), row.updated_at);
-      continue;
-    }
-    if (key === "ai_todo_analysis") {
-      const ageSecs = row.updated_at ? Date.now() / 1000 - row.updated_at : Infinity;
-      replaceCacheEntry(key, data, Date.now(), row.updated_at);
-      if (ageSecs > AI_TODO_ANALYSIS_TTL_SECS) {
-        aiTodoStore.set(null);
-        continue;
-      }
-      const result = { ...(data as Record<string, unknown>) };
-      delete result._cache_fingerprint;
-      aiTodoStore.set({ result, timestamp: row.updated_at ? row.updated_at * 1000 : Date.now() });
-      continue;
-    }
-    replaceCacheEntry(key, data, Date.now(), row.updated_at);
-  }
-
-  cacheStatus.update((s) => ({ ...s, lastUpdated: Date.now() }));
-}
 
 function refreshVisibleBackendCaches() {
   void syncBackendManagedKeys([
@@ -1517,21 +1289,19 @@ function refreshVisibleBackendCaches() {
     "exams",
     "ai_notif_analysis",
     "ai_todo_analysis",
-  ], true);
+  ], true).catch((error) => console.warn("[Selah] foreground cache sync failed:", error));
 }
 
-async function syncBackendSessionStatusNow(): Promise<void> {
-  if (_isDemo()) return;
-  const status = await invoke<BackendSessionStatus>("backend_sync_session_status_now");
-  applyBackendSessionStatus(status);
+function syncBackendSessionStatusNow(): Promise<void> {
+  return backendSessionStatusRead.refresh();
 }
 
-let lastForegroundSessionSyncAt = 0;
+let lastForegroundSessionSyncAt: number | null = null;
 const FOREGROUND_SESSION_SYNC_COOLDOWN_MS = 60_000;
 
 function syncForegroundSessionStatus() {
   const now = Date.now();
-  if (now - lastForegroundSessionSyncAt < FOREGROUND_SESSION_SYNC_COOLDOWN_MS) return;
+  if (lastForegroundSessionSyncAt !== null && now - lastForegroundSessionSyncAt < FOREGROUND_SESSION_SYNC_COOLDOWN_MS) return;
   lastForegroundSessionSyncAt = now;
   syncBackendSessionStatusNow().catch((err) => {
     console.warn("[Selah] foreground session status sync failed:", err);
@@ -1545,11 +1315,13 @@ export async function openLoginWindow(): Promise<void> {
   await invoke("open_login_window");
 }
 
-export async function enterDemoMode(): Promise<void> {
+export async function enterDemoMode(current: () => boolean = () => true): Promise<void> {
+  if (!current()) return;
   stopBackgroundPolling();
   stopTrayStatus();
   sessionExpired.set(false);
   const { activateDemo } = await import("./demo");
+  if (!current()) return;
   activateDemo();
   startBackgroundPolling();
   startTrayStatus();
@@ -1898,12 +1670,18 @@ export type {
   LiveWhiteboard,
   LiveSummaryChunk,
   LiveSessionSnapshot,
+  LiveSurfaceSnapshot,
   LiveSaveResult,
+  LiveSurfaceSaveResult,
   LiveTodoSuggestionsEvent,
   LiveTodoSuggestion,
   LiveGeneratedTodo,
 } from "./liveSessionApi";
 export {
+  liveHasActiveSession,
+  liveGetSurface,
+  livePeekDaySurface,
+  liveStartSurface,
   liveGetSession,
   livePeekDayCache,
   liveStartSession,
@@ -1913,6 +1691,7 @@ export {
   liveCancelSession,
   liveClearDayCache,
   liveFinishSession,
+  liveFinishSurface,
 } from "./liveSessionApi";
 
 async function readGeneratedTodos<T>(cacheKey: string): Promise<T[]> {
@@ -2187,46 +1966,35 @@ function registerBackendRefreshTasks() {
   }
 }
 
-async function readBackendTaskSyncedAt(key: string): Promise<number | null> {
-  try {
-    if (key === "schedule_data") {
-      const snapshot = await getScheduleSnapshot();
-      return snapshot.snapshot_updated_at > 0 ? snapshot.snapshot_updated_at * 1000 : null;
+const backendTaskStatuses = new BackendTaskStatusReader(
+  BACKEND_TASKS.filter(task => task.key !== "preemptive_renewal").map(task => ({
+    key: task.key, cacheKey: BACKEND_CACHE_DB_KEY[task.key] ?? task.key,
+  })),
+  async (keys, includeSchedule) => {
+    if (_isDemo()) {
+      return { rows: [], schedule_updated_at: includeSchedule ? (await getScheduleSnapshot()).snapshot_updated_at : null };
     }
-    if (key === "preemptive_renewal") return null;
-    const dbKey = BACKEND_CACHE_DB_KEY[key] ?? key;
-    const updatedAt = await getDataCacheUpdatedAt(dbKey);
-    return updatedAt && updatedAt > 0 ? updatedAt * 1000 : null;
-  } catch {
-    return null;
-  }
-}
+    return invoke<BackendTaskTimestampBatch>("get_backend_task_timestamps", { keys, includeSchedule });
+  },
+  (key, syncedAt) => updateTask(key, {
+    running: false, lastRunTs: syncedAt, lastOk: syncedAt != null ? true : null,
+  }),
+);
 
-export async function refreshBackendTaskStatuses() {
-  await Promise.all(BACKEND_TASKS.map(async (task) => {
-    if (task.key === "preemptive_renewal") return;
-    const syncedAt = await readBackendTaskSyncedAt(task.key);
-    updateTask(task.key, {
-      running: false,
-      lastRunTs: syncedAt,
-      lastOk: syncedAt != null ? true : null,
-    });
-  }));
+export function refreshBackendTaskStatuses(): Promise<void> {
+  return backendTaskStatuses.refresh();
 }
 
 function markBackendTasksUpdated(keys: string[], ok: boolean) {
   const ts = Date.now();
+  backendTaskStatuses.invalidate(keys);
   for (const key of [...new Set(keys.filter(Boolean))]) {
     updateTask(key, { running: false, lastRunTs: ts, lastOk: ok });
   }
 }
 
-export function startBackgroundPolling() {
-  // Demo mode: no real polling
-  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") return;
-
-  stopBackgroundPolling();
-  document.addEventListener("visibilitychange", handlePollVisibility);
+function hydrateBackgroundStatuses() {
+  lastForegroundSessionSyncAt = null;
   // Routine cache/session/AI refresh is backend-owned now. Frontend only keeps
   // a foreground catch-up in case cache-update events were missed.
   registerBackendRefreshTasks();
@@ -2240,18 +2008,37 @@ export function startBackgroundPolling() {
   refreshVisibleBackendCaches();
 }
 
-export function stopBackgroundPolling() {
-  document.removeEventListener("visibilitychange", handlePollVisibility);
+function handlePollVisibility() {
+  refreshVisibleBackendCaches();
+  syncForegroundSessionStatus();
+  refreshBackendAiTaskStatus().catch((err) => {
+    console.warn("[Selah] backend AI status visibility sync failed:", err);
+  });
 }
 
-function handlePollVisibility() {
-  if (document.visibilityState === "visible") {
-    refreshVisibleBackendCaches();
-    syncForegroundSessionStatus();
-    refreshBackendAiTaskStatus().catch((err) => {
-      console.warn("[Selah] backend AI status visibility sync failed:", err);
-    });
-  }
+const backgroundRefresh = new BackgroundRefresh({
+  demo: _isDemo,
+  visible: () => document.visibilityState === "visible",
+  subscribe: callback => {
+    document.addEventListener("visibilitychange", callback);
+    return () => document.removeEventListener("visibilitychange", callback);
+  },
+  hydrate: hydrateBackgroundStatuses,
+  catchUp: handlePollVisibility,
+  invalidate: () => {
+    backendAiStatusRead.invalidate();
+    backendSessionStatusRead.invalidate();
+    backendTaskStatuses.invalidate();
+  },
+});
+
+/** Explicit successful login catches up even when refresh already owns a scope. */
+export function startBackgroundPolling(refresh = false) {
+  backgroundRefresh.start(refresh);
+}
+
+export function stopBackgroundPolling() {
+  backgroundRefresh.stop();
 }
 
 // ============ Backend AI Refresh ============
@@ -2371,6 +2158,8 @@ export async function refreshAllData(): Promise<void> {
 
 export type {
   AgentConversationSummary,
+  AgentAttachment,
+  AgentDocumentPart,
   AgentImagePart,
   AgentMessage,
   AgentStreamEvent,
@@ -2379,6 +2168,7 @@ export {
   agentListConversations,
   agentCreateConversation,
   agentLoadMessages,
+  agentLoadDisplayMessages,
   agentSend,
   agentCancel,
   agentDeleteConversation,

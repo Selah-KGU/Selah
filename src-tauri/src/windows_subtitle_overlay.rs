@@ -1,11 +1,12 @@
 //! Windows リアルタイム字幕浮窗 — ネイティブカプセル版
 //!
-//! Live 録課モジュールが発行する `live-session-updated` / `live-line-appended`
+//! Live 録課モジュールが発行する `live-session-updated` / `live-transcript-appended`
 //! / `stt-partial` を監聴し、最新の転写テキストを画面下部のネイティブ浮窗に
 //! 表示します。macOS 版と同様、STT / Agent 本体とは分離された補助 UI です。
 
 #![cfg(target_os = "windows")]
 
+use crate::subtitle_events::{Caption, CaptionMailbox};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use tauri::AppHandle;
@@ -66,10 +67,11 @@ static CACHED_FONT_HANDLE: OnceLock<isize> = OnceLock::new();
 // Prevents double-spawning when ensure_overlay_window is called concurrently.
 static CREATING: AtomicBool = AtomicBool::new(false);
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
-static LAST_PARTIAL_MS: AtomicU64 = AtomicU64::new(0);
-const PARTIAL_MIN_INTERVAL_MS: u64 = 120;
+static CAPTION_MAILBOX: LazyLock<CaptionMailbox> = LazyLock::new(CaptionMailbox::default);
 
-static LAST_CAPTION_SEQ: AtomicU64 = AtomicU64::new(0);
+fn captions_enabled() -> bool {
+    OVERLAY_OPEN.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 const MORPH_DEBOUNCE_MS: u64 = 150;
 
@@ -81,6 +83,7 @@ struct OverlayWindow {
     top_y: i32,
     alpha: u8,
     text: String,
+    displayed_session_id: Option<String>,
     dark: bool,
 }
 

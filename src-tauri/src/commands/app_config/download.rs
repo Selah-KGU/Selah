@@ -27,12 +27,24 @@ pub fn load_download_config() -> DownloadConfig {
 }
 
 #[tauri::command]
-pub fn get_download_config() -> DownloadConfig {
-    load_download_config()
+pub async fn get_download_config() -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "Download configuration worker failed",
+        "Download configuration encoding failed",
+        || Ok(load_download_config()),
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn save_download_config(config: DownloadConfig) -> Result<(), String> {
+pub async fn save_download_config(config: DownloadConfig) -> Result<(), String> {
+    crate::background_ipc::run("Download configuration save worker failed", move || {
+        save_download_config_impl(config)
+    })
+    .await
+}
+
+fn save_download_config_impl(config: DownloadConfig) -> Result<(), String> {
     if !config.download_dir.is_empty() {
         let p = std::path::Path::new(&config.download_dir);
         if !p.is_absolute() {

@@ -3,10 +3,14 @@ use std::sync::Arc;
 use chrono::{DateTime, Local};
 use tauri::Emitter;
 
-use super::{LiveSessionSnapshot, LiveState, MIN_AI_SUMMARIZATION_DURATION_SECS};
+use super::notification::LiveSessionNotification;
+use super::types::LiveSessionUpdate;
+use super::{LiveFinishPhase, LiveSessionSnapshot, LiveState, MIN_AI_SUMMARIZATION_DURATION_SECS};
 
 pub(in crate::live) fn empty_snapshot() -> LiveSessionSnapshot {
     LiveSessionSnapshot {
+        update_revision: 0,
+        session_id: None,
         active: false,
         course: None,
         started_at: None,
@@ -15,11 +19,20 @@ pub(in crate::live) fn empty_snapshot() -> LiveSessionSnapshot {
         summaries: Arc::new(Vec::new()),
         next_summary_at_ms: None,
         summarizing: false,
+        finish_phase: None,
+        finish_revision: 0,
     }
 }
 
-pub(in crate::live) fn emit_live_finish_progress(app: &tauri::AppHandle, step: &str) {
-    let _ = app.emit("live-finish-progress", serde_json::json!({ "step": step }));
+pub(in crate::live) fn emit_live_finish_progress(
+    app: &tauri::AppHandle,
+    state: &LiveState,
+    expected: &str,
+    phase: LiveFinishPhase,
+) -> Result<(), String> {
+    let progress = state.set_finish_phase(expected, phase)?;
+    let _ = app.emit("live-finish-progress", progress);
+    Ok(())
 }
 
 pub(in crate::live) fn sanitize_model_output(text: &str) -> String {
@@ -54,19 +67,96 @@ pub(in crate::live) fn sanitize_filename_component(name: &str) -> String {
 
 pub(in crate::live) fn current_snapshot(state: &LiveState) -> LiveSessionSnapshot {
     state
-        .0
+        .session
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().map(|session| session.snapshot()))
+        .map(|guard| state.capture_snapshot(guard.as_ref()))
         .unwrap_or_else(empty_snapshot)
 }
 
 pub(in crate::live) fn emit_live_update(app: &tauri::AppHandle, state: &LiveState) {
-    let _ = app.emit("live-session-updated", current_snapshot(state));
+    emit_session_update(app, state, false);
+}
+
+pub(in crate::live) fn emit_session_update(
+    app: &tauri::AppHandle,
+    state: &LiveState,
+    include_summary: bool,
+) {
+    match current_notification(state, include_summary) {
+        Ok(update) => {
+            let _ = app.emit("live-session-updated", update);
+        }
+        Err(error) => log::warn!("[Live] session update capture failed: {error}"),
+    }
+}
+
+pub(in crate::live) fn current_notification(
+    state: &LiveState,
+    include_summary: bool,
+) -> Result<LiveSessionNotification, String> {
+    let (update, reference) = capture_update(state, include_summary)?;
+    Ok(LiveSessionNotification::new(update, reference))
+}
+
+#[cfg(test)]
+pub(in crate::live) fn current_update(
+    state: &LiveState,
+    include_summary: bool,
+) -> Result<LiveSessionUpdate, String> {
+    capture_update(state, include_summary).map(|(update, _)| update)
+}
+
+fn capture_update(
+    state: &LiveState,
+    include_summary: bool,
+) -> Result<(LiveSessionUpdate, Option<usize>), String> {
+    let guard = state
+        .session
+        .lock()
+        .map_err(|_| "Live state lock failed".to_owned())?;
+    let session = guard.as_ref();
+    // Only pointer identity is checked under the capture lock. An independently
+    // equal new board stays complete, so this path never hashes/scans its nodes.
+    let reference = session.filter(|_| include_summary).and_then(|session| {
+        let latest = session.summaries.last()?.whiteboard.as_ref()?;
+        let previous = session.summaries[..session.summaries.len() - 1]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, chunk)| chunk.whiteboard.as_ref().map(|board| (index, board)))?;
+        Arc::ptr_eq(latest, previous.1).then_some(previous.0)
+    });
+    Ok((
+        LiveSessionUpdate {
+            update_revision: state.next_snapshot_revision(),
+            session_id: session.map(|s| s.session_id.clone()),
+            active: session.is_some(),
+            course: session.map(|s| s.course.clone()),
+            started_at: session.map(|s| super::format_datetime(s.started_at)),
+            next_summary_at_ms: session.and_then(|s| s.next_summary_at_ms()),
+            summarizing: session.is_some_and(|s| s.flush_in_flight),
+            finish_phase: session.and_then(|s| s.finish_phase),
+            finish_revision: session.map_or(0, |s| s.finish_revision),
+            transcript_line_count: session.map_or(0, |s| s.transcript_lines.len()),
+            pending_line_count: session.map_or(0, |s| s.pending_lines.len()),
+            summary_count: session.map_or(0, |s| s.summaries.len()),
+            latest_summary: session
+                .filter(|_| include_summary)
+                .and_then(|s| s.summaries.last().cloned()),
+        },
+        reference,
+    ))
 }
 
 pub(in crate::live) fn live_ai_config() -> Result<crate::ai::AiConfig, String> {
-    let cfg = crate::ai::load_ai_config();
+    validate_live_ai_config(crate::ai::load_ai_config())
+}
+
+/// Validate this request's resolved settings without rereading credentials.
+pub(in crate::live) fn validate_live_ai_config(
+    cfg: crate::ai::AiConfig,
+) -> Result<crate::ai::AiConfig, String> {
     if !cfg.ai_enabled {
         return Err("Live要約にはAIを有効にしてください".into());
     }
@@ -85,9 +175,7 @@ pub(in crate::live) fn live_ai_config() -> Result<crate::ai::AiConfig, String> {
 }
 
 pub(in crate::live) fn live_summary_interval_minutes() -> i64 {
-    crate::ai::load_ai_config()
-        .live_summary_interval_minutes
-        .max(5) as i64
+    crate::ai::live_summary_interval_minutes()
 }
 
 pub(in crate::live) fn should_skip_ai_summarization(
@@ -112,3 +200,7 @@ pub(in crate::live) fn should_require_finish_chunk_ai(
 ) -> bool {
     pending_line_count > 0 && !should_skip_ai_summarization(started_at, ended_at)
 }
+
+#[cfg(test)]
+#[path = "tests/updates.rs"]
+mod tests;

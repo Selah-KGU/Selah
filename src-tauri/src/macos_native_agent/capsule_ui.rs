@@ -1,6 +1,7 @@
 //! Floating capsule panel, theme application, and border animations.
 
 use super::*;
+use crate::main_thread_animation::MainThreadAnimation;
 
 #[path = "capsule_ui/border.rs"]
 mod border;
@@ -18,6 +19,7 @@ pub(super) use motion::{start_listen_pulse_animation, start_processing_dots_anim
 #[derive(Default)]
 struct CapsuleViews {
     panel: Option<Retained<NSPanel>>,
+    displayed_epoch: Option<u64>,
     root_view: Option<Retained<NSView>>,
     capsule_view: Option<Retained<NSView>>,
     vfx_view: Option<Retained<NSVisualEffectView>>,
@@ -66,12 +68,60 @@ impl Spring {
 }
 
 // ─ Text rendering ────────────────────────────────────────────────────────────
-pub(super) fn update_text(app: &AppHandle, mode: CapsuleMode, text: &str) {
-    let text = text.to_string();
-    let _ = app.run_on_main_thread(move || {
-        let Some(mtm) = MainThreadMarker::new() else {
+static VIEW_MAILBOX: std::sync::LazyLock<LatestUiMailbox<NativeViewUpdate>> =
+    std::sync::LazyLock::new(LatestUiMailbox::default);
+
+pub(super) fn enqueue_view_update(app: &AppHandle, view: NativeViewUpdate) {
+    let Some(ticket) = VIEW_MAILBOX.push(view) else {
+        return;
+    };
+    let app_update = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let Some(view) = VIEW_MAILBOX.take(ticket) else {
             return;
         };
+        if view.is_current() {
+            apply_view_update(&app_update, view);
+        }
+    }) {
+        VIEW_MAILBOX.cancel(ticket);
+        log::warn!("native Agent view dispatch failed: {error}");
+    }
+}
+
+fn apply_view_update(app: &AppHandle, view: NativeViewUpdate) {
+    // Reserve effects before AppKit/Markdown work. A concurrent close can
+    // invalidate these tokens; this older render must never claim new ones later.
+    let effects = {
+        let _state = SHARED.lock().unwrap();
+        if !view.is_current() {
+            return;
+        }
+        let changed = UI.with(|ui| ui.borrow().displayed_epoch != Some(view.epoch));
+        changed.then(|| {
+            let claim = |token: &AtomicU64| token.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            (
+                claim(&FADE_TOKEN),
+                claim(&MORPH_TOKEN),
+                claim(&BORDER_TOKEN),
+                claim(&DOTS_TOKEN),
+                claim(&LISTEN_PULSE_TOKEN),
+            )
+        })
+    };
+    let changed = UI.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        if ui.panel.is_none() {
+            build_panel(&mut ui);
+            install_click_monitor(&mut ui, app.clone());
+        }
+        let changed = ui.displayed_epoch != Some(view.epoch);
+        ui.displayed_epoch = Some(view.epoch);
+        changed
+    });
+    let mode = view.mode;
+    let text = view.text;
+    suppress_implicit_animations(|| {
         UI.with(|ui| {
             let ui = ui.borrow();
             let Some(label) = &ui.text_label else {
@@ -125,28 +175,43 @@ pub(super) fn update_text(app: &AppHandle, mode: CapsuleMode, text: &str) {
             layout_processing_dots(&ui, mode);
             layout_listen_indicator(&ui, mode);
         });
-        let _ = mtm;
     });
+    if !changed {
+        return;
+    }
+    let (width, height) = match mode {
+        CapsuleMode::Listening => (LISTEN_W, LISTEN_H),
+        CapsuleMode::Processing => (PROCESS_W, PROCESS_H),
+        CapsuleMode::Result => (RESULT_W, compute_result_height(&text)),
+        CapsuleMode::Notice => (NOTICE_W, NOTICE_H),
+    };
+    let Some((fade, morph, border, dots, pulse)) = effects else {
+        return;
+    };
+    let app_fade = app.clone();
+    tauri::async_runtime::spawn(async move {
+        fade_to(app_fade, 1.0, fade).await;
+    });
+    animate_to(app.clone(), width, height, morph);
+    update_border(app.clone(), mode, border);
+    start_processing_dots_animation(app.clone(), mode, dots);
+    start_listen_pulse_animation(app.clone(), mode, pulse);
+    match mode {
+        CapsuleMode::Result => schedule_close(
+            app.clone(),
+            Duration::from_secs(RESULT_AUTO_CLOSE_SECS),
+            view.lease,
+        ),
+        CapsuleMode::Notice => schedule_close(
+            app.clone(),
+            Duration::from_millis(NOTICE_AUTO_CLOSE_MS),
+            view.lease,
+        ),
+        _ => {}
+    }
 }
 
 // ─ Panel / layout ────────────────────────────────────────────────────────────
-pub(super) fn ensure_panel(app: &AppHandle, width: f64, height: f64) {
-    let app_handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        UI.with(|ui| {
-            let mut ui = ui.borrow_mut();
-            if ui.panel.is_none() {
-                build_panel(&mut ui);
-                install_click_monitor(&mut ui, app_handle.clone());
-            }
-        });
-    });
-
-    let token = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    fade_to(app.clone(), 1.0, token);
-    animate_to(app.clone(), width, height);
-}
-
 fn layout_label(ui: &CapsuleViews, mode: CapsuleMode) {
     let Some(panel) = &ui.panel else {
         return;
@@ -238,26 +303,50 @@ fn layout_listen_indicator(ui: &CapsuleViews, mode: CapsuleMode) {
 }
 
 pub(super) fn close_panel(app: &AppHandle, immediate: bool) {
-    cancel_auto_close();
-    BORDER_TOKEN.fetch_add(1, Ordering::Relaxed);
-    DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
-    LISTEN_PULSE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
+    close_panel_for_view(app, immediate, None);
+}
+
+pub(super) fn close_panel_if_current(app: &AppHandle, lease: &NativeViewLease) {
+    close_panel_for_view(app, false, Some(lease));
+}
+
+fn close_panel_for_view(app: &AppHandle, immediate: bool, expected: Option<&NativeViewLease>) {
+    let (input_id, token) = {
+        let mut sh = SHARED.lock().unwrap();
+        let Some(closed) = sh.close_view(expected) else {
+            return;
+        };
+        VIEW_MAILBOX.clear();
+        cancel_auto_close();
+        BORDER_TOKEN.fetch_add(1, Ordering::Relaxed);
+        DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
+        LISTEN_PULSE_TOKEN.fetch_add(1, Ordering::Relaxed);
+        MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
+        let token = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        (closed.input_id, token)
+    };
+    if let Some(id) = input_id {
+        let _ = stt::stt_request_native_input_stop(&id);
+    }
+    let close = MainThreadAnimation::with_token(&FADE_TOKEN, token);
 
     if immediate {
-        let _ = app.run_on_main_thread(remove_panel);
-        reset_shared_state();
+        let _ = app.run_on_main_thread(move || {
+            if close.is_current() {
+                remove_panel();
+            }
+        });
         return;
     }
 
     let app = app.clone();
-    let token = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     tauri::async_runtime::spawn(async move {
-        fade_to(app.clone(), 0.0, token);
-        tokio::time::sleep(Duration::from_millis(ANIM_MS * (FADE_FRAMES + 1))).await;
-        if FADE_TOKEN.load(Ordering::Relaxed) == token {
-            let _ = app.run_on_main_thread(remove_panel);
-            reset_shared_state();
+        if fade_to(app.clone(), 0.0, token).await {
+            close
+                .frame(&app, || {
+                    remove_panel();
+                })
+                .await;
         }
     });
 }
@@ -273,6 +362,7 @@ fn remove_panel() {
             panel.orderOut(None);
             panel.close();
         }
+        ui.displayed_epoch = None;
         ui.root_view = None;
         ui.capsule_view = None;
         ui.vfx_view = None;
@@ -284,16 +374,6 @@ fn remove_panel() {
         ui.gradient_mask = None;
     });
     PANEL_OPEN.store(false, Ordering::Relaxed);
-}
-
-fn reset_shared_state() {
-    let mut sh = SHARED.lock().unwrap();
-    sh.mode = None;
-    sh.stop_requested = false;
-    sh.finals_accumulated.clear();
-    sh.current_speech.clear();
-    sh.result_accumulated.clear();
-    sh.agent_listener = None;
 }
 
 // ─ Click monitor to open main window from Result state ───────────────────────
@@ -332,85 +412,87 @@ fn install_click_monitor(ui: &mut CapsuleViews, app: AppHandle) {
 }
 
 pub(super) fn apply_theme(theme: &Theme) {
-    UI.with(|ui| {
-        let ui = ui.borrow();
-        let mode = SHARED.lock().unwrap().mode;
-        if let Some(bg) = &ui.bg_overlay {
-            let (r, g, b, a) = theme.background();
-            if let Some(layer) = bg.layer() {
-                layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
-            }
-        }
-        if let Some(capsule) = &ui.capsule_view {
-            if let Some(layer) = capsule.layer() {
-                let (sr, sg, sb) = if theme.is_dark {
-                    (6, 4, 12)
-                } else {
-                    (60, 40, 120)
-                };
-                layer.setShadowColor(Some(&srgb(sr, sg, sb, 0.62).CGColor()));
-                layer.setShadowOpacity(if theme.is_dark { 0.30 } else { 0.14 });
-            }
-        }
-        if let Some(vfx) = &ui.vfx_view {
-            if let Some(layer) = vfx.layer() {
-                let (r, g, b, a) = match mode {
-                    Some(CapsuleMode::Result) => theme.border_result(),
-                    Some(CapsuleMode::Notice) => theme.border_notice(),
-                    Some(CapsuleMode::Processing) => {
-                        // Gradient border takes over in processing; clear the solid one.
-                        layer.setBorderColor(Some(&NSColor::clearColor().CGColor()));
-                        layer.setBorderWidth(0.0);
-                        theme.border_idle()
-                    }
-                    _ => theme.border_idle(),
-                };
-                if mode != Some(CapsuleMode::Processing) {
-                    layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
-                    layer.setBorderWidth(BORDER_IDLE_W);
+    suppress_implicit_animations(|| {
+        UI.with(|ui| {
+            let ui = ui.borrow();
+            let mode = SHARED.lock().unwrap().mode;
+            if let Some(bg) = &ui.bg_overlay {
+                let (r, g, b, a) = theme.background();
+                if let Some(layer) = bg.layer() {
+                    layer.setBackgroundColor(Some(&srgb(r, g, b, a).CGColor()));
                 }
             }
-        }
-        if let Some(view) = &ui.listen_indicator {
-            if let Some(layer) = view.layer() {
-                layer.setBackgroundColor(Some(&theme.listen_indicator().CGColor()));
-                layer.setShadowColor(Some(&theme.listen_indicator().CGColor()));
-            }
-        }
-        for dot in &ui.processing_dots {
-            if let Some(layer) = dot.layer() {
-                layer.setBackgroundColor(Some(&theme.accent().CGColor()));
-                layer.setShadowColor(Some(&theme.accent().CGColor()));
-            }
-        }
-        if let Some(gradient) = &ui.gradient_border {
-            set_gradient_colors(gradient, theme);
-        }
-        // Re-skin the active label so live theme flips reach currently-visible text.
-        if let Some(label) = &ui.text_label {
-            match mode {
-                Some(CapsuleMode::Result) => {
-                    let source = SHARED.lock().unwrap().result_accumulated.clone();
-                    let trimmed = source.trim();
-                    if !trimmed.is_empty() {
-                        let attr = build_markdown_attributed(trimmed, *theme);
-                        label.setAttributedStringValue(&attr);
-                    }
-                }
-                Some(CapsuleMode::Listening) => {
-                    let combined = listening_display_text(&SHARED.lock().unwrap());
-                    let color = if combined.trim().is_empty() {
-                        theme.muted_label()
+            if let Some(capsule) = &ui.capsule_view {
+                if let Some(layer) = capsule.layer() {
+                    let (sr, sg, sb) = if theme.is_dark {
+                        (6, 4, 12)
                     } else {
-                        theme.label_color()
+                        (60, 40, 120)
                     };
-                    label.setTextColor(Some(&color));
+                    layer.setShadowColor(Some(&srgb(sr, sg, sb, 0.62).CGColor()));
+                    layer.setShadowOpacity(if theme.is_dark { 0.30 } else { 0.14 });
                 }
-                Some(CapsuleMode::Notice) => {
-                    label.setTextColor(Some(&theme.label_color()));
-                }
-                _ => {}
             }
-        }
+            if let Some(vfx) = &ui.vfx_view {
+                if let Some(layer) = vfx.layer() {
+                    let (r, g, b, a) = match mode {
+                        Some(CapsuleMode::Result) => theme.border_result(),
+                        Some(CapsuleMode::Notice) => theme.border_notice(),
+                        Some(CapsuleMode::Processing) => {
+                            // Gradient border takes over in processing; clear the solid one.
+                            layer.setBorderColor(Some(&NSColor::clearColor().CGColor()));
+                            layer.setBorderWidth(0.0);
+                            theme.border_idle()
+                        }
+                        _ => theme.border_idle(),
+                    };
+                    if mode != Some(CapsuleMode::Processing) {
+                        layer.setBorderColor(Some(&srgb(r, g, b, a).CGColor()));
+                        layer.setBorderWidth(BORDER_IDLE_W);
+                    }
+                }
+            }
+            if let Some(view) = &ui.listen_indicator {
+                if let Some(layer) = view.layer() {
+                    layer.setBackgroundColor(Some(&theme.listen_indicator().CGColor()));
+                    layer.setShadowColor(Some(&theme.listen_indicator().CGColor()));
+                }
+            }
+            for dot in &ui.processing_dots {
+                if let Some(layer) = dot.layer() {
+                    layer.setBackgroundColor(Some(&theme.accent().CGColor()));
+                    layer.setShadowColor(Some(&theme.accent().CGColor()));
+                }
+            }
+            if let Some(gradient) = &ui.gradient_border {
+                set_gradient_colors(gradient, theme);
+            }
+            // Re-skin the active label so live theme flips reach currently-visible text.
+            if let Some(label) = &ui.text_label {
+                match mode {
+                    Some(CapsuleMode::Result) => {
+                        let source = SHARED.lock().unwrap().result_accumulated.clone();
+                        let trimmed = source.trim();
+                        if !trimmed.is_empty() {
+                            let attr = build_markdown_attributed(trimmed, *theme);
+                            label.setAttributedStringValue(&attr);
+                        }
+                    }
+                    Some(CapsuleMode::Listening) => {
+                        let combined = listening_display_text(&SHARED.lock().unwrap());
+                        let color = if combined.trim().is_empty() {
+                            theme.muted_label()
+                        } else {
+                            theme.label_color()
+                        };
+                        label.setTextColor(Some(&color));
+                    }
+                    Some(CapsuleMode::Notice) => {
+                        label.setTextColor(Some(&theme.label_color()));
+                    }
+                    _ => {}
+                }
+            }
+        });
     });
 }

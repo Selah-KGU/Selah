@@ -15,287 +15,75 @@ pub fn setup(app: &AppHandle) {
         let _ = app_main.run_on_main_thread(move || apply_theme(&Theme::current()));
     });
 
-    let app_final = app.clone();
-    app.listen("stt-final", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        let text = payload
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        let (display, pending_submit) = {
-            let mut sh = SHARED.lock().unwrap();
-            if sh.mode != Some(CapsuleMode::Listening) {
-                return;
-            }
-            append_final_segment(&mut sh, &text);
-            let display = listening_display_text(&sh);
-            let pending = if sh.stop_requested {
-                sh.stop_requested = false;
-                Some(consume_all_speech(&mut sh))
-            } else {
-                None
-            };
-            (display, pending)
-        };
-
-        if should_render_listening_text() && !display.is_empty() {
-            update_text(&app_final, CapsuleMode::Listening, &display);
-        }
-
-        if let Some(text) = pending_submit {
-            if !text.is_empty() {
-                submit_to_agent(app_final.clone(), text);
-            }
-        }
-    });
-
-    let app_partial = app.clone();
-    app.listen("stt-partial", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        let text = payload
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if text.trim().is_empty() {
-            return;
-        }
-        let display = {
-            let mut sh = SHARED.lock().unwrap();
-            sh.current_speech = text;
-            listening_display_text(&sh)
-        };
-        if should_render_listening_text() {
-            update_text(&app_partial, CapsuleMode::Listening, &display);
-        }
-    });
-
-    let app_state = app.clone();
-    app.listen("stt-state", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        let state_name = payload
-            .get("state")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default();
-        let listening = matches!(state_name, "initializing" | "listening");
-
-        if listening {
-            transition_to_listening(&app_state, None);
-            return;
-        }
-
-        let pending = {
-            let mut sh = SHARED.lock().unwrap();
-            if sh.mode == Some(CapsuleMode::Processing)
-                || sh.mode == Some(CapsuleMode::Result)
-                || sh.mode == Some(CapsuleMode::Notice)
-            {
-                sh.finals_accumulated.clear();
-                sh.current_speech.clear();
-                None
-            } else if sh.stop_requested {
-                let text = consume_all_speech(&mut sh);
-                if text.is_empty() {
-                    None
-                } else {
-                    sh.stop_requested = false;
-                    Some(text)
-                }
-            } else {
-                sh.stop_requested = false;
-                Some(consume_all_speech(&mut sh))
-            }
-        };
-
-        if let Some(text) = pending {
-            if text.is_empty() {
-                close_panel(&app_state, false);
-            } else {
-                submit_to_agent(app_state.clone(), text);
-            }
-        } else {
-            schedule_release_finalize(app_state.clone(), RELEASE_FINALIZE_DELAY_MS);
-        }
-    });
-
-    let app_err = app.clone();
-    app.listen("stt-error", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        {
-            let mut sh = SHARED.lock().unwrap();
-            sh.stop_requested = false;
-            sh.finals_accumulated.clear();
-            sh.current_speech.clear();
-        }
-        transition_to_notice(&app_err, "音声入力を開始できませんでした");
-    });
-}
-
-fn should_render_listening_text() -> bool {
-    let sh = SHARED.lock().unwrap();
-    sh.mode == Some(CapsuleMode::Listening) && !sh.stop_requested
-}
-
-// ─ Mode transitions ──────────────────────────────────────────────────────────
-pub(super) fn transition_to_listening(app: &AppHandle, text: Option<&str>) {
-    cancel_auto_close();
-    SHARED.lock().unwrap().mode = Some(CapsuleMode::Listening);
-    ensure_panel(app, LISTEN_W, LISTEN_H);
-    let display_text = if let Some(text) = text {
-        text.to_string()
-    } else {
-        let sh = SHARED.lock().unwrap();
-        let combined = listening_display_text(&sh);
-        if combined.trim().is_empty() {
-            "話してください".to_string()
-        } else {
-            combined
-        }
-    };
-    update_text(app, CapsuleMode::Listening, &display_text);
-    update_border(app.clone(), CapsuleMode::Listening);
-    start_processing_dots_animation(app.clone(), CapsuleMode::Listening);
-    start_listen_pulse_animation(app.clone(), CapsuleMode::Listening);
-}
-
-fn transition_to_processing(app: &AppHandle) {
-    cancel_auto_close();
-    {
-        let mut sh = SHARED.lock().unwrap();
-        sh.mode = Some(CapsuleMode::Processing);
-        sh.current_speech.clear();
-        sh.finals_accumulated.clear();
-    }
-    ensure_panel(app, PROCESS_W, PROCESS_H);
-    update_text(app, CapsuleMode::Processing, "");
-    update_border(app.clone(), CapsuleMode::Processing);
-    start_processing_dots_animation(app.clone(), CapsuleMode::Processing);
-    start_listen_pulse_animation(app.clone(), CapsuleMode::Processing);
-}
-
-fn transition_to_result(app: &AppHandle, text: &str) {
-    cancel_auto_close();
-    SHARED.lock().unwrap().mode = Some(CapsuleMode::Result);
-    let target_h = compute_result_height(text);
-    ensure_panel(app, RESULT_W, target_h);
-    update_text(app, CapsuleMode::Result, text);
-    update_border(app.clone(), CapsuleMode::Result);
-    start_processing_dots_animation(app.clone(), CapsuleMode::Result);
-    start_listen_pulse_animation(app.clone(), CapsuleMode::Result);
-    schedule_close(app.clone(), Duration::from_secs(RESULT_AUTO_CLOSE_SECS));
-}
-
-pub(super) fn transition_to_notice(app: &AppHandle, message: &str) {
-    cancel_auto_close();
-    SHARED.lock().unwrap().mode = Some(CapsuleMode::Notice);
-    ensure_panel(app, NOTICE_W, NOTICE_H);
-    update_text(app, CapsuleMode::Notice, message);
-    update_border(app.clone(), CapsuleMode::Notice);
-    start_processing_dots_animation(app.clone(), CapsuleMode::Notice);
-    start_listen_pulse_animation(app.clone(), CapsuleMode::Notice);
-    schedule_close(app.clone(), Duration::from_millis(NOTICE_AUTO_CLOSE_MS));
+    crate::native_agent_events::install(
+        &SHARED,
+        enqueue_view_update,
+        finish_capture,
+        capture_error,
+    );
 }
 
 // ─ Agent submission ──────────────────────────────────────────────────────────
-pub(super) fn submit_to_agent(app: AppHandle, text: String) {
-    if text.trim().is_empty() {
-        close_panel(&app, false);
-        return;
-    }
+pub(super) fn capture_error(app: &AppHandle, input_id: &str, message: &str) {
+    crate::native_agent_submission::capture_failed(
+        app,
+        input_id,
+        message,
+        &SHARED,
+        enqueue_view_update,
+    );
+}
 
-    transition_to_processing(&app);
-
-    let db = app.state::<Database>();
-    let conv_id = uuid_v4();
-    let _ = db.agent_create_conversation(&conv_id, "Voice Shortcut");
-
-    let cid = conv_id.clone();
-    let app_for_listener = app.clone();
-    let listener_id = app.listen(format!("agent_stream:{conv_id}"), move |event| {
-        handle_agent_stream(&app_for_listener, &cid, event.payload());
-    });
-
-    {
+pub(super) fn finish_capture(app: AppHandle, input_id: &str) {
+    finish_capture_owned(app, input_id, None);
+}
+pub(super) fn finish_capture_for_release(app: AppHandle, input_id: &str, token: u64) {
+    finish_capture_owned(app, input_id, Some(token));
+}
+fn finish_capture_owned(app: AppHandle, input_id: &str, release_token: Option<u64>) {
+    let (text, start) = {
         let mut sh = SHARED.lock().unwrap();
-        sh.agent_listener = Some(listener_id);
-        sh.result_accumulated.clear();
-    }
-
-    tauri::async_runtime::spawn(async move {
-        let _ = agent::agent_send(app.clone(), conv_id, text, Vec::new()).await;
-    });
+        let finished = match release_token {
+            Some(token) => sh.finish_released_capture(
+                input_id,
+                token,
+                RELEASE_FINALIZE_TOKEN.load(Ordering::Relaxed),
+            ),
+            None => sh.capture.finish(input_id),
+        };
+        if !finished {
+            return;
+        }
+        sh.stop_requested = false;
+        let text = consume_all_speech(&mut sh);
+        if text.is_empty() {
+            let view = sh.prepare_view(CapsuleMode::Listening, String::new());
+            drop(sh);
+            close_panel_if_current(&app, &view.lease);
+            return;
+        }
+        // Reserve the conversation before releasing capture ownership. A new
+        // shortcut can hide this result while its speech still reaches history.
+        let conv_id = uuid_v4();
+        let start = sh.begin_stream(conv_id);
+        (text, start)
+    };
+    crate::native_agent_submission::submit(
+        app.clone(),
+        start.owner,
+        text,
+        &SHARED,
+        enqueue_view_update,
+    );
+    enqueue_view_update(&app, start.view);
 }
 
-fn handle_agent_stream(app: &AppHandle, _conv_id: &str, payload: &str) {
-    let parsed = serde_json::from_str::<Value>(payload).unwrap_or(Value::Null);
-    let event_type = parsed
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-
-    match event_type {
-        "token" => {
-            let chunk = parsed
-                .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if chunk.is_empty() {
-                return;
-            }
-            let mut sh = SHARED.lock().unwrap();
-            sh.result_accumulated.push_str(chunk);
-        }
-        "error" => {
-            let msg = parsed
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("エラーが発生しました");
-            clear_agent_listener(app);
-            {
-                let mut sh = SHARED.lock().unwrap();
-                sh.result_accumulated = msg.to_string();
-            }
-            transition_to_notice(app, msg);
-        }
-        "done" => {
-            let final_text = {
-                let sh = SHARED.lock().unwrap();
-                sh.result_accumulated.trim().to_string()
-            };
-            clear_agent_listener(app);
-            if final_text.is_empty() {
-                transition_to_notice(app, "応答を取得できませんでした");
-            } else {
-                transition_to_result(app, &final_text);
-            }
-        }
-        _ => {}
-    }
-}
-
-pub(super) fn clear_agent_listener(app: &AppHandle) {
-    let listener_id = SHARED.lock().unwrap().agent_listener.take();
-    if let Some(id) = listener_id {
-        app.unlisten(id);
-    }
+pub(super) fn clear_agent_stream() {
+    SHARED.lock().unwrap().cancel_stream();
 }
 
 // ─ Result height measurement ─────────────────────────────────────────────────
-fn compute_result_height(text: &str) -> f64 {
+pub(super) fn compute_result_height(text: &str) -> f64 {
     let text_w = RESULT_W - RESULT_PAD_X * 2.0;
     // Rough measurement — each character counted as ~font*0.56 (cjk ~font*0.98).
     let mut total_lines = 0.0_f64;
@@ -374,15 +162,16 @@ fn strip_markdown_syntax(line: &str) -> String {
     out
 }
 
-fn schedule_close(app: AppHandle, delay: Duration) {
-    let token = AUTO_CLOSE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+pub(super) fn schedule_close(app: AppHandle, delay: Duration, lease: NativeViewLease) {
+    let close = crate::main_thread_animation::MainThreadAnimation::start(&AUTO_CLOSE_TOKEN);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(delay).await;
-        if AUTO_CLOSE_TOKEN.load(Ordering::Relaxed) == token {
-            close_panel(&app, false);
-        }
+        let app_close = app.clone();
+        close
+            .frame(&app, move || {
+                close_panel_if_current(&app_close, &lease);
+            })
+            .await;
     });
 }
 
@@ -459,19 +248,6 @@ fn effective_is_dark(app: &AppHandle) -> bool {
         "dark" => true,
         _ => is_dark_mode(),
     }
-}
-
-/// Run a closure inside a CATransaction that suppresses CoreAnimation's default
-/// implicit animations. Without this, every `setFrame` / `setOpacity` /
-/// `setStartPoint` on a CALayer triggers a ~0.25s ease animation; when we
-/// drive our own motion at 60fps these implicit animations stack and fight,
-/// which reads as jitter.
-pub(super) fn suppress_implicit_animations<F: FnOnce()>(f: F) {
-    CATransaction::begin();
-    CATransaction::setDisableActions(true);
-    CATransaction::setAnimationDuration(0.0);
-    f();
-    CATransaction::commit();
 }
 
 pub(super) fn ease_out_quart(t: f64) -> f64 {

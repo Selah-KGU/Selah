@@ -1,5 +1,6 @@
 use super::*;
 
+use super::ai_analysis::load_ai_cache_with_snapshot;
 use crate::db::{AiScheduleResult, Database, ScheduleRawData};
 use crate::luna_parser;
 use serde::Serialize;
@@ -26,15 +27,24 @@ pub struct ScheduleResponse {
 /// Load schedule from DB snapshot only (no network). Fast, used on page mount.
 /// SQLite reads run on the blocking pool so a large snapshot cannot stall async commands.
 #[tauri::command]
-pub async fn get_schedule_snapshot(app: tauri::AppHandle) -> Result<ScheduleResponse, String> {
-    tokio::task::spawn_blocking(move || build_schedule_snapshot(&app))
-        .await
-        .map_err(|err| format!("時間割スナップショットの読み込みに失敗しました: {err}"))?
+pub async fn get_schedule_snapshot<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "時間割スナップショットの読み込みに失敗しました",
+        "時間割応答の変換に失敗しました",
+        move || build_schedule_snapshot(&app),
+    )
+    .await
 }
 
-pub(crate) fn build_schedule_snapshot(app: &tauri::AppHandle) -> Result<ScheduleResponse, String> {
+pub(crate) fn build_schedule_snapshot<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<ScheduleResponse, String> {
     let db = app.state::<Database>();
-    let snap = db.get_snapshot_state()?.unwrap_or_default();
+    let saved_snapshot = db.get_snapshot_state()?;
+    let has_saved_snapshot = saved_snapshot.is_some();
+    let snap = saved_snapshot.unwrap_or_default();
     let scope = crate::academic_period::visible_weeks(
         &snap.current_week_label,
         &snap.next_week_label,
@@ -45,7 +55,8 @@ pub(crate) fn build_schedule_snapshot(app: &tauri::AppHandle) -> Result<Schedule
     let mut communities = snap.luna_communities.clone();
     retain_current_communities(&mut communities, &scope.year, &scope.term);
     let raw = db.build_raw_data(&scope.current, &scope.next, communities.clone())?;
-    let (ai_result, ai_stale) = load_ai_cache(&db)?;
+    let (ai_result, ai_stale) =
+        load_ai_cache_with_snapshot(&db, has_saved_snapshot.then_some(&snap))?;
     let mut kgc_warning = load_kgc_warning(&db);
     if scope.hid_current {
         kgc_warning = STALE_SEMESTER_KGC_WARNING.to_string();

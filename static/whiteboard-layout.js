@@ -30,6 +30,7 @@
  * fields (node_type, role, kind, parent_id, source_type) have already been
  * validated by parse_live_whiteboard and are passed through verbatim.
  * This module is then responsible ONLY for:
+ *   - unique display identities (old saved boards may contain ID collisions)
  *   - coordinate assignment (x/y via the Layered Topic Forest layout)
  *   - folding term nodes into their parent's chip list
  *   - edge geometry (Bézier control points, label placement)
@@ -40,6 +41,36 @@
  */
 (function (global) {
   'use strict';
+
+  // ID maps must not resolve inherited Object properties as graph nodes.
+  function idMap() { return Object.create(null); }
+
+  // Repair display identities locally. Reserve every explicit ID first so a
+  // fallback or generated suffix cannot steal a later node's original ID.
+  // Both topics and compute use this same pass over all valid raw nodes.
+  function displayNodeIds(nodes) {
+    var reserved = new Set();
+    var ids = nodes.map(function (node) {
+      var id = (node.id && String(node.id)) || null;
+      if (id) reserved.add(id);
+      return id;
+    });
+    if (reserved.size === nodes.length) return ids;
+    var seen = new Set();
+    return ids.map(function (id, index) {
+      if (id && !seen.has(id)) { seen.add(id); return id; }
+      var base = id || ('n' + (index + 1));
+      var candidate = id ? base + '-' + (index + 1) : base;
+      if (reserved.has(candidate)) {
+        var prefix = base + '-' + (index + 1);
+        candidate = prefix;
+        var suffix = 2;
+        while (reserved.has(candidate)) candidate = prefix + '-' + suffix++;
+      }
+      reserved.add(candidate);
+      return candidate;
+    });
+  }
 
   function clampBoardPoint(value, min, max) {
     if (min == null) min = 10;
@@ -159,12 +190,14 @@
   }
 
   function segmentsCross(ax, ay, bx, by, cx, cy, dx, dy) {
-    function s(x) { return x > 0 ? 1 : x < 0 ? -1 : 0; }
-    var d1 = s((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
-    var d2 = s((bx - ax) * (dy - ay) - (by - ay) * (dx - ax));
-    var d3 = s((dx - cx) * (ay - cy) - (dy - cy) * (ax - cx));
-    var d4 = s((dx - cx) * (by - cy) - (dy - cy) * (bx - cx));
-    return d1 !== d2 && d3 !== d4;
+    var d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    var d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+    // Compare the same three sign classes directly. Zero and NaN both have
+    // neither sign, exactly as in the original classifier.
+    if ((d1 > 0) === (d2 > 0) && (d1 < 0) === (d2 < 0)) return false;
+    var d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+    var d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+    return (d3 > 0) !== (d4 > 0) || (d3 < 0) !== (d4 < 0);
   }
 
   function rectSegmentIntersect(rect, seg) {
@@ -178,7 +211,7 @@
     );
   }
 
-  function placeEdgeLabel(midX, midY, from, to, lw, lh, occupied, nodeRects, otherSegments, edgeIndex) {
+  function placeEdgeLabel(midX, midY, from, to, lw, lh, occupied, nodeRects, segments, ownSegmentIndex, edgeIndex) {
     var dx = to.x - from.x;
     var dy = to.y - from.y;
     var length = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -191,19 +224,36 @@
     var best = null;
     var bestScore = Infinity;
     for (var i = 0; i < normalOffsets.length; i++) {
+      candidate:
       for (var j = 0; j < tangentOffsets.length; j++) {
         var normal = normalOffsets[i];
         var tangent = tangentOffsets[j];
+        var cost = Math.abs(normal) * 1.6 + Math.abs(tangent) + (edgeIndex % 2 === 0 && normal < 0 ? 0.4 : 0);
+        // Every remaining penalty is nonnegative. The original winner uses
+        // strict <, so a tied or worse partial score cannot replace it. Keep
+        // the candidate and addition order for every potentially winning one.
+        if (cost >= bestScore) continue;
         var x = clampBoardPoint(midX + nx * normal + tx * tangent, 6 + lw / 2, 94 - lw / 2);
         var y = clampBoardPoint(midY + ny * normal + ty * tangent, 7 + lh / 2, 93 - lh / 2);
-        var cost = Math.abs(normal) * 1.6 + Math.abs(tangent) + (edgeIndex % 2 === 0 && normal < 0 ? 0.4 : 0);
         var rect = { x1: x - lw / 2, y1: y - lh / 2, x2: x + lw / 2, y2: y + lh / 2 };
         var score = cost;
-        for (var k = 0; k < occupied.length; k++) score += rectOverlapArea(rect, occupied[k]) * 12;
-        for (var m = 0; m < nodeRects.length; m++) score += rectOverlapArea(rect, nodeRects[m]) * 14;
-        if (otherSegments) {
-          for (var s = 0; s < otherSegments.length; s++) {
-            if (rectSegmentIntersect(rect, otherSegments[s])) score += 3.2;
+        for (var k = 0; k < occupied.length; k++) {
+          score += rectOverlapArea(rect, occupied[k]) * 12;
+          if (score >= bestScore) continue candidate;
+        }
+        for (var m = 0; m < nodeRects.length; m++) {
+          score += rectOverlapArea(rect, nodeRects[m]) * 14;
+          if (score >= bestScore) continue candidate;
+        }
+        if (segments) {
+          for (var s = 0; s < segments.length; s++) {
+            if (s === ownSegmentIndex) continue;
+            var seg = segments[s];
+            // A disjoint bounding box cannot intersect this label. Retain
+            // touching bounds and the original precise test / scoring order.
+            if (seg.maxX < rect.x1 || seg.minX > rect.x2 || seg.maxY < rect.y1 || seg.minY > rect.y2) continue;
+            if (rectSegmentIntersect(rect, seg)) score += 3.2;
+            if (score >= bestScore) continue candidate;
           }
         }
         if (score < bestScore) { bestScore = score; best = { x: x, y: y, rect: rect }; }
@@ -229,7 +279,7 @@
   // boxes are shelf-packed, then normalised to the 0..100 board space; the
   // pixel bounds become the stage-size hint.
   function computeForestLayout(nodes) {
-    if (!nodes.length) return { points: {}, stage: null };
+    if (!nodes.length) return { points: idMap(), stage: null };
 
     // Slot = node box + surrounding gap, so touching slots leave a clean gap
     // between the cards. Height tracks the node's real content — detail-text
@@ -248,12 +298,12 @@
     var TOPIC_GAP = 70;
     var MARGIN = 60;
 
-    var byId = {};
+    var byId = idMap();
     nodes.forEach(function (n) { byId[n.id] = n; });
     var mains = nodes.filter(function (n) { return n.role === 'main'; });
     var rootFallback = (mains[0] || nodes[0]).id;
 
-    var childIds = {};
+    var childIds = idMap();
     nodes.forEach(function (n) { childIds[n.id] = []; });
     nodes.forEach(function (n) {
       if (n.role === 'main') return;
@@ -263,7 +313,7 @@
 
     // Structural depth — used only to pick orientation.
     function structuralDepth(id, seen) {
-      seen = seen || {};
+      seen = seen || idMap();
       if (seen[id]) return 1;
       seen[id] = true;
       var d = 1;
@@ -378,7 +428,7 @@
     var topicRoots = mains.length ? mains : [nodes[0]];
     var topicBoxes = topicRoots.map(function (m) {
       var orient = structuralDepth(m.id) <= 2 ? 'TB' : 'LR';
-      return layoutNode(m.id, orient, {});
+      return layoutNode(m.id, orient, idMap());
     });
 
     // Shelf-pack the topic boxes into a roughly landscape area.
@@ -388,7 +438,7 @@
       topicBoxes.reduce(function (mx, b) { return Math.max(mx, b.w); }, 0),
       Math.sqrt(totalArea) * 1.3
     );
-    var abs = {};
+    var abs = idMap();
     var cursorX = 0, cursorY = 0, rowH = 0, maxX = 0;
     topicBoxes.forEach(function (b) {
       if (cursorX > 0 && cursorX + b.w > rowLimit) {
@@ -405,7 +455,7 @@
     var stageH = cursorY + rowH + MARGIN * 2;
 
     // Normalise slot centres to 0..100; the renderer scales them to the stage.
-    var points = {};
+    var points = idMap();
     nodes.forEach(function (n) {
       var a = abs[n.id];
       if (!a) { points[n.id] = [50, 50]; return; }
@@ -434,12 +484,13 @@
     });
     if (!hasExplicitHierarchy) return [];
     var out = [];
+    var ids = displayNodeIds(rawNodes);
     rawNodes.forEach(function (n, i) {
       var role = backendNormalized
         ? String(n.role || 'branch')
         : normalizeRole(n.role, n.kind, n.parent_id);
       if (role === 'main') {
-        out.push({ id: (n.id && String(n.id)) || ('n' + (i + 1)), label: String(n.label).trim() });
+        out.push({ id: ids[i], label: String(n.label).trim() });
       }
     });
     return out;
@@ -457,17 +508,18 @@
 
     // Fast-path flag: backend-normalised boards (schema_version ≥ 1) have
     // already had structural fields validated. Skip re-normalisation and trust
-    // the values directly; only layout / geometry passes run below.
+    // the values directly; display identities and layout / geometry run below.
     var backendNormalized = !!(board.normalized_by === 'backend');
 
     var hasExplicitHierarchy = backendNormalized || rawNodes.some(function (n) {
       return (n.role && String(n.role).trim()) || (n.parent_id && String(n.parent_id).trim());
     });
 
+    var ids = displayNodeIds(rawNodes);
     var drafts = rawNodes.map(function (n, i) {
       var externalSource = n.external_source ? String(n.external_source).trim() : '';
       return {
-        id: (n.id && String(n.id)) || ('n' + (i + 1)),
+        id: ids[i],
         label: String(n.label).trim(),
         detail: (n.detail ? String(n.detail).trim() : ''),
         nodeType: backendNormalized ? String(n.node_type || 'structure') : normalizeNodeType(n.node_type),
@@ -500,9 +552,9 @@
         if (!drafts.some(function (n) { return n.role === 'main'; })) {
           drafts[0].role = 'main';
         }
-        var mainIds = {};
+        var mainIds = idMap();
         drafts.forEach(function (n) { if (n.role === 'main') mainIds[n.id] = true; });
-        var structureIds = {};
+        var structureIds = idMap();
         drafts.forEach(function (n) { if (n.nodeType !== 'term') structureIds[n.id] = true; });
         var fallbackMain = null;
         for (var fi = 0; fi < drafts.length; fi++) {
@@ -527,12 +579,12 @@
       // skipped automatically downstream (byId lookups fail for missing ids).
       var topicIds = opts && Array.isArray(opts.topicIds) ? opts.topicIds : null;
       if (topicIds && topicIds.length) {
-        var keepTopic = {};
+        var keepTopic = idMap();
         topicIds.forEach(function (id) { keepTopic[String(id)] = true; });
-        var draftById = {};
+        var draftById = idMap();
         drafts.forEach(function (d) { draftById[d.id] = d; });
         drafts = drafts.filter(function (d) {
-          var seen = {};
+          var seen = idMap();
           var cur = d;
           while (cur && !seen[cur.id]) {
             if (cur.role === 'main') return !!keepTopic[cur.id];
@@ -546,7 +598,7 @@
       // not first-class graph nodes — folding them keeps the layout to the
       // structural skeleton (≈40% fewer nodes) and renders them as compact
       // chips inside the parent card instead of scattered pills.
-      var foldById = {};
+      var foldById = idMap();
       drafts.forEach(function (d) { foldById[d.id] = d; });
       var structureDrafts = [];
       var orphanTerms = [];
@@ -574,7 +626,7 @@
       stageHint = ltf.stage;
     } else {
       var fallbackPoints = whiteboardPoints(drafts.length, String(board.layout || 'grid').toLowerCase());
-      points = {};
+      points = idMap();
       drafts.forEach(function (n, i) { points[n.id] = fallbackPoints[i] || [50, 50]; });
       // Legacy non-hierarchical boards still get a pixel stage so edges are
       // drawn in pixel space (the renderer's SVG viewBox / stroke width assume
@@ -589,7 +641,7 @@
       return n;
     });
 
-    var byId = {};
+    var byId = idMap();
     nodes.forEach(function (n) { byId[n.id] = n; });
 
     var occupiedLabelRects = [];
@@ -610,10 +662,10 @@
       if (!from || !to || from.id === to.id) return;
       validEdges.push({ raw: e, index: i, from: from, to: to });
     });
-    var edgeAdj = {};
+    var edgeAdj = idMap();
     validEdges.forEach(function (ve) {
-      (edgeAdj[ve.from.id] = edgeAdj[ve.from.id] || {})[ve.to.id] = true;
-      (edgeAdj[ve.to.id] = edgeAdj[ve.to.id] || {})[ve.from.id] = true;
+      (edgeAdj[ve.from.id] = edgeAdj[ve.from.id] || idMap())[ve.to.id] = true;
+      (edgeAdj[ve.to.id] = edgeAdj[ve.to.id] || idMap())[ve.from.id] = true;
     });
     function isRedundant(aId, bId) {
       var an = edgeAdj[aId];
@@ -639,9 +691,9 @@
         ix2: to.x - ux * insetDist, iy2: to.y - uy * insetDist
       };
     });
-    var allSegments = edgeGeoms.map(function (g) {
-      return { x1: g.ix1, y1: g.iy1, x2: g.ix2, y2: g.iy2 };
-    });
+    // Only labelled edges need collision scoring. Build one shared segment
+    // list on first use, rather than copying all other segments for each edge.
+    var allSegments = null;
     var edges = edgeGeoms.map(function (geom, gi) {
       var label = geom.raw.label ? String(geom.raw.label).trim() : '';
       var labelWidth = label ? clampBoardPoint(estimateLabelWidthEm(label), 5, 13.2) : 0;
@@ -676,14 +728,21 @@
       // aspect distortion (only SVG shapes stretch, not point positions).
       var anchorX = ((px1 + 2 * pcx + px2) / 4) / sw * 100;
       var anchorY = ((py1 + 2 * pcy + py2) / 4) / sh * 100;
-      var otherSegs = [];
-      for (var oi = 0; oi < allSegments.length; oi++) if (oi !== gi) otherSegs.push(allSegments[oi]);
+      if (label && !allSegments) {
+        allSegments = edgeGeoms.map(function (g) {
+          return {
+            x1: g.ix1, y1: g.iy1, x2: g.ix2, y2: g.iy2,
+            minX: Math.min(g.ix1, g.ix2), maxX: Math.max(g.ix1, g.ix2),
+            minY: Math.min(g.iy1, g.iy2), maxY: Math.max(g.iy1, g.iy2)
+          };
+        });
+      }
       var lp = label ? placeEdgeLabel(
         anchorX, anchorY,
         { x: geom.ix1, y: geom.iy1 }, { x: geom.ix2, y: geom.iy2 },
         labelWidth, labelHeight,
         occupiedLabelRects, nodeLabelRects,
-        otherSegs,
+        allSegments, gi,
         geom.index
       ) : { x: anchorX, y: anchorY };
       return {

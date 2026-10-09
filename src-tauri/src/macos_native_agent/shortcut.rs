@@ -56,14 +56,10 @@ pub fn apply_config(app: &AppHandle, config: &NativeAgentConfig) -> Result<(), S
                     .map_err(|e| format!("failed to unregister voice shortcut: {e}"))?;
             }
         }
-        clear_agent_listener(app);
-        SHORTCUT_DOWN.store(false, Ordering::Relaxed);
-        SHORTCUT_ARM_TOKEN.fetch_add(1, Ordering::Relaxed);
+        clear_agent_stream();
+        SHARED.lock().unwrap().shortcut.release();
         RELEASE_FINALIZE_TOKEN.fetch_add(1, Ordering::Relaxed);
         FN_PRESSED.store(false, Ordering::Relaxed);
-        if stt::stt_get_active_caller().as_deref() == Some("native_agent") {
-            let _ = stt::stt_stop_stream();
-        }
         close_panel(app, true);
     }
 
@@ -117,106 +113,100 @@ fn stop_fn_polling() {
 }
 
 pub(super) fn schedule_release_finalize(app: AppHandle, delay_ms: u64) {
-    let token = RELEASE_FINALIZE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    let (input_id, token) = {
+        let state = SHARED.lock().unwrap();
+        let Some(input_id) = state.capture.id().map(str::to_owned) else {
+            return;
+        };
+        let token = RELEASE_FINALIZE_TOKEN
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        (input_id, token)
+    };
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         if RELEASE_FINALIZE_TOKEN.load(Ordering::Relaxed) != token {
             return;
         }
-
-        let pending = {
-            let mut sh = SHARED.lock().unwrap();
-            if sh.mode != Some(CapsuleMode::Listening) || !sh.stop_requested {
+        tauri::async_runtime::spawn_blocking(move || {
+            let Ok(state) = stt::stt_get_stream_state() else {
+                return;
+            };
+            if state.owner.as_ref().is_some_and(|owner| {
+                owner.caller == "native_agent"
+                    && owner.input_session_id.as_deref() == Some(&input_id)
+            }) {
                 return;
             }
-            sh.stop_requested = false;
-            consume_all_speech(&mut sh)
-        };
-
-        if pending.is_empty() {
-            close_panel(&app, false);
-        } else {
-            submit_to_agent(app, pending);
-        }
+            super::flow::finish_capture_for_release(app, &input_id, token);
+        });
     });
 }
 
 fn handle_shortcut_pressed(app: AppHandle) {
-    SHORTCUT_DOWN.store(true, Ordering::Relaxed);
-    let token = SHORTCUT_ARM_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+    let request = {
+        let mut state = SHARED.lock().unwrap();
+        let Some(request) = state.press_shortcut() else {
+            return;
+        };
+        cancel_auto_close();
+        request
+    };
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(SHORTCUT_HOLD_MS)).await;
-        if SHORTCUT_ARM_TOKEN.load(Ordering::Relaxed) != token
-            || !SHORTCUT_DOWN.load(Ordering::Relaxed)
-        {
-            return;
-        }
-        start_agent_capture(app);
+        tauri::async_runtime::spawn_blocking(move || start_agent_capture(app, request));
     });
 }
 
 fn handle_shortcut_released(app: AppHandle) {
-    SHORTCUT_DOWN.store(false, Ordering::Relaxed);
-    SHORTCUT_ARM_TOKEN.fetch_add(1, Ordering::Relaxed);
-    let was_listening = {
+    let input_id = {
         let mut sh = SHARED.lock().unwrap();
-        if sh.mode == Some(CapsuleMode::Listening) {
-            sh.stop_requested = true;
-            true
-        } else {
-            false
+        sh.shortcut.release();
+        if sh.mode != Some(CapsuleMode::Listening) {
+            return;
         }
+        let input_id = sh.capture.id().map(str::to_owned);
+        sh.stop_requested = true;
+        input_id
     };
-    if stt::stt_get_active_caller().as_deref() != Some("native_agent") {
-        if was_listening {
-            schedule_release_finalize(app, RELEASE_FINALIZE_DELAY_MS);
-        }
-        return;
+    if let Some(id) = input_id {
+        let _ = stt::stt_request_native_input_stop(&id);
     }
-    let _ = stt::stt_stop_stream();
     schedule_release_finalize(app, RELEASE_FINALIZE_DELAY_MS);
 }
 
-fn start_agent_capture(app: AppHandle) {
-    RELEASE_FINALIZE_TOKEN.fetch_add(1, Ordering::Relaxed);
-    cancel_auto_close();
-    clear_agent_listener(&app);
-
-    if stt::stt_is_running() {
-        match stt::stt_get_active_caller().as_deref() {
-            Some("native_agent") => return,
-            Some(_) => {
-                transition_to_notice(&app, "ほかの音声入力が動作中です");
-                return;
-            }
-            None => {}
-        }
+fn start_agent_capture(app: AppHandle, request: crate::native_shortcut::ShortcutRequest) {
+    let input_id = uuid::Uuid::new_v4().to_string();
+    let Some(update) = crate::native_shortcut::prepare_capture(
+        &SHARED,
+        request,
+        input_id.clone(),
+        "話してください",
+        stt::stt_get_stream_state,
+    ) else {
+        return;
+    };
+    enqueue_view_update(&app, update.view);
+    if !update.start {
+        return;
     }
 
-    {
-        let mut sh = SHARED.lock().unwrap();
-        sh.stop_requested = false;
-        sh.finals_accumulated.clear();
-        sh.current_speech.clear();
-        sh.result_accumulated.clear();
-        sh.mode = Some(CapsuleMode::Listening);
-    }
-
-    transition_to_listening(&app, Some("話してください"));
-
-    match stt::stt_start_stream(app.clone(), "native_agent".to_string(), Some(false)) {
+    match stt::stt_start_native_input_now(app.clone(), input_id.clone()) {
         Ok(_) => {
-            if !SHORTCUT_DOWN.load(Ordering::Relaxed) {
-                SHARED.lock().unwrap().stop_requested = true;
-                let _ = stt::stt_stop_stream();
+            let stop = {
+                let sh = SHARED.lock().unwrap();
+                if !sh.capture.owns(Some(&input_id)) {
+                    true
+                } else {
+                    sh.stop_requested
+                }
+            };
+            if stop {
+                let _ = stt::stt_request_native_input_stop(&input_id);
                 schedule_release_finalize(app, RELEASE_FINALIZE_DELAY_MS);
             }
         }
-        Err(err) => transition_to_notice(&app, &err),
+        Err(err) => capture_error(&app, &input_id, &err),
     }
 }
 

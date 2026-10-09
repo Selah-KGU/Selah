@@ -2,150 +2,23 @@
 
 use super::*;
 
-/// Design a Hamming-windowed sinc low-pass FIR.
-/// `fs` is the input sample rate the filter runs at, `fc` the cutoff in Hz.
-fn design_lowpass_fir(fs: f32, fc: f32, m: usize) -> Vec<f32> {
-    let mid = (m as f32 - 1.0) / 2.0;
-    let fc_norm = fc / fs; // 0..0.5
-    let two_pi = 2.0 * std::f32::consts::PI;
-    let mut taps: Vec<f32> = (0..m)
-        .map(|n| {
-            let x = n as f32 - mid;
-            let sinc = if x.abs() < 1e-6 {
-                2.0 * fc_norm
-            } else {
-                (two_pi * fc_norm * x).sin() / (std::f32::consts::PI * x)
-            };
-            let window = 0.54 - 0.46 * (two_pi * n as f32 / (m as f32 - 1.0)).cos();
-            sinc * window
-        })
-        .collect();
-    let sum: f32 = taps.iter().sum();
-    if sum.abs() > 1e-6 {
-        for v in taps.iter_mut() {
-            *v /= sum;
-        }
-    }
-    taps
-}
+#[path = "audio/resampler.rs"]
+mod resampler;
+pub(super) use resampler::Resampler;
 
-/// Stateful resampler: stereo/mono-interleaved input → 16 kHz mono.
-///
-/// For source rates above the target we apply a windowed-sinc low-pass
-/// before decimation to avoid aliasing (the previous pure-linear path
-/// folded the 8-24 kHz band into speech, hurting sibilants). State is
-/// carried across chunks so the filter has no boundary transients.
-pub(super) struct Resampler {
-    src_rate: i32,
-    channels: usize,
-    taps: Vec<f32>,
-    history: Vec<f32>,
-    /// Scratch buffers reused across calls to avoid per-frame allocations
-    /// in the audio hot path. Capacity grows once during warmup.
-    scratch_mono: Vec<f32>,
-    scratch_buf: Vec<f32>,
-    scratch_filtered: Vec<f32>,
-}
-
-impl Resampler {
-    pub(super) fn new(src_rate: i32, channels: usize) -> Self {
-        // Only engage the FIR when we actually need to band-limit. At 16 kHz
-        // input the cutoff would eat useful energy; the caller handles that
-        // case via the early-return in `process`.
-        let taps = if src_rate > TARGET_SAMPLE_RATE {
-            // ~7.5 kHz cutoff gives ~500 Hz guard band below Nyquist.
-            // 63-tap Hamming yields ~60 dB stopband attenuation, plenty for
-            // STT purposes; cost is ~63 mul-adds per input sample.
-            design_lowpass_fir(src_rate as f32, 7500.0, 63)
-        } else {
-            Vec::new()
-        };
-        let history_len = taps.len().saturating_sub(1);
-        Self {
-            src_rate,
-            channels: channels.max(1),
-            taps,
-            history: vec![0.0; history_len],
-            scratch_mono: Vec::new(),
-            scratch_buf: Vec::new(),
-            scratch_filtered: Vec::new(),
-        }
-    }
-
-    pub(super) fn process(&mut self, interleaved: &[f32]) -> Vec<f32> {
-        if interleaved.is_empty() {
-            return Vec::new();
-        }
-        // Downmix to mono into reused scratch buffer.
-        self.scratch_mono.clear();
-        if self.channels == 1 {
-            self.scratch_mono.extend_from_slice(interleaved);
-        } else {
-            let inv = 1.0 / self.channels as f32;
-            self.scratch_mono.reserve(interleaved.len() / self.channels);
-            for frame in interleaved.chunks(self.channels) {
-                let sum: f32 = frame.iter().copied().sum();
-                self.scratch_mono.push(sum * inv);
-            }
-        }
-
-        if self.taps.is_empty() {
-            // src == target rate: no filtering or resampling needed.
-            // Return a fresh Vec so the caller can mutate independently of
-            // the next process() call.
-            return self.scratch_mono.clone();
-        }
-
-        // Apply stateful FIR: prepend history, convolve, emit samples that
-        // had full filter context, carry the tail forward.
-        let m = self.taps.len();
-        self.scratch_buf.clear();
-        self.scratch_buf
-            .reserve(self.history.len() + self.scratch_mono.len());
-        self.scratch_buf.extend_from_slice(&self.history);
-        self.scratch_buf.extend_from_slice(&self.scratch_mono);
-
-        let n_out = self.scratch_buf.len().saturating_sub(m - 1);
-        self.scratch_filtered.clear();
-        self.scratch_filtered.reserve(n_out);
-        for i in 0..n_out {
-            let mut acc = 0.0f32;
-            for k in 0..m {
-                acc += self.taps[k] * self.scratch_buf[i + k];
-            }
-            self.scratch_filtered.push(acc);
-        }
-        self.history.clear();
-        self.history
-            .extend_from_slice(&self.scratch_buf[self.scratch_buf.len().saturating_sub(m - 1)..]);
-
-        // Linear interpolation from src_rate → 16 kHz on the already
-        // band-limited signal. For the common 48 kHz input the step is
-        // exactly 3.0 so there is no phase jitter across chunks; for odd
-        // rates (44.1 kHz) the sub-sample jitter at chunk edges is well
-        // under 1 input sample — negligible for STT.
-        let ratio = TARGET_SAMPLE_RATE as f64 / self.src_rate as f64;
-        let out_len = ((self.scratch_filtered.len() as f64) * ratio).round() as usize;
-        let mut out = Vec::with_capacity(out_len);
-        for i in 0..out_len {
-            let pos = i as f64 / ratio;
-            let idx = pos.floor() as usize;
-            let frac = (pos - idx as f64) as f32;
-            let s0 = *self.scratch_filtered.get(idx).unwrap_or(&0.0);
-            let s1 = *self.scratch_filtered.get(idx + 1).unwrap_or(&s0);
-            out.push(s0 + (s1 - s0) * frac);
-        }
-        out
-    }
-}
+#[path = "audio/onset.rs"]
+mod onset;
+pub(super) use onset::OnsetBuffer;
 
 /// Soft automatic-gain control.
 ///
 /// Tracks a slow EMA of the peak sample observed while the VAD reports
 /// speech, then scales chunks by a gain that brings that tracked peak
-/// toward a conventional speech level. Gain is clamped to [1.0, 2.0] so
-/// we never attenuate and can't boost a whisper into distortion. Updates
-/// only happen during speech so room tone can't pull the reference down.
+/// toward a conventional speech level. Gain is clamped to [1.0, 2.0] and
+/// limited by the current chunk's headroom so a louder onset cannot clip
+/// while the tracked peak catches up. Updates only happen during speech
+/// so room tone can't pull the reference down. Already clipped input
+/// cannot be restored here.
 pub(super) struct Agc {
     ema_peak: f32,
     initialized: bool,
@@ -168,8 +41,8 @@ impl Agc {
         if samples.is_empty() {
             return;
         }
+        let chunk_peak: f32 = samples.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
         if in_speech {
-            let chunk_peak: f32 = samples.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
             if !self.initialized {
                 self.ema_peak = chunk_peak;
                 self.initialized = true;
@@ -182,7 +55,11 @@ impl Agc {
         if !self.initialized || self.ema_peak < 1e-4 {
             return;
         }
-        let gain = (Self::TARGET_PEAK / self.ema_peak).clamp(1.0, Self::MAX_GAIN);
+        let requested_gain = (Self::TARGET_PEAK / self.ema_peak).clamp(1.0, Self::MAX_GAIN);
+        // Protect both detected speech and the first chunk of a new onset,
+        // which can arrive before VAD updates its speech state. Use one gain
+        // for the whole chunk rather than flattening individual peaks.
+        let gain = requested_gain.min((1.0 / chunk_peak).max(1.0));
         if gain <= 1.001 {
             return;
         }
@@ -208,13 +85,15 @@ pub(super) fn rms(samples: &[f32]) -> f32 {
 /// Threshold corresponds to roughly -55 dBFS.
 pub(super) const RMS_GATE: f32 = 0.0018;
 
-pub(super) fn normalize_i16_input(data: &[i16]) -> Vec<f32> {
-    data.iter().map(|&s| s as f32 / i16::MAX as f32).collect()
-}
-
-pub(super) fn normalize_u16_input(data: &[u16]) -> Vec<f32> {
+/// CPAL's conversion preserves signed PCM scale and unsigned PCM's exact
+/// midpoint. Convert before downmixing or resampling, retaining channel order.
+pub(super) fn normalize_input<T: cpal::Sample>(data: &[T]) -> Vec<f32>
+where
+    f32: cpal::FromSample<T>,
+{
+    use cpal::Sample;
     data.iter()
-        .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0)
+        .map(|&sample| f32::from_sample(sample))
         .collect()
 }
 
@@ -282,24 +161,6 @@ pub(super) fn partial_decode_slice(
     last_partial_at: &mut Instant,
     stable_streak: &mut u32,
     window_secs: usize,
-    tail_silence_rms: f32,
-) -> Option<Vec<f32>> {
-    let partial_profile = stt_partial_throttle_profile(&load_config().partial_mode);
-    partial_decode_slice_with_profile(
-        current_samples,
-        last_partial_at,
-        stable_streak,
-        window_secs,
-        &partial_profile,
-        tail_silence_rms,
-    )
-}
-
-fn partial_decode_slice_with_profile(
-    current_samples: &[f32],
-    last_partial_at: &mut Instant,
-    stable_streak: &mut u32,
-    window_secs: usize,
     partial_profile: &SttPartialThrottleProfile,
     tail_silence_rms: f32,
 ) -> Option<Vec<f32>> {
@@ -347,6 +208,164 @@ fn partial_decode_slice_with_profile(
 mod tests {
     use super::*;
 
+    #[test]
+    fn signed_microphone_pcm_preserves_full_scale_and_half_scale() {
+        assert_eq!(
+            normalize_input(&[i16::MIN, -16384, 0, 16384, i16::MAX]),
+            [-1.0, -0.5, 0.0, 0.5, 32767.0 / 32768.0]
+        );
+    }
+
+    #[test]
+    fn unsigned_microphone_pcm_has_exact_silence_and_symmetric_amplitude() {
+        assert_eq!(
+            normalize_input(&[0u16, 16384, 32768, 49152, u16::MAX]),
+            [-1.0, -0.5, 0.0, 0.5, 32767.0 / 32768.0]
+        );
+    }
+
+    #[test]
+    fn microphone_pcm_accepts_every_integer_width_with_the_same_scale() {
+        macro_rules! signed {
+            ($sample:ty) => {
+                let half = <$sample>::MIN / 2;
+                let output = normalize_input(&[<$sample>::MIN, half, 0, -half, <$sample>::MAX]);
+                assert_eq!(&output[..4], &[-1.0, -0.5, 0.0, 0.5]);
+                assert!(output[4] > 0.99 && output[4] <= 1.0);
+                assert!(normalize_input::<$sample>(&[]).is_empty());
+            };
+        }
+        macro_rules! unsigned {
+            ($sample:ty, $bits:literal) => {
+                let midpoint: $sample = 1 << ($bits - 1);
+                let output = normalize_input(&[
+                    0,
+                    midpoint / 2,
+                    midpoint,
+                    midpoint + midpoint / 2,
+                    <$sample>::MAX,
+                ]);
+                assert_eq!(&output[..4], &[-1.0, -0.5, 0.0, 0.5]);
+                assert!(output[4] > 0.99 && output[4] <= 1.0);
+                assert!(normalize_input::<$sample>(&[]).is_empty());
+            };
+        }
+        signed!(i8);
+        signed!(i16);
+        signed!(i32);
+        signed!(i64);
+        unsigned!(u8, 8);
+        unsigned!(u16, 16);
+        unsigned!(u32, 32);
+        unsigned!(u64, 64);
+    }
+
+    #[test]
+    fn floating_microphone_samples_keep_their_amplitude() {
+        let samples = [-1.0f32, -0.5, -0.0, 0.0, 0.25, 0.5, 1.0];
+        let output = normalize_input(&samples);
+        for (source, converted) in samples.iter().zip(output) {
+            assert_eq!(source.to_bits(), converted.to_bits());
+        }
+        let doubles = samples.map(f64::from);
+        assert_eq!(normalize_input(&doubles), samples);
+        assert!(normalize_input::<f32>(&[]).is_empty());
+        assert!(normalize_input::<f64>(&[]).is_empty());
+    }
+
+    #[test]
+    fn microphone_pcm_conversion_preserves_split_stereo_resampling() {
+        fn convert_callbacks<T: cpal::Sample>(input: &[T], partition: usize) -> Vec<f32>
+        where
+            f32: cpal::FromSample<T>,
+        {
+            let mut resampler = Resampler::new(44100, 2);
+            let mut actual = Vec::new();
+            for chunk in input.chunks(partition) {
+                actual.extend(resampler.process(&normalize_input(chunk)));
+            }
+            actual.extend(resampler.finish());
+            actual
+        }
+
+        // An independent PCM scale reference, including interleaved channel
+        // boundaries. Callback partitions deliberately split stereo frames.
+        let signed: Vec<i16> = (0..8000)
+            .map(|index| ((index * 997 % 65536) - 32768) as i16)
+            .collect();
+        let unsigned: Vec<u16> = signed
+            .iter()
+            .map(|&sample| (i32::from(sample) + 32768) as u16)
+            .collect();
+        let reference: Vec<f32> = signed
+            .iter()
+            .map(|&sample| sample as f32 / 32768.0)
+            .collect();
+        let mut reference_resampler = Resampler::new(44100, 2);
+        let mut expected = reference_resampler.process(&reference);
+        expected.extend(reference_resampler.finish());
+        for partition in [1, 7, 511, 1280, 8000] {
+            for actual in [
+                convert_callbacks(&signed, partition),
+                convert_callbacks(&unsigned, partition),
+            ] {
+                assert_eq!(actual, expected, "callback partition {partition}");
+            }
+        }
+    }
+
+    #[test]
+    fn gain_does_not_flatten_a_loud_onset_after_quiet_speech() {
+        let mut agc = Agc::new();
+        let mut quiet = vec![0.05, -0.05];
+        agc.apply(&mut quiet, true);
+        assert_eq!(quiet, vec![0.1, -0.1]);
+
+        // The tracked peak still permits 2x gain. A louder syllable must
+        // retain its waveform rather than saturate its largest samples.
+        let original = [0.8, -0.8, 0.6, -0.6, 0.2, -0.2];
+        let mut onset = original;
+        agc.apply(&mut onset, true);
+        let gain = onset[0] / original[0];
+        assert!(gain >= 1.0 && gain <= 1.25);
+        for (sample, source) in onset.into_iter().zip(original) {
+            assert!((sample - source * gain).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn stale_speech_gain_cannot_clip_a_chunk_before_vad_detects_it() {
+        let mut agc = Agc::new();
+        agc.apply(&mut [0.03, -0.03], true);
+        let mut onset = [0.95, -0.95, 0.7, -0.7];
+        agc.apply(&mut onset, false);
+        let gain = onset[0] / 0.95;
+        assert!((onset[2] - 0.7 * gain).abs() < 1e-6);
+        assert!(onset.iter().all(|sample| sample.abs() <= 1.0));
+
+        let mut full_scale = [1.0, -1.0, 0.5];
+        agc.apply(&mut full_scale, true);
+        assert_eq!(full_scale, [1.0, -1.0, 0.5]);
+    }
+
+    #[test]
+    fn quiet_speech_keeps_its_boost_and_silence_does_not_set_the_reference() {
+        let mut agc = Agc::new();
+        let mut room = [0.001, -0.001];
+        agc.apply(&mut room, false);
+        assert_eq!(room, [0.001, -0.001]);
+        let mut quiet = [0.04, -0.04, 0.02];
+        agc.apply(&mut quiet, true);
+        assert_eq!(quiet, [0.08, -0.08, 0.04]);
+        for _ in 0..100 {
+            agc.apply(&mut [0.0; 16], false);
+        }
+        agc.apply(&mut [], true);
+        let mut later = [0.04, -0.02];
+        agc.apply(&mut later, true);
+        assert_eq!(later, [0.08, -0.04]);
+    }
+
     fn balanced_profile() -> SttPartialThrottleProfile {
         SttPartialThrottleProfile {
             enabled: true,
@@ -372,7 +391,7 @@ mod tests {
 
         let mut last_partial_at = Instant::now() - Duration::from_secs(10);
         let mut stable_streak = 0;
-        let skipped = partial_decode_slice_with_profile(
+        let skipped = partial_decode_slice(
             &samples,
             &mut last_partial_at,
             &mut stable_streak,
@@ -385,7 +404,7 @@ mod tests {
 
         let mut last_partial_at = Instant::now() - Duration::from_secs(10);
         let mut stable_streak = 4;
-        let kept = partial_decode_slice_with_profile(
+        let kept = partial_decode_slice(
             &samples,
             &mut last_partial_at,
             &mut stable_streak,
@@ -402,7 +421,7 @@ mod tests {
         let mut last_partial_at = Instant::now() - Duration::from_secs(10);
         let mut stable_streak = 0;
         let samples = vec![0.0001; TARGET_SAMPLE_RATE as usize];
-        let slice = partial_decode_slice_with_profile(
+        let slice = partial_decode_slice(
             &samples,
             &mut last_partial_at,
             &mut stable_streak,

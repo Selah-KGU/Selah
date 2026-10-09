@@ -3,6 +3,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { applyAuxiliaryTheme, syncAuxiliaryTheme } from "./auxiliarySurfaceTheme";
+  import { acquireResourceGroup, ResourceScope } from "./resourceScope";
+  import { LatestViewRead } from "./latestViewRead";
+  import { createCacheSyncQueue } from "./cacheSyncQueue";
+  import { FilePreviewController, filePreviewRequest, type DownloadPreview, type FilePreviewRequest } from "./filePreviewController";
 
   interface DownloadRecord {
     id: string;
@@ -14,12 +18,6 @@
     downloaded_at: number;
     file_exists: boolean;
     subfolder?: string;
-  }
-  interface DownloadPreview {
-    kind: string;
-    mime: string;
-    data_url?: string | null;
-    text?: string | null;
   }
   interface DuplicateItem extends DownloadRecord {
     is_recommended: boolean;
@@ -33,6 +31,10 @@
     deleted_count?: number;
     failed_count?: number;
     errors?: string[];
+  }
+  function bulkResultMessage(result: BulkResult, summary: string): string {
+    const errors = result.errors?.slice(0, 2).join(" / ");
+    return errors ? summary + "（" + errors + "）" : summary;
   }
   interface ControlEvent {
     owner?: string;
@@ -190,6 +192,14 @@
   let openMenu = $state<"period" | "sort" | null>(null);
   let menuX = $state(0);
 
+  const resources = new ResourceScope();
+  let mutating = $state(false);
+  let reloadAfterMutation = false;
+  let themeVersion = 0;
+  const refreshTheme = createCacheSyncQueue(async () => {
+    const version = ++themeVersion;
+    await syncAuxiliaryTheme(() => resources.active && version === themeVersion);
+  });
   let pendingFocusCourse = readFocusCourse();
 
   function setForKind(kind: FilterKind): Set<string> {
@@ -420,15 +430,52 @@
   );
 
   // ── Data loading ──
-  async function loadDownloads(): Promise<void> {
-    try {
-      allRecords = await invoke<DownloadRecord[]>("list_downloads");
-    } catch (e) {
-      console.error("Failed to load downloads:", e);
-      allRecords = [];
-    }
+  function applyRecords(records: DownloadRecord[]): void {
+    if (!resources.active) return;
+    allRecords = records;
+    reconcilePreviewRecords(records);
     loading = false;
+    pruneSelection();
     applyPendingFocus();
+  }
+  const recordsRead = new LatestViewRead(resources,
+    () => invoke<DownloadRecord[]>("list_downloads"),
+    applyRecords,
+    (e) => { loading = false; statusMessage = `読み込み失敗: ${String(e)}`; });
+  const refreshRecords = createCacheSyncQueue(async () => {
+    if (mutating) { reloadAfterMutation = true; return; }
+    await recordsRead.refresh().catch(() => {});
+  });
+  function loadDownloads(): Promise<void> {
+    if (!resources.active) return Promise.resolve();
+    if (mutating) { reloadAfterMutation = true; return Promise.resolve(); }
+    return refreshRecords(["downloads"]);
+  }
+  async function mutate(work: () => Promise<void>): Promise<void> {
+    if (!resources.active || mutating) return;
+    mutating = true;
+    recordsRead.invalidate();
+    try { await work(); }
+    finally {
+      recordsRead.invalidate();
+      if (resources.active) {
+        mutating = false;
+        loading = false;
+        if (reloadAfterMutation) {
+          reloadAfterMutation = false;
+          void loadDownloads();
+        }
+        if (reloadDuplicatesAfterMutation && dupModalOpen) {
+          reloadDuplicatesAfterMutation = false;
+          void refreshDuplicates();
+        }
+      }
+    }
+  }
+  function removeSubmittedSelection(ids: Iterable<string>): void {
+    const next = new Set(selectedIds);
+    for (const id of ids) next.delete(id);
+    selectedIds = next;
   }
   function applyPendingFocus(): void {
     if (!pendingFocusCourse) return;
@@ -446,6 +493,7 @@
 
   // ── Actions ──
   async function openFile(path: string): Promise<void> {
+    if (!resources.active) return;
     try {
       await invoke("open_downloaded_file", { path });
     } catch (e) {
@@ -453,92 +501,95 @@
     }
   }
   async function revealFile(path: string): Promise<void> {
+    if (!resources.active) return;
     try {
       await invoke("luna_reveal_file", { path });
     } catch (e) {
       console.error("Failed to reveal file:", e);
     }
   }
-  async function removeRecord(id: string): Promise<void> {
-    try {
-      await invoke("remove_download_record", { id });
-      allRecords = allRecords.filter((r) => r.id !== id);
-      const next = new Set(selectedIds);
-      next.delete(id);
-      selectedIds = next;
-    } catch (e) {
-      console.error("Failed to remove record:", e);
-    }
+  async function removeRecord(id: string, deletedFilename?: string): Promise<void> {
+    await mutate(async () => {
+      try {
+        await invoke("remove_download_record", { id });
+        if (!resources.active) return;
+        applyRecords(allRecords.filter((r) => r.id !== id));
+        removeSubmittedSelection([id]);
+        if (deletedFilename) statusMessage = "「" + deletedFilename + "」を履歴から削除しました";
+      } catch (e) {
+        if (resources.active) statusMessage = "履歴削除に失敗しました: " + e;
+      }
+    });
   }
-  // Hover trash button: single click pins a "double-click to delete" hint,
-  // double click performs the real delete (disk for existing, history for missing).
+  // A click pins the existing double-click hint; a double click submits removal.
   let deleteHintId = $state<string | null>(null);
-  let deleteHintTimer: ReturnType<typeof setTimeout> | null = null;
+  let cancelDeleteHint = () => {};
   function pinDeleteHint(id: string): void {
+    if (!resources.active || mutating) return;
     deleteHintId = id;
-    if (deleteHintTimer) clearTimeout(deleteHintTimer);
-    deleteHintTimer = setTimeout(() => {
-      deleteHintTimer = null;
-      deleteHintId = null;
-    }, 2500);
+    cancelDeleteHint();
+    cancelDeleteHint = resources.schedule(() => { deleteHintId = null; }, 2500);
   }
   async function deleteEntry(r: DownloadRecord): Promise<void> {
+    if (!resources.active || mutating) return;
+    const id = r.id, path = r.path, filename = r.filename;
     deleteHintId = null;
-    if (deleteHintTimer) {
-      clearTimeout(deleteHintTimer);
-      deleteHintTimer = null;
-    }
-    if (r.file_exists === false || !r.path) {
-      await removeRecord(r.id);
-      statusMessage = "「" + r.filename + "」を履歴から削除しました";
+    cancelDeleteHint();
+    if (r.file_exists === false || !path) {
+      await removeRecord(id, filename);
       return;
     }
-    try {
-      const result = await invoke<BulkResult>("delete_downloaded_files", { paths: [r.path] });
-      allRecords = await invoke<DownloadRecord[]>("list_downloads");
-      const next = new Set(selectedIds);
-      next.delete(r.id);
-      selectedIds = next;
-      statusMessage = (result.failed_count ?? 0) > 0
-        ? "「" + r.filename + "」の削除に失敗しました"
-        : "「" + r.filename + "」を削除しました";
-    } catch (e) {
-      console.error("Failed to delete file:", e);
-      statusMessage = "削除に失敗しました: " + e;
-    }
+    await mutate(async () => {
+      try {
+        const result = await invoke<BulkResult>("delete_downloaded_files", { paths: [path] });
+        if (!resources.active) return;
+        await loadDownloads();
+        removeSubmittedSelection([id]);
+        statusMessage = bulkResultMessage(result, (result.failed_count ?? 0) > 0
+          ? "「" + filename + "」の削除に失敗しました"
+          : "「" + filename + "」を削除しました");
+      } catch (e) {
+        if (resources.active) statusMessage = "削除に失敗しました: " + e;
+      }
+    });
   }
   async function deleteSelectedRecords(): Promise<void> {
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
-    try {
-      await invoke("remove_download_records", { ids });
-      allRecords = allRecords.filter((r) => !selectedIds.has(r.id));
-      selectedIds = new Set();
-      bulkDeleteArmed = false;
-      statusMessage = ids.length + "件を履歴から削除しました";
-    } catch (e) {
-      console.error("Failed to remove selected records:", e);
-      statusMessage = "履歴削除に失敗しました: " + e;
-    }
+    await mutate(async () => {
+      try {
+        await invoke("remove_download_records", { ids });
+        if (!resources.active) return;
+        const submitted = new Set(ids);
+        applyRecords(allRecords.filter((r) => !submitted.has(r.id)));
+        removeSubmittedSelection(ids);
+        bulkDeleteArmed = false;
+        statusMessage = ids.length + "件を履歴から削除しました";
+      } catch (e) {
+        if (resources.active) statusMessage = "履歴削除に失敗しました: " + e;
+      }
+    });
   }
   let sharing = $state(false);
   async function shareSelectedFiles(): Promise<void> {
+    if (!resources.active || sharing || mutating) return;
     const paths = selectedExisting.map((r) => r.path);
     if (!paths.length) return;
     sharing = true;
     try {
       await invoke("share_downloaded_files_native", { paths });
-      statusMessage = paths.length + "件を共有に送信しました";
+      if (resources.active) statusMessage = paths.length + "件を共有に送信しました";
     } catch (e) {
-      console.error("Failed to share selected files:", e);
-      statusMessage = "共有に失敗しました: " + e;
+      if (resources.active) statusMessage = "共有に失敗しました: " + e;
     } finally {
-      sharing = false;
+      if (resources.active) sharing = false;
     }
   }
   let deletingFiles = $state(false);
   async function deleteSelectedFiles(): Promise<void> {
-    const paths = selectedExisting.map((r) => r.path);
+    if (!resources.active || mutating) return;
+    const selected = selectedExisting;
+    const paths = selected.map((r) => r.path), ids = selected.map((r) => r.id);
     if (!paths.length) return;
     if (!bulkDeleteArmed) {
       bulkDeleteArmed = true;
@@ -546,42 +597,49 @@
       return;
     }
     bulkDeleteArmed = false;
-    deletingFiles = true;
-    try {
-      const result = await invoke<BulkResult>("delete_downloaded_files", { paths });
-      allRecords = await invoke<DownloadRecord[]>("list_downloads");
-      selectedIds = new Set();
-      const deleted = result.deleted_count ?? 0;
-      const failed = result.failed_count ?? 0;
-      statusMessage = failed > 0 ? deleted + "件削除、" + failed + "件失敗" : deleted + "件のファイルを削除しました";
-    } catch (e) {
-      console.error("Failed to delete selected files:", e);
-      statusMessage = "ファイル削除に失敗しました: " + e;
-    } finally {
-      deletingFiles = false;
-    }
+    await mutate(async () => {
+      deletingFiles = true;
+      try {
+        const result = await invoke<BulkResult>("delete_downloaded_files", { paths });
+        if (!resources.active) return;
+        await loadDownloads();
+        removeSubmittedSelection(ids);
+        const deleted = result.deleted_count ?? 0, failed = result.failed_count ?? 0;
+        statusMessage = bulkResultMessage(result, failed > 0 ? deleted + "件削除、" + failed + "件失敗" : deleted + "件のファイルを削除しました");
+      } catch (e) {
+        if (resources.active) statusMessage = "ファイル削除に失敗しました: " + e;
+      } finally {
+        if (resources.active) deletingFiles = false;
+      }
+    });
   }
   async function clearHistory(): Promise<void> {
-    try {
-      await invoke("clear_download_history");
-      allRecords = [];
-    } catch (e) {
-      console.error("Failed to clear history:", e);
-    }
+    await mutate(async () => {
+      try {
+        await invoke("clear_download_history");
+        if (resources.active) applyRecords([]);
+      } catch (e) {
+        if (resources.active) statusMessage = "履歴削除に失敗しました: " + e;
+      }
+    });
   }
   let scanning = $state(false);
   async function scanDir(): Promise<void> {
-    scanning = true;
-    try {
-      const before = allRecords.length;
-      allRecords = await invoke<DownloadRecord[]>("scan_download_dir");
-      const added = allRecords.length - before;
-      statusMessage = added > 0 ? added + "件の新しいファイルを検出しました" : "新しいファイルは見つかりませんでした";
-    } catch (e) {
-      console.error("Failed to scan:", e);
-    } finally {
-      scanning = false;
-    }
+    await mutate(async () => {
+      scanning = true;
+      try {
+        const before = allRecords.length;
+        const records = await invoke<DownloadRecord[]>("scan_download_dir");
+        if (!resources.active) return;
+        applyRecords(records);
+        const added = records.length - before;
+        statusMessage = added > 0 ? added + "件の新しいファイルを検出しました" : "新しいファイルは見つかりませんでした";
+      } catch (e) {
+        if (resources.active) statusMessage = "スキャンに失敗しました: " + e;
+      } finally {
+        if (resources.active) scanning = false;
+      }
+    });
   }
 
   // ── Duplicate manager ──
@@ -592,6 +650,23 @@
   let dupCleaning = $state(false);
   let dupError = $state("");
   let dupFootOverride = $state("");
+  let duplicateVersion = 0;
+  let reloadDuplicatesAfterMutation = false;
+  const duplicatesRead = new LatestViewRead(resources,
+    () => invoke<DuplicateGroup[]>("scan_duplicate_downloads"),
+    (groups) => { if (dupModalOpen) duplicateGroups = groups; },
+    (e) => { if (dupModalOpen) dupError = String(e); });
+  const queueDuplicates = createCacheSyncQueue(async () => {
+    if (!resources.active || !dupModalOpen) return;
+    if (mutating) { reloadDuplicatesAfterMutation = true; return; }
+    dupScanning = true;
+    try { await duplicatesRead.refresh().catch(() => {}); }
+    finally { if (resources.active) dupScanning = false; }
+  });
+  function refreshDuplicates(): Promise<void> {
+    if (!resources.active || !dupModalOpen) return Promise.resolve();
+    return queueDuplicates(["duplicates"]);
+  }
 
   function isDuplicateKeep(item: DuplicateItem): boolean {
     return item.is_recommended === true;
@@ -618,8 +693,12 @@
     dupModalOpen = true;
   }
   function closeDuplicateModal(): void {
+    duplicateVersion += 1;
+    duplicatesRead.invalidate();
     dupModalOpen = false;
+    dupScanning = false;
     dupCleanupArmed = false;
+    reloadDuplicatesAfterMutation = false;
   }
   function onWindowKeydown(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
@@ -627,46 +706,43 @@
     else if (openMenu) openMenu = null;
   }
   async function scanDuplicates(): Promise<void> {
+    if (!resources.active) return;
     dupCleanupArmed = false;
     dupError = "";
     dupFootOverride = "";
     dupModalOpen = true;
-    dupScanning = true;
-    try {
-      duplicateGroups = await invoke<DuplicateGroup[]>("scan_duplicate_downloads");
-    } catch (e) {
-      console.error("Failed to scan duplicates:", e);
-      duplicateGroups = [];
-      dupError = String(e);
-    } finally {
-      dupScanning = false;
-    }
+    await refreshDuplicates();
   }
   async function cleanupDuplicates(): Promise<void> {
-    const paths = dupCleanupPaths;
+    if (!resources.active || mutating || dupScanning) return;
+    const paths = [...dupCleanupPaths];
     if (!paths.length) return;
     if (!dupCleanupArmed) {
       dupCleanupArmed = true;
       dupFootOverride = paths.length + "件を削除します。各グループの「保留」は残ります";
       return;
     }
+    const version = duplicateVersion;
     dupCleanupArmed = false;
-    dupCleaning = true;
-    try {
-      const result = await invoke<BulkResult>("cleanup_duplicate_downloads", { paths });
-      allRecords = await invoke<DownloadRecord[]>("list_downloads");
-      duplicateGroups = await invoke<DuplicateGroup[]>("scan_duplicate_downloads");
-      const deleted = result.deleted_count ?? 0;
-      const failed = result.failed_count ?? 0;
-      const errors = result.errors || [];
-      statusMessage = failed > 0 ? deleted + "件削除、" + failed + "件失敗" : deleted + "件の重複ファイルを削除しました";
-      dupFootOverride = failed > 0 && errors.length ? errors.slice(0, 2).join(" / ") : "";
-    } catch (e) {
-      console.error("Failed to cleanup duplicates:", e);
-      dupFootOverride = String(e);
-    } finally {
-      dupCleaning = false;
-    }
+    duplicatesRead.invalidate();
+    await mutate(async () => {
+      dupCleaning = true;
+      try {
+        const result = await invoke<BulkResult>("cleanup_duplicate_downloads", { paths });
+        if (!resources.active) return;
+        await loadDownloads();
+        await refreshDuplicates();
+        const deleted = result.deleted_count ?? 0, failed = result.failed_count ?? 0;
+        statusMessage = bulkResultMessage(result, failed > 0 ? deleted + "件削除、" + failed + "件失敗" : deleted + "件の重複ファイルを削除しました");
+        if (dupModalOpen && version === duplicateVersion) {
+          dupFootOverride = result.errors?.slice(0, 2).join(" / ") || "";
+        }
+      } catch (e) {
+        if (resources.active && dupModalOpen && version === duplicateVersion) dupFootOverride = String(e);
+      } finally {
+        if (resources.active) dupCleaning = false;
+      }
+    });
   }
   let dupFootText = $derived.by(() => {
     if (dupScanning) return "スキャン中…";
@@ -685,82 +761,69 @@
   // ── Lazy preview loading (icons view) ──
   let fileListEl = $state<HTMLElement | null>(null);
   let previewMap = $state<Record<string, DownloadPreview | null>>({});
-  const previewCache = new Map<string, DownloadPreview | null>();
-  const previewQueuedPaths = new Set<string>();
-  let previewQueue: string[] = [];
-  let previewActive = 0;
-  const MAX_PREVIEW_JOBS = 4;
+  const previewController = new FilePreviewController(
+    path => invoke<DownloadPreview | null>("get_download_preview", { path }),
+    (key, preview) => {
+      if (!resources.active) return;
+      if (preview === undefined) delete previewMap[key];
+      else previewMap[key] = preview;
+    },
+  );
   let previewObserver: IntersectionObserver | null = null;
+  type PreviewTarget = { request: FilePreviewRequest; visible: boolean; invalidated: boolean; since: number; release: () => void };
+  const previewTargets = new Map<HTMLElement, PreviewTarget>();
 
-  function applyPreview(path: string, preview: DownloadPreview | null): void {
-    previewMap = { ...previewMap, [path]: preview };
-  }
-  async function fetchPreview(path: string): Promise<void> {
-    try {
-      if (previewCache.has(path)) {
-        applyPreview(path, previewCache.get(path) ?? null);
-        return;
-      }
-      const preview = await invoke<DownloadPreview | null>("get_download_preview", { path });
-      previewCache.set(path, preview ?? null);
-      applyPreview(path, preview ?? null);
-    } catch {
-      previewCache.set(path, null);
-      applyPreview(path, null);
-    } finally {
-      previewQueuedPaths.delete(path);
+  function reconcilePreviewRecords(records: DownloadRecord[]): void {
+    const keys = new Set(records.map(r => filePreviewRequest(r).key));
+    previewController.prune(keys);
+    for (const target of previewTargets.values()) {
+      if (keys.has(target.request.key)) continue;
+      target.release(); target.release = () => {};
+      target.visible = false; target.invalidated = true;
     }
   }
-  function pumpPreviewQueue(): void {
-    while (previewActive < MAX_PREVIEW_JOBS && previewQueue.length) {
-      const path = previewQueue.shift()!;
-      previewActive++;
-      void fetchPreview(path).finally(() => {
-        previewActive--;
-        pumpPreviewQueue();
-      });
+  function previewEntries(entries: IntersectionObserverEntry[]): void {
+    if (!resources.active) return;
+    for (const entry of entries) {
+      const consumer = previewTargets.get(entry.target as HTMLElement);
+      if (!consumer || (typeof entry.time === "number" && entry.time < consumer.since)) continue;
+      const visible = entry.isIntersecting && entry.target.isConnected && viewMode === "icons";
+      if (visible === consumer.visible) continue;
+      consumer.visible = visible;
+      consumer.release();
+      consumer.release = visible ? previewController.retain(consumer.request) : () => {};
     }
   }
-  function enqueuePreview(path: string): void {
-    if (!path || path in previewMap) return;
-    if (previewCache.has(path)) {
-      applyPreview(path, previewCache.get(path) ?? null);
-      return;
-    }
-    if (previewQueuedPaths.has(path)) return;
-    previewQueuedPaths.add(path);
-    previewQueue.push(path);
-    pumpPreviewQueue();
+  function flushPreviewEntries(except: HTMLElement): void {
+    // Drain queued observations before reusing a node for a new file version.
+    const queued = previewObserver?.takeRecords();
+    if (queued?.length) previewEntries(queued.filter(entry => entry.target !== except));
   }
-  function lazyPreview(node: HTMLElement, path: string) {
-    function setup(p: string): void {
-      if (!p || p in previewMap || previewCache.has(p)) {
-        if (previewCache.has(p)) applyPreview(p, previewCache.get(p) ?? null);
-        return;
-      }
-      node.dataset.previewPath = p;
+  function lazyPreview(node: HTMLElement, request: FilePreviewRequest) {
+    let current: PreviewTarget | undefined;
+    function setup(next: FilePreviewRequest): void {
+      if (!resources.active || (current?.request.key === next.key && current.request.path === next.path && !current.invalidated)) return;
+      flushPreviewEntries(node);
+      previewObserver?.unobserve(node);
+      current?.release();
+      current = { request: next, visible: false, invalidated: false, since: performance.now(), release: () => {} };
+      previewTargets.set(node, current);
+      node.dataset.previewPath = next.path;
+      if (!next.path) return;
       if (!previewObserver) {
-        previewObserver = new IntersectionObserver(
-          (entries) => {
-            for (const entry of entries) {
-              if (!entry.isIntersecting) continue;
-              previewObserver!.unobserve(entry.target);
-              const pth = (entry.target as HTMLElement).dataset.previewPath;
-              if (pth) enqueuePreview(pth);
-            }
-          },
-          { root: fileListEl, rootMargin: "160px" },
-        );
+        previewObserver = new IntersectionObserver(resources.guard(previewEntries), { root: fileListEl, rootMargin: "160px" });
       }
+      // Keep observing after loading so scrolling/filtering releases the image.
       previewObserver.observe(node);
     }
-    setup(path);
+    setup(request);
     return {
-      update(p: string) {
-        setup(p);
-      },
+      update: setup,
       destroy() {
+        flushPreviewEntries(node);
         previewObserver?.unobserve(node);
+        current?.release();
+        previewTargets.delete(node);
       },
     };
   }
@@ -777,7 +840,23 @@
     savePrefs();
   }
   function setViewMode(mode: ViewMode): void {
+    if (!resources.active || viewMode === mode) return;
     viewMode = mode;
+    if (mode !== "icons") {
+      for (const target of previewTargets.values()) {
+        target.release(); target.release = () => {}; target.visible = false;
+      }
+      previewController.clearConsumers();
+    } else {
+      // A list → icons change in one tick can reuse the same DOM nodes. Re-arm
+      // observation so those nodes receive an initial visible notification.
+      previewObserver?.takeRecords();
+      for (const [node, target] of previewTargets) {
+        target.since = performance.now();
+        previewObserver?.unobserve(node);
+        previewObserver?.observe(node);
+      }
+    }
     savePrefs();
   }
   function setSortKey(key: SortKey): void {
@@ -815,13 +894,13 @@
       { id: "period", label: "期間", value: PERIOD_LABELS[period], action: "files.togglePeriodMenu", icon: "calendar", active: openMenu === "period" || period !== "all", group: "view" },
       { id: "missing", label: hideMissing ? "欠落を表示" : "欠落を非表示", action: "files.toggleMissing", icon: "exclamationmark.triangle", active: !hideMissing, group: "view" },
       { id: "sort", label: "並び替え", value: SORT_KEY_LABELS[sortKey], action: "files.toggleSortMenu", icon: "arrow.triangle.swap", active: openMenu === "sort", group: "sort" },
-      { id: "scan", label: scanning ? "スキャン中" : "スキャン", action: "files.scan", icon: "folder.open", disabled: scanning, group: "file" },
+      { id: "scan", label: scanning ? "スキャン中" : "スキャン", action: "files.scan", icon: "folder.open", disabled: scanning || mutating, group: "file" },
       { id: "dup", label: "重複整理", action: "files.duplicates", icon: "doc", group: "file" },
-      { id: "clear", label: "履歴クリア", action: "files.clearHistory", icon: "trash", disabled: allRecords.length === 0, group: "file" },
+      { id: "clear", label: "履歴クリア", action: "files.clearHistory", icon: "trash", disabled: mutating || allRecords.length === 0, group: "file" },
     ];
   }
   function pushControls(): void {
-    if (!tabTarget) return;
+    if (!resources.active || !tabTarget) return;
     invoke("document_tabs_set_controls", { owner: tabOwner, target: tabTarget, controls: buildControls() }).catch(() => {});
   }
   function isCurrentControlEvent(control: ControlEvent | undefined): boolean {
@@ -856,7 +935,7 @@
 
   $effect(() => {
     // Re-push the control row whenever any reflected state changes.
-    void [viewMode, period, hideMissing, sortKey, sortDir, sortDirLabel, scanning, allRecords.length, openMenu];
+    void [viewMode, period, hideMissing, sortKey, sortDir, sortDirLabel, scanning, mutating, allRecords.length, openMenu];
     pushControls();
   });
 
@@ -866,37 +945,43 @@
     pruneSelection();
   });
 
-  let themeUnlisten: (() => void) | null = null;
-  let appThemeUnlisten: (() => void) | null = null;
-  let focusUnlisten: (() => void) | null = null;
-  let controlUnlisten: (() => void) | null = null;
-
-  onMount(async () => {
+  async function initializeFiles(): Promise<void> {
+    await acquireResourceGroup(resources, [
+      group => listen<string>("theme-changed", group.guard((event) => {
+        themeVersion += 1;
+        applyAuxiliaryTheme(event.payload);
+      })),
+      group => listen("app-theme-changed", group.guard(() => { void refreshTheme(["theme"]); })),
+      group => listen<string>("focus-course", group.guard((event) => {
+        const name = String(event.payload || "").trim();
+        if (!name) { pendingFocusCourse = ""; courseFilters = new Set(); return; }
+        pendingFocusCourse = name;
+        // Keep the request pending while the first list is still loading.
+        if (!loading) applyPendingFocus();
+      })),
+      group => listen<ControlEvent>("document-tab-control", group.guard(handleControl), { target: tabTarget }),
+    ]);
+    if (!resources.active) return;
+    pushControls();
+    void refreshTheme(["theme"]);
+    await loadDownloads();
+  }
+  onMount(() => {
     document.documentElement.setAttribute("data-aux-surface", "files");
     document.body.setAttribute("data-aux-surface", "files");
     loadPrefs();
-    await syncAuxiliaryTheme();
-    themeUnlisten = await listen<string>("theme-changed", (event) => applyAuxiliaryTheme(event.payload)).catch(() => null);
-    appThemeUnlisten = await listen("app-theme-changed", () => void syncAuxiliaryTheme()).catch(() => null);
-    focusUnlisten = await listen<string>("focus-course", (event) => {
-      const name = String(event.payload || "").trim();
-      if (!name) {
-        courseFilters = new Set();
-        return;
-      }
-      pendingFocusCourse = name;
-      applyPendingFocus();
-    }).catch(() => null);
-    controlUnlisten = await listen<ControlEvent>("document-tab-control", handleControl).catch(() => null);
-    await loadDownloads();
+    void initializeFiles().catch((e) => {
+      if (resources.active) { loading = false; statusMessage = `初期化失敗: ${String(e)}`; }
+    });
   });
-
   onDestroy(() => {
-    themeUnlisten?.();
-    appThemeUnlisten?.();
-    focusUnlisten?.();
-    controlUnlisten?.();
+    resources.dispose();
     previewObserver?.disconnect();
+    previewObserver = null;
+    for (const target of previewTargets.values()) target.release();
+    previewTargets.clear();
+    previewController.dispose();
+    previewMap = {};
     document.documentElement.removeAttribute("data-aux-surface");
     document.body.removeAttribute("data-aux-surface");
     if (tabTarget) invoke("document_tabs_set_controls", { owner: tabOwner, target: tabTarget, controls: [] }).catch(() => {});
@@ -989,9 +1074,9 @@
           <div class="selection-actions">
             <button class="toolbar-btn" onclick={selectAllVisible}>表示中を選択</button>
             <button class="toolbar-btn" onclick={clearSelection}>選択解除</button>
-            <button class="toolbar-btn" disabled={selectedExisting.length === 0 || sharing} onclick={shareSelectedFiles}>{sharing ? "共有中…" : "共有"}</button>
-            <button class="toolbar-btn" onclick={deleteSelectedRecords}>履歴から削除</button>
-            <button class="toolbar-btn danger" disabled={selectedExisting.length === 0 || deletingFiles} onclick={deleteSelectedFiles}>
+            <button class="toolbar-btn" disabled={selectedExisting.length === 0 || sharing || mutating} onclick={shareSelectedFiles}>{sharing ? "共有中…" : "共有"}</button>
+            <button class="toolbar-btn" disabled={mutating} onclick={deleteSelectedRecords}>履歴から削除</button>
+            <button class="toolbar-btn danger" disabled={selectedExisting.length === 0 || deletingFiles || mutating} onclick={deleteSelectedFiles}>
               {deletingFiles ? "削除中…" : bulkDeleteArmed ? "もう一度押して削除" : "ファイルを削除"}
             </button>
           </div>
@@ -1046,8 +1131,9 @@
                       {#if missing || !canPreviewFile(r.filename)}
                         <div class="file-card-icon" style="background:{info.color}">{info.label}</div>
                       {:else}
-                        {@const preview = previewMap[r.path]}
-                        <div class="file-card-preview" class:pending={preview === undefined} use:lazyPreview={r.path}>
+                        {@const request = filePreviewRequest(r)}
+                        {@const preview = previewMap[request.key]}
+                        <div class="file-card-preview" class:pending={preview === undefined} use:lazyPreview={request}>
                           {#if preview === undefined || preview === null}
                             <div class="file-card-preview fallback" style="background:{info.color}">{info.label}</div>
                           {:else if preview.kind === "image" && (preview.data_url)}
@@ -1072,7 +1158,7 @@
                         {#if !missing}
                           <button class="action-btn" title="Finderで表示" onclick={() => revealFile(r.path)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg></button>
                         {/if}
-                        <span class="action-tip" class:pinned={deleteHintId === r.id}><button class="action-btn remove" aria-label="削除" onclick={() => pinDeleteHint(r.id)} ondblclick={() => deleteEntry(r)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg></button><span class="action-tip-bubble">ダブルクリックで削除</span></span>
+                        <span class="action-tip" class:pinned={deleteHintId === r.id}><button class="action-btn remove" aria-label="削除" disabled={mutating} onclick={() => pinDeleteHint(r.id)} ondblclick={() => deleteEntry(r)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg></button><span class="action-tip-bubble">ダブルクリックで削除</span></span>
                       </div>
                     </div>
                   {:else}
@@ -1097,7 +1183,7 @@
                         {#if !missing}
                           <button class="action-btn" title="Finderで表示" onclick={() => revealFile(r.path)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg></button>
                         {/if}
-                        <span class="action-tip" class:pinned={deleteHintId === r.id}><button class="action-btn remove" aria-label="削除" onclick={() => pinDeleteHint(r.id)} ondblclick={() => deleteEntry(r)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg></button><span class="action-tip-bubble">ダブルクリックで削除</span></span>
+                        <span class="action-tip" class:pinned={deleteHintId === r.id}><button class="action-btn remove" aria-label="削除" disabled={mutating} onclick={() => pinDeleteHint(r.id)} ondblclick={() => deleteEntry(r)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg></button><span class="action-tip-bubble">ダブルクリックで削除</span></span>
                       </div>
                     </div>
                   {/if}
@@ -1191,7 +1277,7 @@
           <span>{dupFootText}</span>
           <div class="modal-action-row">
             <button class="toolbar-btn" onclick={scanDuplicates}>再スキャン</button>
-            <button class="toolbar-btn danger" disabled={dupCleanupPaths.length === 0 || dupCleaning} onclick={cleanupDuplicates}>
+            <button class="toolbar-btn danger" disabled={dupCleanupPaths.length === 0 || dupCleaning || dupScanning || mutating} onclick={cleanupDuplicates}>
               {dupCleaning ? "削除中…" : dupCleanupArmed ? "もう一度押して削除" : "推奨以外を削除"}
             </button>
           </div>
@@ -1515,6 +1601,7 @@
     cursor: pointer; padding: 0; transition: color 0.15s, background 0.15s;
   }
   .action-btn:hover { color: var(--text-primary); background: var(--bg-secondary); }
+  .action-btn:disabled { opacity: 0.55; cursor: default; pointer-events: none; }
   .action-btn.remove:hover { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 
   .action-tip { position: relative; display: inline-flex; }

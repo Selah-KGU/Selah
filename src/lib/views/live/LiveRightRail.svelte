@@ -3,6 +3,7 @@
   import type { WhiteboardLayoutResult } from "../../whiteboardLayout";
   import type { TermFloatLabels } from "./liveTypes";
   import LiveSummaryCard from "./LiveSummaryCard.svelte";
+  import { visibleDeckCards } from "./liveDeck";
 
   type SummaryEntry = { range_label: string; body: string; isOverall: boolean };
 
@@ -11,6 +12,7 @@
     /** Index of the active SEGMENT (into the non-overall entries). */
     activeSummaryIdx: number;
     summarySegmentCount: number;
+    visible?: boolean;
     renderMd: (text: string) => string;
     onOpenSummaryDetail: () => void;
     onSelectSegment: (idx: number) => void;
@@ -21,7 +23,6 @@
     activeSummaryTerms: LiveTermExplanation[];
     termCardIdx: number;
     termFloatLabels: TermFloatLabels;
-    termStackOffset: (index: number) => number;
     onOpenWhiteboard: () => void;
     onSelectTermCard: (index: number) => void;
     onTermCardPrev: () => void;
@@ -32,6 +33,7 @@
     summaryEntries,
     activeSummaryIdx,
     summarySegmentCount,
+    visible = true,
     renderMd,
     onOpenSummaryDetail,
     onSelectSegment,
@@ -42,7 +44,6 @@
     activeSummaryTerms,
     termCardIdx,
     termFloatLabels,
-    termStackOffset,
     onOpenWhiteboard,
     onSelectTermCard,
     onTermCardPrev,
@@ -64,6 +65,7 @@
 
   const canPrevSegment = $derived(activeSummaryIdx > 0);
   const canNextSegment = $derived(activeSummaryIdx < segments.length - 1);
+  const visibleTerms = $derived(visibleDeckCards(activeSummaryTerms, termCardIdx));
   function prevSegment() {
     if (canPrevSegment) onSelectSegment(activeSummaryIdx - 1);
   }
@@ -102,15 +104,16 @@
         entries={summaryEntries}
         activeIdx={activeSummaryIdx}
         segmentCount={summarySegmentCount}
+        {visible}
         {renderMd}
         onOpenDetail={onOpenSummaryDetail}
       />
     {/if}
     {#if activeSummaryTerms.length > 0}
       <aside class="term-stack" class:multi={activeSummaryTerms.length > 1} aria-label={termFloatLabels.title}>
-        {#each activeSummaryTerms as item, i (i + "-" + item.term)}
-          {@const offset = termStackOffset(i)}
-          {@const visible = offset >= 0 && offset <= 2}
+        {#each visibleTerms as card (card.index + "-" + card.item.term)}
+          {@const item = card.item}
+          {@const offset = card.offset}
           <button
             type="button"
             class="term-card"
@@ -120,12 +123,9 @@
               transform: translateY({offset * 10}px) scale({1 - offset * 0.04});
               opacity: {offset === 0 ? 1 : 0.72 - (offset - 1) * 0.22};
               z-index: {100 - offset};
-              pointer-events: {visible ? 'auto' : 'none'};
-              visibility: {visible ? 'visible' : 'hidden'};
-              {visible ? '' : 'transition: none;'}
             "
-            onclick={() => (offset === 0 ? onOpenSummaryDetail() : onSelectTermCard(i))}
-            aria-hidden={!visible}
+            onclick={() => (offset === 0 ? onOpenSummaryDetail() : onSelectTermCard(card.index))}
+            aria-hidden={false}
             tabindex={offset === 0 ? 0 : -1}
           >
             <div class="term-card-term">{item.term}</div>

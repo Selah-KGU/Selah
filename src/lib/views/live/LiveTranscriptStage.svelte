@@ -1,19 +1,18 @@
 <script lang="ts">
-  import type { LiveSaveResult, LiveSessionSnapshot } from "../../api";
+  import type { LiveTranscriptLine } from "../../api";
 
-  type TranscriptLine = LiveSessionSnapshot["transcript_lines"][number];
+  import type { LiveSavedPreview, LiveSurfaceSnapshot } from "./liveTranscript";
 
   interface Props {
     pageLoading: boolean;
     hasContent: boolean;
-    snapshot: LiveSessionSnapshot;
+    snapshot: Pick<LiveSurfaceSnapshot, "active" | "transcript_line_count">;
     partialText: string;
-    lastSaved: LiveSaveResult | null;
+    lastSaved: LiveSavedPreview | null;
     showSaveNotif: boolean;
-    visibleLines: TranscriptLine[];
+    visibleLines: LiveTranscriptLine[];
     hiddenLineCount: number;
     renderMd: (text: string) => string;
-    extractOverallSummary: (markdown: string) => string;
   }
 
   let {
@@ -26,7 +25,6 @@
     visibleLines,
     hiddenLineCount,
     renderMd,
-    extractOverallSummary,
   }: Props = $props();
 </script>
 
@@ -48,7 +46,7 @@
         <!-- Saved-note preview (content). The 保存完了 *status* lives only in the
              top island now — not repeated here. -->
         <div class="empty-hero">
-          <div class="save-summary md">{@html renderMd(extractOverallSummary(lastSaved.markdown))}</div>
+          <div class="save-summary md">{@html renderMd(lastSaved.summary_markdown)}</div>
         </div>
       {:else}
         <div class="empty-hero">
@@ -67,7 +65,7 @@
       {#if hiddenLineCount > 0}
         <div class="lyrics-hidden-hint">前{hiddenLineCount}行は保存済み（表示省略）</div>
       {/if}
-      {#each visibleLines as line, i (line.at + '-' + i)}
+      {#each visibleLines as line, i (hiddenLineCount + i)}
         {@const isLast = i === visibleLines.length - 1 && !partialText.trim()}
         <div class="lyric-line" class:past={!isLast} class:active={isLast}>
           <span class="lyric-time">{line.at}</span>
@@ -81,7 +79,7 @@
         </div>
       {/if}
     </div>
-    <div class="lyrics-count">{snapshot.transcript_lines.length}行</div>
+    <div class="lyrics-count">{snapshot.transcript_line_count}行</div>
   {/if}
 </section>
 
@@ -160,7 +158,6 @@
     transition:
       opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
       transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-      filter 0.5s cubic-bezier(0.22, 1, 0.36, 1),
       background 0.3s ease;
     animation: lyric-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
@@ -169,12 +166,10 @@
     from {
       opacity: 0;
       transform: translateY(14px) scale(0.97);
-      filter: blur(4px);
     }
     to {
       opacity: 1;
       transform: translateY(0) scale(1);
-      filter: blur(0);
     }
   }
 

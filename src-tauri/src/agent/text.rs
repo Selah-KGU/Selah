@@ -97,16 +97,7 @@ pub fn trim_to(s: &str, max_chars: usize) -> String {
 }
 
 pub fn preview_of(v: &Value) -> String {
-    let s = serde_json::to_string(&sanitize_answer_tool_result(v)).unwrap_or_default();
-    let mut end = CFG.preview_bytes.min(s.len());
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    if s.len() > CFG.preview_bytes {
-        format!("{}…", &s[..end])
-    } else {
-        s
-    }
+    tool_result::preview(v, CFG.preview_bytes)
 }
 
 // ─────────────────────── History Helpers ───────────────────────
@@ -114,26 +105,14 @@ pub fn preview_of(v: &Value) -> String {
 pub fn slice_history(
     rows: &[crate::db::AgentMessageRow],
     window: usize,
-) -> Vec<crate::db::AgentMessageRow> {
-    if rows.is_empty() {
-        return Vec::new();
-    }
-    let end = rows.len().saturating_sub(1);
+) -> &[crate::db::AgentMessageRow] {
+    // Rows already exclude the committed input by ID at the SQL boundary.
+    let end = rows.len();
     let start = end.saturating_sub(window);
-    rows[start..end].to_vec()
+    &rows[start..end]
 }
 
-pub fn maybe_autotitle(app: &AppHandle, db: &Database, conv_id: &str, user_text: &str) {
-    let list = match db.agent_list_conversations() {
-        Ok(l) => l,
-        Err(_) => return,
-    };
-    let Some(row) = list.iter().find(|c| c.id == conv_id) else {
-        return;
-    };
-    if !matches!(row.title.as_str(), "" | "新しい会話" | "エージェント") {
-        return;
-    }
+pub fn maybe_autotitle(db: &Database, conv_id: &str, user_text: &str) {
     let title: String = user_text
         .chars()
         .filter(|c| !c.is_control())
@@ -144,7 +123,5 @@ pub fn maybe_autotitle(app: &AppHandle, db: &Database, conv_id: &str, user_text:
     } else {
         title
     };
-    if db.agent_rename_conversation(conv_id, &title).is_ok() {
-        let _ = app.emit("agent-conversations-changed", conv_id);
-    }
+    let _ = db.agent_autotitle_conversation(conv_id, &title);
 }

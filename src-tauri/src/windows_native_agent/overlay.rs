@@ -76,6 +76,8 @@ pub(super) fn spawn_overlay_thread(app: &AppHandle) {
             s.alpha = 0;
             s.text.clear();
             s.dark = dark;
+            s.displayed_epoch = None;
+            s.displayed_mode = MODE_NONE;
         }
         OVERLAY_HWND.store(hwnd as isize, Ordering::Relaxed);
         HWND_READY.store(true, Ordering::Release);
@@ -116,87 +118,77 @@ pub(super) fn ensure_overlay_window(app: &AppHandle) {
 }
 
 // ─ Animation ─────────────────────────────────────────────────────────────────
-pub(super) fn morph_to(target_w: i32, target_h: i32) {
-    let Some(snap) = frame_snapshot() else { return };
-    let token = MORPH_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+pub(super) fn morph_to(target_w: i32, target_h: i32, token: u64) {
+    let animation = MainThreadAnimation::with_token(&MORPH_TOKEN, token);
     tauri::async_runtime::spawn(async move {
+        let Some(Some(snap)) = animation.read_with(enqueue_ui_job, frame_snapshot).await else {
+            return;
+        };
+        if snap.width == target_w && snap.height == target_h {
+            return;
+        }
         let mut sw = Spring::new(snap.width as f64);
         sw.set_target(target_w as f64);
         let mut sh = Spring::new(snap.height as f64);
         sh.set_target(target_h as f64);
-
         for _ in 0..90 {
-            if MORPH_TOKEN.load(Ordering::Relaxed) != token {
+            if !animation.is_current() {
                 return;
             }
-            let mw = sw.tick();
-            let mh = sh.tick();
-            apply_frame(
-                sw.pos.round() as i32,
-                sh.pos.round() as i32,
-                snap.center_x,
-                snap.top_y,
-            );
-            if !mw && !mh {
+            let moving_w = sw.tick();
+            let moving_h = sh.tick();
+            let width = sw.pos.round() as i32;
+            let height = sh.pos.round() as i32;
+            if animation
+                .read_with(enqueue_ui_job, move || {
+                    apply_frame(width, height, snap.center_x, snap.top_y)
+                })
+                .await
+                .is_none()
+            {
+                return;
+            }
+            if !moving_w && !moving_h {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
         }
-        if MORPH_TOKEN.load(Ordering::Relaxed) == token {
-            apply_frame(target_w, target_h, snap.center_x, snap.top_y);
-        }
+        animation
+            .read_with(enqueue_ui_job, move || {
+                apply_frame(target_w, target_h, snap.center_x, snap.top_y)
+            })
+            .await;
     });
 }
 
-pub(super) fn fade_in() {
-    let start = frame_snapshot().map(|s| s.alpha).unwrap_or(0);
-    if start >= 250 {
-        return;
-    }
-    let token = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+pub(super) fn fade_in(token: u64) {
+    fade_to(255, token);
+}
+pub(super) fn fade_out_then_hide(token: u64) {
+    fade_to(0, token);
+}
+fn fade_to(target: u8, token: u64) {
+    let animation = MainThreadAnimation::with_token(&FADE_TOKEN, token);
     tauri::async_runtime::spawn(async move {
+        let Some(Some(snap)) = animation.read_with(enqueue_ui_job, frame_snapshot).await else {
+            return;
+        };
         for i in 0..=FADE_FRAMES {
-            if FADE_TOKEN.load(Ordering::Relaxed) != token {
+            let alpha = (snap.alpha as f64
+                + (target as f64 - snap.alpha as f64)
+                    * ease_out_quart(i as f64 / FADE_FRAMES as f64))
+            .round()
+            .clamp(0.0, 255.0) as u8;
+            if animation
+                .read_with(enqueue_ui_job, move || set_alpha(alpha))
+                .await
+                .is_none()
+            {
                 return;
             }
-            let a = start as f64
-                + (255.0 - start as f64) * ease_out_quart(i as f64 / FADE_FRAMES as f64);
-            set_alpha(a.round().clamp(0.0, 255.0) as u8);
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
         }
     });
-}
-
-pub(super) fn fade_out_then_hide() {
-    let token = FADE_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    tauri::async_runtime::spawn(async move {
-        for i in (0..=FADE_FRAMES).rev() {
-            if FADE_TOKEN.load(Ordering::Relaxed) != token {
-                return;
-            }
-            let a = (255.0 * ease_out_quart(i as f64 / FADE_FRAMES as f64))
-                .round()
-                .clamp(0.0, 255.0) as u8;
-            set_alpha(a);
-            tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
-        }
-        if FADE_TOKEN.load(Ordering::Relaxed) == token {
-            hide_panel();
-        }
-    });
-}
-
-// Just hide the window — never destroy it while the shortcut is enabled,
-// so the LL keyboard hook (which lives on the overlay thread) stays installed.
-pub(super) fn hide_panel() {
-    let hwnd = WINDOW.lock().unwrap_or_else(|e| e.into_inner()).hwnd;
-    if hwnd == 0 {
-        return;
-    }
-    unsafe {
-        ShowWindow(hwnd_from_raw(hwnd), SW_HIDE);
-    }
-    // HWND_READY stays true — the window still exists.
 }
 
 // Called only when the feature is explicitly disabled (apply_config enabled=false).
@@ -215,53 +207,57 @@ pub(super) fn force_destroy_panel() {
     }
     DESTROYING.store(true, Ordering::SeqCst);
     unsafe {
-        ShowWindow(hwnd_from_raw(hwnd), SW_HIDE);
         let _ = PostMessageW(hwnd_from_raw(hwnd), WM_CLOSE, 0, 0);
     }
 }
 
-pub(super) fn start_dots_animation() {
-    DOTS_ACTIVE.store(0, Ordering::Relaxed);
-    let token = DOTS_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+pub(super) fn start_dots_animation(token: u64) {
+    let animation = MainThreadAnimation::with_token(&DOTS_TOKEN, token);
     tauri::async_runtime::spawn(async move {
-        let mut phase: i32 = 0;
+        let mut phase = 0;
         loop {
-            if DOTS_TOKEN.load(Ordering::Relaxed) != token {
+            let updated = animation
+                .read_with(enqueue_ui_job, move || {
+                    if current_mode() != MODE_PROCESSING {
+                        return false;
+                    }
+                    DOTS_ACTIVE.store(phase % 3, Ordering::Relaxed);
+                    let hwnd = WINDOW.lock().unwrap_or_else(|e| e.into_inner()).hwnd;
+                    if hwnd != 0 {
+                        unsafe {
+                            InvalidateRect(hwnd_from_raw(hwnd), null(), 1);
+                        }
+                    }
+                    true
+                })
+                .await;
+            if updated != Some(true) {
                 break;
-            }
-            if CURRENT_MODE.load(Ordering::Relaxed) != MODE_PROCESSING {
-                break;
-            }
-            DOTS_ACTIVE.store(phase % 3, Ordering::Relaxed);
-            let hwnd = WINDOW.lock().unwrap_or_else(|e| e.into_inner()).hwnd;
-            if hwnd != 0 {
-                unsafe {
-                    let _ = InvalidateRect(hwnd_from_raw(hwnd), null(), 1);
-                }
             }
             phase = phase.wrapping_add(1);
             tokio::time::sleep(Duration::from_millis(DOTS_PERIOD_MS)).await;
         }
-        DOTS_ACTIVE.store(-1, Ordering::Relaxed);
+        // A cancelled old task must not reset the new processing indicator.
+        animation
+            .read_with(enqueue_ui_job, || DOTS_ACTIVE.store(-1, Ordering::Relaxed))
+            .await;
     });
 }
-
 pub(super) fn stop_dots_animation() {
     DOTS_TOKEN.fetch_add(1, Ordering::Relaxed);
     DOTS_ACTIVE.store(-1, Ordering::Relaxed);
 }
-
-pub(super) fn schedule_auto_close(delay: Duration) {
-    let token = AUTO_CLOSE_TOKEN
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
+pub(super) fn schedule_auto_close(delay: Duration, lease: NativeViewLease, token: u64) {
+    let animation = MainThreadAnimation::with_token(&AUTO_CLOSE_TOKEN, token);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(delay).await;
-        if AUTO_CLOSE_TOKEN.load(Ordering::Relaxed) == token {
-            if let Some(app) = APP_HANDLE.get() {
-                close_panel(app, false);
-            }
-        }
+        animation
+            .read_with(enqueue_ui_job, move || {
+                if let Some(app) = APP_HANDLE.get() {
+                    close_panel_for_view(app, &lease);
+                }
+            })
+            .await;
     });
 }
 

@@ -64,6 +64,9 @@ pub fn clear_inference_cancel(gen_id: &str) {
 
 #[cfg(target_os = "macos")]
 fn is_cancelled(gen_id: &str) -> bool {
+    if crate::agent_turn_scope::generation_cancelled(gen_id) {
+        return true;
+    }
     if gen_id.is_empty() {
         return false;
     }
@@ -132,6 +135,11 @@ fn run_local(
     let api = library()?;
     let c_request =
         CString::new(request).map_err(|_| "推論リクエストに NUL が含まれています".to_string())?;
+    // Loading the native library can take time; a cancel issued before it was
+    // loaded could not notify its registry. Check the immutable Rust latch again.
+    if is_cancelled(&req.gen_id) {
+        return Err(CANCELLED_MSG.into());
+    }
     let mut streamed = String::new();
     let response = if let Some(callback) = on_chunk {
         let mut wrapped = |text: &str, is_think: bool| {
@@ -398,4 +406,28 @@ extern "C" {
     fn dlopen(path: *const c_char, flags: i32) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn dlerror() -> *const c_char;
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn model_entry_flag_reset_cannot_revive_a_cancelled_request_or_its_plan() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let old = crate::agent_turn_scope::RunningTurn::begin(&id, None);
+        let generation = old.turn.generation().to_owned();
+        let plan = format!("plan:{generation}");
+        assert!(crate::agent_turn_scope::cancel(&id, None));
+        clear_inference_cancel(&generation);
+        clear_inference_cancel(&plan);
+        assert!(is_cancelled(&generation));
+        assert!(is_cancelled(&plan));
+        let latest = crate::agent_turn_scope::RunningTurn::begin(&id, None);
+        assert!(!is_cancelled(latest.turn.generation()));
+        drop(old);
+        assert!(!is_cancelled(&generation));
+        assert!(!is_cancelled(&plan));
+        assert!(!latest.turn.cancelled());
+    }
 }

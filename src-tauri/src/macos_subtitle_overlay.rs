@@ -1,6 +1,6 @@
 //! macOS リアルタイム字幕浮窗 — 灵动岛风格
 //!
-//! Live 録課モジュールが発行する `live-session-updated` イベントを監聴し、
+//! Live 録課モジュールが発行する `live-transcript-appended` イベントを監聴し、
 //! 最新のトランスクリプト行を画面下部の磨砂ガラスカプセルに表示します。
 //! STT / Agent とは完全に独立した機能です。
 //! また `stt-partial`（caller="live"）を監聴して発話中のリアルタイムテキストも表示します。
@@ -14,8 +14,10 @@ use std::sync::Mutex;
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSPanel, NSTextField, NSView, NSVisualEffectView};
-use serde_json::Value;
 use tauri::{AppHandle, Listener};
+
+use crate::main_thread_animation::MainThreadAnimation;
+use crate::subtitle_events::{Caption, CaptionMailbox};
 
 #[path = "macos_subtitle_overlay/caption.rs"]
 mod caption;
@@ -24,7 +26,7 @@ mod panel;
 #[path = "macos_subtitle_overlay/theme.rs"]
 mod theme;
 
-use caption::{schedule_fade_out, show_text};
+use caption::{show_caption, status_changed};
 use panel::{build_overlay_panel, install_click_monitor};
 use theme::{apply_overlay_theme, effective_is_dark};
 
@@ -64,34 +66,15 @@ const FADE_FRAMES: u64 = 20;
 static HIDE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static MORPH_TOKEN: AtomicU64 = AtomicU64::new(0);
+static LIFECYCLE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static OVERLAY_OPEN: AtomicBool = AtomicBool::new(false);
-/// Last partial show_text time in millis since epoch — used to coalesce STT
-/// partials that fire faster than human reading speed.
-static LAST_PARTIAL_MS: AtomicU64 = AtomicU64::new(0);
-const PARTIAL_MIN_INTERVAL_MS: u64 = 120;
+static CAPTION_MAILBOX: std::sync::LazyLock<CaptionMailbox> =
+    std::sync::LazyLock::new(CaptionMailbox::default);
 
-static LAST_CAPTION_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn claim_caption_seq(seq: u64) -> bool {
-    let last = LAST_CAPTION_SEQ.load(Ordering::SeqCst);
-    if seq > 0 && seq < last {
-        return false;
-    }
-    if seq > 0 {
-        LAST_CAPTION_SEQ.store(seq, Ordering::SeqCst);
-        return true;
-    }
-    // Unsequenced echo of a line the page already committed. Once a sequenced
-    // caption has been shown, that echo must not cover a newer partial.
-    last == 0
+fn captions_enabled() -> bool {
+    OVERLAY_OPEN.load(Ordering::Relaxed)
 }
 
-fn payload_seq(payload: &Value) -> u64 {
-    payload
-        .get("seq")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0)
-}
 static SYSTEM_IS_DARK: AtomicBool = AtomicBool::new(true);
 
 // ── Thread-local UI handles ────────────────────────────────────────────────────
@@ -104,6 +87,7 @@ struct OverlayViews {
     vfx_view: Option<Retained<NSVisualEffectView>>,
     bg_overlay: Option<Retained<NSView>>,
     text_label: Option<Retained<NSTextField>>,
+    displayed_session_id: Option<String>,
     screen_center_x: f64,
     screen_bottom_y: f64,
     /// Local event monitor for click-to-navigate
@@ -155,91 +139,8 @@ impl Spring {
 
 // ── Colour helpers ─────────────────────────────────────────────────────────────
 pub fn setup(app: &AppHandle) {
-    // `live-session-updated` is now only emitted on summary/cancel/finish —
-    // we listen purely to drive the fade-out when the session goes inactive.
-    let app_state = app.clone();
-    let lid_state = app.listen("live-session-updated", move |event| {
-        if !OVERLAY_OPEN.load(Ordering::Relaxed) {
-            return;
-        }
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        let active = payload
-            .get("active")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !active {
-            schedule_fade_out(&app_state, SUB_FADE_DELAY_SECS);
-        }
-    });
-
-    // Slim per-line delta event — carries only the new transcript line so
-    // the overlay no longer reserialises the full (potentially hundreds of
-    // KB) session snapshot on every final.
-    let app_line = app.clone();
-    let lid_line = app.listen("live-line-appended", move |event| {
-        if !OVERLAY_OPEN.load(Ordering::Relaxed) {
-            return;
-        }
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        let text = payload
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_owned();
-        if text.trim().is_empty() || !claim_caption_seq(0) {
-            return;
-        }
-        show_text(&app_line, text, true);
-    });
-
-    let app_partial = app.clone();
-    let lid_partial = app.listen("stt-partial", move |event| {
-        if !OVERLAY_OPEN.load(Ordering::Relaxed) {
-            return;
-        }
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("live") {
-            return;
-        }
-        let text = payload
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_owned();
-        if text.trim().is_empty() || !claim_caption_seq(payload_seq(&payload)) {
-            return;
-        }
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let last = LAST_PARTIAL_MS.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last) < PARTIAL_MIN_INTERVAL_MS {
-            return;
-        }
-        LAST_PARTIAL_MS.store(now_ms, Ordering::Relaxed);
-        show_text(&app_partial, text, false);
-    });
-
-    let app_stt_final = app.clone();
-    let lid_stt_final = app.listen("stt-final", move |event| {
-        if !OVERLAY_OPEN.load(Ordering::Relaxed) {
-            return;
-        }
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("live") {
-            return;
-        }
-        let text = payload
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_owned();
-        if text.trim().is_empty() || !claim_caption_seq(payload_seq(&payload)) {
-            return;
-        }
-        show_text(&app_stt_final, text, true);
-    });
+    let mut listeners =
+        crate::subtitle_events::subscribe(app, captions_enabled, show_caption, status_changed);
 
     // Refresh overlay colours when the user changes the app theme from
     // the main window, or when the system appearance flips while the app
@@ -253,14 +154,21 @@ pub fn setup(app: &AppHandle) {
         let _ = app_main.run_on_main_thread(move || apply_overlay_theme(dark));
     });
 
-    SHARED.lock().unwrap().event_listeners =
-        vec![lid_state, lid_line, lid_partial, lid_stt_final, lid_theme];
+    listeners.push(lid_theme);
+    SHARED.lock().unwrap().event_listeners = listeners;
 }
 
 pub fn open_overlay(app: &AppHandle) -> Result<(), String> {
     if OVERLAY_OPEN.load(Ordering::Relaxed) {
+        let lifecycle = MainThreadAnimation::with_token(
+            &LIFECYCLE_TOKEN,
+            LIFECYCLE_TOKEN.load(Ordering::Relaxed),
+        );
         let app_refresh = app.clone();
         let _ = app.run_on_main_thread(move || {
+            if !lifecycle.is_current() || !OVERLAY_OPEN.load(Ordering::Relaxed) {
+                return;
+            }
             UI.with(|ui| {
                 if let Some(p) = &ui.borrow().panel {
                     p.orderFrontRegardless();
@@ -271,12 +179,31 @@ pub fn open_overlay(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     OVERLAY_OPEN.store(true, Ordering::Relaxed);
+    let lifecycle = MainThreadAnimation::start(&LIFECYCLE_TOKEN);
     let app2 = app.clone();
     let app_theme = app.clone();
     app.run_on_main_thread(move || {
-        build_overlay_panel();
+        if !lifecycle.is_current() || !OVERLAY_OPEN.load(Ordering::Relaxed) {
+            return;
+        }
+        // A rapid close/open may invalidate the queued close and reuse the UI.
+        let needs_panel = UI.with(|ui| ui.borrow().panel.is_none());
+        if needs_panel {
+            build_overlay_panel();
+            install_click_monitor(app2);
+        } else {
+            UI.with(|ui| {
+                let mut ui = ui.borrow_mut();
+                ui.displayed_session_id = None;
+                if let Some(label) = &ui.text_label {
+                    label.setStringValue(&objc2_foundation::NSString::from_str(""));
+                }
+                if let Some(panel) = &ui.panel {
+                    panel.setAlphaValue(0.0);
+                }
+            });
+        }
         apply_overlay_theme(effective_is_dark(&app_theme));
-        install_click_monitor(app2);
     })
     .map_err(|e| format!("subtitle overlay open failed: {e}"))
 }
@@ -286,11 +213,16 @@ pub fn close_overlay(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     OVERLAY_OPEN.store(false, Ordering::Relaxed);
+    let lifecycle = MainThreadAnimation::start(&LIFECYCLE_TOKEN);
+    CAPTION_MAILBOX.clear();
     HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);
     FADE_TOKEN.fetch_add(1, Ordering::Relaxed);
     MORPH_TOKEN.fetch_add(1, Ordering::Relaxed);
 
-    app.run_on_main_thread(|| {
+    app.run_on_main_thread(move || {
+        if !lifecycle.is_current() {
+            return;
+        }
         UI.with(|ui| {
             let mut ui = ui.borrow_mut();
             // Remove event monitor first
@@ -307,6 +239,7 @@ pub fn close_overlay(app: &AppHandle) -> Result<(), String> {
             ui.vfx_view = None;
             ui.bg_overlay = None;
             ui.text_label = None;
+            ui.displayed_session_id = None;
         });
     })
     .map_err(|e| format!("subtitle overlay close failed: {e}"))

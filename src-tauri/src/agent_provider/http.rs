@@ -5,11 +5,8 @@ use std::sync::LazyLock;
 const NON_STREAMING_ATTEMPTS: usize = 2;
 // ─────────────────────── Remote: non-streaming (plan) ───────────────────────
 
-/// HTTP client shared with `ai.rs`.
+/// Agent client reused across planning, streaming and compatibility retries.
 pub fn http_client() -> &'static reqwest::Client {
-    // Reuse the same LazyLock-based client from ai.rs.
-    // We access it by calling a non-streaming chat completion.
-    // For decoupling, we build our own minimal client.
     static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         reqwest::Client::builder()
             // Planning calls can return large JSON payloads. A short whole-request

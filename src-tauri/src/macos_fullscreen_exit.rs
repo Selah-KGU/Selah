@@ -6,13 +6,13 @@
 //! immediately and WindowServer never finishes leaving the Space. Tray quit
 //! goes through app.exit() and then process::exit with the same result.
 //!
-//! Hold the quit until NSWindowDidExitFullScreenNotification, then allow
-//! termination. The run loop must keep spinning during the wait; blocking
+//! Route AppKit termination through Tauri's recording-save coordinator. Hold
+//! its ordinary exit until NSWindowDidExitFullScreenNotification. The run loop must keep spinning during the wait; blocking
 //! here prevents the Space animation from completing.
 
 use std::cell::RefCell;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,25 +32,12 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const EXIT_SETTLE: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IncomingQuit {
-    Terminate,
-    ProgrammedExit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuitReply {
     Proceed,
     Defer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct PendingFlags {
-    terminate: bool,
-    programmed_exit: bool,
-}
-
 struct PendingQuit {
-    flags: PendingFlags,
     exit: Option<(AppHandle, i32)>,
 }
 
@@ -58,6 +45,7 @@ static PENDING: Mutex<Option<PendingQuit>> = Mutex::new(None);
 static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
 static EXIT_STARTED: AtomicBool = AtomicBool::new(false);
 static FINISH_SCHEDULED: AtomicBool = AtomicBool::new(false);
+static EXIT_REVISION: AtomicU64 = AtomicU64::new(0);
 static APP: Mutex<Option<AppHandle>> = Mutex::new(None);
 
 thread_local! {
@@ -83,12 +71,7 @@ pub(crate) fn defer_programmed_exit(app: &AppHandle, code: Option<i32>) -> bool 
     let mut started = false;
     let reply = with_pending(|pending, allow_exit| {
         let is_new = pending.is_none() && fullscreen;
-        let reply = note_quit(
-            pending,
-            allow_exit,
-            fullscreen,
-            IncomingQuit::ProgrammedExit,
-        );
+        let reply = note_quit(pending, allow_exit, fullscreen);
         if reply == QuitReply::Defer {
             if let Some(state) = pending.as_mut() {
                 state.exit = Some((app.clone(), code.unwrap_or(0)));
@@ -162,28 +145,20 @@ extern "C-unwind" fn application_should_terminate(
     _sender: *mut AnyObject,
 ) -> NSApplicationTerminateReply {
     match std::panic::catch_unwind(|| {
-        let fullscreen = any_native_fullscreen();
-        let mut started = false;
-        let reply = with_pending(|pending, allow_exit| {
-            let is_new = pending.is_none() && fullscreen;
-            let reply = note_quit(pending, allow_exit, fullscreen, IncomingQuit::Terminate);
-            if reply == QuitReply::Defer && is_new {
-                started = true;
-            }
-            reply
-        });
-        if started {
-            begin_fullscreen_exit();
-        }
-        match reply {
-            QuitReply::Defer => NSApplicationTerminateReply::TerminateLater,
-            QuitReply::Proceed => NSApplicationTerminateReply::TerminateNow,
+        if let Some(app) = app_handle() {
+            // AppKit's TerminateNow bypasses the Tauri event loop. Cancel that
+            // termination and request a preventable exit with the save path.
+            app.exit(0);
+            NSApplicationTerminateReply::TerminateCancel
+        } else {
+            log::error!("applicationShouldTerminate has no app handle");
+            NSApplicationTerminateReply::TerminateNow
         }
     }) {
         Ok(reply) => reply,
         Err(_) => {
-            log::error!("applicationShouldTerminate panicked; allowing quit");
-            NSApplicationTerminateReply::TerminateNow
+            log::error!("applicationShouldTerminate panicked; canceling quit");
+            NSApplicationTerminateReply::TerminateCancel
         }
     }
 }
@@ -252,6 +227,7 @@ fn begin_fullscreen_exit() {
     if EXIT_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
+    let revision = EXIT_REVISION.fetch_add(1, Ordering::SeqCst) + 1;
     log::info!("leaving fullscreen before quit so the desktop Space can be restored");
     toggle_fullscreen_windows();
     let app = app_handle();
@@ -259,22 +235,23 @@ fn begin_fullscreen_exit() {
         let started = Instant::now();
         loop {
             thread::sleep(Duration::from_millis(100));
-            if !quit_is_pending() {
+            if EXIT_REVISION.load(Ordering::SeqCst) != revision || !quit_is_pending() {
                 return;
             }
             if started.elapsed() < EXIT_TIMEOUT {
                 continue;
             }
-            log::warn!("fullscreen exit timed out; quitting anyway");
+            log::warn!("fullscreen exit timed out; continuing through recording persistence");
             let finished = app.as_ref().and_then(|app| {
-                run_on_main(app, || {
-                    finish_quit();
+                run_on_main(app, move || {
+                    finish_quit(revision);
                 })
             });
             if finished.is_none() {
                 log::error!("could not reach the main thread to finish a deferred quit");
-                // NSTerminateLater would otherwise leave Cmd+Q stuck forever.
-                std::process::exit(0);
+                // Do not bypass recording persistence with process::exit.
+                // The retained request can finish once the UI thread responds.
+                log::warn!("fullscreen quit remains pending until the main thread responds");
             }
             return;
         }
@@ -286,12 +263,13 @@ fn schedule_finish() {
         return;
     }
     let app = app_handle();
+    let revision = EXIT_REVISION.load(Ordering::SeqCst);
     thread::spawn(move || {
         thread::sleep(EXIT_SETTLE);
         let Some(app) = app else {
             return;
         };
-        let _ = run_on_main(&app, finish_quit);
+        let _ = run_on_main(&app, move || finish_quit(revision));
     });
 }
 
@@ -312,21 +290,30 @@ fn toggle_fullscreen_windows() {
     });
 }
 
-fn finish_quit() {
-    ALLOW_EXIT.store(true, Ordering::SeqCst);
-    let pending = lock_pending().take();
-    let Some(pending) = pending else {
+fn finish_quit(revision: u64) {
+    let mut slot = lock_pending();
+    let Some(pending) =
+        take_current_quit(&mut slot, revision, EXIT_REVISION.load(Ordering::SeqCst))
+    else {
         return;
     };
+    ALLOW_EXIT.store(true, Ordering::SeqCst);
+    drop(slot);
     hide_toggled_windows();
-    if pending.flags.terminate {
-        if let Some(mtm) = MainThreadMarker::new() {
-            NSApp(mtm).replyToApplicationShouldTerminate(true);
-        }
-    }
     if let Some((app, code)) = pending.exit {
         app.exit(code);
     }
+}
+
+fn take_current_quit(
+    pending: &mut Option<PendingQuit>,
+    expected: u64,
+    current: u64,
+) -> Option<PendingQuit> {
+    if expected != current {
+        return None;
+    }
+    pending.take()
 }
 
 fn hide_toggled_windows() {
@@ -386,38 +373,38 @@ fn lock_pending() -> std::sync::MutexGuard<'static, Option<PendingQuit>> {
     PENDING.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-fn note_quit(
-    pending: &mut Option<PendingQuit>,
-    allow_exit: bool,
-    fullscreen: bool,
-    incoming: IncomingQuit,
-) -> QuitReply {
+/// A failed disk write cancels the quit, including its old fullscreen watchdog.
+pub(crate) fn cancel_deferred_quit() {
+    let mut pending = lock_pending();
+    *pending = None;
+    let revision = EXIT_REVISION.fetch_add(1, Ordering::SeqCst) + 1;
+    ALLOW_EXIT.store(false, Ordering::SeqCst);
+    EXIT_STARTED.store(false, Ordering::SeqCst);
+    FINISH_SCHEDULED.store(false, Ordering::SeqCst);
+    drop(pending);
+    if let Some(app) = app_handle() {
+        let restored = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if EXIT_REVISION.load(Ordering::SeqCst) != revision {
+                return;
+            }
+            TOGGLED.with(|slots| slots.borrow_mut().clear());
+            crate::app_lifecycle::present_main_window(&restored);
+        });
+    }
+}
+
+fn note_quit(pending: &mut Option<PendingQuit>, allow_exit: bool, fullscreen: bool) -> QuitReply {
     if allow_exit {
         return QuitReply::Proceed;
     }
-    if let Some(state) = pending.as_mut() {
-        match incoming {
-            IncomingQuit::Terminate => state.flags.terminate = true,
-            IncomingQuit::ProgrammedExit => state.flags.programmed_exit = true,
-        }
+    if pending.is_some() {
         return QuitReply::Defer;
     }
     if !fullscreen {
         return QuitReply::Proceed;
     }
-    *pending = Some(PendingQuit {
-        flags: match incoming {
-            IncomingQuit::Terminate => PendingFlags {
-                terminate: true,
-                programmed_exit: false,
-            },
-            IncomingQuit::ProgrammedExit => PendingFlags {
-                terminate: false,
-                programmed_exit: true,
-            },
-        },
-        exit: None,
-    });
+    *pending = Some(PendingQuit { exit: None });
     QuitReply::Defer
 }
 
@@ -425,47 +412,32 @@ fn note_quit(
 mod tests {
     use super::*;
 
-    fn pending(flags: PendingFlags) -> Option<PendingQuit> {
-        Some(PendingQuit { flags, exit: None })
-    }
-
     #[test]
     fn quit_proceeds_when_not_fullscreen() {
         let mut state = None;
-        assert_eq!(
-            note_quit(&mut state, false, false, IncomingQuit::Terminate),
-            QuitReply::Proceed
-        );
+        assert_eq!(note_quit(&mut state, false, false), QuitReply::Proceed);
         assert!(state.is_none());
     }
 
     #[test]
-    fn fullscreen_quit_is_deferred_until_allowed() {
+    fn fullscreen_quit_is_deferred_until_allowed_and_repeated_quit_is_coalesced() {
         let mut state = None;
-        assert_eq!(
-            note_quit(&mut state, false, true, IncomingQuit::Terminate),
-            QuitReply::Defer
-        );
-        assert!(state.unwrap().flags.terminate);
+        assert_eq!(note_quit(&mut state, false, true), QuitReply::Defer);
+        assert!(state.is_some());
+        assert_eq!(note_quit(&mut state, false, false), QuitReply::Defer);
+        assert_eq!(note_quit(&mut state, true, true), QuitReply::Proceed);
+    }
 
-        let mut state = pending(PendingFlags {
-            terminate: true,
-            programmed_exit: false,
-        });
-        assert_eq!(
-            note_quit(&mut state, false, true, IncomingQuit::ProgrammedExit),
-            QuitReply::Defer
+    #[test]
+    fn delayed_finish_from_a_canceled_quit_cannot_consume_the_next_quit() {
+        let mut pending = None;
+        assert_eq!(note_quit(&mut pending, false, true), QuitReply::Defer);
+        assert!(take_current_quit(&mut pending, 1, 2).is_none());
+        assert!(
+            pending.is_some(),
+            "old fullscreen watchdog consumed the new quit"
         );
-        let state = state.unwrap();
-        assert!(state.flags.terminate && state.flags.programmed_exit);
-
-        let mut state = pending(PendingFlags {
-            terminate: true,
-            programmed_exit: false,
-        });
-        assert_eq!(
-            note_quit(&mut state, true, true, IncomingQuit::Terminate),
-            QuitReply::Proceed
-        );
+        assert!(take_current_quit(&mut pending, 2, 2).is_some());
+        assert!(take_current_quit(&mut pending, 2, 2).is_none());
     }
 }

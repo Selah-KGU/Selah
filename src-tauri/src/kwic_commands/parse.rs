@@ -92,7 +92,9 @@ mod information;
 mod subportal;
 
 pub(in crate::kwic_commands) use cabinet::parse_cabinet_reference;
-pub(in crate::kwic_commands) use detail::{compact_inline_images, extract_csrf_token, parse_detail_html};
+pub(in crate::kwic_commands) use detail::{
+    compact_inline_images, extract_csrf_token, parse_detail_html,
+};
 pub(in crate::kwic_commands) use home::parse_portal_home;
 pub(in crate::kwic_commands) use information::merge_information_list_sections;
 #[cfg(test)]

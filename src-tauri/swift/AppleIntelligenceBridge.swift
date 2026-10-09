@@ -13,7 +13,11 @@ private final class TaskRegistry: @unchecked Sendable {
         guard !id.isEmpty else { return }
         lock.lock()
         tasks[id] = task
+        let wasCancelled = cancelled.contains(id)
         lock.unlock()
+        // Cancellation may arrive after Task creation but before registration.
+        // Preserve that request instead of leaving the newly registered Task alive.
+        if wasCancelled { task.cancel() }
     }
 
     func remove(_ id: String) {

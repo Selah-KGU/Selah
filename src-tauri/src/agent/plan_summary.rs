@@ -6,7 +6,11 @@
 use super::*;
 
 pub(super) fn summarize_plan_tool_result(name: &str, json: &str) -> String {
-    let parsed: Value = match serde_json::from_str(json) {
+    let parsed: Value = match if name == "computer_screenshot" {
+        tool_result::screenshot_metadata(json)
+    } else {
+        serde_json::from_str(json)
+    } {
         Ok(v) => v,
         Err(_) => return trim_to(json, 260),
     };

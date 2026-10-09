@@ -10,6 +10,7 @@ pub(in crate::windows_native_agent) fn window_snapshot() -> Option<OverlaySnapsh
         height: s.height,
         text: s.text.clone(),
         dark: s.dark,
+        mode: s.displayed_mode,
     })
 }
 
@@ -127,7 +128,7 @@ pub(in crate::windows_native_agent) unsafe extern "system" fn overlay_wndproc(
         WM_ERASEBKGND => 1,
         WM_LBUTTONUP => {
             // Any click: bring main window forward and dismiss the overlay.
-            if CURRENT_MODE.load(Ordering::Relaxed) == MODE_RESULT {
+            if current_mode() == MODE_RESULT {
                 bring_main_window_to_front();
             }
             if let Some(app) = APP_HANDLE.get() {
@@ -139,22 +140,21 @@ pub(in crate::windows_native_agent) unsafe extern "system" fn overlay_wndproc(
             paint_overlay(hwnd);
             0
         }
+        WM_AGENT_UI_JOB => {
+            run_ui_job(hwnd as RawHwnd, wparam as u64);
+            0
+        }
         WM_AGENT_SHORTCUT_PRESS => {
-            // Spawn async so WndProc returns immediately (<1 ms).
-            // Blocking here would freeze the overlay thread and risk the
-            // LL hook 300 ms system timeout.
+            // Only cheap input reservation/stop requests happen here. Models,
+            // window creation waits, DB work and rendering run elsewhere.
+            // Keep press/release ordering on the hook's owning thread.
             if let Some(app) = APP_HANDLE.get() {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    handle_shortcut_press(app);
-                });
+                handle_shortcut_press(app.clone());
             }
             0
         }
         WM_AGENT_SHORTCUT_RELEASE => {
-            tauri::async_runtime::spawn(async move {
-                handle_shortcut_release();
-            });
+            handle_shortcut_release();
             0
         }
         WM_CLOSE => {
@@ -173,6 +173,7 @@ pub(in crate::windows_native_agent) unsafe extern "system" fn overlay_wndproc(
                 cell.set((u32::MAX, 0));
             });
             clear_destroyed_window(hwnd as RawHwnd);
+            drop_ui_jobs(hwnd as RawHwnd);
             DESTROYING.store(false, Ordering::SeqCst);
             if HOOK_VK.load(Ordering::Relaxed) != 0 {
                 if let Some(app) = APP_HANDLE.get() {

@@ -1,6 +1,9 @@
 use super::super::{contains_any, extract_browser_click_text, normalize_planner_text};
 use crate::agent_tools;
 
+// Largest lookback used by click confirmations and numbered selections.
+pub(in crate::agent) const BROWSER_CLICK_HISTORY_ROWS: usize = 12;
+
 pub(in crate::agent) fn requested_click_labels(norm: &str) -> Option<Vec<String>> {
     if contains_any(
         norm,
@@ -124,7 +127,7 @@ fn recent_numbered_click_labels(
     index: usize,
     current_norm: &str,
 ) -> Option<Vec<String>> {
-    for row in history.iter().rev().take(12) {
+    for row in history.iter().rev().take(BROWSER_CLICK_HISTORY_ROWS) {
         if row.role != "assistant" {
             continue;
         }

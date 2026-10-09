@@ -2,14 +2,6 @@ import { writable } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { initializeThemePreference, type ThemePreference } from "./themePreference";
 import type { LiveTodoSuggestion } from "./api";
-import {
-  DETAIL_GENERATED_TODO_KEY,
-  LIVE_GENERATED_TODO_KEY,
-  mergeDetailTodosIntoLunaTodos,
-  mergeGeneratedTodosIntoLunaTodos,
-  mergeGeneratedTodosIntoSchedule,
-  repairDetailGeneratedTodoSourceUrls,
-} from "./generatedTodoSupport";
 
 interface AuthState {
   authenticated: boolean;
@@ -361,44 +353,96 @@ export const cacheStatus = writable<CacheStatusData>({
 export interface ReadIdsData { kgc: string[]; luna: string[]; kwic: string[] }
 export const readIdsStore = writable<ReadIdsData>({ kgc: [], luna: [], kwic: [] });
 
+let readStateTail: Promise<void> = Promise.resolve();
+let pendingReadIds: Promise<void> | null = null;
+let readStateVersion = 0;
+
+function readStateDemo(): boolean {
+  return typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1";
+}
+
+function queueReadState(work: () => Promise<void>): Promise<void> {
+  const request = readStateTail.then(work);
+  readStateTail = request.catch(() => {});
+  return request;
+}
+
+function mutateReadIds(write: () => Promise<void>, apply: () => void): Promise<void> {
+  pendingReadIds = null;
+  const version = readStateVersion;
+  const demo = readStateDemo();
+  const current = () => version === readStateVersion && (demo || !readStateDemo());
+  const work = async () => {
+    if (!current()) return;
+    try {
+      if (typeof localStorage !== "undefined" && !demo) await write();
+    } catch (error) {
+      if (current()) throw error;
+      return;
+    }
+    if (current()) apply();
+  };
+  return demo ? work() : queueReadState(work);
+}
+
 /** Canonical key for dedup: normalized title + date */
 export function notifKey(title: string, date: string): string {
   return `${title.trim().replace(/\s+/g, "")}|${date}`;
 }
 
 /** Load read IDs from DB into the store. Call once on app init. */
-export async function loadReadIds(): Promise<void> {
-  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
+export function loadReadIds(): Promise<void> {
+  if (readStateDemo()) {
+    readStateVersion += 1;
+    pendingReadIds = null;
     readIdsStore.set({ kgc: [], luna: [], kwic: [] });
-    return;
+    return Promise.resolve();
   }
-  const data = await invoke<ReadIdsData>("get_read_notifications");
-  readIdsStore.set(data);
+  if (pendingReadIds) return pendingReadIds;
+  const version = readStateVersion;
+  const request = queueReadState(async () => {
+    if (version !== readStateVersion || readStateDemo()) return;
+    try {
+      const data = await invoke<ReadIdsData>("get_read_notifications");
+      if (version === readStateVersion && !readStateDemo()) readIdsStore.set(data);
+    } catch (error) {
+      if (version === readStateVersion && !readStateDemo()) throw error;
+    }
+  }).finally(() => {
+    if (pendingReadIds === request) pendingReadIds = null;
+  });
+  pendingReadIds = request;
+  return request;
 }
 
 /** Mark a single notification as read. DB-first, then update store. */
-export async function markRead(source: string, id: string): Promise<void> {
-  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") !== "1") {
-    await invoke<void>("mark_notification_read", { source, id });
-  }
-  readIdsStore.update(store => {
-    const key = source as keyof ReadIdsData;
-    if (store[key].includes(id)) return store;
-    return { ...store, [source]: [...store[key], id] };
+export function markRead(source: string, id: string): Promise<void> {
+  return mutateReadIds(() => invoke<void>("mark_notification_read", { source, id }), () => {
+    readIdsStore.update(store => {
+      const key = source as keyof ReadIdsData;
+      if (store[key].includes(id)) return store;
+      return { ...store, [source]: [...store[key], id] };
+    });
   });
 }
 
 /** Mark multiple notifications as read. DB-first, then update store. */
-export async function markBatchRead(source: string, ids: string[]): Promise<void> {
-  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") !== "1") {
-    await invoke<void>("mark_batch_notification_read", { source, ids });
-  }
-  readIdsStore.update(store => {
-    const key = source as keyof ReadIdsData;
-    const existing = new Set(store[key]);
-    const fresh = ids.filter(id => !existing.has(id));
-    if (fresh.length === 0) return store;
-    return { ...store, [source]: [...store[key], ...fresh] };
+export function markBatchRead(source: string, ids: string[]): Promise<void> {
+  const accepted = ids.slice();
+  return mutateReadIds(() => invoke<void>("mark_batch_notification_read", { source, ids: accepted }), () => {
+    readIdsStore.update(store => {
+      const key = source as keyof ReadIdsData;
+      const existing = new Set(store[key]);
+      const fresh: string[] = [];
+      for (const id of accepted) {
+        if (!existing.has(id)) {
+          existing.add(id);
+          fresh.push(id);
+        }
+      }
+      if (fresh.length === 0) return store;
+      return { ...store, [source]: [...store[key], ...fresh] };
+    });
   });
 }
 
@@ -458,640 +502,8 @@ function notifyTaskListeners() {
   for (const cb of taskListeners) cb();
 }
 
-// ============ Data Cache ============
-// Unified caching layer: memory + disk (localStorage) + stale-while-revalidate
-//
-// Usage:  data = await cachedFetch("key", fetcher)
-// SWR:    onCacheUpdate("key", (fresh) => { data = fresh })
-//
-// To add a new cached endpoint:
-//   1. Add TTL to CACHE_TTLS (optional, defaults to 5 min)
-//   2. Add key to DISK_CACHE_KEYS if it should persist across restarts
-
-export type CacheStamp = string | number;
-
-interface MemoryCacheEntry {
-  data: any;
-  ts: number;
-  stamp?: CacheStamp;
-}
-
-const cache = new Map<string, MemoryCacheEntry>();
-const rawCache = new Map<string, { updatedAt: number; parsed: unknown }>();
-const inflight = new Map<string, Promise<any>>();
-
-const DEFAULT_TTL = 5 * 60 * 1000; // 5 minutes
-// Memory TTL mirrors the Rust cache max-age. SQLite is authoritative; a shorter
-// TTL here only causes backend_refresh_now calls that the backend then skips.
-// Keep these in sync with background_refresh.rs / notifier.rs.
-const CACHE_TTLS: Record<string, number> = {
-  // KG-Course. schedule: SCHEDULE_CACHE_MAX_AGE_SECS (6h)
-  schedule_data: 6 * 60 * 60 * 1000,
-  grades: 72 * 60 * 60 * 1000,
-  exams: 12 * 60 * 60 * 1000,
-  registration: 72 * 60 * 60 * 1000,
-  // STABLE_CACHE_MAX_AGE_SECS
-  cancellations: 12 * 60 * 60 * 1000,
-  makeup: 12 * 60 * 60 * 1000,
-  rooms: 12 * 60 * 60 * 1000,
-  // KGC_NOTIFICATION_MAX_AGE_SECS
-  notifications: 12 * 60 * 60 * 1000,
-  profile: 12 * 60 * 60 * 1000,
-  student_profile: 12 * 60 * 60 * 1000,
-  favorites: 10 * 60 * 1000,
-  // FAST_CACHE_MAX_AGE_SECS / FAST_SOURCE_MAX_AGE_SECS
-  luna_todo: 5 * 60 * 1000,
-  luna_updates: 5 * 60 * 1000,
-  weather: 60 * 60 * 1000,
-  mail_inbox: 5 * 60 * 1000,
-  kwic_home: 5 * 60 * 1000,
-};
-
-// Keys eligible for disk persistence (survive app restart, stale-while-revalidate)
-// Only first-screen data needs synchronous localStorage; others rely on SQLite fallback.
-const DISK_CACHE_KEYS = new Set([
-  "schedule_data", "kwic_home",
-  "notifications", "luna_updates", "luna_todo",
-]);
-
-// Keys eligible for SQLite DB persistence (async SWR).
-// The Rust backend already saves these on successful fetch via save_data_cache,
-// so we only need to *read* from DB on cold start — no frontend writes needed.
-const DB_CACHE_KEYS = new Set([
-  "grades", "registration",
-  "kwic_home", "notifications", "luna_updates", "luna_todo",
-  "cancellations", "makeup", "rooms", "mail_inbox",
-  "weather", "student_profile", "ai_notif_analysis", "ai_todo_analysis",
-]);
-const BACKEND_CACHE_DB_KEYS: Record<string, string> = {
-  exams: "exam_timetable",
-};
-const DISK_PREFIX = "selah_cache_";
-const DISK_CACHE_VERSION = 1;
-const DISK_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
-
-interface DiskEntry { v: number; data: any; ts: number }
-
-function loadDiskCache(key: string): { data: any; ts: number } | null {
-  try {
-    const raw = localStorage.getItem(DISK_PREFIX + key);
-    if (!raw) return null;
-    const parsed: DiskEntry = JSON.parse(raw);
-    if (parsed.v !== DISK_CACHE_VERSION) return null;
-    if (Date.now() - parsed.ts > DISK_MAX_AGE) return null;
-    return { data: parsed.data, ts: parsed.ts };
-  } catch { return null; }
-}
-
-function saveDiskCache(key: string, data: any, ts: number) {
-  try {
-    const entry: DiskEntry = { v: DISK_CACHE_VERSION, data, ts };
-    localStorage.setItem(DISK_PREFIX + key, JSON.stringify(entry));
-  } catch { /* quota exceeded */ }
-}
-
-// SWR update listeners: components subscribe to be notified when background refresh completes
-const swrListeners = new Map<string, Set<(data: any) => void>>();
-export function onCacheUpdate<T>(key: string, cb: (data: T) => void): () => void {
-  if (!swrListeners.has(key)) swrListeners.set(key, new Set());
-  swrListeners.get(key)!.add(cb as (data: any) => void);
-  return () => {
-    const set = swrListeners.get(key);
-    if (set) {
-      set.delete(cb as (data: any) => void);
-      if (set.size === 0) swrListeners.delete(key);
-    }
-  };
-}
-
-function notifySwr(key: string, data: any) {
-  swrListeners.get(key)?.forEach((cb) => { try { cb(data); } catch { /* ignore */ } });
-}
-
-function stableCacheJson(data: unknown): string | null {
-  try {
-    return JSON.stringify(data);
-  } catch {
-    return null;
-  }
-}
-
-export function isEmptyNotificationsPayload(data: unknown): boolean {
-  if (!data || typeof data !== "object") return false;
-  const entries = (data as { entries?: unknown }).entries;
-  return Array.isArray(entries) && entries.length === 0;
-}
-
-export function isCacheFresh(key: string, ttl?: number): boolean {
-  const entry = cache.get(key);
-  if (!entry) return false;
-  // An empty campus list is not a successful load. The 12h TTL would otherwise
-  // keep a failed parse on screen until the next day.
-  if (key === "notifications" && isEmptyNotificationsPayload(entry.data)) return false;
-  const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
-  return Date.now() - entry.ts < effectiveTtl;
-}
-
-export function hasMemoryCache(key: string): boolean {
-  return cache.has(key);
-}
-
-export function getCacheStamp(key: string): CacheStamp | null {
-  const stamp = cache.get(key)?.stamp;
-  return stamp == null ? null : stamp;
-}
-
-export function touchCacheTimestamp(key: string, ts = Date.now()): boolean {
-  const entry = cache.get(key);
-  if (!entry) return false;
-  cache.set(key, { ...entry, ts });
-  return true;
-}
-
-export function rememberRawCache(key: string, updatedAt: number, parsed: unknown): void {
-  rawCache.set(key, { updatedAt, parsed });
-}
-
-export function readRawCache<T>(key: string): T | null {
-  const entry = rawCache.get(key);
-  return entry ? entry.parsed as T : null;
-}
-
-export function hasRawCache(key: string): boolean {
-  return rawCache.has(key);
-}
-
-export function knownRawUpdatedAt(key: string): number | null {
-  const entry = rawCache.get(key);
-  return entry ? entry.updatedAt : null;
-}
-
-function persistCacheValue<T>(key: string, data: T, ts: number, notify: boolean, stamp?: CacheStamp) {
-  const prev = cache.get(key);
-  const stampUnchanged = stamp !== undefined && prev?.stamp !== undefined && prev.stamp === stamp;
-  if (stampUnchanged && prev) {
-    cache.set(key, { ...prev, ts });
-    return;
-  }
-  const prevJson = prev ? stableCacheJson(prev.data) : null;
-  const nextJson = stableCacheJson(data);
-  const changed = prevJson == null || nextJson == null || prevJson !== nextJson;
-  cache.set(key, { data, ts, stamp: stamp !== undefined ? stamp : prev?.stamp });
-  if (changed && DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
-  if (notify && changed) notifySwr(key, data);
-}
-
-function isEmptySchedulePayload(data: any): boolean {
-  const raw = data?.raw;
-  if (!raw) return true;
-  const kgcEmpty = !Array.isArray(raw.kgc_entries_current) || raw.kgc_entries_current.length === 0;
-  const lunaEmpty = !Array.isArray(raw.luna_courses) || raw.luna_courses.length === 0;
-  const noWeek = !String(raw.current_week_label || "").trim();
-  return kgcEmpty && lunaEmpty && noWeek;
-}
-
-function readAnyDiskCache<T>(key: string): { data: T; ts: number } | null {
-  const disk = loadDiskCache(key);
-  if (!disk) return null;
-  return { data: disk.data as T, ts: disk.ts };
-}
-
-async function loadBackendManagedCache<T>(key: string): Promise<{ data: T; ts: number } | null> {
-  try {
-    if (key === "schedule_data") {
-      const data = await invoke<any>("get_schedule_snapshot");
-      const generated = await loadLiveGeneratedTodos();
-      return { data: mergeGeneratedTodosIntoSchedule(data, generated) as T, ts: Date.now() };
-    }
-    const dbKey = BACKEND_CACHE_DB_KEYS[key] ?? key;
-    const json = await invoke<string | null>("get_data_cache", { key: dbKey });
-    if (key === "luna_todo") {
-      const generated = await loadLiveGeneratedTodos();
-      const detail = await loadDetailGeneratedTodos();
-      if (!json && generated.length === 0 && detail.length === 0) return null;
-      const parsed = json ? JSON.parse(json) : [];
-      const withLive = mergeGeneratedTodosIntoLunaTodos(parsed, generated);
-      const withDetail = mergeDetailTodosIntoLunaTodos(withLive, detail);
-      return { data: withDetail as T, ts: Date.now() };
-    }
-    if (!json) return null;
-    const parsed = JSON.parse(json);
-    return { data: parsed as T, ts: Date.now() };
-  } catch {
-    return null;
-  }
-}
-
-async function loadLiveGeneratedTodos(): Promise<any[]> {
-  try {
-    const json = await invoke<string | null>("get_data_cache", { key: LIVE_GENERATED_TODO_KEY });
-    if (!json) return [];
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-async function readDataCache(key: string): Promise<string | null> {
-  return invoke<string | null>("get_data_cache", { key });
-}
-
-async function writeDataCache(key: string, json: string): Promise<void> {
-  await invoke("save_data_cache", { key, json });
-}
-
-async function loadDetailGeneratedTodos(): Promise<any[]> {
-  try {
-    const json = await readDataCache(DETAIL_GENERATED_TODO_KEY);
-    if (!json) return [];
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed)
-      ? await repairDetailGeneratedTodoSourceUrls(parsed, readDataCache, writeDataCache)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-async function backendRowAgeMs(key: string, data?: unknown): Promise<number | null> {
-  if (key === "schedule_data") {
-    const updated = (data as { snapshot_updated_at?: number } | null)?.snapshot_updated_at;
-    if (typeof updated === "number" && updated > 0) return Date.now() - updated * 1000;
-    return null;
-  }
-  const dbKey = BACKEND_CACHE_DB_KEYS[key] ?? key;
-  try {
-    const updatedAt = await invoke<number | null>("get_data_cache_updated_at", { key: dbKey });
-    if (typeof updatedAt === "number" && updatedAt > 0) return Date.now() - updatedAt * 1000;
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-async function sqliteRowNewerThan(dbKey: string, diskTs: number): Promise<boolean> {
-  try {
-    const updatedAt = await invoke<number | null>("get_data_cache_updated_at", { key: dbKey });
-    if (typeof updatedAt !== "number" || updatedAt <= 0) return false;
-    // updated_at is whole seconds. A row written after this localStorage
-    // snapshot is strictly newer; the same write is not.
-    return updatedAt * 1000 > diskTs;
-  } catch {
-    return false;
-  }
-}
-
-async function sqliteCacheNewerThan(key: string, diskTs: number): Promise<boolean> {
-  const dbKeys = key === "luna_todo"
-    ? [BACKEND_CACHE_DB_KEYS[key] ?? key, LIVE_GENERATED_TODO_KEY, DETAIL_GENERATED_TODO_KEY]
-    : [BACKEND_CACHE_DB_KEYS[key] ?? key];
-  for (const dbKey of dbKeys) {
-    if (await sqliteRowNewerThan(dbKey, diskTs)) return true;
-  }
-  return false;
-}
-
-function refreshBackendIfStale<T>(key: string, data: T, ttl: number) {
-  if (key === "notifications" && isEmptyNotificationsPayload(data)) {
-    void queueBackendManagedRefresh<T>(key, true, data);
-    return;
-  }
-  void backendRowAgeMs(key, data).then((age) => {
-    if (age != null && age < ttl) return;
-    void queueBackendManagedRefresh<T>(key, false, data);
-  });
-}
-
-function queueBackendManagedRefresh<T>(key: string, force: boolean, fallback?: T): Promise<T> {
-  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
-    const entry = cache.get(key);
-    if (entry) return Promise.resolve(entry.data as T);
-    const disk = readAnyDiskCache<T>(key);
-    if (disk) {
-      persistCacheValue(key, disk.data, disk.ts, false);
-      return Promise.resolve(disk.data);
-    }
-    if (fallback !== undefined) return Promise.resolve(fallback);
-    return Promise.reject(new Error(`No demo cache available for "${key}"`));
-  }
-
-  const pending = inflight.get(key);
-  if (pending) return pending as Promise<T>;
-
-  const refreshPromise = invoke<string[]>("backend_refresh_now", { keys: [key], force })
-    .then(async () => {
-      const loaded = await loadBackendManagedCache<T>(key);
-      if (!loaded) {
-        if (fallback !== undefined) return fallback;
-        throw new Error(`No backend cache available for "${key}"`);
-      }
-      if (
-        key === "notifications"
-        && isEmptyNotificationsPayload(loaded.data)
-        && fallback !== undefined
-        && !isEmptyNotificationsPayload(fallback)
-      ) {
-        return fallback;
-      }
-      persistCacheValue(key, loaded.data, loaded.ts, true);
-      return loaded.data;
-    })
-    .catch((err) => {
-      if (fallback !== undefined) return fallback;
-      throw err;
-    })
-    .finally(() => {
-      if (inflight.get(key) === refreshPromise) inflight.delete(key);
-    });
-  inflight.set(key, refreshPromise);
-  return refreshPromise;
-}
-
-export async function cachedBackendFetch<T>(key: string, ttl?: number): Promise<T> {
-  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
-    const entry = cache.get(key);
-    if (entry) return entry.data as T;
-    const disk = readAnyDiskCache<T>(key);
-    if (disk) {
-      persistCacheValue(key, disk.data, disk.ts, false);
-      return disk.data;
-    }
-  }
-
-  const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
-  const entry = cache.get(key);
-  if (key === "schedule_data") {
-    // Memory is enough while fresh. Backend writes emit backend-cache-updated,
-    // which reloads the snapshot; revisiting home should not rebuild it.
-    if (entry && Date.now() - entry.ts < effectiveTtl) {
-      return entry.data as T;
-    }
-    const loaded = await loadBackendManagedCache<T>(key);
-    if (!loaded) {
-      if (entry) return entry.data as T;
-      throw new Error("時間割スナップショットを読み込めませんでした");
-    }
-    persistCacheValue(key, loaded.data, Date.now(), true);
-    refreshBackendIfStale(key, loaded.data, effectiveTtl);
-    return loaded.data;
-  }
-  if (entry && isCacheFresh(key, effectiveTtl)) {
-    return entry.data as T;
-  }
-
-  if (entry) {
-    const forceEmptyNotifications = key === "notifications" && isEmptyNotificationsPayload(entry.data);
-    void queueBackendManagedRefresh<T>(key, forceEmptyNotifications, entry.data as T);
-    return entry.data as T;
-  }
-
-  if (DISK_CACHE_KEYS.has(key)) {
-    const disk = loadDiskCache(key);
-    if (disk) {
-      const diskLooksFresh = Date.now() - disk.ts < effectiveTtl && !(await sqliteCacheNewerThan(key, disk.ts));
-      if (diskLooksFresh && !(key === "notifications" && isEmptyNotificationsPayload(disk.data))) {
-        persistCacheValue(key, disk.data as T, disk.ts, false);
-        return disk.data as T;
-      }
-      // localStorage can lag SQLite. A fresh backend row must replace the
-      // stale disk payload even when that row is too new to need a network refresh.
-      const loaded = await loadBackendManagedCache<T>(key);
-      if (loaded) {
-        if (
-          key === "notifications"
-          && isEmptyNotificationsPayload(loaded.data)
-          && !isEmptyNotificationsPayload(disk.data)
-        ) {
-          persistCacheValue(key, disk.data as T, disk.ts, false);
-          void queueBackendManagedRefresh<T>(key, true, disk.data as T);
-          return disk.data as T;
-        }
-        persistCacheValue(key, loaded.data, loaded.ts, true);
-        refreshBackendIfStale(key, loaded.data, effectiveTtl);
-        return loaded.data;
-      }
-      persistCacheValue(key, disk.data as T, disk.ts, false);
-      void queueBackendManagedRefresh<T>(key, false, disk.data as T);
-      return disk.data as T;
-    }
-  }
-
-  const loaded = await loadBackendManagedCache<T>(key);
-  if (loaded) {
-    persistCacheValue(key, loaded.data, loaded.ts, false);
-    refreshBackendIfStale(key, loaded.data, effectiveTtl);
-    return loaded.data;
-  }
-
-  return queueBackendManagedRefresh<T>(key, true);
-}
-
-export function refreshBackendManagedCache<T>(key: string): Promise<T> {
-  return queueBackendManagedRefresh<T>(key, true);
-}
-
-/**
- * Fetch data with caching, dedup, and optional stale-while-revalidate.
- *
- * Flow:
- * 1. If memory cache hit and fresh → return immediately
- * 2. If disk cache available (cold start) → return stale, revalidate in background
- * 3. Otherwise → fetch, cache result, return
- *
- * Background SWR refresh errors are silently swallowed (stale data is kept).
- * Components should subscribe via onCacheUpdate() for live refreshes.
- */
-export function cachedFetch<T>(key: string, fetcher: () => Promise<T>, ttl?: number): Promise<T> {
-  // Demo mode: always serve from cache, never hit network
-  if (typeof localStorage !== "undefined" && localStorage.getItem("selah-demo-mode") === "1") {
-    const entry = cache.get(key);
-    if (entry) return Promise.resolve(entry.data as T);
-    const disk = loadDiskCache(key);
-    if (disk) { cache.set(key, disk); return Promise.resolve(disk.data as T); }
-    return fetcher().then((data) => {
-      const now = Date.now();
-      cache.set(key, { data, ts: now });
-      if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, now);
-      return data;
-    });
-  }
-
-  const effectiveTtl = ttl ?? CACHE_TTLS[key] ?? DEFAULT_TTL;
-  const entry = cache.get(key);
-  if (entry && Date.now() - entry.ts < effectiveTtl) {
-    return Promise.resolve(entry.data as T);
-  }
-  // Dedup: if the same key is already being fetched, share the promise
-  // but if it resolves with no data (background refresh failed), do our own fetch
-  const pending = inflight.get(key);
-  if (pending) return (pending as Promise<T>).then((data) => {
-    if (data != null) return data;
-    // Background refresh failed and returned undefined — fall through to fresh fetch
-    return fetcher().then((freshData) => {
-      const now = Date.now();
-      cache.set(key, { data: freshData, ts: now });
-      if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, freshData, now);
-      return freshData;
-    });
-  });
-
-  // Stale-while-revalidate: if disk cache exists, return stale data immediately
-  if (DISK_CACHE_KEYS.has(key) && !entry) {
-    const disk = loadDiskCache(key);
-    if (disk) {
-      cache.set(key, disk);
-      // Background refresh (fire-and-forget, errors are swallowed)
-      const bg = fetcher().then((data) => {
-        // Guard: don't overwrite good cache with empty schedule data
-        if (key === "schedule_data") {
-          const sr = data as any;
-          if (isEmptySchedulePayload(sr)) {
-            console.warn(`[Selah] SWR: "${key}" returned empty data, keeping stale cache`);
-            return disk.data as T;
-          }
-        }
-        const now = Date.now();
-        cache.set(key, { data, ts: now });
-        saveDiskCache(key, data, now);
-        notifySwr(key, data);
-        return data;
-      }).catch((err) => {
-        console.warn(`[Selah] SWR background refresh failed for "${key}":`, err);
-        // Still notify listeners with the stale data so UI stays consistent
-        return disk.data as T;
-      }).finally(() => inflight.delete(key));
-      inflight.set(key, bg);
-      return Promise.resolve(disk.data as T);
-    }
-  }
-
-  // SQLite SWR: async DB read → return stale, revalidate in background
-  if (DB_CACHE_KEYS.has(key) && !entry) {
-    const dbSwr = invoke<string | null>("get_data_cache", { key }).then((json) => {
-      if (!json) return null;
-      try { return JSON.parse(json) as T; } catch { return null; }
-    }).catch(() => null).then((dbData) => {
-      if (dbData != null) {
-        const now = Date.now();
-        cache.set(key, { data: dbData, ts: now });
-        // Persist to localStorage so getCached() can find it synchronously next time
-        if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, dbData, now);
-        // Background refresh (Rust saves to DB on success automatically)
-        // Replace the inflight entry with the bg promise so further callers
-        // dedup against the refresh, not the already-resolved DB read.
-        const bg = fetcher().then((freshData) => {
-          const ts = Date.now();
-          cache.set(key, { data: freshData, ts });
-          if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, freshData, ts);
-          notifySwr(key, freshData);
-          return freshData;
-        }).catch((err) => {
-          console.warn(`[Selah] DB-SWR background refresh failed for "${key}":`, err);
-          return dbData;
-        }).finally(() => inflight.delete(key));
-        inflight.set(key, bg);
-        return dbData;
-      }
-      // No DB cache — fall through to normal fetch
-      return fetcher().then((data) => {
-        const ts = Date.now();
-        cache.set(key, { data, ts });
-        if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, ts);
-        return data;
-      });
-    });
-    // Store outer promise immediately so refreshCache deduplicates against it.
-    // Must capture the .finally() promise in a variable so the === check works
-    // (.finally() creates a new promise object, different from dbSwr).
-    const inflightEntry = dbSwr.finally(() => {
-      if (inflight.get(key) === inflightEntry) inflight.delete(key);
-    });
-    inflight.set(key, inflightEntry);
-    return dbSwr;
-  }
-
-  const p = fetcher().then((data) => {
-    const now = Date.now();
-    cache.set(key, { data, ts: now });
-    if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, now);
-    return data;
-  }).finally(() => {
-    inflight.delete(key);
-  });
-  inflight.set(key, p);
-  return p;
-}
-
-export function getCacheTimestamp(key: string): number | null {
-  const entry = cache.get(key);
-  return entry ? entry.ts : null;
-}
-
-/** Read cached data (memory or disk) without triggering a fetch */
-export function getCached<T>(key: string): T | null {
-  const entry = cache.get(key);
-  if (entry) return entry.data as T;
-  if (DISK_CACHE_KEYS.has(key)) {
-    const disk = loadDiskCache(key);
-    if (disk) {
-      cache.set(key, disk);
-      return disk.data as T;
-    }
-  }
-  return null;
-}
-
-export function invalidateCache(key?: string) {
-  if (key) {
-    cache.delete(key);
-    inflight.delete(key);
-    rawCache.delete(key);
-    rawCache.delete(BACKEND_CACHE_DB_KEYS[key] ?? key);
-    localStorage.removeItem(DISK_PREFIX + key);
-  } else {
-    cache.clear();
-    inflight.clear();
-    rawCache.clear();
-    for (const k of DISK_CACHE_KEYS) localStorage.removeItem(DISK_PREFIX + k);
-  }
-}
-
-/** Update a cached entry in-place and notify SWR listeners. */
-export function updateCacheEntry<T>(key: string, updater: (data: T) => T): void {
-  const entry = cache.get(key);
-  if (!entry) return;
-  const updated = updater(entry.data as T);
-  const now = Date.now();
-  cache.set(key, { data: updated, ts: now, stamp: entry.stamp });
-  if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, updated, now);
-  notifySwr(key, updated);
-}
-
-export function replaceCacheEntry<T>(key: string, data: T, ts: number = Date.now(), stamp?: CacheStamp): void {
-  persistCacheValue(key, data, ts, true, stamp);
-}
-
-/**
- * Force-refresh a cached key in the background. Deduped with inflight map.
- * On success, updates cache + disk + notifies SWR listeners.
- * On failure, silently swallowed (stale data retained).
- */
-export function refreshCache<T>(key: string, fetcher: () => Promise<T>): Promise<T> | null {
-  if (inflight.has(key)) return null; // already refreshing
-  const p = fetcher().then((data) => {
-    const now = Date.now();
-    cache.set(key, { data, ts: now });
-    if (DISK_CACHE_KEYS.has(key)) saveDiskCache(key, data, now);
-    notifySwr(key, data);
-    return data;
-  }).catch((err) => {
-    console.warn(`[Selah] Background refresh failed for "${key}":`, err);
-    return undefined as unknown as T;
-  }).finally(() => { inflight.delete(key); });
-  inflight.set(key, p);
-  return p;
-}
+// Cache state is independent of authentication, theme and UI stores.
+export * from "./cacheStore";
 
 // ============ Faculty Filter ============
 

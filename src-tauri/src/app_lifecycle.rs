@@ -113,10 +113,14 @@ pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             if defer_fullscreen_quit(app, &api, code) {
                 return;
             }
-            stt::stt_shutdown_for_exit(std::time::Duration::from_millis(1500));
+            if super::app_shutdown::defer_exit(app, &api, code) {
+                return;
+            }
         }
         tauri::RunEvent::Exit => {
-            stt::stt_shutdown_for_exit(std::time::Duration::from_millis(500));
+            if let Err(error) = stt::stt_shutdown_for_exit(std::time::Duration::from_millis(500)) {
+                log::warn!("Exit: speech cleanup failed: {error}");
+            }
             persist_sessions_before_exit(app);
         }
         #[cfg(target_os = "macos")]

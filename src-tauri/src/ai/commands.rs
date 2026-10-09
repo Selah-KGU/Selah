@@ -1,22 +1,15 @@
 use tauri::{Emitter, Manager};
 
-use super::completion::chat_completion;
-use super::config::{load_config, normalize_ai_config, save_config, AiConfig, ChatMessage};
+use super::config::{normalize_ai_config, save_config, AiConfig};
 
 // ============ Tauri Commands ============
-
-#[tauri::command]
-pub fn get_ai_config() -> AiConfig {
-    load_config()
-}
 
 #[tauri::command]
 pub fn get_local_ai_support() -> crate::local_ai_support::LocalAiSupport {
     crate::local_ai_support::current()
 }
 
-#[tauri::command]
-pub fn save_ai_config(app: tauri::AppHandle, mut config: AiConfig) -> Result<(), String> {
+pub(super) fn validate_config(mut config: AiConfig) -> Result<AiConfig, String> {
     config.temperature = config.temperature.clamp(0.0, 2.0);
     config.api_key = config.api_key.trim().to_string();
     config.base_url = config.base_url.trim().to_string();
@@ -46,38 +39,33 @@ pub fn save_ai_config(app: tauri::AppHandle, mut config: AiConfig) -> Result<(),
         _ => return Err("不明なプロバイダーです".into()),
     }
 
+    Ok(config)
+}
+
+pub(super) fn persist_config(app: &tauri::AppHandle, config: AiConfig) -> Result<(), String> {
     // If switching away from local, unload the model to free memory
     #[cfg(target_os = "macos")]
     if config.provider != "local" {
         crate::local_ai::unload_model();
     }
 
-    let result = save_config(&config);
-    if result.is_ok() {
+    persist_and_publish(&config, save_config, || {
         // Notify all windows that AI config changed
         let _ = app.emit("ai-config-changed", ());
         if let Some(state) = app.try_state::<crate::live::LiveState>() {
             state.notify_flush_driver();
         }
-    }
-    result
+    })
 }
 
-#[tauri::command]
-pub async fn ai_chat(messages: Vec<ChatMessage>) -> Result<String, String> {
-    let config = load_config();
-    chat_completion(&config, messages).await
-}
-
-#[tauri::command]
-pub async fn ai_test_connection() -> Result<String, String> {
-    let config = load_config();
-    let test_messages = vec![ChatMessage {
-        role: "user".into(),
-        content: "Reply OK in one word.".into(),
-        images: Vec::new(),
-    }];
-    chat_completion(&config, test_messages).await
+pub(super) fn persist_and_publish(
+    config: &AiConfig,
+    write: impl FnOnce(&AiConfig) -> Result<(), String>,
+    publish: impl FnOnce(),
+) -> Result<(), String> {
+    write(config)?;
+    publish();
+    Ok(())
 }
 
 // ============ Local model management commands ============

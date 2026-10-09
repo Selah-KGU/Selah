@@ -15,28 +15,9 @@ pub fn document_tabs_set_controls(
     controls: Vec<DocumentTabControl>,
 ) -> Result<(), String> {
     let owner = owner.unwrap_or_else(|| OWNER_LABEL.to_string());
-    let active_target = active_tab_for_owner(&owner).map(|tab| tab.target);
-    let target = target
-        .or(active_target)
-        .ok_or_else(|| "アクティブなタブがありません".to_string())?;
-    let mut found = false;
-    {
-        let mut states = DOCUMENT_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(state) = states.get_mut(&owner) {
-            if let Some(tab) = state
-                .tabs
-                .iter_mut()
-                .find(|tab| tab.target == target || tab.id == target || tab.label == target)
-            {
-                tab.controls = controls;
-                found = true;
-            }
-        }
+    if set_controls_for_owner(&owner, target.as_deref(), controls)? {
+        emit_tabs_changed(&app, &owner);
     }
-    if !found {
-        return Err(format!("タブが見つかりません: {}", target));
-    }
-    emit_tabs_changed(&app, &owner);
     Ok(())
 }
 
@@ -78,12 +59,18 @@ pub fn document_tabs_report_title(app: tauri::AppHandle, target: String, title: 
 pub fn document_tabs_send_control(
     app: tauri::AppHandle,
     owner: Option<String>,
+    tab_id: Option<String>,
     action: String,
     payload: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let owner = owner.unwrap_or_else(|| OWNER_LABEL.to_string());
-    let tab =
-        active_tab_for_owner(&owner).ok_or_else(|| "アクティブなタブがありません".to_string())?;
+    let tab = match tab_for_owner(&owner, tab_id.as_deref()) {
+        Some(tab) => tab,
+        // A captured tab may have closed while the command was being delivered.
+        // Never redirect its action to a different currently active page.
+        None if tab_id.is_some() => return Ok(()),
+        None => return Err("アクティブなタブがありません".to_string()),
+    };
     let mut targets = vec![tab.target.clone()];
     if action == "detail.refresh" {
         targets.extend(pane_chain(&tab.child).into_iter().map(|(target, _)| target));
@@ -223,6 +210,7 @@ pub async fn document_tabs_close(
             return Err(format!("タブが見つかりません: {}", id));
         };
         let closed = state.tabs.remove(index);
+        crate::commands::discard_pending_markdown_payload(&closed.target);
         let next_active = if state.active.as_deref() == Some(closed.id.as_str()) {
             state
                 .tabs

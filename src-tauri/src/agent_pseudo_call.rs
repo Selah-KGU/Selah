@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 use crate::agent_text;
 use crate::agent_tools;
 
+mod detection;
+pub(crate) use detection::{find_start, has_any};
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct ToolCall {
     pub name: String,
@@ -26,7 +29,7 @@ pub(crate) struct RawToolCall {
 }
 
 pub(crate) fn parse_leading(answer: &str) -> Option<ToolCall> {
-    let visible = agent_text::strip_think(answer);
+    let visible = agent_text::visible_without_thinking(answer);
     let visible = leading_candidate(&visible)?;
     for marker in agent_text::PSEUDO_TOOL_MARKERS {
         let Some(after_marker) = visible.strip_prefix(marker) else {
@@ -62,32 +65,15 @@ pub(crate) fn parse_leading(answer: &str) -> Option<ToolCall> {
 
 #[cfg(test)]
 pub(crate) fn parse_any(answer: &str) -> Option<ToolCall> {
-    let visible = agent_text::strip_think(answer);
+    let visible = agent_text::visible_without_thinking(answer);
     let idx = find_start(&visible)?;
     parse_leading(&visible[idx..])
 }
 
 pub(crate) fn parse_any_raw(answer: &str) -> Option<RawToolCall> {
-    let visible = agent_text::strip_think(answer);
+    let visible = agent_text::visible_without_thinking(answer);
     let idx = find_start(&visible)?;
     parse_leading_raw(&visible[idx..])
-}
-
-pub(crate) fn has_any(answer: &str) -> bool {
-    let visible = agent_text::strip_think(answer);
-    find_start(&visible).is_some()
-}
-
-pub(crate) fn find_start(text: &str) -> Option<usize> {
-    for (idx, _) in text.char_indices() {
-        if !is_boundary(text, idx) {
-            continue;
-        }
-        if leading_candidate(&text[idx..]).is_some() {
-            return Some(idx);
-        }
-    }
-    None
 }
 
 pub(crate) fn starts_with(text: &str) -> bool {
@@ -109,23 +95,6 @@ pub(crate) fn maybe_starts_with_prefix(text: &str) -> bool {
         }
     }
     false
-}
-
-fn is_boundary(text: &str, idx: usize) -> bool {
-    if idx == 0 {
-        return true;
-    }
-    text[..idx]
-        .chars()
-        .last()
-        .map(|ch| {
-            ch.is_whitespace()
-                || matches!(
-                    ch,
-                    '<' | '‹' | '〈' | '`' | '(' | '[' | '{' | '"' | '\'' | '「' | '『'
-                )
-        })
-        .unwrap_or(true)
 }
 
 fn split_tool_name_and_rest(s: &str) -> Option<(&str, &'static str, &str)> {
@@ -159,7 +128,7 @@ fn split_tool_name_and_rest(s: &str) -> Option<(&str, &'static str, &str)> {
 }
 
 fn parse_leading_raw(answer: &str) -> Option<RawToolCall> {
-    let visible = agent_text::strip_think(answer);
+    let visible = agent_text::visible_without_thinking(answer);
     let visible = leading_candidate(&visible)?;
     for marker in agent_text::PSEUDO_TOOL_MARKERS {
         let Some(after_marker) = visible.strip_prefix(marker) else {
@@ -525,6 +494,23 @@ fn first_json_object(s: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parser_keeps_case_sensitive_markers_and_complete_unicode_arguments() {
+        let text = "正文\n‹call：read_file {\"path\":\"/tmp/漢字🙂.pdf\"}›";
+        let raw = parse_any_raw(text).unwrap();
+        assert_eq!(raw.name, "read_file");
+        assert_eq!(raw.args["path"], "/tmp/漢字🙂.pdf");
+        // Detection accepts ASCII case variants; parsing remains case-sensitive.
+        assert!(has_any("CALL:read_file {\"path\":\"/tmp/a.pdf\"}"));
+        assert!(parse_any_raw("CALL:read_file {}").is_none());
+        let raw = parse_any_raw(
+            "<think>call:hidden</think>call:read_file {\"path\":\"/tmp/a.pdf\"}",
+        )
+        .unwrap();
+        assert_eq!(raw.name, "read_file");
+        assert_eq!(raw.args["path"], "/tmp/a.pdf");
+    }
 
     #[test]
     fn parses_visible_task_call() {

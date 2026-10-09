@@ -1,0 +1,52 @@
+[
+  {
+    "name": "Japanese summary and next topic",
+    "markdown": "# 授業\n\n### 全体要約\n\n- 中文 👩🏽‍💻\n- 日本語\n\n### 今回の論点\nother",
+    "summary": "- 中文 👩🏽‍💻\n- 日本語"
+  },
+  {
+    "name": "no summary heading",
+    "markdown": "# 授業\n\n## 全文転写\n- line",
+    "summary": ""
+  },
+  {
+    "name": "heading without newline",
+    "markdown": "### 全体要約",
+    "summary": ""
+  },
+  {
+    "name": "summary until end",
+    "markdown": "### 全体要約\nlast 🌕\n",
+    "summary": "last 🌕"
+  },
+  {
+    "name": "second-level boundary",
+    "markdown": "### 全体要約\nsummary\n\n## 全文転写\nprivate",
+    "summary": "summary"
+  },
+  {
+    "name": "third-level boundary retains original priority",
+    "markdown": "### 全体要約\nsummary\n## other\nretained\n### next\ndropped",
+    "summary": "summary\n## other\nretained"
+  },
+  {
+    "name": "CRLF and quoted heading",
+    "markdown": "prefix ### 全体要約\r\n  **引用**: 内容\r\n\r\n### next\r\ndropped",
+    "summary": "**引用**: 内容"
+  },
+  {
+    "name": "first heading wins",
+    "markdown": "### 全体要約\nfirst\n### 全体要約\nsecond",
+    "summary": "first"
+  },
+  {
+    "name": "ECMAScript whitespace",
+    "markdown": "### 全体要約\n﻿        　\t\u000b\f\r 🌕 \t﻿",
+    "summary": "🌕"
+  },
+  {
+    "name": "NEL is not ECMAScript whitespace",
+    "markdown": "### 全体要約\n🌕\n",
+    "summary": "🌕"
+  }
+]

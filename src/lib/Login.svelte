@@ -4,94 +4,129 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, onDestroy } from "svelte";
+  import { ResourceScope, acquireResourceGroup } from "./resourceScope";
   import selahLogoUrl from "../assets/logo.png";
 
-  let unlisten1: (() => void) | null = null;
-  let unlisten2: (() => void) | null = null;
-  let unlisten3: (() => void) | null = null;
+  const resources = new ResourceScope();
+  onDestroy(() => resources.dispose());
+  let listenersBound = false;
+  let listenerRegistration: Promise<boolean> | null = null;
+  let openingLogin = false;
+  let startingDemo = false;
 
   // Demo mode: 7 taps on logo within 3 seconds
   let logoTapCount = 0;
-  let logoTapTimer: ReturnType<typeof setTimeout> | null = null;
+  let cancelLogoTapTimer: (() => void) | null = null;
   const DEMO_TAPS = 7;
   const DEMO_TAP_WINDOW = 3000;
   let showDemoConfirm = $state(false);
   const isWindows = navigator.userAgent.includes("Windows");
   const appWindow = getCurrentWindow();
 
-  function minimizeWindow() { appWindow.minimize(); }
-  function toggleMaximize() { appWindow.toggleMaximize(); }
-  function closeWindow() { appWindow.close(); }
+  function minimizeWindow() { if (resources.active) void appWindow.minimize(); }
+  function toggleMaximize() { if (resources.active) void appWindow.toggleMaximize(); }
+  function closeWindow() { if (resources.active) void appWindow.close(); }
 
   function handleLogoClick() {
+    if (!resources.active) return;
     logoTapCount++;
-    if (logoTapTimer) clearTimeout(logoTapTimer);
-    logoTapTimer = setTimeout(() => { logoTapCount = 0; }, DEMO_TAP_WINDOW);
+    cancelLogoTapTimer?.();
+    cancelLogoTapTimer = resources.schedule(() => {
+      logoTapCount = 0;
+      cancelLogoTapTimer = null;
+    }, DEMO_TAP_WINDOW);
 
     if (logoTapCount >= DEMO_TAPS) {
       logoTapCount = 0;
-      if (logoTapTimer) { clearTimeout(logoTapTimer); logoTapTimer = null; }
+      cancelLogoTapTimer();
+      cancelLogoTapTimer = null;
       showDemoConfirm = true;
     }
   }
 
   async function startDemoMode() {
+    if (!resources.active || startingDemo) return;
+    startingDemo = true;
     showDemoConfirm = false;
     try {
-      await enterDemoMode();
+      await enterDemoMode(() => resources.active);
     } catch (e: any) {
+      if (!resources.active) return;
       authState.update((s) => ({
         ...s,
         loading: false,
         error: e?.message || e?.toString() || "デモモードの起動に失敗しました",
       }));
+    } finally {
+      startingDemo = false;
     }
   }
 
   function cancelDemoMode() {
+    if (!resources.active) return;
     showDemoConfirm = false;
   }
 
-  onMount(async () => {
-    unlisten1 = await listen<{ username: string; display_name: string; student_id: string; faculty: string; department: string }>(
-      "login-success",
-      (event) => {
-        setAuthFromSession(event.payload);
-        // Luna auth state is set by the "luna-login-success" event listener in api.ts
-        // after Phase 2 (Luna SAML) actually completes.
-        startBackgroundPolling();
-      }
-    );
+  function ensureLoginListeners(): Promise<boolean> {
+    if (!resources.active) return Promise.resolve(false);
+    if (listenersBound) return Promise.resolve(true);
+    if (listenerRegistration) return listenerRegistration;
+    const registration = (async () => {
+      await acquireResourceGroup(resources, [
+        group => listen<{ username: string; display_name: string; student_id: string; faculty: string; department: string }>(
+          "login-success", group.guard((event) => {
+            setAuthFromSession(event.payload);
+            // Luna's API listener applies auth after its SAML phase finishes.
+            startBackgroundPolling(true);
+          })),
 
-    unlisten2 = await listen<string>("login-error", (event) => {
-      authState.update((s) => ({
-        ...s,
-        loading: false,
-        error: event.payload || "ログインに失敗しました",
-      }));
+        group => listen<string>("login-error", group.guard((event) => {
+          authState.update((s) => ({
+            ...s,
+            loading: false,
+            error: event.payload || "ログインに失敗しました",
+          }));
+        })),
+
+        group => listen<string>("login-cancelled", group.guard(() => {
+          authState.update((s) => ({ ...s, loading: false }));
+        })),
+      ]);
+      if (!resources.active) return false;
+      listenersBound = true;
+      return true;
+    })().finally(() => {
+      if (listenerRegistration === registration) listenerRegistration = null;
     });
+    listenerRegistration = registration;
+    return registration;
+  }
 
-    unlisten3 = await listen<string>("login-cancelled", () => {
-      authState.update((s) => ({ ...s, loading: false }));
-    });
-  });
+  function showLoginError(error: unknown) {
+    if (!resources.active) return;
+    const detail = error as { message?: string; toString?: () => string } | null | undefined;
+    authState.update(s => ({
+      ...s,
+      loading: false,
+      error: detail?.message || detail?.toString?.() || "接続エラー",
+    }));
+  }
 
-  onDestroy(() => {
-    unlisten1?.();
-    unlisten2?.();
-    unlisten3?.();
+  onMount(() => {
+    void ensureLoginListeners().catch(showLoginError);
   });
 
   async function handleLogin() {
+    if (!resources.active || openingLogin) return;
+    openingLogin = true;
     authState.update((s) => ({ ...s, loading: true, error: "" }));
     try {
+      if (!(await ensureLoginListeners()) || !resources.active) return;
       await openLoginWindow();
-    } catch (e: any) {
-      authState.update((s) => ({
-        ...s,
-        loading: false,
-        error: e?.message || e?.toString() || "接続エラー",
-      }));
+    } catch (e) {
+      showLoginError(e);
+    } finally {
+      openingLogin = false;
     }
   }
 </script>

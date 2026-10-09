@@ -1,11 +1,24 @@
 //! Tauri commands for the Selah agent chat feature.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use crate::agent;
 use crate::ai::ImagePart;
 use crate::db::{AgentConversationRow, AgentMessageRow, Database};
+
+#[path = "agent_commands/history.rs"]
+mod history;
+#[path = "agent_commands/lifecycle.rs"]
+mod lifecycle;
+#[path = "agent_commands/mutations.rs"]
+mod mutations;
+#[path = "agent_commands/submission.rs"]
+mod submission;
+#[path = "agent_commands/worker.rs"]
+mod worker;
+pub(crate) use mutations::{drain_mutations, reopen_mutations, seal_mutations};
+pub(crate) use submission::admission_handler;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConversationSummary {
@@ -33,6 +46,8 @@ pub struct AgentMessageDto {
     pub role: String,
     pub content: String,
     pub images: Option<Vec<ImagePart>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<crate::agent_attachments::DocumentPart>,
     pub tool_name: Option<String>,
     pub tool_result: Option<serde_json::Value>,
     pub created_at: i64,
@@ -54,6 +69,7 @@ impl From<AgentMessageRow> for AgentMessageDto {
             role: r.role,
             content: r.content,
             images,
+            documents: Vec::new(),
             tool_name: r.tool_name,
             tool_result,
             created_at: r.created_at,
@@ -62,128 +78,51 @@ impl From<AgentMessageRow> for AgentMessageDto {
 }
 
 #[tauri::command]
-pub fn agent_list_conversations(
-    db: State<'_, Database>,
-) -> Result<Vec<AgentConversationSummary>, String> {
-    Ok(db
-        .agent_list_conversations()?
-        .into_iter()
-        .map(Into::into)
-        .collect())
+pub async fn agent_list_conversations(app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    worker::with_database(app, |db| {
+        let rows = db
+            .agent_list_conversations()?
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<AgentConversationSummary>>();
+        worker::json_response(&rows)
+    })
+    .await
 }
-
-#[tauri::command]
-pub fn agent_create_conversation(
-    db: State<'_, Database>,
-    title: Option<String>,
-) -> Result<String, String> {
-    let id = uuid_v4();
-    let t = title.unwrap_or_else(|| "新しい会話".to_string());
-    db.agent_create_conversation(&id, &t)?;
-    Ok(id)
-}
-
-const ACTIVE_CONV_KEY: &str = "agent_active_conversation";
 
 /// The globally-shared "current" agent conversation, used by both the sidebar
 /// agent (across all tabs/pages) and the main-window agent so the chat stays
 /// continuous across pages. Persisted so it survives restarts and is readable
 /// from any webview as well as from backend (silent / scheduled) turns.
 #[tauri::command]
-pub fn agent_active_conversation(db: State<'_, Database>) -> Option<String> {
-    db.get_data_cache(ACTIVE_CONV_KEY)
-        .ok()
-        .flatten()
-        .map(|(value, _)| value)
-        .filter(|v| !v.is_empty())
-}
-
-#[tauri::command]
-pub fn agent_set_active_conversation(
-    app: AppHandle,
-    db: State<'_, Database>,
-    conv_id: String,
-) -> Result<(), String> {
-    db.save_data_cache(ACTIVE_CONV_KEY, &conv_id)?;
-    use tauri::Emitter;
-    let _ = app.emit("agent-active-conversation-changed", conv_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn agent_load_messages(
-    db: State<'_, Database>,
-    conv_id: String,
-) -> Result<Vec<AgentMessageDto>, String> {
-    Ok(db
-        .agent_load_messages(&conv_id)?
-        .into_iter()
-        .map(Into::into)
-        .collect())
-}
-
-#[tauri::command]
-pub async fn agent_send(
-    app: AppHandle,
-    conv_id: String,
-    content: String,
-    images: Option<Vec<ImagePart>>,
-) -> Result<(), String> {
-    let content = content.trim().to_string();
-    let imgs = images.unwrap_or_default();
-    if content.is_empty() && imgs.is_empty() {
-        return Err("メッセージが空です".into());
-    }
-    agent::agent_send(app, conv_id, content, imgs).await
-}
-
-#[tauri::command]
-pub async fn agent_send_with_context(
-    app: AppHandle,
-    conv_id: String,
-    content: String,
-    images: Option<Vec<ImagePart>>,
-    browser_target: Option<String>,
-    page_title: Option<String>,
-    page_kind: Option<String>,
-) -> Result<(), String> {
-    let content = content.trim().to_string();
-    let imgs = images.unwrap_or_default();
-    if content.is_empty() && imgs.is_empty() {
-        return Err("メッセージが空です".into());
-    }
-
-    let browser_target = browser_target
-        .as_deref()
-        .map(str::trim)
-        .filter(|target| !target.is_empty())
-        .map(|target| crate::webview_toolbar::resolve_browser_target(&app, Some(target)))
-        .transpose()?;
-
-    agent::agent_send_with_context(
-        app,
-        conv_id,
-        content,
-        imgs,
-        agent::AgentTurnContext {
-            browser_target,
-            browser_click_labels: Vec::new(),
-            page_title: page_title
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
-            page_kind: page_kind
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
-            // Filled in agent_send_with_context from the live split-view panes.
-            view_pane_targets: Vec::new(),
-        },
-    )
+pub async fn agent_active_conversation(app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    worker::with_database(app, |db| {
+        worker::json_response(&db.agent_active_conversation()?)
+    })
     .await
 }
 
 #[tauri::command]
-pub fn agent_cancel(conv_id: String) {
-    agent::cancel(&conv_id);
+pub async fn agent_load_messages(
+    app: AppHandle,
+    conv_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    worker::with_database(app, move |db| history::load_full_response(db, &conv_id)).await
+}
+
+/// Displayed messages only; SQLite, attachment decoding and JSON encoding run
+/// off the IPC thread. The existing full-history command remains available to older callers.
+#[tauri::command]
+pub async fn agent_load_display_messages(
+    app: AppHandle,
+    conv_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    worker::with_database(app, move |db| history::load_display_response(db, &conv_id)).await
+}
+
+#[tauri::command]
+pub fn agent_cancel(conv_id: String, turn_id: Option<String>) {
+    agent::cancel_request(&conv_id, turn_id.as_deref());
 }
 
 // Async so it runs off the event-loop thread: open_agent_workspace creates child
@@ -232,24 +171,6 @@ pub async fn open_agent_popup(
         .build()
         .map(|_| ())
         .map_err(|e| format!("Agent popup を開けませんでした: {}", e))
-}
-
-#[tauri::command]
-pub fn agent_delete_conversation(db: State<'_, Database>, conv_id: String) -> Result<(), String> {
-    db.agent_delete_conversation(&conv_id)
-}
-
-#[tauri::command]
-pub fn agent_rename_conversation(
-    app: AppHandle,
-    db: State<'_, Database>,
-    conv_id: String,
-    title: String,
-) -> Result<(), String> {
-    db.agent_rename_conversation(&conv_id, &title)?;
-    use tauri::Emitter;
-    let _ = app.emit("agent-conversations-changed", conv_id);
-    Ok(())
 }
 
 /// Minimal UUIDv4 generator (no new dependency). Uses `rand`, already a

@@ -1,0 +1,20 @@
+{
+  "live_active": {
+    "active": true,
+    "listening": false,
+    "started_at": "2026-10-07 11:45:00"
+  },
+  "live_error": "Live state lock failed",
+  "live_get_tray_status": {
+    "active": false,
+    "listening": false,
+    "started_at": null
+  },
+  "stt_get_active_caller": null,
+  "stt_get_stream_state": {
+    "owner": null,
+    "phase": "idle",
+    "session_id": null
+  },
+  "stt_is_running": false
+}

@@ -4,6 +4,8 @@ use super::*;
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentTurnContext {
+    pub documents: Vec<crate::agent_attachments::DocumentPart>,
+    pub has_documents: bool,
     pub browser_target: Option<String>,
     pub browser_click_labels: Vec<String>,
     pub page_title: Option<String>,
@@ -15,62 +17,186 @@ pub struct AgentTurnContext {
     pub view_pane_targets: Vec<String>,
 }
 
-/// Called from the Tauri command layer.
-pub async fn agent_send(
+// The decoder owns the IPC message and runs only on the blocking worker. Its
+// borrowed validation, save reservation and request identity were admitted by
+// the command adapter before any async response task can be delayed.
+pub(crate) fn submit_rpc_turn(
     app: AppHandle,
     conv_id: String,
-    user_text: String,
-    user_images: Vec<ImagePart>,
-) -> Result<(), String> {
-    agent_send_with_context(
-        app,
-        conv_id,
-        user_text,
-        user_images,
-        AgentTurnContext::default(),
-    )
-    .await
+    request_id: Option<String>,
+    save: crate::pending_persistence::SavePermit,
+    decode: impl FnOnce() -> Result<(String, Vec<ImagePart>, AgentTurnContext), AgentError>
+        + Send
+        + 'static,
+) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
+    start_turn(app, conv_id, request_id, move || {
+        let (text, images, context) = decode()?;
+        Ok((input::TurnInput::New { text, images, save }, context))
+    })
 }
 
-/// Called from an Agent panel attached to a specific browser/detail webview.
-pub async fn agent_send_with_context(
+/// Admit the native request before its accepted speech save can be delayed.
+/// One blocking preparation job persists speech, then resolves model/history.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn submit_voice_turn(
     app: AppHandle,
     conv_id: String,
+    request_id: String,
+    save: impl FnOnce() -> Result<SavedVoiceInput, String> + Send + 'static,
+) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
+    let prepare_app = app.clone();
+    let prepare_id = conv_id.clone();
+    let admitted = admit_voice(&conv_id, request_id, save, move |input, owner| {
+        Ok((
+            prepare_turn(
+                &prepare_app,
+                &prepare_id,
+                input::TurnInput::Voice(input),
+                &owner,
+                &[],
+            )?,
+            AgentTurnContext::default(),
+        ))
+    });
+    run_admitted(app, conv_id, admitted)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn admit_voice<T: Send + 'static>(
+    conversation: &str,
+    request: String,
+    save: impl FnOnce() -> Result<SavedVoiceInput, String> + Send + 'static,
+    prepare: impl FnOnce(
+            SavedVoiceInput,
+            std::sync::Arc<crate::agent_turn_scope::Turn>,
+        ) -> Result<T, AgentError>
+        + Send
+        + 'static,
+) -> crate::agent_turn_scope::Admission<T> {
+    crate::agent_turn_scope::Admission::start(conversation, Some(request), move |owner| {
+        // Supersession and dropped async waiters must not discard accepted text.
+        let input = save().map_err(AgentError::db)?;
+        if owner.cancelled() {
+            return Err(AgentError::Cancelled);
+        }
+        prepare(input, owner)
+    })
+}
+
+struct PreparedTurn {
+    provider: AgentProvider,
+    history: Vec<crate::db::AgentMessageRow>,
     user_text: String,
     user_images: Vec<ImagePart>,
-    turn_context: AgentTurnContext,
-) -> Result<(), String> {
-    AgentProvider::clear_cancel(&conv_id);
-    let mut turn_context = turn_context;
-    // Widen the browser target lock to the whole current split view: collect the
-    // live pane targets of the Copilot window's active tab so the agent may read
-    // and operate on any pane, not just the attached/active one.
-    if turn_context.browser_target.is_some() && turn_context.view_pane_targets.is_empty() {
-        turn_context.view_pane_targets =
-            crate::document_tabs::active_view_panes(&app, "document-tabs");
-    }
-    let result = run_turn(&app, &conv_id, user_text, user_images, turn_context).await;
-    AgentProvider::clear_cancel(&conv_id);
-    match &result {
-        Ok(()) => emit(&app, &conv_id, &StreamEvent::Done),
-        Err(AgentError::Cancelled) => {
-            log::info!("[agent] turn cancelled conv_id={}", conv_id);
-            emit(&app, &conv_id, &StreamEvent::Done);
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            emit(&app, &conv_id, &StreamEvent::Error { message: &msg });
-        }
-    }
-    match result {
-        Ok(()) | Err(AgentError::Cancelled) => Ok(()),
-        Err(e) => Err(e.to_string()),
+}
+
+fn start_turn(
+    app: AppHandle,
+    conv_id: String,
+    request_id: Option<String>,
+    decode: impl FnOnce() -> Result<(input::TurnInput, AgentTurnContext), AgentError> + Send + 'static,
+) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
+    let prepare_app = app.clone();
+    let prepare_id = conv_id.clone();
+    let admitted = crate::agent_turn_scope::Admission::start(&conv_id, request_id, move |owner| {
+        let (input, mut context) = decode()?;
+        let prepared = prepare_turn(&prepare_app, &prepare_id, input, &owner, &context.documents)?;
+        context.has_documents = !context.documents.is_empty();
+        context.documents.clear();
+        Ok((prepared, context))
+    });
+    run_admitted(app, conv_id, admitted)
+}
+
+fn run_admitted(
+    app: AppHandle,
+    conv_id: String,
+    mut admitted: crate::agent_turn_scope::Admission<(PreparedTurn, AgentTurnContext)>,
+) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
+    let scope = admitted.running.turn.clone();
+    async move {
+        let result = crate::agent_turn_scope::CURRENT
+            .scope(scope, async {
+                let result = async {
+                    let (prepared, mut context) = admitted.prepared().await?;
+                    // Collect live panes after durable preparation; the async waiter
+                    // owns the same admitted request and never registers a second one.
+                    if context.browser_target.is_some() && context.view_pane_targets.is_empty() {
+                        context.view_pane_targets =
+                            crate::document_tabs::active_view_panes(&app, "document-tabs");
+                    }
+                    run_turn(&app, &conv_id, prepared, context).await
+                }
+                .await;
+                match &result {
+                    Ok(()) => emit(&app, &conv_id, &StreamEvent::Done),
+                    Err(AgentError::Cancelled) => {
+                        log::info!("[agent] turn cancelled conv_id={}", conv_id);
+                        emit(&app, &conv_id, &StreamEvent::Done);
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        emit(&app, &conv_id, &StreamEvent::Error { message: &message });
+                    }
+                }
+                match result {
+                    Ok(()) | Err(AgentError::Cancelled) => Ok(()),
+                    Err(error) => Err(error.to_string()),
+                }
+            })
+            .await;
+        admitted.running.finish();
+        result
     }
 }
 
-/// Exposed for the cancel command.
-pub fn cancel(conv_id: &str) {
-    AgentProvider::cancel(conv_id);
+fn prepare_turn(
+    app: &AppHandle,
+    conv_id: &str,
+    input: input::TurnInput,
+    owner: &crate::agent_turn_scope::Turn,
+    documents: &[crate::agent_attachments::DocumentPart],
+) -> Result<PreparedTurn, AgentError> {
+    let db = app.state::<Database>();
+    let (committed, provider, history) = prepare::persisted_turn(
+        || {
+            let mut committed = input.persist_with(conv_id, |text, images| {
+                persist_user_message(app, &db, conv_id, text, images, documents)
+            })?;
+            if !documents.is_empty() {
+                committed.text =
+                    crate::agent_attachments::model_content(&committed.text, documents);
+            }
+            owner.set_input_message(committed.message_id)?;
+            Ok(committed)
+        },
+        || {
+            if crate::app_shutdown::is_shutting_down() || owner.cancelled() {
+                return Err(AgentError::Cancelled);
+            }
+            AgentProvider::resolve()
+        },
+        || {
+            db.agent_load_turn_prior_messages(
+                conv_id,
+                owner.history()?.input_message,
+                CFG.history_window
+                    .max(BROWSER_CLICK_HISTORY_ROWS.saturating_sub(1)),
+            )
+            .map_err(AgentError::db)
+        },
+    )?;
+    Ok(PreparedTurn {
+        provider,
+        history,
+        user_text: committed.text,
+        user_images: committed.images,
+    })
+}
+
+/// Match the issuing UI request; legacy callers may cancel the current turn.
+pub fn cancel_request(conv_id: &str, request: Option<&str>) {
+    crate::agent_turn_scope::cancel(conv_id, request);
 }
 
 // ─────────────────────── Turn Pipeline ───────────────────────
@@ -78,18 +204,18 @@ pub fn cancel(conv_id: &str) {
 async fn run_turn(
     app: &AppHandle,
     conv_id: &str,
-    user_text: String,
-    user_images: Vec<ImagePart>,
+    prepared: PreparedTurn,
     mut turn_context: AgentTurnContext,
 ) -> Result<(), AgentError> {
-    let provider = AgentProvider::resolve()?;
-    let db = app.state::<Database>();
-
-    // 1. Persist user message.
-    persist_user_message(app, &db, conv_id, &user_text, &user_images)?;
-
-    // 2. Load conversation history.
-    let history = db.agent_load_messages(conv_id).unwrap_or_default();
+    let PreparedTurn {
+        provider,
+        history,
+        user_text,
+        user_images,
+    } = prepared;
+    if AgentProvider::is_cancelled(conv_id) {
+        return Err(AgentError::Cancelled);
+    }
     let history_slice = slice_history(&history, CFG.history_window);
     turn_context.browser_click_labels = browser_click_labels_for_turn(&history, &user_text);
 
@@ -98,7 +224,7 @@ async fn run_turn(
         app,
         conv_id,
         &provider,
-        &history_slice,
+        history_slice,
         &user_text,
         &user_images,
         &turn_context,
@@ -109,8 +235,7 @@ async fn run_turn(
     if AgentProvider::is_cancelled(conv_id) {
         return Err(AgentError::Cancelled);
     }
-    let mut tool_results =
-        execute_tools(app, conv_id, &db, &plan, &user_text, &turn_context).await?;
+    let mut tool_results = execute_tools(app, conv_id, &plan, &user_text, &turn_context).await?;
     if AgentProvider::is_cancelled(conv_id) {
         return Err(AgentError::Cancelled);
     }
@@ -130,7 +255,8 @@ async fn run_turn(
         if !agent_loop_should_continue(last_batch, &tool_results, &user_text, &turn_context) {
             break;
         }
-        let follow_history = db.agent_load_messages(conv_id).unwrap_or_default();
+        let follow_history =
+            persistence::load_planning_history(app, conv_id, provider.supports_vision()).await?;
         let next_plan = match plan_next_step(
             app,
             &provider,
@@ -153,7 +279,7 @@ async fn run_turn(
             break;
         }
         let follow_results =
-            execute_tools(app, conv_id, &db, &next_plan, &user_text, &turn_context).await?;
+            execute_tools(app, conv_id, &next_plan, &user_text, &turn_context).await?;
         last_batch_len = follow_results.len();
         tool_results.extend(follow_results);
         if last_batch_len == 0 {
@@ -161,10 +287,12 @@ async fn run_turn(
         }
     }
 
+    if AgentProvider::is_cancelled(conv_id) {
+        return Err(AgentError::Cancelled);
+    }
     if let Some(answer) = local_browser_action_answer(&user_text, &tool_results, &turn_context) {
         emit(app, conv_id, &StreamEvent::Token { text: &answer });
-        db.agent_append_message(conv_id, "assistant", &answer, None, None, None)
-            .map_err(AgentError::db)?;
+        persistence::save_answer(app, conv_id, answer).await?;
         return Ok(());
     }
 
@@ -173,7 +301,7 @@ async fn run_turn(
         app,
         conv_id,
         &provider,
-        &history_slice,
+        history_slice,
         &user_text,
         &user_images,
         &tool_results,
@@ -197,7 +325,7 @@ async fn run_turn(
                         app,
                         conv_id,
                         &provider,
-                        &history_slice,
+                        history_slice,
                         &user_text,
                         &user_images,
                         &tool_results,
@@ -224,7 +352,7 @@ async fn run_turn(
                     app,
                     conv_id,
                     &provider,
-                    &history_slice,
+                    history_slice,
                     &user_text,
                     &user_images,
                     &tool_results,
@@ -250,7 +378,7 @@ async fn run_turn(
                     app,
                     conv_id,
                     &provider,
-                    &history_slice,
+                    history_slice,
                     &user_text,
                     &user_images,
                     &tool_results,
@@ -286,7 +414,7 @@ async fn run_turn(
                     app,
                     conv_id,
                     &provider,
-                    &history_slice,
+                    history_slice,
                     &user_text,
                     &user_images,
                     &tool_results,
@@ -310,7 +438,7 @@ async fn run_turn(
             image_only: false,
         };
         let follow_results =
-            execute_tools(app, conv_id, &db, &follow_plan, &user_text, &turn_context).await?;
+            execute_tools(app, conv_id, &follow_plan, &user_text, &turn_context).await?;
         if follow_results.is_empty() {
             break;
         }
@@ -319,7 +447,7 @@ async fn run_turn(
             app,
             conv_id,
             &provider,
-            &history_slice,
+            history_slice,
             &user_text,
             &user_images,
             &tool_results,
@@ -329,8 +457,10 @@ async fn run_turn(
     }
 
     // 6. Persist assistant response.
-    db.agent_append_message(conv_id, "assistant", &answer, None, None, None)
-        .map_err(AgentError::db)?;
+    if AgentProvider::is_cancelled(conv_id) {
+        return Err(AgentError::Cancelled);
+    }
+    persistence::save_answer(app, conv_id, answer).await?;
 
     Ok(())
 }
@@ -341,7 +471,55 @@ fn persist_user_message(
     conv_id: &str,
     user_text: &str,
     user_images: &[ImagePart],
-) -> Result<(), AgentError> {
+    documents: &[crate::agent_attachments::DocumentPart],
+) -> Result<i64, AgentError> {
+    let message_id = persist_user_documents(db, conv_id, user_text, user_images, documents)?;
+    maybe_autotitle(db, conv_id, user_text);
+    // Metadata changed even for a fixed Voice Shortcut/manual title. Publish
+    // only after persistence, before a configuration error can end the turn.
+    let _ = app.emit("agent-conversations-changed", conv_id);
+    Ok(message_id)
+}
+
+pub(in crate::agent) fn persist_user_documents(
+    db: &Database,
+    conv_id: &str,
+    content: &str,
+    images: &[ImagePart],
+    documents: &[crate::agent_attachments::DocumentPart],
+) -> Result<i64, AgentError> {
+    if documents.is_empty() {
+        return persist_user_body(db, conv_id, content, images);
+    }
+    crate::agent_attachments::validate_documents(documents).map_err(AgentError::config)?;
+    let saved = crate::agent_attachments::SavedDocuments {
+        content: content.into(),
+        documents: documents.to_vec(),
+    };
+    let documents_json =
+        serde_json::to_string(&saved).map_err(|e| AgentError::db(e.to_string()))?;
+    let images_json = if images.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(images).map_err(|e| AgentError::db(e.to_string()))?)
+    };
+    db.agent_append_document_message(
+        conv_id,
+        &crate::agent_attachments::model_content(content, documents),
+        images_json.as_deref(),
+        &documents_json,
+    )
+    .map_err(AgentError::db)
+}
+
+// Kept separate from title/UI notification so preparation can be verified with
+// real SQLite without creating an application or resolving the user's model.
+pub(in crate::agent) fn persist_user_body(
+    db: &Database,
+    conv_id: &str,
+    user_text: &str,
+    user_images: &[ImagePart],
+) -> Result<i64, AgentError> {
     let images_json = if user_images.is_empty() {
         None
     } else {
@@ -355,7 +533,13 @@ fn persist_user_message(
         None,
         None,
     )
-    .map_err(AgentError::db)?;
-    maybe_autotitle(app, db, conv_id, user_text);
-    Ok(())
+    .map_err(AgentError::db)
 }
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+#[path = "turn/voice_tests.rs"]
+mod voice_tests;
+
+#[cfg(test)]
+#[path = "turn/document_tests.rs"]
+mod document_tests;

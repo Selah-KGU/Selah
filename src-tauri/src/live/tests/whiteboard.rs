@@ -69,7 +69,8 @@ fn enrich_whiteboard_source_excerpts_uses_previous_terms_and_transcript() {
     let lines = vec![LiveTranscriptLine {
         at: "12:00:00".to_string(),
         text: "個人発表のテーマ選定では、賛否が分かれる問いを選んでください。".to_string(),
-    }];
+    }
+    .into()];
 
     let enriched = enrich_whiteboard_source_excerpts(Some(board), Some(&previous), &terms, &lines)
         .expect("whiteboard should remain available");

@@ -8,8 +8,16 @@ pub(in crate::stt) fn next_stt_event_seq() -> u64 {
 
 #[derive(Debug)]
 pub(in crate::stt) enum SttDecodeJob {
-    Partial { seq: u64, samples: Vec<f32> },
-    Final { seq: u64, samples: Vec<f32> },
+    Partial {
+        seq: u64,
+        version: u64,
+        samples: Vec<f32>,
+    },
+    Final {
+        seq: u64,
+        samples: Vec<f32>,
+    },
+    ConfigurePartial,
     Shutdown,
 }
 
@@ -19,6 +27,16 @@ fn enqueue_stt_decode_job(
     prioritize_partials: bool,
 ) {
     let is_partial = matches!(job, SttDecodeJob::Partial { .. });
+    if matches!(job, SttDecodeJob::ConfigurePartial) {
+        jobs.retain(|existing| {
+            !matches!(
+                existing,
+                SttDecodeJob::Partial { .. } | SttDecodeJob::ConfigurePartial
+            )
+        });
+        jobs.push_front(job);
+        return;
+    }
     if is_partial {
         // A newer partial supersedes any partial still waiting.
         jobs.retain(|existing| !matches!(existing, SttDecodeJob::Partial { .. }));
@@ -76,6 +94,11 @@ impl SttDecodeInbox {
         self.cv.notify_one();
     }
 
+    pub(in crate::stt) fn discard_partials(&self) {
+        self.lock()
+            .retain(|job| !matches!(job, SttDecodeJob::Partial { .. }));
+    }
+
     pub(in crate::stt) fn pop(&self) -> SttDecodeJob {
         let mut jobs = self.lock();
         loop {
@@ -96,8 +119,6 @@ impl SttDecodeInbox {
 pub(in crate::stt) enum SttDecodeLane {
     /// Agent and other short inputs: one recognizer handles both job kinds.
     Combined,
-    /// Live partials. A final already being decoded must not block these.
-    Partial,
     /// Live finals, kept in arrival order on their own recognizer.
     Final,
 }

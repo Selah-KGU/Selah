@@ -2,19 +2,23 @@
 
 use super::*;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
+
+#[path = "markdown_delivery.rs"]
+mod delivery;
 
 /// Max size of a markdown file the in-app reader will load. Larger files are
 /// pushed to the external opener.
 const MARKDOWN_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Pending payloads keyed by window label. The markdown reader window pulls
-/// from here on startup to avoid a race where the backend emits the
-/// `markdown-content` event before the page's listener attaches.
-static PENDING_MARKDOWN_PAYLOADS: LazyLock<Mutex<HashMap<String, serde_json::Value>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+// Startup pull and pushed events share the same immutable payload.
+static PENDING_MARKDOWN_PAYLOADS: LazyLock<delivery::Registry> =
+    LazyLock::new(delivery::Registry::default);
+
+pub(crate) fn discard_pending_markdown_payload(label: &str) {
+    PENDING_MARKDOWN_PAYLOADS.discard(label);
+}
 
 fn markdown_window_label(canonical: &std::path::Path) -> String {
     let mut hasher = DefaultHasher::new();
@@ -47,10 +51,17 @@ fn queue_markdown_payload_emit(
     filename: String,
 ) {
     use tauri::Emitter;
+    // Serialize reservation with tab removal. A close between open_tab and this
+    // handoff cannot resurrect a pending entry for a webview that no longer exists.
+    let Some(delivery) = crate::document_tabs::with_open_reader(&label, || {
+        PENDING_MARKDOWN_PAYLOADS.reserve(&label)
+    }) else {
+        return;
+    };
     tauri::async_runtime::spawn(async move {
         let error_path = canonical.to_string_lossy().to_string();
         let error_filename = filename.clone();
-        let payload = match tokio::task::spawn_blocking(move || {
+        let mut payload = match tokio::task::spawn_blocking(move || {
             markdown_payload_for_file(&canonical, &filename)
         })
         .await
@@ -63,28 +74,28 @@ fn queue_markdown_payload_emit(
                 "error": format!("読み込み失敗: {}", e),
             }),
         };
-        if let Ok(mut map) = PENDING_MARKDOWN_PAYLOADS.lock() {
-            map.insert(label.clone(), payload.clone());
+        // Decimal text preserves all u64 bits across the JS IPC boundary.
+        payload["deliveryRevision"] = delivery.revision.to_string().into();
+        if !delivery.publish(payload) {
+            return;
         }
-        let _ = app.emit_to(
-            tauri::EventTarget::AnyLabel {
-                label: label.clone(),
-            },
-            "markdown-content",
-            &payload,
-        );
-
-        let payload_clone = payload.clone();
-        let label_clone = label.clone();
-        let app_clone = app.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-            let _ = app_clone.emit_to(
-                tauri::EventTarget::AnyLabel { label: label_clone },
+        if let Some(payload) = delivery.snapshot() {
+            let _ = app.emit_to(
+                tauri::EventTarget::AnyLabel {
+                    label: label.clone(),
+                },
                 "markdown-content",
-                &payload_clone,
+                &payload,
             );
-        });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        if let Some(payload) = delivery.snapshot() {
+            let _ = app.emit_to(
+                tauri::EventTarget::AnyLabel { label },
+                "markdown-content",
+                &payload,
+            );
+        }
     });
 }
 
@@ -120,14 +131,24 @@ pub async fn open_markdown_file_window(app: tauri::AppHandle, path: String) -> R
     Ok(())
 }
 
-/// Called by the markdown reader on init to fetch its payload synchronously.
-/// Removes the entry so subsequent calls return null.
+/// Startup fallback returns the complete object (or null). Serialization and
+/// disposal of large text stay on a blocking worker, outside the UI executor.
 #[tauri::command]
-pub fn get_pending_markdown_payload(label: String) -> Option<serde_json::Value> {
-    PENDING_MARKDOWN_PAYLOADS
-        .lock()
-        .ok()
-        .and_then(|mut m| m.remove(&label))
+pub async fn get_pending_markdown_payload(label: String) -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "Markdown payload worker failed",
+        "Markdown payload encoding failed",
+        move || Ok(PENDING_MARKDOWN_PAYLOADS.take(&label)),
+    )
+    .await
+}
+
+/// Event receipt acknowledges only that generation, without returning the text.
+#[tauri::command]
+pub fn ack_markdown_payload(label: String, delivery_revision: String) {
+    if let Ok(revision) = delivery_revision.parse() {
+        PENDING_MARKDOWN_PAYLOADS.acknowledge(&label, revision);
+    }
 }
 
 /// Write Markdown contents back to disk. Restricted to .md/.markdown files
@@ -144,3 +165,7 @@ pub fn write_markdown_file(path: String, contents: String) -> Result<(), String>
     std::fs::write(&canonical, contents.as_bytes()).map_err(|e| format!("保存失敗: {}", e))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "markdown_tests.rs"]
+mod tests;

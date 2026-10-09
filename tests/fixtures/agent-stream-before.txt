@@ -1,0 +1,27 @@
+  function appendAssistantText(text: string) {
+    if (!text) return;
+    const last = messages[messages.length - 1];
+    if (last && last.role === "assistant" && last._streaming) {
+      messages[messages.length - 1] = { ...last, content: last.content + text };
+    } else {
+      messages = [
+        ...messages,
+        {
+          id: -Date.now(),
+          conv_id: activeConvId ?? "",
+          role: "assistant",
+          content: text,
+          created_at: Math.floor(Date.now() / 1000),
+          _streaming: true,
+        },
+      ];
+    }
+  }
+
+  function quoteReply(m: UIMessage) {
+    quotedMessage = m;
+    const current = conversationView.capture();
+    void tick().then(() => {
+      if (current()) composerTextarea?.focus();
+    });
+  }

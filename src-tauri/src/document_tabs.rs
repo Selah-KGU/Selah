@@ -8,10 +8,14 @@ use tauri::{Emitter, Manager};
 mod agent_panel;
 #[path = "document_tabs/commands.rs"]
 mod commands;
+#[path = "document_tabs/events.rs"]
+mod events;
 #[path = "document_tabs/layout.rs"]
 mod layout;
 #[path = "document_tabs/open.rs"]
 mod open;
+#[path = "document_tabs/state.rs"]
+mod state;
 
 pub(in crate::document_tabs) use agent_panel::*;
 pub use agent_panel::{emit_agent_status, open_agent_workspace};
@@ -19,6 +23,20 @@ pub use commands::*;
 pub use layout::resize_current_for_owner;
 pub(in crate::document_tabs) use layout::*;
 pub use open::*;
+pub(in crate::document_tabs) use state::*;
+
+/// Run a short reader handoff while its tab still exists. The callback must
+/// only reserve ownership; file IO and event serialization happen after unlock.
+pub(crate) fn with_open_reader<T>(target: &str, reserve: impl FnOnce() -> T) -> Option<T> {
+    let states = DOCUMENT_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+    let exists = states.get(OWNER_LABEL).is_some_and(|state| {
+        state
+            .tabs
+            .iter()
+            .any(|tab| tab.kind == "reader" && tab.target == target)
+    });
+    exists.then(reserve)
+}
 
 const OWNER_LABEL: &str = "document-tabs";
 
@@ -114,7 +132,7 @@ pub struct DocumentTabInfo {
     pub reopen: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentTabControl {
     pub id: String,
@@ -253,48 +271,7 @@ fn ensure_tab_strip(
 }
 
 fn emit_tabs_changed(app: &tauri::AppHandle, owner: &str) {
-    let tabs = list_tabs_for_owner(owner);
-    let payload = serde_json::json!({
-        "owner": owner,
-        "tabs": tabs,
-    });
-    let mut labels = vec![TAB_STRIP_LABEL.to_string(), AGENT_PANEL_LABEL.to_string()];
-    for tab in list_tabs_for_owner(owner) {
-        for index in 0..MAX_SPLIT_DIVIDERS {
-            labels.push(split_divider_target(&tab.target, index));
-        }
-    }
-    for label in labels {
-        let _ = app.emit_to(
-            tauri::EventTarget::AnyLabel { label },
-            "document-tabs-changed",
-            payload.clone(),
-        );
-    }
-}
-
-fn list_tabs_for_owner(owner: &str) -> Vec<DocumentTabInfo> {
-    let state = DOCUMENT_WINDOWS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(owner)
-        .cloned()
-        .unwrap_or_default();
-    state
-        .tabs
-        .iter()
-        .map(|tab| tab.info(state.active.as_deref() == Some(tab.id.as_str())))
-        .collect()
-}
-
-fn active_tab_for_owner(owner: &str) -> Option<DocumentTab> {
-    let state = DOCUMENT_WINDOWS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(owner)
-        .cloned()?;
-    let active = state.active.as_deref()?;
-    state.tabs.iter().find(|tab| tab.id == active).cloned()
+    events::emit_tab_snapshot(app, owner, list_tabs_for_owner(owner));
 }
 
 /// Targets of every **live** pane that makes up the owner's current view: the

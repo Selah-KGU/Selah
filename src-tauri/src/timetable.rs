@@ -30,6 +30,7 @@ pub(in crate::timetable) use luna_sync::{
 pub(in crate::timetable) use syllabus::batch_fetch_syllabi;
 pub(in crate::timetable) use sync::{load_kgc_warning, STALE_SEMESTER_KGC_WARNING};
 
+pub(crate) use ai_analysis::AI_CACHE_MAX_AGE;
 pub use enrich::*;
 pub use snapshot::*;
 pub use sync::*;

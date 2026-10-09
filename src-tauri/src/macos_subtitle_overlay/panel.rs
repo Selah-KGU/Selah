@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::theme::{is_dark_mode, srgb};
 use super::*;
+use crate::macos_layer_transaction::suppress_implicit_animations;
 
 pub(in crate::macos_subtitle_overlay) fn build_overlay_panel() {
     let mtm = MainThreadMarker::new().expect("main thread");
@@ -216,43 +217,47 @@ pub(in crate::macos_subtitle_overlay) fn apply_frame(w: f64, cx: f64, bottom_y: 
         let ui = ui.borrow();
         let x = cx - w / 2.0;
         if let Some(panel) = &ui.panel {
+            // Let AppKit display the updated backing views at its next draw
+            // opportunity, after their frames below have been updated together.
             panel.setFrame_display(
                 NSRect::new(NSPoint::new(x, bottom_y), NSSize::new(w, SUB_H)),
-                true,
+                false,
             );
         }
-        let sz = NSSize::new(w, SUB_H);
-        let origin = NSPoint::new(0.0, 0.0);
-        let r = SUB_CORNER.min(w / 2.0);
-        let label_w = (w - SUB_PAD_X * 2.0).max(8.0);
+        suppress_implicit_animations(|| {
+            let sz = NSSize::new(w, SUB_H);
+            let origin = NSPoint::new(0.0, 0.0);
+            let r = SUB_CORNER.min(w / 2.0);
+            let label_w = (w - SUB_PAD_X * 2.0).max(8.0);
 
-        if let Some(v) = &ui.root_view {
-            v.setFrame(NSRect::new(origin, sz));
-        }
-        if let Some(v) = &ui.capsule_view {
-            v.setFrame(NSRect::new(origin, sz));
-            if let Some(l) = v.layer() {
-                l.setCornerRadius(r);
+            if let Some(v) = &ui.root_view {
+                v.setFrame(NSRect::new(origin, sz));
             }
-        }
-        if let Some(v) = &ui.vfx_view {
-            v.setFrame(NSRect::new(origin, sz));
-            if let Some(l) = v.layer() {
-                l.setCornerRadius(r);
+            if let Some(v) = &ui.capsule_view {
+                v.setFrame(NSRect::new(origin, sz));
+                if let Some(l) = v.layer() {
+                    l.setCornerRadius(r);
+                }
             }
-        }
-        if let Some(v) = &ui.bg_overlay {
-            v.setFrame(NSRect::new(origin, sz));
-            if let Some(l) = v.layer() {
-                l.setCornerRadius(r);
+            if let Some(v) = &ui.vfx_view {
+                v.setFrame(NSRect::new(origin, sz));
+                if let Some(l) = v.layer() {
+                    l.setCornerRadius(r);
+                }
             }
-        }
-        if let Some(lbl) = &ui.text_label {
-            lbl.setFrame(NSRect::new(
-                NSPoint::new(SUB_PAD_X, SUB_LABEL_Y),
-                NSSize::new(label_w, SUB_LABEL_H),
-            ));
-        }
+            if let Some(v) = &ui.bg_overlay {
+                v.setFrame(NSRect::new(origin, sz));
+                if let Some(l) = v.layer() {
+                    l.setCornerRadius(r);
+                }
+            }
+            if let Some(lbl) = &ui.text_label {
+                lbl.setFrame(NSRect::new(
+                    NSPoint::new(SUB_PAD_X, SUB_LABEL_Y),
+                    NSSize::new(label_w, SUB_LABEL_H),
+                ));
+            }
+        });
     });
 }
 

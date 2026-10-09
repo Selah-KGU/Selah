@@ -1,0 +1,1885 @@
+[
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460507,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [
+        {
+          "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 0,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 0 🙂",
+          "whiteboard": {
+            "edges": [
+              {
+                "from": "n0",
+                "label": "関係 0 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n0",
+                "label": "関係 1 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n1",
+                "label": "関係 2 🌕",
+                "to": "n1"
+              },
+              {
+                "from": "missing",
+                "label": "未知端点",
+                "to": "n0"
+              }
+            ],
+            "layout": "grid",
+            "nodes": [
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "core",
+                "label": "概念 0 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "",
+                "role": "main",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "external"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "result",
+                "label": "概念 1 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n1",
+                "kind": "question",
+                "label": "概念 2 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              }
+            ],
+            "normalized_by": "backend",
+            "schema_version": 1,
+            "title": "累積ボード 0"
+          }
+        }
+      ],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n0",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n1",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "core",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 0"
+        }
+      },
+      "next_summary_at_ms": 1791445460507,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂",
+        "whiteboard_from_summary": 0
+      },
+      "next_summary_at_ms": 1791445460507,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 0
+  },
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460512,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [
+        {
+          "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 0,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 0 🙂",
+          "whiteboard": {
+            "edges": [
+              {
+                "from": "n0",
+                "label": "関係 0 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n0",
+                "label": "関係 1 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n1",
+                "label": "関係 2 🌕",
+                "to": "n1"
+              },
+              {
+                "from": "missing",
+                "label": "未知端点",
+                "to": "n0"
+              }
+            ],
+            "layout": "grid",
+            "nodes": [
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "core",
+                "label": "概念 0 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "",
+                "role": "main",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "external"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "result",
+                "label": "概念 1 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n1",
+                "kind": "question",
+                "label": "概念 2 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              }
+            ],
+            "normalized_by": "backend",
+            "schema_version": 1,
+            "title": "累積ボード 0"
+          }
+        },
+        {
+          "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 1,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 1 🙂"
+        }
+      ],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 2\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 2,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 2 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n0",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n1",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "core",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 0"
+        }
+      },
+      "next_summary_at_ms": 1791445460512,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 3,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 2\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 2,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 2 🙂",
+        "whiteboard_from_summary": 0
+      },
+      "next_summary_at_ms": 1791445460512,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 3,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 1
+  },
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460512,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [
+        {
+          "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 0,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 0 🙂",
+          "whiteboard": {
+            "edges": [
+              {
+                "from": "n0",
+                "label": "関係 0 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n0",
+                "label": "関係 1 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n1",
+                "label": "関係 2 🌕",
+                "to": "n1"
+              },
+              {
+                "from": "missing",
+                "label": "未知端点",
+                "to": "n0"
+              }
+            ],
+            "layout": "grid",
+            "nodes": [
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "core",
+                "label": "概念 0 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "",
+                "role": "main",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "external"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "result",
+                "label": "概念 1 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n1",
+                "kind": "question",
+                "label": "概念 2 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              }
+            ],
+            "normalized_by": "backend",
+            "schema_version": 1,
+            "title": "累積ボード 0"
+          }
+        },
+        {
+          "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 1,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 1 🙂",
+          "whiteboard": {
+            "edges": [],
+            "layout": "grid",
+            "nodes": [],
+            "normalized_by": "backend",
+            "schema_version": 1,
+            "title": "累積ボード 0"
+          }
+        }
+      ],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 2\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 2,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 2 🙂",
+        "whiteboard": {
+          "edges": [],
+          "layout": "grid",
+          "nodes": [],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 0"
+        }
+      },
+      "next_summary_at_ms": 1791445460512,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 3,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 2\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 2,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 2 🙂",
+        "whiteboard_from_summary": 1
+      },
+      "next_summary_at_ms": 1791445460512,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 3,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 2
+  },
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460512,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [
+        {
+          "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 0,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 0 🙂",
+          "whiteboard": {
+            "edges": [
+              {
+                "from": "n0",
+                "label": "関係 0 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n0",
+                "label": "関係 1 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n1",
+                "label": "関係 2 🌕",
+                "to": "n1"
+              },
+              {
+                "from": "missing",
+                "label": "未知端点",
+                "to": "n0"
+              }
+            ],
+            "layout": "grid",
+            "nodes": [
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "core",
+                "label": "概念 0 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "",
+                "role": "main",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "external"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "result",
+                "label": "概念 1 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n1",
+                "kind": "question",
+                "label": "概念 2 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              }
+            ],
+            "normalized_by": "backend",
+            "schema_version": 1,
+            "title": "累積ボード 0"
+          }
+        }
+      ],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n0",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n1",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "core",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 0"
+        }
+      },
+      "next_summary_at_ms": 1791445460512,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n0",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n1",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "core",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 0"
+        }
+      },
+      "next_summary_at_ms": 1791445460512,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 3
+  },
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460513,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [
+        {
+          "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 0,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 0 🙂",
+          "whiteboard": {
+            "edges": [
+              {
+                "from": "n0",
+                "label": "関係 0 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n0",
+                "label": "関係 1 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n1",
+                "label": "関係 2 🌕",
+                "to": "n1"
+              },
+              {
+                "from": "missing",
+                "label": "未知端点",
+                "to": "n0"
+              }
+            ],
+            "layout": "grid",
+            "nodes": [
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "core",
+                "label": "概念 0 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "",
+                "role": "main",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "external"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "result",
+                "label": "概念 1 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n1",
+                "kind": "question",
+                "label": "概念 2 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              }
+            ],
+            "normalized_by": "backend",
+            "schema_version": 1,
+            "title": "累積ボード 0"
+          }
+        }
+      ],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n3"
+            },
+            {
+              "from": "n1",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n2",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "n3",
+              "label": "関係 3 🌕",
+              "to": "n2"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n2",
+              "kind": "support",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n3",
+              "kind": "core",
+              "label": "概念 3 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 1"
+        }
+      },
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n3"
+            },
+            {
+              "from": "n1",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n2",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "n3",
+              "label": "関係 3 🌕",
+              "to": "n2"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n2",
+              "kind": "support",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n3",
+              "kind": "core",
+              "label": "概念 3 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 1"
+        }
+      },
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 4
+  },
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460513,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [
+        {
+          "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+          "line_count": 0,
+          "range_label": "10:00-10:05",
+          "terms": [
+            {
+              "explanation": "用語の完全な説明",
+              "external_source": "https://example.invalid",
+              "source_excerpt": "原文の出典",
+              "term": "講義"
+            }
+          ],
+          "title": "区間 0 🙂",
+          "whiteboard": {
+            "edges": [
+              {
+                "from": "n0",
+                "label": "関係 0 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n0",
+                "label": "関係 1 🌕",
+                "to": "n0"
+              },
+              {
+                "from": "n1",
+                "label": "関係 2 🌕",
+                "to": "n1"
+              },
+              {
+                "from": "missing",
+                "label": "未知端点",
+                "to": "n0"
+              }
+            ],
+            "layout": "grid",
+            "nodes": [
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "core",
+                "label": "概念 0 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "",
+                "role": "main",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "external"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n0",
+                "kind": "result",
+                "label": "概念 1 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              },
+              {
+                "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+                "external_source": "参考資料の全文 🌕",
+                "id": "n1",
+                "kind": "question",
+                "label": "概念 2 👩🏽‍💻",
+                "node_type": "structure",
+                "parent_id": "n0",
+                "role": "branch",
+                "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+                "source_type": "lecture"
+              }
+            ],
+            "normalized_by": "backend",
+            "schema_version": 1,
+            "title": "累積ボード 0"
+          }
+        }
+      ],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂"
+      },
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 1\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 1,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 1 🙂"
+      },
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 2,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 5
+  },
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460513,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 0,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 0 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n0",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n1",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "core",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 0"
+        }
+      },
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 1,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "latest_summary": {
+        "body": "# 本文 0\n中文・日本語 👩🏽‍💻\n\"引用\"",
+        "line_count": 0,
+        "range_label": "10:00-10:05",
+        "terms": [
+          {
+            "explanation": "用語の完全な説明",
+            "external_source": "https://example.invalid",
+            "source_excerpt": "原文の出典",
+            "term": "講義"
+          }
+        ],
+        "title": "区間 0 🙂",
+        "whiteboard": {
+          "edges": [
+            {
+              "from": "n0",
+              "label": "関係 0 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n0",
+              "label": "関係 1 🌕",
+              "to": "n0"
+            },
+            {
+              "from": "n1",
+              "label": "関係 2 🌕",
+              "to": "n1"
+            },
+            {
+              "from": "missing",
+              "label": "未知端点",
+              "to": "n0"
+            }
+          ],
+          "layout": "grid",
+          "nodes": [
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "core",
+              "label": "概念 0 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "",
+              "role": "main",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "external"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n0",
+              "kind": "result",
+              "label": "概念 1 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            },
+            {
+              "detail": "完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕完全な詳細 日本語・中文\n\"引用\" 🌕",
+              "external_source": "参考資料の全文 🌕",
+              "id": "n1",
+              "kind": "question",
+              "label": "概念 2 👩🏽‍💻",
+              "node_type": "structure",
+              "parent_id": "n0",
+              "role": "branch",
+              "source_excerpt": "根拠となる発話を保持する 👩🏽‍💻",
+              "source_type": "lecture"
+            }
+          ],
+          "normalized_by": "backend",
+          "schema_version": 1,
+          "title": "累積ボード 0"
+        }
+      },
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 1,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 6
+  },
+  {
+    "current": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460513,
+      "pending_from_line": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summaries": [],
+      "summarizing": false,
+      "transcript_line_count": 0,
+      "update_revision": 0,
+      "visible_lines": []
+    },
+    "legacy_update": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 0,
+      "transcript_line_count": 0,
+      "update_revision": 1
+    },
+    "notification": {
+      "active": true,
+      "course": {
+        "course_code": "",
+        "course_name": "test",
+        "day": 1,
+        "is_free_note": false,
+        "period": 1,
+        "room": "",
+        "teacher": "",
+        "time_label": ""
+      },
+      "finish_phase": null,
+      "finish_revision": 0,
+      "next_summary_at_ms": 1791445460513,
+      "pending_line_count": 0,
+      "session_id": "recording-test",
+      "started_at": "2026-10-08 16:39:20",
+      "summarizing": false,
+      "summary_count": 0,
+      "transcript_line_count": 0,
+      "update_revision": 1,
+      "whiteboard_delta_version": 1
+    },
+    "variant": 7
+  }
+]

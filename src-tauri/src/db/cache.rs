@@ -1,5 +1,15 @@
 use super::*;
 
+#[derive(Debug, Serialize)]
+pub struct CacheDeltaRow {
+    pub key: String,
+    pub updated_at: i64,
+    pub revision: i64,
+    pub unchanged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json: Option<String>,
+}
+
 impl Database {
     // ── Generic data cache ──
 
@@ -27,12 +37,12 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         let now = epoch_secs();
         let existing = conn.query_row(
-            "SELECT data_json FROM data_cache WHERE cache_key = ?1",
-            params![key],
-            |row| row.get::<_, String>(0),
+            "SELECT data_json = ?2 FROM data_cache WHERE cache_key = ?1",
+            params![key, json],
+            |row| row.get::<_, bool>(0),
         );
         match existing {
-            Ok(prev) if prev == json => {
+            Ok(true) => {
                 if touch_if_same {
                     conn.execute(
                         "UPDATE data_cache SET updated_at = ?1 WHERE cache_key = ?2",
@@ -42,7 +52,7 @@ impl Database {
                 }
                 Ok(false)
             }
-            Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => {
+            Ok(false) | Err(rusqlite::Error::QueryReturnedNoRows) => {
                 conn.execute(
                     "INSERT INTO data_cache (cache_key, data_json, updated_at)
                      VALUES (?1, ?2, ?3)
@@ -67,7 +77,7 @@ impl Database {
     pub fn cache_updated_at(&self, key: &str) -> Option<i64> {
         let conn = self.conn.lock().ok()?;
         conn.query_row(
-            "SELECT updated_at FROM data_cache WHERE cache_key = ?1",
+            "SELECT updated_at FROM data_cache INDEXED BY idx_data_cache_metadata WHERE cache_key = ?1",
             params![key],
             |row| row.get(0),
         )
@@ -203,6 +213,51 @@ impl Database {
         Ok(out)
     }
 
+    /// Read small covering-index metadata first. Matching versions never load
+    /// JSON into Rust; a read transaction keeps metadata and payload consistent.
+    pub fn get_data_cache_deltas(
+        &self,
+        queries: &[(String, Option<i64>)],
+    ) -> Result<Vec<CacheDeltaRow>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("DB cache read: {e}"))?;
+        let mut metadata = tx.prepare("SELECT updated_at, revision FROM data_cache INDEXED BY idx_data_cache_metadata WHERE cache_key = ?1").map_err(|e| e.to_string())?;
+        let mut payload = tx
+            .prepare("SELECT data_json FROM data_cache WHERE cache_key = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = Vec::with_capacity(queries.len());
+        for (key, known_revision) in queries {
+            let stamp = metadata.query_row(params![key], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            });
+            let (updated_at, revision, exists) = match stamp {
+                Ok((updated_at, revision)) => (updated_at, revision, true),
+                Err(rusqlite::Error::QueryReturnedNoRows) => (0, 0, false),
+                Err(error) => return Err(format!("DB cache metadata: {error}")),
+            };
+            let unchanged = *known_revision == Some(revision);
+            let json = if exists && !unchanged {
+                Some(
+                    payload
+                        .query_row(params![key], |row| row.get::<_, String>(0))
+                        .map_err(|e| format!("DB cache payload: {e}"))?,
+                )
+            } else {
+                None
+            };
+            rows.push(CacheDeltaRow {
+                key: key.clone(),
+                updated_at,
+                revision,
+                unchanged,
+                json,
+            });
+        }
+        Ok(rows)
+    }
+
     /// Delete a cached entry by key (used to invalidate stale HTML cache).
     pub fn delete_data_cache(&self, key: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
@@ -236,12 +291,7 @@ mod tests {
     use super::*;
 
     fn temp_db() -> (Database, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "selah-cache-{}-{}",
-            std::process::id(),
-            epoch_secs()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = std::env::temp_dir().join(format!("selah-cache-{}", uuid::Uuid::new_v4()));
         let db = Database::open(&dir).expect("open temp db");
         (db, dir)
     }
@@ -254,6 +304,175 @@ mod tests {
         assert!(!db.save_data_cache_if_changed("k", "hello").unwrap());
         assert!(db.save_data_cache_if_changed("k", "world").unwrap());
         assert_eq!(db.cache_payload("k").as_deref(), Some("world"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn content_versions_survive_touches_same_second_changes_and_recreation() {
+        let (db, dir) = temp_db();
+        db.save_data_cache("k", "first").unwrap();
+        let first = db.cache_revision("k").unwrap();
+        db.save_data_cache("k", "first").unwrap();
+        db.touch_data_cache("k").unwrap();
+        assert_eq!(db.cache_revision("k"), Some(first));
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE data_cache SET updated_at = 42 WHERE cache_key = 'k'",
+                [],
+            )
+            .unwrap();
+        db.save_data_cache("k", "second").unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE data_cache SET updated_at = 42 WHERE cache_key = 'k'",
+                [],
+            )
+            .unwrap();
+        let changed = db
+            .get_data_cache_deltas(&[("k".into(), Some(first))])
+            .unwrap()
+            .remove(0);
+        assert_eq!(changed.updated_at, 42);
+        assert!(!changed.unchanged);
+        assert_eq!(changed.json.as_deref(), Some("second"));
+        assert!(changed.revision > first);
+        db.delete_data_cache("k").unwrap();
+        let absent = db
+            .get_data_cache_deltas(&[("k".into(), Some(changed.revision))])
+            .unwrap()
+            .remove(0);
+        assert_eq!(absent.revision, 0);
+        assert!(!absent.unchanged);
+        db.save_data_cache("k", "third").unwrap();
+        assert!(db.cache_revision("k").unwrap() > changed.revision);
+        let version = db.cache_revision("k");
+        drop(db);
+        let reopened = Database::open(&dir).unwrap();
+        assert_eq!(reopened.cache_revision("k"), version);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn matching_versions_use_covering_metadata_and_omit_large_json() {
+        let (db, dir) = temp_db();
+        let large = "x".repeat(2 * 1024 * 1024);
+        db.save_data_cache("large", &large).unwrap();
+        let revision = db.cache_revision("large").unwrap();
+        let rows = db
+            .get_data_cache_deltas(&[("large".into(), Some(revision)), ("absent".into(), Some(0))])
+            .unwrap();
+        assert!(rows.iter().all(|row| row.unchanged && row.json.is_none()));
+        assert!(serde_json::to_string(&rows).unwrap().len() < 250);
+        let plan: String = db.conn.lock().unwrap().query_row(
+            "EXPLAIN QUERY PLAN SELECT updated_at, revision FROM data_cache INDEXED BY idx_data_cache_metadata WHERE cache_key = ?1",
+            params!["large"], |row| row.get(3)).unwrap();
+        assert!(plan.contains("COVERING INDEX"), "{plan}");
+        assert_eq!(db.cache_updated_at("large"), Some(rows[0].updated_at));
+        let timestamp_plan: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+            "EXPLAIN QUERY PLAN SELECT updated_at FROM data_cache INDEXED BY idx_data_cache_metadata WHERE cache_key = ?1",
+                params!["large"],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(
+            timestamp_plan.contains("COVERING INDEX"),
+            "{timestamp_plan}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn schedule_revision_tracks_counts_activities_and_ai_without_timestamp_changes() {
+        let (db, dir) = temp_db();
+        let initial = db.schedule_snapshot_version().unwrap();
+        let statements = [
+            "INSERT INTO luna_counts (luna_id, reports) VALUES ('course', 1)",
+            "UPDATE luna_counts SET reports = 2 WHERE luna_id = 'course'",
+            "INSERT INTO luna_activities (luna_id, activity_type, title) VALUES ('course', 'report', 'new')",
+            "INSERT INTO ai_schedule_cache (id, result_json) VALUES (1, '{}')",
+            "DELETE FROM luna_counts WHERE luna_id = 'course'",
+            "INSERT INTO data_cache (cache_key, data_json) VALUES ('schedule_kgc_warning', 'warning')",
+            "UPDATE data_cache SET data_json = 'changed warning' WHERE cache_key = 'schedule_kgc_warning'",
+            "DELETE FROM data_cache WHERE cache_key = 'schedule_kgc_warning'",
+        ];
+        let mut previous = initial.1;
+        for statement in statements {
+            db.conn.lock().unwrap().execute(statement, []).unwrap();
+            let (timestamp, revision) = db.schedule_snapshot_version().unwrap();
+            assert_eq!(timestamp, initial.0);
+            assert!(revision > previous);
+            previous = revision;
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn revision_migration_preserves_legacy_payloads_and_schedule_rows() {
+        let dir =
+            std::env::temp_dir().join(format!("selah-cache-migration-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("courses.db")).unwrap();
+        conn.execute_batch("PRAGMA user_version = 6;
+            CREATE TABLE data_cache (cache_key TEXT PRIMARY KEY, data_json TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO data_cache VALUES ('user-memory', 'durable', 42);
+            CREATE TABLE luna_counts (luna_id TEXT PRIMARY KEY, announcements INTEGER NOT NULL DEFAULT 0, new_announcements INTEGER NOT NULL DEFAULT 0, reports INTEGER NOT NULL DEFAULT 0, exams INTEGER NOT NULL DEFAULT 0, discussions INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO luna_counts (luna_id, reports) VALUES ('old-course', 3);").unwrap();
+        drop(conn);
+        let db = Database::open(&dir).unwrap();
+        assert_eq!(
+            db.get_data_cache("user-memory").unwrap(),
+            Some(("durable".into(), 42))
+        );
+        assert!(db.cache_revision("user-memory").unwrap() > 0);
+        let reports: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT reports FROM luna_counts WHERE luna_id = 'old-course'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reports, 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    #[ignore = "manual cache synchronization benchmark"]
+    fn benchmark_unchanged_cache_sync() {
+        let (db, dir) = temp_db();
+        let large = "x".repeat(1024 * 1024);
+        let keys: Vec<String> = (0..16).map(|i| format!("payload-{i}")).collect();
+        for key in &keys {
+            db.save_data_cache(key, &large).unwrap();
+        }
+        let queries: Vec<_> = keys
+            .iter()
+            .map(|key| (key.clone(), db.cache_revision(key)))
+            .collect();
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            assert_eq!(db.get_data_cache_many(&keys).unwrap().len(), 16);
+        }
+        let baseline = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            assert!(db
+                .get_data_cache_deltas(&queries)
+                .unwrap()
+                .iter()
+                .all(|row| row.json.is_none()));
+        }
+        println!("unchanged cache batch: legacy={baseline:?}, metadata={:?}, 16 MiB per batch, 100 batches", start.elapsed());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

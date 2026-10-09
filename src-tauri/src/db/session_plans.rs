@@ -1,5 +1,22 @@
 use super::*;
 
+const COURSE_PLANS: &str = "SELECT session_num, th_header, topic, delivery_mode, study_outside
+     FROM session_plans WHERE kgc_code = ?1 ORDER BY session_num";
+const PLAN_CODES: &str = "SELECT DISTINCT kgc_code FROM session_plans ORDER BY kgc_code";
+
+fn plan_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, SessionPlanRow)> {
+    Ok((
+        row.get(0)?,
+        SessionPlanRow {
+            session_num: row.get(1)?,
+            th_header: row.get(2)?,
+            topic: row.get(3)?,
+            delivery_mode: row.get(4)?,
+            study_outside: row.get(5)?,
+        },
+    ))
+}
+
 impl Database {
     // ── Session plans ──
 
@@ -39,6 +56,71 @@ impl Database {
         Self::query_all_session_plans(&conn)
     }
 
+    /// Read only one course's complete plans. LIVE historically matched codes
+    /// after Rust's Unicode trim; retain that fallback without loading every
+    /// course's plan text. Prefer the exact code, then the first sorted alias.
+    pub(crate) fn get_session_plans_for_course(
+        &self,
+        kgc_code: &str,
+    ) -> Result<Option<Vec<SessionPlanRow>>, String> {
+        let code = kgc_code.trim();
+        if code.is_empty() {
+            return Ok(None);
+        }
+        let mut conn = self.conn.lock().map_err(|e| format!("DB lock: {e}"))?;
+        // Exact lookup, alias selection and its rows see one SQLite snapshot.
+        let tx = conn.transaction().map_err(|e| format!("DB begin: {e}"))?;
+        let plans = Self::query_course_session_plans(&tx, code)?;
+        let result = if !plans.is_empty() {
+            Some(plans)
+        } else {
+            let alias = {
+                let mut stmt = tx
+                    .prepare_cached(PLAN_CODES)
+                    .map_err(|e| format!("DB query plan codes: {e}"))?;
+                let codes = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|e| format!("DB map plan codes: {e}"))?;
+                let mut alias = None;
+                for value in codes {
+                    let value = value.map_err(|e| format!("DB read plan code: {e}"))?;
+                    if value.trim() == code {
+                        alias = Some(value);
+                        break;
+                    }
+                }
+                alias
+            };
+            alias
+                .map(|alias| Self::query_course_session_plans(&tx, &alias))
+                .transpose()?
+        };
+        tx.commit().map_err(|e| format!("DB commit: {e}"))?;
+        Ok(result)
+    }
+
+    fn query_course_session_plans(
+        conn: &Connection,
+        code: &str,
+    ) -> Result<Vec<SessionPlanRow>, String> {
+        let mut stmt = conn
+            .prepare_cached(COURSE_PLANS)
+            .map_err(|e| format!("DB query course plans: {e}"))?;
+        let rows = stmt
+            .query_map(params![code], |row| {
+                Ok(SessionPlanRow {
+                    session_num: row.get(0)?,
+                    th_header: row.get(1)?,
+                    topic: row.get(2)?,
+                    delivery_mode: row.get(3)?,
+                    study_outside: row.get(4)?,
+                })
+            })
+            .map_err(|e| format!("DB map course plans: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("DB read course plan: {e}"))
+    }
+
     pub(super) fn query_all_session_plans(
         conn: &Connection,
     ) -> Result<Vec<(String, Vec<SessionPlanRow>)>, String> {
@@ -46,22 +128,25 @@ impl Database {
             "SELECT kgc_code, session_num, th_header, topic, delivery_mode, study_outside FROM session_plans ORDER BY kgc_code, session_num"
         ).map_err(|e| format!("DB query: {}", e))?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    SessionPlanRow {
-                        session_num: row.get(1)?,
-                        th_header: row.get(2)?,
-                        topic: row.get(3)?,
-                        delivery_mode: row.get(4)?,
-                        study_outside: row.get(5)?,
-                    },
-                ))
-            })
+            .query_map([], plan_row)
             .map_err(|e| format!("DB map: {}", e))?;
         let mut map: std::collections::HashMap<String, Vec<SessionPlanRow>> = Default::default();
         for r in rows.flatten() {
             map.entry(r.0).or_default().push(r.1);
+        }
+        Ok(map.into_iter().collect())
+    }
+
+    pub(super) fn query_visible_session_plans(
+        conn: &Connection,
+        codes: &[&str],
+    ) -> Result<Vec<(String, Vec<SessionPlanRow>)>, String> {
+        let rows = super::scoped_rows::query_selected(conn, codes,
+            "SELECT kgc_code, session_num, th_header, topic, delivery_mode, study_outside FROM session_plans",
+            "kgc_code", "ORDER BY kgc_code, session_num", plan_row)?;
+        let mut map: std::collections::HashMap<String, Vec<SessionPlanRow>> = Default::default();
+        for (code, plan) in rows {
+            map.entry(code).or_default().push(plan);
         }
         Ok(map.into_iter().collect())
     }
@@ -98,3 +183,7 @@ impl Database {
         Ok(map.into_iter().collect())
     }
 }
+
+#[cfg(test)]
+#[path = "session_plans/tests.rs"]
+mod tests;

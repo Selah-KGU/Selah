@@ -3,6 +3,7 @@
   import type { LiveWhiteboard } from "./api";
   import {
     computeWhiteboardLayout,
+    prepareWhiteboardLayout,
     whiteboardLayoutReady,
     whiteboardTopics,
     type WhiteboardLayoutResult,
@@ -25,6 +26,13 @@
   let fitFingerprint = $state("");
   let drag = $state<{ x: number; y: number; panX: number; panY: number } | null>(null);
   let dragged = false;
+
+  $effect(() => {
+    if (!board) return;
+    void prepareWhiteboardLayout().catch((error) => {
+      console.warn("[MarkdownWhiteboard] layout failed to load:", error);
+    });
+  });
 
   const topics = $derived.by(() => {
     void $whiteboardLayoutReady;

@@ -22,6 +22,6 @@ pub(in crate::agent) use infer::{
     infer_mouse_click_from_observation, infer_mouse_click_from_screenshot,
     infer_tab_browse_click_from_observation, local_browser_action_answer,
 };
-pub(in crate::agent) use labels::browser_click_labels_for_turn;
 #[allow(unused_imports)]
 pub(in crate::agent) use labels::requested_click_labels;
+pub(in crate::agent) use labels::{browser_click_labels_for_turn, BROWSER_CLICK_HISTORY_ROWS};

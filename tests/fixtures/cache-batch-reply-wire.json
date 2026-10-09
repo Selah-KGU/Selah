@@ -1,0 +1,79 @@
+{
+  "notification_batch": {
+    "live_todo_revision": 0,
+    "live_todo_updated_at": 0,
+    "rows": [
+      {
+        "json": "{\"entries\":[{\"id\":\"notice\",\"title\":\"全文\\n\\\"引用\\\" 🌙\"}]}",
+        "key": "notifications",
+        "revision": 3,
+        "unchanged": false,
+        "updated_at": 42
+      }
+    ],
+    "schedule_revision": 0,
+    "schedule_stamp": "",
+    "schedule_unchanged": false,
+    "schedule_updated_at": 0
+  },
+  "notification_unchanged_batch": {
+    "live_todo_revision": 0,
+    "live_todo_updated_at": 0,
+    "rows": [
+      {
+        "key": "notifications",
+        "revision": 3,
+        "unchanged": true,
+        "updated_at": 42
+      }
+    ],
+    "schedule_revision": 0,
+    "schedule_stamp": "",
+    "schedule_unchanged": false,
+    "schedule_updated_at": 0
+  },
+  "schedule_snapshot": {
+    "ai_result": null,
+    "ai_stale": true,
+    "kgc_warning": "",
+    "luna_communities": [],
+    "luna_term": "03",
+    "luna_term_options": [],
+    "luna_year": "2026",
+    "luna_year_options": [],
+    "raw": {
+      "current_week_label": "",
+      "kgc_course_details": [],
+      "kgc_entries_current": [],
+      "kgc_entries_next": [],
+      "luna_activities": [],
+      "luna_communities": [],
+      "luna_counts": [],
+      "luna_courses": [],
+      "next_week_label": "",
+      "session_plans": []
+    },
+    "snapshot_updated_at": 0
+  },
+  "timestamp_batch": {
+    "rows": [
+      {
+        "key": "notifications",
+        "updated_at": 42
+      },
+      {
+        "key": "missing",
+        "updated_at": null
+      },
+      {
+        "key": "large",
+        "updated_at": -1
+      },
+      {
+        "key": "notifications",
+        "updated_at": 42
+      }
+    ],
+    "schedule_updated_at": null
+  }
+}

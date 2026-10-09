@@ -2,12 +2,14 @@ use tauri::Emitter;
 use tokio::sync::Mutex;
 
 use super::client;
-use super::db;
 use super::google_calendar;
 use super::kwic_client;
 use super::luna_client;
 use super::mail;
-use super::read_state;
+
+#[path = "app_state/cache.rs"]
+mod cache;
+pub(crate) use cache::{admission_handler, drain_cache, reopen_cache, seal_cache};
 
 // ── Decoupled per-service states (independent locking, zero cross-service contention) ──
 
@@ -59,50 +61,6 @@ pub fn set_app_theme(app: tauri::AppHandle, state: tauri::State<'_, ThemeState>,
 }
 
 #[tauri::command]
-pub fn mark_notification_read(db: tauri::State<'_, db::Database>, source: String, id: String) {
-    read_state::mark_read(&db, &source, &id);
-}
-
-#[tauri::command]
-pub fn mark_batch_notification_read(
-    db: tauri::State<'_, db::Database>,
-    source: String,
-    ids: Vec<String>,
-) {
-    read_state::mark_batch_read(&db, &source, ids);
-}
-
-#[tauri::command]
-pub fn get_read_notifications(db: tauri::State<'_, db::Database>) -> read_state::ReadIdsResponse {
-    read_state::get_all_read_ids(&db)
-}
-
-#[tauri::command]
-pub fn get_data_cache(db: tauri::State<'_, db::Database>, key: String) -> Option<String> {
-    db.get_data_cache(&key).ok().flatten().map(|(json, _)| json)
-}
-
-#[tauri::command]
-pub fn get_data_cache_updated_at(db: tauri::State<'_, db::Database>, key: String) -> Option<i64> {
-    db.get_data_cache(&key)
-        .ok()
-        .flatten()
-        .map(|(_, updated_at)| updated_at)
-}
-
-#[tauri::command]
-pub fn save_data_cache(
-    db: tauri::State<'_, db::Database>,
-    key: String,
-    json: String,
-) -> Result<(), String> {
-    if key.starts_with("seen_notifs_") {
-        return Err("reserved cache key".into());
-    }
-    db.save_data_cache(&key, &json)
-}
-
-#[tauri::command]
 pub fn request_app_restart(app: tauri::AppHandle) {
-    app.request_restart();
+    super::app_shutdown::request_restart(&app);
 }

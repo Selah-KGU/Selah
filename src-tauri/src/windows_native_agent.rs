@@ -12,17 +12,17 @@
 //!   - Listening 中に再押し: 手動で入力終了 (Released 非対応環境向け fallback)
 
 #[allow(unused_imports)]
-use crate::agent;
-#[allow(unused_imports)]
 use crate::commands::NativeAgentConfig;
 #[allow(unused_imports)]
-use crate::db::Database;
+use crate::latest_ui_mailbox::{CurrentUiValue, LatestUiMailbox};
+use crate::main_thread_animation::MainThreadAnimation;
+use crate::native_agent_state::{
+    consume_all_speech, CapsuleMode, NativeViewLease, NativeViewUpdate, SharedState as AgentState,
+};
 #[allow(unused_imports)]
 use crate::stt;
 #[allow(unused_imports)]
 use rand::RngCore;
-#[allow(unused_imports)]
-use serde_json::Value;
 #[allow(unused_imports)]
 use std::mem::size_of;
 #[allow(unused_imports)]
@@ -73,10 +73,13 @@ mod paint;
 mod session;
 #[path = "windows_native_agent/shortcut.rs"]
 mod shortcut;
+#[path = "windows_native_agent/ui.rs"]
+mod ui;
 #[path = "windows_native_agent/util.rs"]
 mod util;
 #[path = "windows_native_agent/window.rs"]
 mod window;
+use ui::{drop_ui_jobs, enqueue_close, enqueue_ui_job, enqueue_view, run_ui_job};
 
 pub use bootstrap::{apply_config, setup};
 pub(in crate::windows_native_agent) use bootstrap::{install_ll_hook, uninstall_ll_hook};
@@ -148,17 +151,16 @@ const NULL_PEN_STOCK: i32 = 8; // GetStockObject(NULL_PEN)
 // ─ Custom window message ──────────────────────────────────────────────────────
 const WM_AGENT_SHORTCUT_PRESS: u32 = WM_USER + 50;
 const WM_AGENT_SHORTCUT_RELEASE: u32 = WM_USER + 51;
+const WM_AGENT_UI_JOB: u32 = WM_USER + 53;
 
 // ─ Atomic state ───────────────────────────────────────────────────────────────
 static HWND_READY: AtomicBool = AtomicBool::new(false);
 static CREATING: AtomicBool = AtomicBool::new(false);
 static DESTROYING: AtomicBool = AtomicBool::new(false);
-static CURRENT_MODE: AtomicI32 = AtomicI32::new(MODE_NONE);
 static MORPH_TOKEN: AtomicU64 = AtomicU64::new(0);
 static FADE_TOKEN: AtomicU64 = AtomicU64::new(0);
 static DOTS_TOKEN: AtomicU64 = AtomicU64::new(0);
 static DOTS_ACTIVE: AtomicI32 = AtomicI32::new(-1);
-static SHORTCUT_ARM_TOKEN: AtomicU64 = AtomicU64::new(0); // reset token for stop_listening
 static AUTO_CLOSE_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 // ─ LL keyboard hook state ─────────────────────────────────────────────────────
@@ -192,6 +194,8 @@ struct OverlayWindow {
     alpha: u8,
     text: String,
     dark: bool,
+    displayed_epoch: Option<u64>,
+    displayed_mode: i32,
 }
 
 impl Default for OverlayWindow {
@@ -205,21 +209,13 @@ impl Default for OverlayWindow {
             alpha: 0,
             text: String::new(),
             dark: true,
+            displayed_epoch: None,
+            displayed_mode: MODE_NONE,
         }
     }
 }
 
 // ─ Agent / STT logic state ────────────────────────────────────────────────────
-#[derive(Default)]
-struct AgentState {
-    stop_requested: bool,
-    finals_accumulated: String,
-    current_speech: String,
-    agent_listener: Option<tauri::EventId>,
-    result_accumulated: String,
-    event_listeners: Vec<tauri::EventId>,
-}
-
 static WINDOW: LazyLock<Mutex<OverlayWindow>> =
     LazyLock::new(|| Mutex::new(OverlayWindow::default()));
 static AGENT: LazyLock<Mutex<AgentState>> = LazyLock::new(|| Mutex::new(AgentState::default()));
@@ -267,6 +263,7 @@ struct OverlaySnapshot {
     height: i32,
     text: String,
     dark: bool,
+    mode: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -276,4 +273,28 @@ struct FrameSnapshot {
     center_x: i32,
     top_y: i32,
     alpha: u8,
+}
+
+/// Native state → STT reservation lock order; no UI/IO inside this guard.
+pub(crate) fn with_capture_owner<T>(
+    input_id: &str,
+    reserve: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let state = AGENT
+        .lock()
+        .map_err(|_| "Native input state lock failed".to_string())?;
+    state.reserve_listening_capture(input_id, reserve)
+}
+
+fn mode_code(mode: Option<CapsuleMode>) -> i32 {
+    match mode {
+        Some(CapsuleMode::Listening) => MODE_LISTENING,
+        Some(CapsuleMode::Processing) => MODE_PROCESSING,
+        Some(CapsuleMode::Result) => MODE_RESULT,
+        Some(CapsuleMode::Notice) => MODE_NOTICE,
+        None => MODE_NONE,
+    }
+}
+fn current_mode() -> i32 {
+    mode_code(AGENT.lock().unwrap_or_else(|e| e.into_inner()).mode)
 }

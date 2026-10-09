@@ -10,9 +10,9 @@ use super::*;
 ///   out an existing visualization just because this chunk's AI call happened
 ///   to skip the field.
 pub fn reconcile_whiteboard(
-    previous: Option<&LiveWhiteboard>,
+    previous: Option<&SharedWhiteboard>,
     model_output: Option<LiveWhiteboard>,
-) -> Option<LiveWhiteboard> {
+) -> Option<SharedWhiteboard> {
     match model_output {
         Some(new_board) => {
             if let Some(prev) = previous {
@@ -27,7 +27,7 @@ pub fn reconcile_whiteboard(
                     return Some(prev.clone());
                 }
             }
-            Some(new_board)
+            Some(new_board.into())
         }
         None => {
             if previous.is_some() {
@@ -38,9 +38,18 @@ pub fn reconcile_whiteboard(
     }
 }
 
-fn should_keep_previous_whiteboard(previous: &LiveWhiteboard, current: &LiveWhiteboard) -> bool {
+pub(super) fn should_keep_previous_whiteboard(
+    previous: &LiveWhiteboard,
+    current: &LiveWhiteboard,
+) -> bool {
     let prev_total = previous.nodes.len();
     let curr_total = current.nodes.len();
+
+    // Every rejection below applies only to non-growing output. Avoid all
+    // retention/cross-edge indexes when growth already makes it admissible.
+    if curr_total > prev_total {
+        return false;
+    }
 
     // Guard 1: extreme total shrink (12→5 style collapse).
     let extreme_shrink = prev_total >= 6 && curr_total < 4 && curr_total * 2 < prev_total;
@@ -123,6 +132,10 @@ fn should_keep_previous_whiteboard(previous: &LiveWhiteboard, current: &LiveWhit
 
     false
 }
+
+#[cfg(test)]
+#[path = "reconcile/tests.rs"]
+mod tests;
 
 fn count_cross_structure_edges(board: &LiveWhiteboard) -> usize {
     let node_by_id: std::collections::HashMap<&str, &LiveWhiteboardNode> =

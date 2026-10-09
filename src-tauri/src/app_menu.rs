@@ -1,7 +1,7 @@
 use tauri::{
     image::Image,
     menu::{AboutMetadataBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    AppHandle,
+    AppHandle, Manager,
 };
 
 const SETTINGS: &str = "app-settings";
@@ -17,6 +17,7 @@ const STUDY_SYLLABUS: &str = "study-syllabus";
 const STUDY_DETECTIVE: &str = "study-detective";
 const AGENT_MAIN: &str = "agent-main";
 const WINDOW_MAIN: &str = "window-main";
+const WINDOW_RELOAD: &str = "window-reload";
 const HELP_GUIDE: &str = "help-guide";
 const HELP_RELEASES: &str = "help-releases";
 const HELP_GITHUB: &str = "help-github";
@@ -89,8 +90,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .build()?;
 
     let main_window = item(app, WINDOW_MAIN, "メインウインドウを表示", None)?;
+    let reload_window = item(
+        app,
+        WINDOW_RELOAD,
+        "画面を再読み込み",
+        Some("CmdOrCtrl+Shift+R"),
+    )?;
     let window_menu = SubmenuBuilder::new(app, "ウインドウ")
         .item(&main_window)
+        .item(&reload_window)
         .separator()
         .minimize_with_text("しまう")
         .fullscreen_with_text("フルスクリーンにする")
@@ -166,6 +174,16 @@ pub fn handle_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         }
         WINDOW_MAIN => {
             let _ = crate::tray::show_main_window_with_tab(app, None);
+        }
+        WINDOW_RELOAD => {
+            // Native reload works even when WebKit cannot execute JavaScript.
+            // The backend recording and transcript state stay alive.
+            if let Some(main) = app.get_webview_window("main") {
+                log::info!("main WebView reload requested from native menu");
+                if let Err(err) = main.reload() {
+                    log::warn!("main WebView reload failed: {err}");
+                }
+            }
         }
         HELP_GUIDE => open_help(
             app,

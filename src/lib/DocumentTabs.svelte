@@ -8,6 +8,9 @@
   import { listBookmarks, toggleBookmark } from "./bookmarks";
   import { tabFaviconUrl } from "./documentTabs";
   import { normalizeEffectiveTheme } from "./themePreference";
+  import { acquireResourceGroup, ResourceScope } from "./resourceScope";
+  import { LatestViewRead } from "./latestViewRead";
+  import { createCacheSyncQueue } from "./cacheSyncQueue";
 
   interface DocumentTabControl {
     id: string;
@@ -68,14 +71,11 @@
   let error = $state("");
   let copied = $state(false);
   let agentOpen = $state(false);
-  let unlisten: (() => void) | null = null;
-  let agentVisibilityUnlisten: (() => void) | null = null;
-  let themeUnlisten: (() => void) | null = null;
-  let appThemeUnlisten: (() => void) | null = null;
-  let bookmarksUnlisten: (() => void) | null = null;
-  let refreshTimer: number | null = null;
-  let visibilityHandler: (() => void) | null = null;
-  let copyTimer: number | null = null;
+  const resources = new ResourceScope();
+  let releasePoll: (() => void) | null = null;
+  let releaseCopyTimer: (() => void) | null = null;
+  let copiedTabId: string | undefined;
+  let copiedUrl = "";
   let dragStart: { x: number; y: number } | null = null;
   let draggingWindow = false;
   let suppressNextTabClick = false;
@@ -87,14 +87,15 @@
   let dragFromIndex = 0;
   let dragToIndex = $state(0);
   let tabUnit = 0;
-  let titleHintUnlisten: (() => void) | null = null;
   let titleHints = $state<Record<string, string>>({});
   let filesSearch = $state("");
-  let filesSearchTimer: number | null = null;
+  let releaseFilesSearch: (() => void) | null = null;
+  let filesSearchTabId = "";
   let address = $state("");
   let addressEl = $state<HTMLInputElement | null>(null);
   let editingAddress = $state(false);
   let addressSyncedKey = "";
+  let navigationVersion = 0;
 
   const defaultReaderControls: DocumentTabControl[] = [
     { id: "toc", label: "目次", action: "reader.toggleToc", icon: "sidebar", group: "view" },
@@ -206,17 +207,25 @@
     return out;
   }
 
-  async function refreshTabs(): Promise<void> {
-    // Don't clobber the optimistic order while the user is dragging a tab.
-    if (dragTabId !== null) return;
-    try {
-      const nextTabs = await invoke<DocumentTab[]>("document_tabs_list", { owner });
+  const tabsRead = new LatestViewRead(resources,
+    () => invoke<DocumentTab[]>("document_tabs_list", { owner }),
+    (nextTabs) => {
+      // A drag can start while the native read is still pending.
+      if (dragTabId !== null) return;
       tabs = nextTabs;
       pruneTitleHints(nextTabs);
       error = "";
-    } catch (e) {
+    }, (e) => {
       error = String(e || "タブ一覧を取得できませんでした");
-    }
+    });
+  const queueTabsRead = createCacheSyncQueue(async (_keys, recoveryOnly) => {
+    if (!resources.active || dragTabId !== null || (recoveryOnly && document.hidden)) return;
+    await tabsRead.refresh().catch(() => {});
+  });
+
+  function refreshTabs(recoveryOnly = false): Promise<void> {
+    if (!resources.active || dragTabId !== null || (recoveryOnly && document.hidden)) return Promise.resolve();
+    return queueTabsRead(["tabs"], recoveryOnly);
   }
 
   function pruneTitleHints(nextTabs: DocumentTab[]): void {
@@ -229,16 +238,19 @@
   }
 
   async function run(action: () => Promise<unknown>): Promise<void> {
-    if (busy) return;
+    if (!resources.active || busy) return;
     busy = true;
     error = "";
+    tabsRead.invalidate();
     try {
       await action();
+      if (!resources.active) return;
+      tabsRead.invalidate();
       await refreshTabs();
     } catch (e) {
-      error = String(e || "操作に失敗しました");
+      if (resources.active) error = String(e || "操作に失敗しました");
     } finally {
-      busy = false;
+      if (resources.active) busy = false;
     }
   }
 
@@ -288,6 +300,7 @@
 
   function onTabPointerDown(event: PointerEvent, id: string, index: number): void {
     if (event.button !== 0) return;
+    tabsRead.invalidate();
     dragTabId = id;
     dragPointerId = event.pointerId;
     dragStartX = event.clientX;
@@ -330,10 +343,11 @@
       const next = tabs.slice();
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
+      tabsRead.invalidate();
       tabs = next;
       void invoke("document_tabs_reorder", { owner, ids: next.map((tab) => tab.id) }).catch(() => {});
     }
-    if (wasActive) window.setTimeout(() => (suppressNextTabClick = false), 120);
+    if (wasActive) resources.schedule(() => (suppressNextTabClick = false), 120);
   }
 
   function onTabPointerCancel(event: PointerEvent): void {
@@ -345,7 +359,8 @@
   }
 
   function sendControl(control: DocumentTabControl, event?: MouseEvent): void {
-    if (control.disabled || control.action === "reader.noop") return;
+    if (!activeTab || control.disabled || control.action === "reader.noop") return;
+    const tabId = activeTab.id;
     let payload: unknown = control.payload ?? null;
     // Menu-toggle controls live in this (88px) strip webview but their popup is
     // drawn in the full-size content webview below. Both webviews share the
@@ -357,24 +372,37 @@
     }
     void run(() => invoke("document_tabs_send_control", {
       owner,
+      tabId,
       action: control.action,
       payload,
     }));
   }
 
-  function sendFilesSearch(): void {
+  function sendFilesSearch(tabId: string, query: string): void {
     void run(() => invoke("document_tabs_send_control", {
       owner,
+      tabId,
       action: "files.search",
-      payload: filesSearch,
+      payload: query,
     }));
   }
 
+  function cancelFilesSearch(): void {
+    releaseFilesSearch?.();
+    releaseFilesSearch = null;
+    filesSearchTabId = "";
+  }
+
   function onFilesSearchInput(): void {
-    if (filesSearchTimer !== null) clearTimeout(filesSearchTimer);
-    filesSearchTimer = window.setTimeout(() => {
-      filesSearchTimer = null;
-      sendFilesSearch();
+    cancelFilesSearch();
+    if (activeTab?.type !== "files") return;
+    const tabId = activeTab.id;
+    const query = filesSearch;
+    filesSearchTabId = tabId;
+    releaseFilesSearch = resources.schedule(() => {
+      releaseFilesSearch = null;
+      filesSearchTabId = "";
+      if (activeTab?.id === tabId && activeTab.type === "files") sendFilesSearch(tabId, query);
     }, 140);
   }
 
@@ -382,6 +410,7 @@
     // Reset the inline search field when leaving a files tab so a stale query
     // never lingers on an unrelated tab's toolbar.
     if (activeTab?.type !== "files") filesSearch = "";
+    if (filesSearchTabId && filesSearchTabId !== activeTab?.id) cancelFilesSearch();
   });
 
   function isNoDragTarget(target: EventTarget | null): boolean {
@@ -412,7 +441,7 @@
     dragStart = null;
     draggingWindow = false;
     if (suppressNextTabClick) {
-      window.setTimeout(() => {
+      resources.schedule(() => {
         suppressNextTabClick = false;
       }, 120);
     }
@@ -434,12 +463,14 @@
   }
 
   async function browserExternal(): Promise<void> {
-    if (!activeTab || isHomeTab) return;
+    const tab = activeTab;
+    if (!resources.active || !tab || isHomeTab) return;
+    let url = tab.url;
     try {
-      const url = await invoke<string>("browser_get_url", { target: activeTab.target });
-      if (url && url !== "about:blank") await invoke("open_in_system_browser", { url });
-    } catch {
-      if (activeTab.url) await invoke("open_in_system_browser", { url: activeTab.url }).catch(() => {});
+      url = await invoke<string>("browser_get_url", { target: tab.target });
+    } catch {}
+    if (resources.active && url && url !== "about:blank") {
+      await invoke("open_in_system_browser", { url }).catch(() => {});
     }
   }
 
@@ -460,6 +491,7 @@
     const url = tab && tab.type !== "home" ? tab.url || "" : "";
     const key = tab ? tab.id : "";
     if (key !== addressSyncedKey) {
+      navigationVersion += 1;
       addressSyncedKey = key;
       editingAddress = false;
       address = url;
@@ -470,7 +502,10 @@
 
   function submitAddress(): void {
     const url = normalizeAddress(address);
-    if (!url || !activeTab) return;
+    if (!resources.active || !url || !activeTab) return;
+    const version = ++navigationVersion;
+    const tabId = activeTab.id;
+    error = "";
     editingAddress = false;
     if (isHomeTab) {
       const id = activeTab.id;
@@ -482,20 +517,37 @@
     }
     addressEl?.blur();
     void invoke("browser_navigate", { target: activeTab.target, url }).catch((e) => {
-      error = String(e || "ページを開けませんでした");
+      if (resources.active && version === navigationVersion && activeTab?.id === tabId) {
+        error = String(e || "ページを開けませんでした");
+      }
     });
   }
 
   async function copyActiveUrl(): Promise<void> {
+    const tabId = activeTab?.id;
     const url = activeTab?.url || "";
-    if (!url || isHomeTab) return;
+    if (!resources.active || !url || isHomeTab) return;
     try {
       await navigator.clipboard.writeText(url);
+      if (!resources.active || activeTab?.id !== tabId || activeTab.url !== url) return;
+      copiedTabId = tabId;
+      copiedUrl = url;
       copied = true;
-      if (copyTimer !== null) window.clearTimeout(copyTimer);
-      copyTimer = window.setTimeout(() => copied = false, 1100);
+      releaseCopyTimer?.();
+      releaseCopyTimer = resources.schedule(() => {
+        releaseCopyTimer = null;
+        copied = false;
+      }, 1100);
     } catch {}
   }
+
+  $effect(() => {
+    if (copied && (activeTab?.id !== copiedTabId || activeTab?.url !== copiedUrl)) {
+      releaseCopyTimer?.();
+      releaseCopyTimer = null;
+      copied = false;
+    }
+  });
 
   function readStoredTheme(): string {
     try {
@@ -516,76 +568,101 @@
     }
   }
 
-  async function syncThemeFromApp(): Promise<void> {
-    const stored = readStoredTheme();
-    try {
+  const themeRead = new LatestViewRead(resources,
+    async () => {
+      const stored = readStoredTheme();
       const appTheme = await invoke<string>("get_app_theme");
-      const normalized = normalizeEffectiveTheme(appTheme);
-      applyTheme(normalized || stored);
-    } catch {
+      return normalizeEffectiveTheme(appTheme) || stored;
+    }, applyTheme, () => {
+      const stored = readStoredTheme();
       if (stored) applyTheme(stored);
-    }
+    });
+  const queueThemeRead = createCacheSyncQueue(async () => {
+    await themeRead.refresh().catch(() => {});
+  });
+
+  function syncThemeFromApp(): Promise<void> {
+    if (!resources.active) return Promise.resolve();
+    return queueThemeRead(["theme"]);
   }
 
-  onMount(async () => {
+  const agentRead = new LatestViewRead(resources,
+    () => invoke<boolean>("document_tabs_agent_is_open"),
+    (open) => { agentOpen = open; });
+
+  function toggleAgent(): Promise<void> {
+    return run(async () => {
+      await invoke("document_tabs_open_agent", { owner });
+      await agentRead.refresh();
+    });
+  }
+
+  function updatePolling(): void {
+    if (!resources.active || document.hidden) {
+      releasePoll?.();
+      releasePoll = null;
+      return;
+    }
+    if (releasePoll) return;
+    // Events provide real-time state. Keep the existing 3s recovery cadence,
+    // but release the timer while hidden and catch up once on returning.
+    releasePoll = resources.interval(() => { void refreshTabs(true); }, 3000);
+    void refreshTabs(true);
+  }
+
+  async function initializeDocumentTabs(): Promise<void> {
+    if (!resources.active) return;
     const storedTheme = readStoredTheme();
     if (storedTheme) applyTheme(storedTheme);
-    await syncThemeFromApp();
-    themeUnlisten = await listen<string>("theme-changed", (event) => {
-      applyTheme(event.payload);
-    });
-    appThemeUnlisten = await listen("app-theme-changed", () => {
-      void syncThemeFromApp();
-    });
-    unlisten = await listen<{ owner: string; tabs: DocumentTab[] }>("document-tabs-changed", (event) => {
-      if (!event.payload || event.payload.owner !== owner) return;
-      if (dragTabId !== null) return;
-      tabs = event.payload.tabs || [];
-      pruneTitleHints(tabs);
-      error = "";
-    });
-    agentVisibilityUnlisten = await listen<{ owner: string; open: boolean }>("document-tabs-agent-visibility", (event) => {
-      if (!event.payload || event.payload.owner !== owner) return;
-      agentOpen = !!event.payload.open;
-    });
-    titleHintUnlisten = await listen<DocumentTabTitleHint>("document-tab-title-hint", (event) => {
-      if (!event.payload || event.payload.owner !== owner) return;
-      const target = String(event.payload.target || "");
-      if (!target) return;
-      const title = String(event.payload.title || "").trim();
-      const next = { ...titleHints };
-      if (title) next[target] = title;
-      else delete next[target];
-      titleHints = next;
-    });
+    await acquireResourceGroup(resources, [
+      (group) => listen<string>("theme-changed", group.guard((event) => {
+        themeRead.invalidate();
+        applyTheme(event.payload);
+      })),
+      (group) => listen("app-theme-changed", group.guard(() => {
+        themeRead.invalidate();
+        void syncThemeFromApp();
+      })),
+      (group) => listen<{ owner: string; tabs: DocumentTab[] }>("document-tabs-changed", group.guard((event) => {
+        if (!event.payload || event.payload.owner !== owner) return;
+        tabsRead.invalidate();
+        if (dragTabId !== null) return;
+        tabs = event.payload.tabs || [];
+        pruneTitleHints(tabs);
+        error = "";
+      })),
+      (group) => listen<{ owner: string; open: boolean }>("document-tabs-agent-visibility", group.guard((event) => {
+        if (!event.payload || event.payload.owner !== owner) return;
+        agentRead.invalidate();
+        agentOpen = !!event.payload.open;
+      })),
+      (group) => listen<DocumentTabTitleHint>("document-tab-title-hint", group.guard((event) => {
+        if (!event.payload || event.payload.owner !== owner) return;
+        const target = String(event.payload.target || "");
+        if (!target) return;
+        const title = String(event.payload.title || "").trim();
+        const next = { ...titleHints };
+        if (title) next[target] = title;
+        else delete next[target];
+        titleHints = next;
+      })),
+      (group) => listen("bookmarks-changed", group.guard(refreshBookmarkIds)),
+    ]);
+    if (!resources.active) return;
     refreshBookmarkIds();
-    bookmarksUnlisten = await listen("bookmarks-changed", () => refreshBookmarkIds());
-    await refreshTabs();
-    agentOpen = await invoke<boolean>("document_tabs_agent_is_open").catch(() => false);
-    // document-tabs-changed drives real-time updates (new/close/activate/reorder/
-    // loading all emit it); this slow poll is only a safety net for any dropped
-    // event, so it can run infrequently instead of hammering IPC every ~1s.
-    // Skip the IPC entirely while the window is hidden/minimized to save power —
-    // live events keep `tabs` current, and refreshTabs runs again once visible.
-    refreshTimer = window.setInterval(() => {
-      if (document.hidden) return;
-      void refreshTabs();
-    }, 3000);
-    visibilityHandler = () => { if (!document.hidden) void refreshTabs(); };
+    const visibilityHandler = resources.guard(updatePolling);
     document.addEventListener("visibilitychange", visibilityHandler);
-  });
+    resources.own(() => document.removeEventListener("visibilitychange", visibilityHandler));
+    updatePolling();
+    await Promise.all([syncThemeFromApp(), agentRead.refresh().catch(() => {})]);
+  }
 
-  onDestroy(() => {
-    unlisten?.();
-    agentVisibilityUnlisten?.();
-    titleHintUnlisten?.();
-    themeUnlisten?.();
-    appThemeUnlisten?.();
-    bookmarksUnlisten?.();
-    if (refreshTimer !== null) window.clearInterval(refreshTimer);
-    if (copyTimer !== null) window.clearTimeout(copyTimer);
-    if (visibilityHandler) document.removeEventListener("visibilitychange", visibilityHandler);
+  onMount(() => {
+    void initializeDocumentTabs().catch((e) => {
+      if (resources.active) error = String(e || "タブの通知を登録できませんでした");
+    });
   });
+  onDestroy(() => resources.dispose());
 </script>
 
 <svelte:head>
@@ -668,10 +745,7 @@
         aria-label={agentOpen ? "エージェントを閉じる" : "エージェントを開く"}
         aria-pressed={agentOpen}
         disabled={busy}
-        onclick={() => run(async () => {
-          await invoke("document_tabs_open_agent", { owner });
-          agentOpen = await invoke<boolean>("document_tabs_agent_is_open");
-        })}
+        onclick={toggleAgent}
       >
         <img class="agent-logo" src={selahLogoUrl} alt="" aria-hidden="true" />
         <span>エージェント</span>

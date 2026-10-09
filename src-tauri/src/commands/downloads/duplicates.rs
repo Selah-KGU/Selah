@@ -3,7 +3,7 @@
 use super::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,8 +69,19 @@ fn recommend_duplicate_keep(items: &[DownloadRecord]) -> usize {
 }
 
 #[tauri::command]
-pub fn scan_duplicate_downloads() -> Result<Vec<DuplicateFileGroup>, String> {
-    let records = scan_download_dir();
+pub async fn scan_duplicate_downloads() -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "Duplicate scan worker failed",
+        "Duplicate scan encoding failed",
+        || find_duplicate_downloads(scan_download_dir_snapshot()?, validate_downloads_path),
+    )
+    .await
+}
+
+fn find_duplicate_downloads(
+    records: Vec<DownloadRecord>,
+    validate: impl Fn(&str) -> Result<std::path::PathBuf, String>,
+) -> Result<Vec<DuplicateFileGroup>, String> {
     let mut by_size: HashMap<u64, Vec<DownloadRecord>> = HashMap::new();
     for mut record in records {
         if record.size_bytes == 0 || record.path.trim().is_empty() {
@@ -80,7 +91,7 @@ pub fn scan_duplicate_downloads() -> Result<Vec<DuplicateFileGroup>, String> {
         if !path.is_file() {
             continue;
         }
-        if validate_downloads_path(&record.path).is_err() {
+        if validate(&record.path).is_err() {
             continue;
         }
         record.file_exists = true;
@@ -139,26 +150,48 @@ pub fn scan_duplicate_downloads() -> Result<Vec<DuplicateFileGroup>, String> {
 }
 
 #[tauri::command]
-pub fn cleanup_duplicate_downloads(paths: Vec<String>) -> Result<DuplicateCleanupResult, String> {
-    delete_downloaded_files(paths)
+pub async fn cleanup_duplicate_downloads(
+    paths: Vec<String>,
+) -> Result<tauri::ipc::Response, String> {
+    delete_downloaded_files(paths).await
 }
 
 #[tauri::command]
-pub fn delete_downloaded_files(paths: Vec<String>) -> Result<DuplicateCleanupResult, String> {
+pub async fn delete_downloaded_files(paths: Vec<String>) -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "File deletion worker failed",
+        "File deletion encoding failed",
+        move || {
+            delete_files_and_history(
+                paths,
+                validate_downloads_path,
+                super::history::remove_download_records_by_paths,
+            )
+        },
+    )
+    .await
+}
+
+fn delete_files_and_history(
+    paths: Vec<String>,
+    validate: impl Fn(&str) -> Result<std::path::PathBuf, String>,
+    remove_history: impl FnOnce(&HashSet<String>) -> Result<(), String>,
+) -> Result<DuplicateCleanupResult, String> {
     let mut deleted_count = 0usize;
     let mut failed_count = 0usize;
     let mut errors = Vec::new();
+    let mut deleted_paths = HashSet::new();
 
     for path in paths {
         let trimmed = path.trim();
         if trimmed.is_empty() {
             continue;
         }
-        match validate_downloads_path(trimmed) {
+        match validate(trimmed) {
             Ok(canonical) => match std::fs::remove_file(&canonical) {
                 Ok(_) => {
                     deleted_count += 1;
-                    remove_download_records_by_path(&canonical.to_string_lossy());
+                    deleted_paths.insert(canonical.to_string_lossy().to_string());
                 }
                 Err(e) => {
                     failed_count += 1;
@@ -171,10 +204,20 @@ pub fn delete_downloaded_files(paths: Vec<String>) -> Result<DuplicateCleanupRes
             }
         }
     }
-
+    if !deleted_paths.is_empty() {
+        if let Err(error) = remove_history(&deleted_paths) {
+            // Files are already deleted; retain their accurate deletion counts
+            // and report the metadata failure without claiming deletion failed.
+            errors.push(format!("Download history cleanup failed: {error}"));
+        }
+    }
     Ok(DuplicateCleanupResult {
         deleted_count,
         failed_count,
         errors,
     })
 }
+
+#[cfg(test)]
+#[path = "duplicates_tests.rs"]
+mod tests;

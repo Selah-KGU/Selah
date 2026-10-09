@@ -454,7 +454,13 @@ pub(super) fn collect_relevant_live_notes(
         return Vec::new();
     }
 
-    let records = commands::list_downloads();
+    let records = match commands::list_downloads_snapshot() {
+        Ok(records) => records,
+        Err(error) => {
+            log::warn!("Reading LIVE download history for TODO context failed: {error}");
+            return Vec::new();
+        }
+    };
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
 

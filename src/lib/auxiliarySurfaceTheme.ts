@@ -12,14 +12,15 @@ export function applyAuxiliaryTheme(value: unknown): void {
   }
 }
 
-export async function syncAuxiliaryTheme(): Promise<void> {
+export async function syncAuxiliaryTheme(active: () => boolean = () => true): Promise<void> {
+  if (!active()) return;
   try {
     const stored = localStorage.getItem("selah-theme") || "";
     const appTheme = await invoke<string>("get_app_theme");
-    applyAuxiliaryTheme(normalizeEffectiveTheme(appTheme) || stored);
+    if (active()) applyAuxiliaryTheme(normalizeEffectiveTheme(appTheme) || stored);
   } catch {
     try {
-      applyAuxiliaryTheme(localStorage.getItem("selah-theme") || "");
+      if (active()) applyAuxiliaryTheme(localStorage.getItem("selah-theme") || "");
     } catch {}
   }
 }

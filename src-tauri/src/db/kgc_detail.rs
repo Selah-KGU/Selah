@@ -1,5 +1,16 @@
 use super::*;
 
+fn detail_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<KgcCourseDetailRow> {
+    let fields_json: String = row.get(offset + 1)?;
+    let textbooks_json: String = row.get(offset + 3)?;
+    Ok(KgcCourseDetailRow {
+        kgc_code: row.get(offset)?,
+        fields: serde_json::from_str(&fields_json).unwrap_or_default(),
+        delivery_mode: row.get(offset + 2)?,
+        textbooks: serde_json::from_str(&textbooks_json).unwrap_or_default(),
+    })
+}
+
 impl Database {
     // ── KGC course details ──
 
@@ -28,25 +39,12 @@ impl Database {
             "SELECT kgc_code, fields_json, delivery_mode, COALESCE(textbooks_json, '[]') FROM kgc_course_details WHERE kgc_code = ?1"
         ).map_err(|e| format!("DB query: {}", e))?;
         let mut rows = stmt
-            .query_map(params![kgc_code], |row| {
-                let kgc_code: String = row.get(0)?;
-                let fields_json: String = row.get(1)?;
-                let delivery_mode: String = row.get(2)?;
-                let textbooks_json: String = row.get(3)?;
-                let fields: Vec<(String, String)> =
-                    serde_json::from_str(&fields_json).unwrap_or_default();
-                let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
-                Ok(KgcCourseDetailRow {
-                    kgc_code,
-                    fields,
-                    delivery_mode,
-                    textbooks,
-                })
-            })
+            .query_map(params![kgc_code], |row| detail_row(row, 0))
             .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.next().and_then(|r| r.ok()))
     }
 
+    #[cfg(test)]
     pub(super) fn query_all_kgc_course_details(
         conn: &Connection,
     ) -> Result<Vec<KgcCourseDetailRow>, String> {
@@ -54,22 +52,21 @@ impl Database {
             "SELECT kgc_code, fields_json, delivery_mode, COALESCE(textbooks_json, '[]') FROM kgc_course_details"
         ).map_err(|e| format!("DB query: {}", e))?;
         let rows = stmt
-            .query_map([], |row| {
-                let kgc_code: String = row.get(0)?;
-                let fields_json: String = row.get(1)?;
-                let delivery_mode: String = row.get(2)?;
-                let textbooks_json: String = row.get(3)?;
-                let fields: Vec<(String, String)> =
-                    serde_json::from_str(&fields_json).unwrap_or_default();
-                let textbooks = serde_json::from_str(&textbooks_json).unwrap_or_default();
-                Ok(KgcCourseDetailRow {
-                    kgc_code,
-                    fields,
-                    delivery_mode,
-                    textbooks,
-                })
-            })
+            .query_map([], |row| detail_row(row, 0))
             .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub(super) fn query_visible_kgc_course_details(
+        conn: &Connection,
+        codes: &[&str],
+    ) -> Result<Vec<KgcCourseDetailRow>, String> {
+        let mut rows: Vec<(i64, KgcCourseDetailRow)> = super::scoped_rows::query_selected(
+            conn, codes, "SELECT rowid, kgc_code, fields_json, delivery_mode, COALESCE(textbooks_json, '[]') FROM kgc_course_details",
+            "kgc_code", "", |row| Ok((row.get(0)?, detail_row(row, 1)?)))?;
+        // The full reader scans this rowid table. Retain its observed order even
+        // when indexed lookups return keys in a different order or in chunks.
+        rows.sort_unstable_by_key(|row| row.0);
+        Ok(rows.into_iter().map(|(_, detail)| detail).collect())
     }
 }

@@ -2,6 +2,10 @@
   import { onMount, onDestroy, untrack } from "svelte";
   import { get } from "svelte/store";
   import { listen } from "@tauri-apps/api/event";
+  import { ResourceScope, ResourceSlot, acquireResourceGroup } from "../resourceScope";
+  import { LatestViewRead } from "../latestViewRead";
+  import { createCacheSyncQueue } from "../cacheSyncQueue";
+  import { getSttStreamState, idleSttStreamState, liveSttPhase } from "../sttSessionApi";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onCacheUpdate, activeTab, liveTodoPending } from "../stores";
@@ -19,31 +23,45 @@
     defaultSelectedCourseKey,
     toLiveCourse,
   } from "./live/liveCourseSelection";
-  import { extractOverallSummary, renderMd } from "./live/liveMarkdown";
+  import { renderMd } from "./live/liveMarkdown";
+  import {
+    emptyLiveSurfaceSnapshot,
+    liveSavedPreview,
+    applyTranscriptDelta,
+    isCurrentLiveSessionEvent,
+    isCurrentLiveSttEvent,
+    mergeLiveSnapshot,
+    type LiveSavedPreview,
+    type LiveSurfaceSnapshot,
+  } from "./live/liveTranscript";
+  import { applyLiveSessionNotification, type LiveSessionNotification } from "./live/liveNotification";
+  import { applyLiveFinishProgress, isLiveBusy, LIVE_FINISH_LABELS, liveSavePresentation } from "./live/liveFinish";
+  import { LiveTranscriptFollow } from "./live/liveTranscriptFollow";
+  import type { LiveFinishProgress, LiveTranscriptUpdate } from "../liveSessionApi";
   import {
     getScheduleSnapshot,
     getAiConfig,
     isAiReady,
-    liveAppendTranscript,
     liveCancelSession,
     liveClearDayCache,
-    liveFinishSession,
+    liveFinishSurface,
     liveGenerateOverallSummary,
-    liveGetSession,
-    livePeekDayCache,
-    liveStartSession,
+    liveGetSurface,
+    livePeekDaySurface,
+    liveStartSurface,
     isDemoActive,
     openSettingsWindow,
     openSubtitleOverlay,
     closeSubtitleOverlay,
     type LiveCourseInfo,
-    type LiveSaveResult,
+    type LiveSurfaceSaveResult,
     type LiveSessionSnapshot,
   } from "../api";
   import type { ScheduleResponse } from "../types";
   import { PERIOD_TIMES } from "../types";
   import { buildCourseSlots, type CourseSlot } from "../schedule";
-  import { computeWhiteboardLayout, whiteboardLayoutReady, whiteboardTopics } from "../whiteboardLayout";
+  import { computeWhiteboardLayout, prepareWhiteboardLayout, whiteboardLayoutReady, whiteboardTopics } from "../whiteboardLayout";
+  import { expandLiveSurfaceSave, type CompactLiveSurfaceSaveResult } from "../liveBoardTransport";
   import type {
     LiveControlModel,
     NoticeAction,
@@ -54,68 +72,59 @@
     WhiteboardStagePreset,
   } from "./live/liveTypes";
 
+  const resources = new ResourceScope();
+  const sttSubscription = new ResourceSlot(resources);
   let scheduleData = $state<ScheduleResponse | null>(null);
   let allCourseOptions = $state<CourseSlot[]>([]);
   let courseOptions = $state<CourseSlot[]>([]);
   let selectedKey = $state("");
-  let snapshot = $state<LiveSessionSnapshot>({
-    active: false,
-    course: null,
-    started_at: null,
-    transcript_lines: [],
-    pending_lines: [],
-    summaries: [],
-  });
+  let snapshot = $state.raw<LiveSurfaceSnapshot>(emptyLiveSurfaceSnapshot());
   let partialText = $state("");
   let lastPartialSeq = 0;
   let sttListening = $state(false);
   let sttPhase = $state<SttPhase>("idle");
   let busy = $state(false);
+  const controlsBusy = $derived(isLiveBusy(snapshot, busy));
   let pageLoading = $state(true);
   let notice = $state<NoticeState>(null);
   let liveReady = $state(false);
   let readinessMessage = $state("");
-  let lastSaved = $state<LiveSaveResult | null>(null);
+  let lastSaved = $state.raw<LiveSavedPreview | null>(null);
   let showSaveNotif = $state(false);
+  let saveNotifTimer: (() => void) | null = null;
+
+  function rememberSaved(result: LiveSurfaceSaveResult) {
+    if (!resources.active) return;
+    if (snapshot.active && snapshot.session_id && snapshot.session_id !== result.snapshot.session_id) return;
+    sessionUpdateRevision = Math.max(sessionUpdateRevision, result.snapshot.update_revision ?? 0);
+    lastSaved = liveSavedPreview(result);
+    if (!result.saved) return;
+    showSaveNotif = true;
+    saveNotifTimer?.();
+    saveNotifTimer = resources.schedule(() => {
+      showSaveNotif = false;
+      saveNotifTimer = null;
+    }, 6000);
+  }
   let saveProgress = $state("");
   // Structured progress for the LIVE 終了/要約 pipeline so the capsule can show a
   // step counter + progress bar + "next step" hint instead of a single label.
   let saveSteps = $state<string[]>([]);
   let saveStepIndex = $state(0);
+  const backendSaveProgress = $derived(liveSavePresentation(snapshot));
 
-  const STOP_STEP = "録音を停止中";
+  const STOP_STEP = LIVE_FINISH_LABELS.stopping;
   const AUTO_STOP_STEP = "自動終了の準備中";
-  const RECORD_WRITE_STEP = "録音内容を保存中";
-  const SUMMARY_STEP = "AI要約を生成中";
-  const FINAL_WRITE_STEP = "AI反映版を書き出し中";
-  const TODO_STEP = "やること・締切を抽出中";
   const OVERALL_STEP = "全体要約を生成中";
 
   function beginSave(steps: string[], index = 0) {
+    if (!resources.active) return;
     saveSteps = steps;
     saveStepIndex = Math.min(Math.max(index, 0), steps.length - 1);
     saveProgress = steps[saveStepIndex] ? `${steps[saveStepIndex]}…` : "";
   }
-  function gotoSave(label: string) {
-    const i = saveSteps.indexOf(label);
-    if (i >= 0) saveStepIndex = i;
-    saveProgress = `${label}…`;
-  }
-  function gotoSaveIfPresent(label: string) {
-    if (saveSteps.includes(label)) gotoSave(label);
-  }
-  function applyFinishProgress(step: string) {
-    if (step === "record_saved" || step === "ai") {
-      if (saveSteps.includes(SUMMARY_STEP)) {
-        gotoSave(SUMMARY_STEP);
-      } else {
-        gotoSaveIfPresent(FINAL_WRITE_STEP);
-      }
-    } else if (step === "final_save") {
-      gotoSaveIfPresent(FINAL_WRITE_STEP);
-    }
-  }
   function endSave() {
+    if (!resources.active) return;
     saveSteps = [];
     saveStepIndex = 0;
     saveProgress = "";
@@ -124,25 +133,24 @@
   let summaryDetailOpen = $state(false); // full secondary page (not a popup)
   let overallSummary = $state("");
   let overallSummaryAt = $state(""); // "HH:MM" the overall summary was generated
-  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  let scheduleFocusTimer: ReturnType<typeof setInterval> | null = null;
+  let noticeTimer: (() => void) | null = null;
+  let scheduleFocusTimer: (() => void) | null = null;
   let liveMounted = false;
   let liveWindowHidden = $state(typeof document !== "undefined" && document.hidden);
+  const liveSurfaceVisible = $derived($activeTab === "live" && !liveWindowHidden);
   let liveSurfaceWasVisible = false;
   let sttBindToken = 0;
   let sttListenersBound = false;
   let aiReplyLanguage = $state("ja");
-  let timeTimer: ReturnType<typeof setInterval> | null = null;
   let now = $state(new Date());
-  let scrollEl: HTMLElement | null = null;
-  const MIN_AI_SUMMARIZATION_MS = 2 * 60 * 1000;
+  let scrollEl = $state<HTMLElement | null>(null);
   const NO_EFFECTIVE_SPEECH_AUTO_PAUSE_MS = 10 * 60 * 1000;
   const PAUSED_AUTO_FINISH_MS = 20 * 60 * 1000;
   const LIVE_AUTO_GUARD_INTERVAL_MS = 60 * 1000;
-  let cancelSessionOnStartFailure = false;
+  let pendingStartSessionId: string | null = null;
   let lastEffectiveSpeechAtMs: number | null = null;
   let pausedSinceMs: number | null = null;
-  let liveAutoGuardTimer: ReturnType<typeof setInterval> | null = null;
+  let liveAutoGuardTimer: (() => void) | null = null;
   let autoLifecycleBusy = false;
 
   function debugLog(...args: unknown[]) {
@@ -157,11 +165,7 @@
     return Number.isFinite(parsed) ? parsed : null;
   }
 
-  function shouldSkipAiSummarizationForSnapshot(current: LiveSessionSnapshot): boolean {
-    const startedAtMs = snapshotStartedAtMs(current.started_at);
-    if (startedAtMs == null) return false;
-    return Date.now() - startedAtMs < MIN_AI_SUMMARIZATION_MS;
-  }
+
 
   function openSummaryDetail() {
     // Open the detail on the segment the rail is currently showing (not the
@@ -193,8 +197,9 @@
   // generated — the "現在までの全体要約" as a trailing entry (no longer a
   // separate floating card at the top of the history). The overall entry is
   // always last, so auto-select (-1) surfaces it the moment it appears.
+  const summaries = $derived(snapshot.summaries);
   const summaryEntries = $derived([
-    ...snapshot.summaries.map((c) => ({
+    ...summaries.map((c) => ({
       range_label: c.range_label,
       body: c.body,
       isOverall: false,
@@ -220,7 +225,7 @@
   // SEGMENT — the 全体要約 never drives them (全体要約不参与卡片显示). When the
   // overall entry happens to be the selected one (e.g. auto = trailing entry),
   // the rail falls back to the latest segment so the cards still load.
-  const segmentCount = $derived(snapshot.summaries.length);
+  const segmentCount = $derived(summaries.length);
   const activeSegmentIdx = $derived(
     segmentCount === 0
       ? -1
@@ -246,7 +251,7 @@
   });
 
   const activeSummaryTerms = $derived.by(() => {
-    const chunk = snapshot.summaries[activeSummaryIdx];
+    const chunk = summaries[activeSummaryIdx];
     return (chunk?.terms ?? []).filter((term) => term.term?.trim() && term.explanation?.trim());
   });
 
@@ -260,11 +265,9 @@
   // Stacked-card pager state for term annotations.
   // No wheel interception — switching is via click on a back card or the prev/next chips.
   let termCardIdx = $state(0);
-  // activeSummaryTerms is a $derived built with .filter(), so it returns a NEW
-  // array reference every time the snapshot updates (every few hundred ms during
-  // a live session). Watching the array itself would reset termCardIdx on every
-  // transcript tick. Instead, derive a stable primitive fingerprint and only reset
-  // when the term set actually changes.
+  // Transcript deltas preserve the chunk references. A recovery or segment
+  // change may replace the terms with an equivalent array; keep the selection
+  // unless the term set changes and the current index needs clamping.
   const termFingerprint = $derived(
     activeSummaryTerms.map((t) => t.term).join("|")
   );
@@ -280,10 +283,6 @@
   });
   function selectTermCard(i: number) {
     termCardIdx = Math.max(0, Math.min(activeSummaryTerms.length - 1, i));
-  }
-  function termStackOffset(i: number): number {
-    const total = activeSummaryTerms.length;
-    return total <= 0 ? 0 : (i - termCardIdx + total) % total;
   }
   function termCardPrev() {
     const total = activeSummaryTerms.length;
@@ -312,12 +311,14 @@
     // state so reopening starts from a clean slate. We deliberately do NOT
     // close on segment-change when the new segment also has a board —
     // swapping content in-place is less jarring than forcing a back/forth.
-    const hasBoard = !!activeWhiteboardLayout;
-    if (untrack(() => whiteboardExpanded) && !hasBoard) {
+    if (!whiteboardExpanded) return;
+    if (!activeWhiteboardLayout) {
       whiteboardExpanded = false;
     }
   });
   function openWhiteboardOverlay() {
+    // Enable the lazy layout before reading its actual stage preset.
+    whiteboardExpanded = true;
     // Reset pan/zoom to preset defaults; the auto-fit effect will recalculate
     // once the canvas dimensions are measured after the DOM renders.
     const preset = getWhiteboardStagePreset(activeWhiteboardLayout);
@@ -325,7 +326,6 @@
     whiteboardPanX = 0;
     whiteboardPanY = 0;
     initialFitDone = false;
-    whiteboardExpanded = true;
   }
   function closeWhiteboardOverlay() {
     whiteboardExpanded = false;
@@ -411,7 +411,13 @@
     }
   });
 
-  const rawWhiteboard = $derived(snapshot.summaries[activeSummaryIdx]?.whiteboard ?? null);
+  const rawWhiteboard = $derived(summaries[activeSummaryIdx]?.whiteboard ?? null);
+  $effect(() => {
+    if (!rawWhiteboard) return;
+    void prepareWhiteboardLayout().catch((error) => {
+      console.warn("[Live] whiteboard layout failed to load:", error);
+    });
+  });
   // Topic switcher: a dense board carries several main topics; the bottom bar
   // lets the user show one (default) or several at a time instead of cramming
   // every topic onto one canvas.
@@ -420,9 +426,8 @@
     return whiteboardTopics(rawWhiteboard);
   });
   let selectedTopicIds = $state<string[]>([]);
-  // Reset the selection only when the *set* of topics changes — the board
-  // object is re-derived on every transcript tick, but as long as the topic
-  // ids are unchanged we keep the user's current pick.
+  // Keep the selected topics when a recovery or segment change replaces the
+  // board with equivalent topic IDs. Speech deltas retain the board reference.
   const whiteboardTopicFingerprint = $derived(whiteboardTopicList.map((t) => t.id).join("|"));
   $effect(() => {
     whiteboardTopicFingerprint;
@@ -434,6 +439,9 @@
     });
   });
   const activeWhiteboardLayout = $derived.by(() => {
+    // The overview has its own layout. Defer the selected-topic forest until
+    // its overlay is opened, including when a new summary arrives in LIVE.
+    if (!whiteboardExpanded) return null;
     void $whiteboardLayoutReady;
     return computeWhiteboardLayout(rawWhiteboard, {
       fallbackBoardTitle: termFloatLabels.boardTitle,
@@ -502,9 +510,8 @@
   }
 
   // Drop selection when the segment changes or the overlay closes. We track
-  // primitives (segment index, overlay flag) — NOT activeWhiteboardLayout,
-  // since live transcript updates re-derive that on every chunk and would
-  // otherwise reset the selection the instant the user clicks.
+  // primitives (segment index, overlay flag); a new layout within the same
+  // segment should not clear a node selected by the user.
   $effect(() => {
     void activeSummaryIdx;
     void whiteboardExpanded;
@@ -542,21 +549,40 @@
     return { width: 1040, height: 660, zoom: 0.96 };
   }
 
-  let unlistenPartial: (() => void) | null = null;
-  let unlistenFinal: (() => void) | null = null;
-  let unlistenState: (() => void) | null = null;
-  let unlistenError: (() => void) | null = null;
-  let unlistenInfo: (() => void) | null = null;
-  let unlistenLive: (() => void) | null = null;
-  let unlistenSaved: (() => void) | null = null;
-  let unlistenFinishProgress: (() => void) | null = null;
-  let unlistenSummaryError: (() => void) | null = null;
-  let unlistenAiConfig: (() => void) | null = null;
-  let unlistenScheduleCache: (() => void) | null = null;
-  let unlistenWinFocus: (() => void) | null = null;
-  let unlistenWinBlur: (() => void) | null = null;
+  let sessionEventVersion = 0;
+  // Keep this watermark when the displayed snapshot becomes a course preview.
+  let sessionUpdateRevision = 0;
 
-  const hasContent = $derived(snapshot.transcript_lines.length > 0 || partialText.trim().length > 0);
+  function mergeSessionRead(fresh: LiveSessionSnapshot | LiveSurfaceSnapshot) {
+    snapshot = mergeLiveSnapshot(snapshot, fresh, isDemoActive() ? 0 : sessionUpdateRevision);
+    sessionUpdateRevision = Math.max(sessionUpdateRevision, fresh.update_revision ?? 0);
+  }
+
+  const sessionRecovery = createCacheSyncQueue(async () => {
+    if (!resources.active) return;
+    try {
+      const fresh = await liveGetSurface();
+      if (!resources.active) return;
+      // Full reads and events share capture order, including stop/start.
+      mergeSessionRead(fresh);
+    } catch (error) {
+      if (resources.active) console.warn("[Live] session resync failed:", error);
+      // Recovery failures are already presented by this batch. Return normally
+      // so callers share its completion without adding one catch per event.
+    }
+  });
+
+  function resyncSession(): Promise<void> {
+    if (!resources.active) return Promise.resolve();
+    // A gap queued during a failed read still gets its own following batch.
+    return sessionRecovery(["live_session"]);
+  }
+
+  function listenLive<T>(name: string, handler: (event: { payload: T }) => void) {
+    return resources.acquire(() => listen<T>(name, resources.guard(handler)));
+  }
+
+  const hasContent = $derived(snapshot.transcript_line_count > 0 || partialText.trim().length > 0);
   const sttBooting = $derived(
     sttPhase === "checking" || sttPhase === "starting" || sttPhase === "initializing"
   );
@@ -603,16 +629,10 @@
   let autoFollow = $state(true);
   let showScrollBtn = $derived(sttListening && !autoFollow);
   let confirmClear = $state(false);
-  let lastAppliedLen = $state(0);
 
-  const VISIBLE_LINE_WINDOW = 120;
-  const visibleLines = $derived.by(() => {
-    const lines = snapshot.transcript_lines;
-    if (lines.length <= VISIBLE_LINE_WINDOW) return lines;
-    return lines.slice(lines.length - VISIBLE_LINE_WINDOW);
-  });
+  const visibleLines = $derived(snapshot.visible_lines);
   const hiddenLineCount = $derived(
-    Math.max(0, snapshot.transcript_lines.length - visibleLines.length)
+    Math.max(0, snapshot.transcript_line_count - visibleLines.length)
   );
 
   /** User deliberately scrolled — unlock auto-follow while streaming. */
@@ -639,46 +659,51 @@
     scrollEl.scrollTop = scrollEl.scrollHeight;
   }
 
-  $effect(() => {
-    // Only run the clock while a session is active. When idle the badge
-    // doesn't display remaining time, so waking the event loop is wasted.
-    // 30s tick: the badge is minute-resolution ("残 X 分"), so anything
-    // tighter just burns power re-deriving the same string.
-    if (snapshot.active) {
-      if (!timeTimer) {
-        now = new Date();
-        timeTimer = setInterval(() => { now = new Date(); }, 30_000);
-      }
-      if (!liveAutoGuardTimer) {
-        liveAutoGuardTimer = setInterval(() => {
-          checkLiveAutoLifecycle().catch((e: any) => {
-            console.warn("[Live] auto lifecycle check failed:", e);
-          });
-        }, LIVE_AUTO_GUARD_INTERVAL_MS);
-      }
-    } else {
-      if (timeTimer) {
-        clearInterval(timeTimer);
-        timeTimer = null;
-      }
-      stopLiveAutoGuardTimer();
-      clearLiveAutoLifecycle();
-    }
-  });
-
-  let lastScrolledLen = -1; // plain variable — not reactive; writing inside $effect must not re-trigger it
-  $effect(() => {
-    const len = snapshot.transcript_lines.length;
-    if (!scrollEl || !autoFollow || !sttListening) return;
-    // Only schedule a scroll when the line count actually changes; partial
-    // text churn would otherwise trigger rAF on every 600ms decode.
-    if (len === lastScrolledLen) return;
-    lastScrolledLen = len;
-    requestAnimationFrame(() => {
-      if (!scrollEl || !autoFollow) return;
-      scrollEl.scrollTop = scrollEl.scrollHeight;
+  // Display-only timer, separate from the recording's lifecycle checks.
+  function bindLiveDisplayClock() {
+    const running = $derived(snapshot.active && liveSurfaceVisible);
+    $effect(() => {
+      if (!running) return;
+      now = new Date();
+      return resources.interval(() => { now = new Date(); }, 30_000);
     });
-  });
+  }
+  bindLiveDisplayClock();
+
+  function bindLiveAutoGuard() {
+    const running = $derived(snapshot.active);
+    $effect(() => {
+      if (!resources.active) return;
+      if (running) {
+        if (!liveAutoGuardTimer) {
+          liveAutoGuardTimer = resources.interval(() => {
+            checkLiveAutoLifecycle().catch((e: any) => {
+              console.warn("[Live] auto lifecycle check failed:", e);
+            });
+          }, LIVE_AUTO_GUARD_INTERVAL_MS);
+        }
+      } else {
+        stopLiveAutoGuardTimer();
+        clearLiveAutoLifecycle();
+      }
+    });
+  }
+  bindLiveAutoGuard();
+
+  function bindLiveTranscriptFollow() {
+    const follow = new LiveTranscriptFollow(resources);
+    $effect(() => {
+      follow.update({
+        recordingId: snapshot.active ? snapshot.session_id ?? null : null,
+        lineCount: snapshot.transcript_line_count,
+        target: scrollEl,
+        visible: liveSurfaceVisible && !whiteboardExpanded && !summaryDetailOpen,
+        listening: sttListening,
+        autoFollow,
+      });
+    });
+  }
+  bindLiveTranscriptFollow();
 
   const selectedCourse = $derived.by(() => {
     if (!selectedKey) return null;
@@ -695,10 +720,10 @@
   const FREE_NOTE_KEY = "__free_note__";
   const freeNoteSelected = $derived(selectedKey === FREE_NOTE_KEY);
   const canStart = $derived(
-    !snapshot.active && liveReady && !busy && (freeNoteSelected || !!selectedCourse),
+    !snapshot.active && liveReady && !controlsBusy && (freeNoteSelected || !!selectedCourse),
   );
-  const canStop = $derived(snapshot.active && !busy);
-  const canGenerateOverallSummary = $derived(snapshot.active && snapshot.transcript_lines.length > 0 && !busy);
+  const canStop = $derived(snapshot.active && !controlsBusy);
+  const canGenerateOverallSummary = $derived(snapshot.active && snapshot.transcript_line_count > 0 && !controlsBusy);
 
   const activeTargetLabel = $derived.by(() => {
     if (snapshot.course) {
@@ -734,7 +759,7 @@
     return `自動保存まで ${formatDuration(remainingMs)}`;
   });
 
-  const lineCountLabel = $derived(`${snapshot.transcript_lines.length}行`);
+  const lineCountLabel = $derived(`${snapshot.transcript_line_count}行`);
   const summaryCountLabel = $derived(
     snapshot.summaries.length > 0 ? `${snapshot.summaries.length}要約` : "要約待ち",
   );
@@ -742,7 +767,8 @@
   const liveControl = $derived.by((): LiveControlModel => {
     const saved = !snapshot.active && showSaveNotif && !!lastSaved;
     const blocked = !snapshot.active && !pageLoading && !liveReady;
-    const thinking = !!saveProgress;
+    const progress = backendSaveProgress?.label ?? saveProgress;
+    const thinking = !!progress;
     const phase = thinking
       ? "thinking"
       : snapshot.active && sttBooting
@@ -771,7 +797,7 @@
       : selectedTargetMeta;
 
     const detailLabel =
-      phase === "thinking" ? saveProgress
+      phase === "thinking" ? progress
       : phase === "booting" ? sttBootMessage
       : phase === "paused" ? pauseHintLabel || "転写は一時停止中です"
       : phase === "blocked" ? readinessMessage || "AI設定を確認してください"
@@ -795,7 +821,7 @@
 
     const primaryDisabled =
       primaryAction === "settings" ? false
-      : primaryAction === "pause" || primaryAction === "resume" ? busy
+      : primaryAction === "pause" || primaryAction === "resume" ? controlsBusy
       : primaryAction === "start" ? !canStart
       : true;
 
@@ -811,9 +837,9 @@
       statusLabel,
       targetLabel: activeTargetLabel,
       targetMeta,
-      progressLabel: phase === "thinking" ? saveProgress : "",
-      saveSteps: phase === "thinking" ? saveSteps : [],
-      saveStepIndex,
+      progressLabel: phase === "thinking" ? progress : "",
+      saveSteps: phase === "thinking" ? backendSaveProgress?.steps ?? saveSteps : [],
+      saveStepIndex: backendSaveProgress?.index ?? saveStepIndex,
       detailLabel,
       elapsedLabel,
       lineCountLabel,
@@ -835,25 +861,51 @@
     };
   });
 
-  // When the selected course changes (and session not active), load cached history
-  $effect(() => {
-    const course = selectedCourse;
-    // Use untrack for snapshot/showSaveNotif reads: writing snapshot inside the
-    // async .then() would otherwise re-trigger this effect → infinite loop.
-    if (!course || untrack(() => snapshot.active || showSaveNotif)) return;
-    livePeekDayCache(toLiveCourse(course)).then((cached) => {
-      if (untrack(() => snapshot.active || showSaveNotif)) return;
-      if (cached.transcript_lines.length > 0 || cached.summaries.length > 0) {
-        snapshot = cached;
-      } else if (untrack(() => snapshot.course)) {
-        snapshot = { active: false, course: null, started_at: null, transcript_lines: [], pending_lines: [], summaries: [] };
-      }
-    }).catch(() => {});
+  const previewRead = new LatestViewRead(resources, livePeekDaySurface, (cached) => {
+    if (untrack(() => snapshot.active || showSaveNotif || busy)) return;
+    if (cached.transcript_line_count > 0 || cached.summaries.length > 0) {
+      snapshot = cached;
+    } else if (untrack(() => snapshot.course)) {
+      snapshot = emptyLiveSurfaceSnapshot();
+    }
   });
+
+  // Schedule clock updates rebuild CourseSlot objects. Use a primitive identity
+  // so an unchanged course does not reread a full transcript every minute.
+  const previewIdentity = $derived.by(() => {
+    const course = selectedCourse;
+    return course ? JSON.stringify([
+      courseKey(course), course.name, now.getFullYear(), now.getMonth(), now.getDate(),
+    ]) : "";
+  });
+
+  function bindLiveCoursePreview() {
+    // Resume a selection skipped during a mutation, recording or saved badge.
+    // Primitive gates avoid rereading on ordinary inactive snapshot updates.
+    const enabled = $derived(!snapshot.active && !showSaveNotif && !busy);
+    $effect(() => {
+      void previewIdentity;
+      if (!enabled || !resources.active) return;
+      untrack(() => {
+        const course = selectedCourse;
+        overallSummary = "";
+        summaryDetailOpen = false;
+        summaryViewIndex = -1;
+        if (!course) {
+          if (snapshot.course) snapshot = emptyLiveSurfaceSnapshot();
+          return;
+        }
+        void previewRead.refresh(toLiveCourse(course)).catch(() => {});
+      });
+      // Also invalidate when selecting free-note, disabling previews or closing.
+      return () => previewRead.invalidate();
+    });
+  }
+  bindLiveCoursePreview();
 
   function clearNoticeTimer() {
     if (noticeTimer) {
-      clearTimeout(noticeTimer);
+      noticeTimer();
       noticeTimer = null;
     }
   }
@@ -872,6 +924,7 @@
       autoClearMs?: number;
     } = {},
   ) {
+    if (!resources.active) return;
     clearNoticeTimer();
     const source = options.source ?? "general";
     notice = {
@@ -882,7 +935,7 @@
     };
     if (options.autoClearMs && options.autoClearMs > 0) {
       const expected = { kind, text, source };
-      noticeTimer = setTimeout(() => {
+      noticeTimer = resources.schedule(() => {
         if (
           notice &&
           notice.kind === expected.kind &&
@@ -989,36 +1042,55 @@
     selectedKey = defaultSelectedCourseKey(courseOptions, date) || FREE_NOTE_KEY;
   }
 
-  async function refreshSchedule(preserveSelection = true) {
-    applyScheduleSnapshot(await getScheduleSnapshot(), new Date(), preserveSelection);
+  const scheduleRead = new LatestViewRead(resources, async (_preserveSelection: boolean) => {
+    const selection = selectedKey;
+    return { data: await getScheduleSnapshot(), selection };
+  }, ({ data, selection }, preserveSelection) => {
+    applyScheduleSnapshot(data, new Date(), preserveSelection || selection !== selectedKey);
+  });
+
+  function refreshSchedule(preserveSelection = true) {
+    return scheduleRead.refresh(preserveSelection);
   }
 
   function refreshFocusedCoursesFromClock() {
+    if (!resources.active) return;
     const current = new Date();
     now = current;
     if (!scheduleData || snapshot.active) return;
     applyScheduleSnapshot(scheduleData, current, true);
   }
 
-  async function refreshReadiness() {
-    const cfg = await getAiConfig();
+  const readinessRead = new LatestViewRead(resources, async () => {
+    const [cfg, ready] = await Promise.all([getAiConfig(), isAiReady()]);
+    return { cfg, ready };
+  }, ({ cfg, ready }) => {
     aiReplyLanguage = cfg.reply_language || "ja";
-    const ready = await isAiReady();
     liveReady = ready;
-    if (liveReady) {
+    if (ready) {
       readinessMessage = "";
       clearReadinessNotice();
-      return;
+    } else {
+      readinessMessage = buildReadinessMessage(cfg, ready);
+      setReadinessNotice(readinessMessage);
     }
-    readinessMessage = buildReadinessMessage(cfg, ready);
+  }, (error) => {
+    liveReady = false;
+    readinessMessage = error instanceof Error ? error.message : String(error);
     setReadinessNotice(readinessMessage);
-  }
+  });
 
-  async function ensureReadyToStart() {
-    await refreshReadiness();
+  function refreshReadiness() { return readinessRead.refresh(); }
+
+  async function ensureReadyToStart(): Promise<boolean> {
+    // A settings event may supersede the check while it is running. Confirm a
+    // current result before starting audio rather than using the earlier state.
+    while (resources.active && !await refreshReadiness()) { /* read again */ }
+    if (!resources.active) return false;
     if (!liveReady) {
       throw new Error(readinessMessage || (notice?.source === "readiness" ? notice.text : "AIの準備ができていません"));
     }
+    return true;
   }
 
   function markLiveListeningStarted() {
@@ -1045,13 +1117,13 @@
 
   function stopLiveAutoGuardTimer() {
     if (liveAutoGuardTimer) {
-      clearInterval(liveAutoGuardTimer);
+      liveAutoGuardTimer();
       liveAutoGuardTimer = null;
     }
   }
 
   async function checkLiveAutoLifecycle() {
-    if (!snapshot.active || busy || autoLifecycleBusy) return;
+    if (!resources.active || !snapshot.active || controlsBusy || autoLifecycleBusy) return;
     const nowMs = Date.now();
     if (sttListening && !sttBooting) {
       const lastEffectiveAt = lastEffectiveSpeechAtMs ?? nowMs;
@@ -1083,17 +1155,28 @@
   }
 
   async function startSession(course: LiveCourseInfo) {
+    if (!resources.active || snapshot.active || controlsBusy) return;
     busy = true;
     clearNotice();
     sttListening = false;
     sttPhase = "checking";
     setSttNotice("音声入力モデルを確認中…");
-    cancelSessionOnStartFailure = true;
+    pendingStartSessionId = null;
+    let createdSessionId: string | null = null;
+    const initialVersion = sessionEventVersion;
     try {
-      await ensureReadyToStart();
+      if (!await ensureReadyToStart()) return;
+      if (snapshot.active) return;
       sttPhase = "starting";
       setSttNotice("音声入力を起動中…");
-      snapshot = await liveStartSession(course);
+      const started = await liveStartSurface(course);
+      createdSessionId = started.session_id ?? null;
+      // The backend recording survives view navigation. Do not start new audio
+      // or publish this delayed response from a page which has already closed.
+      if (!resources.active) return;
+      mergeSessionRead(started);
+      if (!snapshot.active || snapshot.session_id !== createdSessionId || isLiveBusy(snapshot, false)) return;
+      pendingStartSessionId = createdSessionId;
       overallSummary = "";
       partialText = "";
       lastSaved = null;
@@ -1103,19 +1186,29 @@
         markLiveListeningStarted();
         clearSttNotice();
       } else {
-        await invoke("stt_start_stream", { caller: "live" });
+        if (!createdSessionId) throw new Error("Live録音IDがありません");
+        await invoke("stt_start_stream", { caller: "live", liveSessionId: createdSessionId });
       }
-      autoFollow = true;
+      if (resources.active && snapshot.active && snapshot.session_id === createdSessionId && !isLiveBusy(snapshot, false)) autoFollow = true;
     } catch (e: any) {
-      cancelSessionOnStartFailure = false;
-      sttPhase = "idle";
-      clearSttNotice();
-      setMessage("error", e?.message || String(e));
-      try {
-        await liveCancelSession();
-        snapshot = await liveGetSession();
-      } catch {}
-      clearLiveAutoLifecycle();
+      const ownsStart = pendingStartSessionId === createdSessionId;
+      if (ownsStart) pendingStartSessionId = null;
+      const present = resources.active && (createdSessionId
+        ? ownsStart && snapshot.active && snapshot.session_id === createdSessionId && !isLiveBusy(snapshot, false)
+        : initialVersion === sessionEventVersion && !snapshot.active);
+      if (present) {
+        sttPhase = "idle";
+        clearSttNotice();
+        setMessage("error", e?.message || String(e));
+      }
+      if (createdSessionId && present) {
+        try {
+          await liveCancelSession(createdSessionId);
+          if (resources.active && (!snapshot.active || snapshot.session_id === createdSessionId)) await resyncSession();
+        } catch {}
+      }
+      if (present && resources.active && !isLiveBusy(snapshot, false)
+        && (!snapshot.active || snapshot.session_id === createdSessionId)) clearLiveAutoLifecycle();
     } finally {
       busy = false;
     }
@@ -1140,16 +1233,18 @@
   }
 
   async function pauseLiveInternal(automated = false) {
+    if (!resources.active || !snapshot.active || controlsBusy) return;
+    const sessionId = snapshot.session_id;
+    if (!sessionId) return;
     busy = true;
     clearNotice();
     clearSttNotice();
-    cancelSessionOnStartFailure = false;
+    pendingStartSessionId = null;
     try {
       if (!isDemoActive()) {
-        try {
-          await invoke("stt_stop_stream");
-        } catch {}
+        await invoke("stt_stop_stream", { caller: "live", liveSessionId: sessionId });
       }
+      if (!resources.active || snapshot.session_id !== sessionId) return;
       sttListening = false;
       sttPhase = "idle";
       partialText = "";
@@ -1160,7 +1255,7 @@
         setNotice("warning", "10分間有効な音声が認識されなかったため、LIVEを一時停止しました。");
       }
     } catch (e: any) {
-      setMessage("error", e?.message || String(e));
+      if (snapshot.session_id === sessionId) setMessage("error", e?.message || String(e));
     } finally {
       busy = false;
     }
@@ -1171,15 +1266,18 @@
   }
 
   async function resumeLive() {
-    if (!snapshot.active) return;
+    if (!resources.active || !snapshot.active || controlsBusy) return;
+    const sessionId = snapshot.session_id;
+    if (!sessionId) return;
     busy = true;
     clearNotice();
     sttListening = false;
     sttPhase = "checking";
     setSttNotice("音声入力モデルを確認中…");
-    cancelSessionOnStartFailure = false;
+    pendingStartSessionId = null;
     try {
-      await ensureReadyToStart();
+      if (!await ensureReadyToStart()) return;
+      if (snapshot.session_id !== sessionId || !snapshot.active || isLiveBusy(snapshot, false)) return;
       sttPhase = "starting";
       setSttNotice("音声入力を起動中…");
       if (isDemoActive()) {
@@ -1188,70 +1286,50 @@
         markLiveListeningStarted();
         clearSttNotice();
       } else {
-        await invoke("stt_start_stream", { caller: "live" });
+        await invoke("stt_start_stream", { caller: "live", liveSessionId: sessionId });
       }
-      autoFollow = true;
+      if (resources.active && snapshot.session_id === sessionId) autoFollow = true;
     } catch (e: any) {
-      cancelSessionOnStartFailure = false;
-      sttPhase = "idle";
-      markLivePaused();
-      clearSttNotice();
-      setMessage("error", e?.message || String(e));
+      if (resources.active && snapshot.session_id === sessionId) {
+        pendingStartSessionId = null;
+        sttPhase = "idle";
+        markLivePaused();
+        clearSttNotice();
+        setMessage("error", e?.message || String(e));
+      }
     } finally {
       busy = false;
     }
   }
 
   async function stopLiveInternal(automated = false) {
+    if (!resources.active || !snapshot.active || controlsBusy) return;
+    const sessionId = snapshot.session_id;
+    if (!sessionId) return;
     busy = true;
     clearNotice();
     clearSttNotice();
-    cancelSessionOnStartFailure = false;
-    sttPhase = "idle";
+    pendingStartSessionId = null;
     const stopLabel = automated ? AUTO_STOP_STEP : STOP_STEP;
-    // Provisional full pipeline; corrected once we know empty/skip below.
-    beginSave([stopLabel, RECORD_WRITE_STEP, SUMMARY_STEP, FINAL_WRITE_STEP, TODO_STEP]);
+    // The backend reserves this recording before stopping its microphone and
+    // draining the tail. Show its actual stages rather than predicting AI work
+    // from a frontend snapshot captured before the decoder has finished.
+    saveSteps = [];
+    saveStepIndex = 0;
+    saveProgress = `${stopLabel}…`;
     try {
-      if (!isDemoActive()) {
-        try {
-          await invoke("stt_stop_stream");
-        } catch {}
-      }
+      const saved = await liveFinishSurface(sessionId);
+      if (!resources.active || (snapshot.session_id != null && snapshot.session_id !== sessionId)) return;
       sttListening = false;
+      sttPhase = "idle";
       partialText = "";
-      snapshot = await liveGetSession();
-      if (snapshot.transcript_lines.length === 0) {
-        beginSave([stopLabel, RECORD_WRITE_STEP], 1);
-        const ended = await liveFinishSession();
-        lastSaved = ended.saved ? ended : null;
-        snapshot = await liveGetSession();
-        clearLiveAutoLifecycle();
-        endSave();
-        if (!ended.saved) {
-          setMessage("success", automated ? "20分間再開されなかったため、LIVEを自動終了しました" : "LIVEを終了しました");
-        }
-        return;
-      }
-      const skipAiSummarization = shouldSkipAiSummarizationForSnapshot(snapshot);
-      if (skipAiSummarization) {
-        beginSave([stopLabel, RECORD_WRITE_STEP, FINAL_WRITE_STEP, TODO_STEP], 1);
-      } else {
-        gotoSave(RECORD_WRITE_STEP);
-      }
-      const saved = await liveFinishSession();
-      lastSaved = saved.saved ? saved : null;
+      rememberSaved(saved);
       overallSummary = "";
-      snapshot = await liveGetSession();
+      snapshot = saved.snapshot;
       clearLiveAutoLifecycle();
       endSave();
       if (saved.saved) {
-        showSaveNotif = true;
-        setTimeout(() => { showSaveNotif = false; }, 6000);
-        if (automated) {
-          setMessage("success", "20分間再開されなかったため、LIVEを自動保存しました");
-        }
-        // TODO/DDL judgment runs in the background; jump to the TODO page so the
-        // suggestions show up there to add once ready, instead of blocking here.
+        if (automated) setMessage("success", "20分間再開されなかったため、LIVEを自動保存しました");
         if (saved.todos_pending) {
           liveTodoPending.set(true);
           activeTab.set("todo");
@@ -1260,8 +1338,10 @@
         setMessage("success", automated ? "20分間再開されなかったため、LIVEを自動終了しました" : "LIVEを終了しました");
       }
     } catch (e: any) {
-      endSave();
-      setMessage("error", e?.message || String(e));
+      if (resources.active && (snapshot.session_id == null || snapshot.session_id === sessionId)) {
+        endSave();
+        setMessage("error", e?.message || String(e));
+      }
     } finally {
       busy = false;
     }
@@ -1272,20 +1352,25 @@
   }
 
   async function generateOverallSummary() {
-    if (!canGenerateOverallSummary) return;
+    if (!resources.active || !canGenerateOverallSummary) return;
+    const sessionId = snapshot.session_id;
+    if (!sessionId) return;
     busy = true;
     clearNotice();
     beginSave([OVERALL_STEP]);
     try {
-      overallSummary = await liveGenerateOverallSummary();
+      const generated = await liveGenerateOverallSummary(sessionId);
+      if (!resources.active || snapshot.session_id !== sessionId || !snapshot.active) return;
+      overallSummary = generated;
       const at = new Date();
       overallSummaryAt = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
-      snapshot = await liveGetSession();
+      await resyncSession();
+      if (!resources.active || snapshot.session_id !== sessionId || !snapshot.active) return;
       // Reset to auto so the freshly-added overall entry (always last) is shown.
       summaryViewIndex = -1;
       setMessage("success", "現在までの全体要約を生成しました");
     } catch (e: any) {
-      setMessage("error", e?.message || String(e));
+      if (snapshot.active && snapshot.session_id === sessionId) setMessage("error", e?.message || String(e));
     } finally {
       endSave();
       busy = false;
@@ -1293,7 +1378,7 @@
   }
 
   function clearCourseData() {
-    if (!selectedCourse || busy) return;
+    if (!selectedCourse || controlsBusy) return;
     confirmClear = true;
   }
 
@@ -1307,44 +1392,64 @@
   }
 
   async function executeClearCourseData() {
-    if (!selectedCourse) return;
-    const name = selectedCourse.name;
+    if (!resources.active || !selectedCourse || snapshot.active || controlsBusy) return;
+    const course = selectedCourse;
+    const identity = previewIdentity;
+    const displayed = snapshot;
+    const savedPreview = lastSaved;
+    const sessionVersion = sessionEventVersion;
+    const current = () => resources.active && previewIdentity === identity
+      && snapshot === displayed && !snapshot.active && lastSaved === savedPreview
+      && sessionEventVersion === sessionVersion;
     busy = true;
+    // A preview captured before deletion must not restore the removed cache.
+    previewRead.invalidate();
     clearNotice();
     try {
-      await liveClearDayCache(toLiveCourse(selectedCourse));
-      snapshot = { active: false, course: null, started_at: null, transcript_lines: [], pending_lines: [], summaries: [] };
+      await liveClearDayCache(toLiveCourse(course));
+      if (!current()) return;
+      snapshot = emptyLiveSurfaceSnapshot();
       overallSummary = "";
-      setMessage("success", `${name} のキャッシュをクリアしました`);
+      setMessage("success", `${course.name} のキャッシュをクリアしました`);
     } catch (e: any) {
-      setMessage("error", e?.message || String(e));
+      if (current()) setMessage("error", e?.message || String(e));
     } finally {
       busy = false;
     }
   }
 
-  async function refreshLiveSttState() {
-    if (isDemoActive()) {
-      sttListening = false;
-      sttPhase = "idle";
-      return;
-    }
-    try {
-      const [running, caller] = await Promise.all([
-        invoke<boolean>("stt_is_running"),
-        invoke<string | null>("stt_get_active_caller"),
-      ]);
-      sttListening = running && caller === "live";
-      sttPhase = sttListening ? "listening" : "idle";
-      if (sttListening) {
-        markLiveListeningStarted();
-      } else if (snapshot.active) {
-        markLivePaused();
-      }
-    } catch {
-      sttListening = false;
-      sttPhase = "idle";
+  const sttStateRead = new LatestViewRead(resources, async () => {
+    const sessionId = snapshot.session_id;
+    const state = isDemoActive() ? idleSttStreamState() : await getSttStreamState();
+    return { sessionId, state };
+  }, ({ sessionId, state }) => {
+    if (sessionId !== snapshot.session_id) return;
+    applyLiveSttPhase(liveSttPhase(state, sessionId));
+  });
+
+  function applyLiveSttPhase(phase: "idle" | "initializing" | "listening") {
+    const previousPhase = sttPhase;
+    const wasListening = sttListening;
+    sttPhase = phase;
+    sttListening = phase === "initializing" || phase === "listening";
+    if (phase === "initializing") {
+      setSttNotice("マイクと音声認識を初期化中…");
+    } else if (phase === "listening") {
+      clearSttNotice();
+      pendingStartSessionId = null;
+      // Foreground reads must not reset the silence deadline on every focus.
+      if (previousPhase !== "listening") markLiveListeningStarted();
+    } else {
+      clearSttNotice();
       if (snapshot.active) markLivePaused();
+    }
+    if (sttListening && !wasListening) autoFollow = true;
+  }
+
+  async function refreshLiveSttState() {
+    try { await sttStateRead.refresh(); }
+    catch (error) {
+      if (resources.active) console.warn("[Live] STT state read failed:", error);
     }
   }
 
@@ -1354,7 +1459,7 @@
 
   function stopScheduleFocusTimer() {
     if (scheduleFocusTimer) {
-      clearInterval(scheduleFocusTimer);
+      scheduleFocusTimer();
       scheduleFocusTimer = null;
     }
   }
@@ -1362,123 +1467,91 @@
   function unbindLiveSttListeners() {
     sttBindToken += 1;
     sttListenersBound = false;
-    unlistenPartial?.();
-    unlistenFinal?.();
-    unlistenState?.();
-    unlistenError?.();
-    unlistenInfo?.();
-    unlistenPartial = null;
-    unlistenFinal = null;
-    unlistenState = null;
-    unlistenError = null;
-    unlistenInfo = null;
+    sttSubscription.clear();
   }
 
   async function bindLiveSttListeners() {
-    if (sttListenersBound) return;
-    const token = sttBindToken;
+    if (!resources.active || sttListenersBound) return;
+    const token = ++sttBindToken;
     sttListenersBound = true;
-    const bound: Array<() => void> = [];
     try {
-    const partialUnlisten = await listen<{ text: string; caller: string; seq?: number }>("stt-partial", (event) => {
-      if (event.payload.caller !== "live") return;
-      const seq = event.payload.seq ?? 0;
-      if (seq > 0 && seq < lastPartialSeq) return;
-      if (seq > 0) lastPartialSeq = seq;
-      partialText = event.payload.text || "";
-    });
-    bound.push(partialUnlisten);
-    const finalUnlisten = await listen<{ text: string; caller: string; seq?: number }>("stt-final", async (event) => {
-      if (event.payload.caller !== "live") return;
-      if (!snapshot.active) return;
-      const seq = event.payload.seq ?? 0;
-      // An older final can finish after a newer partial. Keep the live line,
-      // but still commit the finished sentence to the transcript.
-      if (seq === 0 || seq >= lastPartialSeq) {
-        if (seq > 0) lastPartialSeq = seq;
-        partialText = "";
-      }
-      try {
-        // The backend also emits `live-session-updated`; we apply the
-        // return value and let the listener be an idempotent no-op via
-        // the line-length fingerprint check below.
-        snapshot = await liveAppendTranscript(event.payload.text || "");
-        lastAppliedLen = snapshot.transcript_lines.length;
-        markEffectiveSpeech();
-      } catch (e: any) {
-        setMessage("error", e?.message || String(e));
-      }
-    });
-    bound.push(finalUnlisten);
-    const stateUnlisten = await listen<{ state: string; caller: string }>("stt-state", (event) => {
-      if (event.payload.caller !== "live") return;
-      const wasListening = sttListening;
-      sttListening = event.payload.state === "initializing" || event.payload.state === "listening";
-      if (event.payload.state === "initializing") {
-        sttPhase = "initializing";
-        setSttNotice("マイクと音声認識を初期化中…");
-      } else if (event.payload.state === "listening") {
-        sttPhase = "listening";
-        clearSttNotice();
-        cancelSessionOnStartFailure = false;
-        // No green "開始/再開" confirmation bar — the capsule flips to REC.
-        if (!wasListening) markLiveListeningStarted();
-      } else {
-        sttPhase = "idle";
-        clearSttNotice();
-        if (snapshot.active) markLivePaused();
-      }
-      if (sttListening && !wasListening) autoFollow = true;
-    });
-    bound.push(stateUnlisten);
-    const errorUnlisten = await listen<{ message: string; caller: string }>("stt-error", (event) => {
-      if (event.payload.caller !== "live") return;
-      const wasStarting = sttPhase === "starting" || sttPhase === "initializing";
-      sttListening = false;
-      sttPhase = "idle";
-      clearSttNotice();
-      if (snapshot.active) markLivePaused();
-      setMessage("error", event.payload.message);
-      if (wasStarting && cancelSessionOnStartFailure) {
-        cancelSessionOnStartFailure = false;
-        void (async () => {
-          try {
-            await liveCancelSession();
-            snapshot = await liveGetSession();
-            partialText = "";
-          } catch {}
-        })();
-      }
-    });
-    bound.push(errorUnlisten);
-    const infoUnlisten = await listen<{ message: string; caller: string }>("stt-info", (event) => {
-      if (event.payload.caller !== "live") return;
-      setMessage("success", event.payload.message);
-    });
-    bound.push(infoUnlisten);
-    if (token !== sttBindToken) {
-      for (const unlisten of bound) unlisten();
-      return;
-    }
-    unlistenPartial = partialUnlisten;
-    unlistenFinal = finalUnlisten;
-    unlistenState = stateUnlisten;
-    unlistenError = errorUnlisten;
-    unlistenInfo = infoUnlisten;
-    } catch (err) {
-      for (const unlisten of bound) unlisten();
-      if (token === sttBindToken) {
-        console.warn("[Live] STT listener bind failed:", err);
-        unbindLiveSttListeners();
+      const bound = await sttSubscription.replace((current, registrationScope) => {
+        function subscribe<T>(name: string, handler: (event: { payload: T }) => void) {
+          return (group: ResourceScope) => listen<T>(name, group.guard((event) => {
+            if (current()) handler(event);
+          }));
+        }
+        return acquireResourceGroup(registrationScope, [
+          subscribe<{ text: string; caller: string; seq?: number; live_session_id?: string }>("stt-partial", (event) => {
+            if (!isCurrentLiveSttEvent(snapshot, event.payload)) return;
+            const seq = event.payload.seq ?? 0;
+            if (seq > 0 && seq < lastPartialSeq) return;
+            if (seq > 0) lastPartialSeq = seq;
+            partialText = event.payload.text || "";
+          }),
+          subscribe<{ text: string; caller: string; seq?: number; live_session_id?: string }>("stt-final", (event) => {
+            if (!isCurrentLiveSttEvent(snapshot, event.payload)) return;
+            if (!snapshot.active) return;
+            const seq = event.payload.seq ?? 0;
+            // An older final can finish after a newer partial. Keep the live line,
+            // but still commit the finished sentence to the transcript.
+            if (seq === 0 || seq >= lastPartialSeq) {
+              if (seq > 0) lastPartialSeq = seq;
+              partialText = "";
+            }
+            // Rust already committed this final. This event only clears the partial;
+            // live-transcript-appended carries the ordered UI delta.
+          }),
+          subscribe<{ state: string; caller: string; live_session_id?: string }>("stt-state", (event) => {
+            if (!isCurrentLiveSttEvent(snapshot, event.payload)) return;
+            sttStateRead.invalidate();
+            applyLiveSttPhase(event.payload.state === "initializing" || event.payload.state === "listening"
+              ? event.payload.state : "idle");
+          }),
+          subscribe<{ message: string; caller: string; live_session_id?: string }>("stt-error", (event) => {
+            if (!isCurrentLiveSttEvent(snapshot, event.payload)) return;
+            sttStateRead.invalidate();
+            const wasStarting = sttPhase === "starting" || sttPhase === "initializing";
+            sttListening = false;
+            sttPhase = "idle";
+            clearSttNotice();
+            if (snapshot.active) markLivePaused();
+            setMessage("error", event.payload.message);
+            if (wasStarting && pendingStartSessionId === event.payload.live_session_id) {
+              pendingStartSessionId = null;
+              const failedSessionId = event.payload.live_session_id;
+              if (!failedSessionId) return;
+              void (async () => {
+                try {
+                  await liveCancelSession(failedSessionId);
+                  if (!resources.active || (snapshot.active && snapshot.session_id !== failedSessionId)) return;
+                  await resyncSession();
+                  if (resources.active && !snapshot.active) partialText = "";
+                } catch {}
+              })();
+            }
+          }),
+          subscribe<{ message: string; caller: string; live_session_id?: string }>("stt-info", (event) => {
+            if (!isCurrentLiveSttEvent(snapshot, event.payload)) return;
+            setMessage("success", event.payload.message);
+          }),
+        ]);
+      });
+      if (token === sttBindToken && !bound) sttListenersBound = false;
+    } catch (error) {
+      if (resources.active && token === sttBindToken) {
+        sttListenersBound = false;
+        console.warn("[Live] STT listener bind failed:", error);
       }
     }
   }
 
   function applyLiveSurfacePolicy(onLive: boolean, hidden: boolean, sessionActive: boolean) {
+    if (!resources.active) return;
     const visible = onLive && !hidden;
     if (!visible) stopScheduleFocusTimer();
     else if (!scheduleFocusTimer) {
-      scheduleFocusTimer = setInterval(refreshFocusedCoursesFromClock, 60_000);
+      scheduleFocusTimer = resources.interval(refreshFocusedCoursesFromClock, 60_000);
     }
     if (!onLive && hidden && !sessionActive) unbindLiveSttListeners();
     else void bindLiveSttListeners();
@@ -1497,93 +1570,106 @@
     applyLiveSurfacePolicy(onLive, hidden, sessionActive);
   });
 
-  onMount(async () => {
-    document.addEventListener("visibilitychange", onLiveVisibilityChange);
+  async function initializeLive() {
+    resources.own(onCacheUpdate<ScheduleResponse>("schedule_data", resources.guard((fresh) => {
+      scheduleRead.invalidate();
+      applyScheduleSnapshot(fresh, new Date(), true);
+    })));
     try {
-      snapshot = await liveGetSession();
+      // Register in parallel before recovery and slow schedule/AI reads.
+      // Owned registrations which finish after teardown release immediately.
+      const win = getCurrentWindow();
+      const registrations = await Promise.allSettled([
+        listenLive<LiveSurfaceSaveResult>("live-surface-saved", (event) => {
+          rememberSaved(event.payload);
+        }),
+        listenLive<CompactLiveSurfaceSaveResult>("live-surface-compact-saved", (event) => {
+          try {
+            rememberSaved(expandLiveSurfaceSave(event.payload));
+          } catch (error) {
+            console.warn("[Live] saved whiteboard transport failed:", error);
+            void resyncSession();
+          }
+        }),
+        listenLive<LiveFinishProgress>("live-finish-progress", (event) => {
+          snapshot = applyLiveFinishProgress(snapshot, event.payload);
+        }),
+        listenLive<LiveSessionNotification>("live-session-updated", (event) => {
+          if (isDemoActive()) return;
+          const result = applyLiveSessionNotification(snapshot, event.payload, sessionUpdateRevision);
+          if (result.snapshot === snapshot && !result.needsResync) return;
+          sessionEventVersion += 1;
+          snapshot = result.snapshot;
+          sessionUpdateRevision = Math.max(sessionUpdateRevision, snapshot.update_revision ?? 0);
+          if (result.needsResync) void resyncSession();
+        }),
+        listenLive<LiveTranscriptUpdate>("live-transcript-appended", (event) => {
+          const result = applyTranscriptDelta(snapshot, event.payload);
+          snapshot = result.snapshot;
+          if (result.needsResync) void resyncSession();
+          else if (snapshot.session_id === event.payload.session_id) markEffectiveSpeech();
+        }),
+        listenLive<{ message: string; session_id: string }>("live-summary-error", (event) => {
+          if (!isCurrentLiveSessionEvent(snapshot, event.payload)) return;
+          // A scheduled AI summary failed. The backend has already cleared the
+          // "生成中" flag; surface the reason (incl. any provider error code) so
+          // the user knows it stalled instead of silently waiting for the next tick.
+          const detail = (event.payload.message || "").trim();
+          setNotice("error", detail ? `AI要約に失敗しました：${detail}` : "AI要約に失敗しました。次の区間で再試行します。", {
+            source: "general",
+            autoClearMs: 8000,
+          });
+        }),
+        listenLive("ai-config-changed", () => {
+          void refreshReadiness().catch((error) => {
+            if (resources.active) console.warn("[Live] readiness check failed:", error);
+          });
+        }),
+        resources.acquire(() => win.listen("tauri://blur", resources.guard(() => {
+          void openSubtitleOverlay().catch(() => {});
+        }))),
+        resources.acquire(() => win.listen("tauri://focus", resources.guard(() => {
+          void refreshSchedule(true).catch(() => {});
+          void closeSubtitleOverlay().catch(() => {});
+        }))),
+        bindLiveSttListeners(),
+      ]);
+      if (!resources.active) return;
+      for (const registration of registrations) {
+        if (registration.status === "rejected") console.warn("[Live] listener registration failed:", registration.reason);
+      }
+      await resyncSession();
+      if (!resources.active) return;
       await Promise.all([refreshSchedule(false), refreshReadiness()]);
+      if (!resources.active) return;
       await refreshLiveSttState();
-
-      unlistenScheduleCache = onCacheUpdate<ScheduleResponse>("schedule_data", (fresh) => {
-        applyScheduleSnapshot(fresh, new Date(), true);
-      });
-      unlistenLive = await listen<LiveSessionSnapshot>("live-session-updated", (event) => {
-        const len = event.payload.transcript_lines.length;
-        // Skip when this update is the same one we just applied via the
-        // liveAppendTranscript return value — avoids re-rendering the
-        // whole transcript block twice per final.
-        if (
-          len === lastAppliedLen &&
-          event.payload.summaries.length === snapshot.summaries.length &&
-          event.payload.active === snapshot.active
-        ) {
-          return;
-        }
-        snapshot = event.payload;
-        lastAppliedLen = len;
-        if (!snapshot.active) {
-          // Backend-owned flush driver stops itself when the session changes.
-        }
-      });
-      unlistenSaved = await listen<LiveSaveResult>("live-session-saved", (event) => {
-        lastSaved = event.payload;
-      });
-      unlistenFinishProgress = await listen<{ step: string }>("live-finish-progress", (event) => {
-        applyFinishProgress(event.payload.step);
-      });
-      unlistenSummaryError = await listen<{ message: string }>("live-summary-error", (event) => {
-        // A scheduled AI summary failed. The backend has already cleared the
-        // "生成中" flag; surface the reason (incl. any provider error code) so
-        // the user knows it stalled instead of silently waiting for the next tick.
-        const detail = (event.payload.message || "").trim();
-        setNotice("error", detail ? `AI要約に失敗しました：${detail}` : "AI要約に失敗しました。次の区間で再試行します。", {
-          source: "general",
-          autoClearMs: 8000,
-        });
-      });
-      unlistenAiConfig = await listen("ai-config-changed", () => {
-        refreshReadiness().catch((e: any) => {
-          liveReady = false;
-          readinessMessage = e?.message || "LIVEにはAIの準備が必要です。AI設定を確認してください。";
-          setReadinessNotice(readinessMessage);
-        });
-      });
-      // Automatic Live summary/whiteboard flushing is owned by the backend.
-    } catch (e: any) {
-      setMessage("error", e?.message || String(e));
+    } catch (error) {
+      if (resources.active) setMessage("error", error instanceof Error ? error.message : String(error));
     } finally {
-      pageLoading = false;
+      if (resources.active) pageLoading = false;
     }
-    // Live ページ表示中は字幕浮窗をブラックリスト
-    closeSubtitleOverlay().catch(() => {});
-    // アプリがバックグラウンドに回ったら浮窗を表示、フォアに戻ったら再ブラック
-    const win = getCurrentWindow();
-    unlistenWinBlur = await win.listen("tauri://blur", () => {
-      openSubtitleOverlay().catch(() => {});
-    });
-    unlistenWinFocus = await win.listen("tauri://focus", () => {
-      refreshSchedule(true).catch(() => {});
-      closeSubtitleOverlay().catch(() => {});
-    });
+    if (!resources.active) return;
+    void closeSubtitleOverlay().catch(() => {});
     liveMounted = true;
     applyLiveSurfacePolicy(get(activeTab) === "live", liveWindowHidden, snapshot.active);
+  }
+
+  onMount(() => {
+    document.addEventListener("visibilitychange", onLiveVisibilityChange);
+    resources.own(() => document.removeEventListener("visibilitychange", onLiveVisibilityChange));
+    void initializeLive().catch((error) => {
+      if (resources.active) console.warn("[Live] initialization failed:", error);
+    });
   });
 
   onDestroy(() => {
+    resources.dispose();
     stopLiveAutoGuardTimer();
-    if (timeTimer) clearInterval(timeTimer);
+    saveNotifTimer?.();
+    saveNotifTimer = null;
     clearNoticeTimer();
-    document.removeEventListener("visibilitychange", onLiveVisibilityChange);
     liveMounted = false;
     unbindLiveSttListeners();
-    unlistenLive?.();
-    unlistenSaved?.();
-    unlistenFinishProgress?.();
-    unlistenSummaryError?.();
-    unlistenAiConfig?.();
-    unlistenScheduleCache?.();
-    unlistenWinFocus?.();
-    unlistenWinBlur?.();
     stopScheduleFocusTimer();
     // Live ページを離れたら浮窗を再表示
     openSubtitleOverlay().catch(() => {});
@@ -1597,7 +1683,7 @@
     {renderedCourseOptions}
     bind:selectedKey
     {pageLoading}
-    {busy}
+    busy={controlsBusy}
     {canStop}
     {canGenerateOverallSummary}
     {confirmClear}
@@ -1629,7 +1715,6 @@
       {visibleLines}
       {hiddenLineCount}
       {renderMd}
-      {extractOverallSummary}
     />
 
 
@@ -1640,6 +1725,7 @@
   <LiveScrollToBottomButton visible={showScrollBtn && hasContent} onScrollToBottom={scrollToBottom} />
 
   <LiveRightRail
+    visible={liveSurfaceVisible && !whiteboardExpanded && !summaryDetailOpen}
     summaryEntries={summaryEntries}
     activeSummaryIdx={activeSegmentIdx}
     summarySegmentCount={snapshot.summaries.length}
@@ -1653,7 +1739,6 @@
     {activeSummaryTerms}
     {termCardIdx}
     {termFloatLabels}
-    {termStackOffset}
     onOpenWhiteboard={openWhiteboardOverlay}
     onSelectTermCard={selectTermCard}
     onTermCardPrev={termCardPrev}

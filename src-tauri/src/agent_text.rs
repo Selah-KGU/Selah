@@ -21,9 +21,18 @@ pub(crate) const THINKING_END_TAGS: &[&str] = &["</think>", "</thought>", "</thi
 pub(crate) const THINKING_TAG_HOLDBACK: usize = 10;
 
 pub(crate) fn strip_think(s: &str) -> String {
+    visible_without_thinking(s).into_owned()
+}
+
+pub(crate) fn visible_without_thinking(s: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let Some(first) = find_thinking_start_tag(s) else {
+        return Cow::Borrowed(s);
+    };
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some((start, start_len)) = find_thinking_start_tag(rest) {
+    let mut next = Some(first);
+    while let Some((start, start_len)) = next {
         out.push_str(&rest[..start]);
         match find_thinking_end_tag(&rest[start + start_len..]) {
             Some((end_rel, end_len)) => {
@@ -34,9 +43,10 @@ pub(crate) fn strip_think(s: &str) -> String {
                 break;
             }
         }
+        next = find_thinking_start_tag(rest);
     }
     out.push_str(rest);
-    out
+    Cow::Owned(out)
 }
 
 pub(crate) fn find_thinking_start_tag(s: &str) -> Option<(usize, usize)> {
@@ -81,15 +91,57 @@ pub(crate) fn holdback(s: &str, keep: usize) -> usize {
 }
 
 pub(crate) fn neutralize_pseudo_tool_calls(text: &str) -> String {
-    text.replace("<call:", "<call：")
-        .replace("</call:", "</call：")
-        .replace("task_call:", "task_call：")
-        .replace("tool_call:", "tool_call：")
-        .replace("function_call:", "function_call：")
-        .replace("call:", "call：")
-        .replace('‹', "〈")
-        .replace('›', "〉")
-        .replace("MALFORMED_FUNCTION_CALL", "MALFORMED FUNCTION CALL")
+    neutralized_tool_text(text).into_owned()
+}
+
+const TOOL_TEXT_REPLACEMENTS: [(&str, &str); 9] = [
+    ("<call:", "<call："),
+    ("</call:", "</call："),
+    ("task_call:", "task_call："),
+    ("tool_call:", "tool_call："),
+    ("function_call:", "function_call："),
+    ("call:", "call："),
+    ("‹", "〈"),
+    ("›", "〉"),
+    ("MALFORMED_FUNCTION_CALL", "MALFORMED FUNCTION CALL"),
+];
+
+pub(crate) fn neutralized_tool_prefix(text: &str, byte_limit: usize) -> std::borrow::Cow<'_, str> {
+    // Current replacements never shorten UTF-8. Read through the longest
+    // marker after the requested prefix so boundary-crossing calls are still
+    // neutralized. If a future rule shrinks text, retain the full-input path.
+    let mut end = if TOOL_TEXT_REPLACEMENTS
+        .iter()
+        .all(|(from, to)| to.len() >= from.len())
+    {
+        byte_limit
+            .saturating_add(3)
+            .saturating_add(
+                TOOL_TEXT_REPLACEMENTS
+                    .iter()
+                    .map(|(from, _)| from.len())
+                    .max()
+                    .unwrap_or(0),
+            )
+            .min(text.len())
+    } else {
+        text.len()
+    };
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    neutralized_tool_text(&text[..end])
+}
+
+pub(crate) fn neutralized_tool_text(text: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let mut text = Cow::Borrowed(text);
+    for (from, to) in TOOL_TEXT_REPLACEMENTS {
+        if text.contains(from) {
+            text = Cow::Owned(text.replace(from, to));
+        }
+    }
+    text
 }
 
 pub(crate) fn extract_pseudo_call_from_text(text: &str) -> Option<String> {
@@ -112,10 +164,16 @@ pub(crate) fn extract_pseudo_call_from_text(text: &str) -> Option<String> {
 }
 
 pub(crate) fn contains_leading_pseudo_tool_call(text: &str) -> bool {
-    let candidate = trim_pseudo_prefixes(text).to_ascii_lowercase();
-    PSEUDO_TOOL_MARKERS
-        .iter()
-        .any(|marker| candidate.starts_with(marker))
+    has_pseudo_marker_prefix(trim_pseudo_prefixes(text))
+}
+
+pub(crate) fn has_pseudo_marker_prefix(candidate: &str) -> bool {
+    PSEUDO_TOOL_MARKERS.iter().any(|marker| {
+        candidate
+            .as_bytes()
+            .get(..marker.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(marker.as_bytes()))
+    })
 }
 
 pub(crate) fn trim_pseudo_prefixes(text: &str) -> &str {

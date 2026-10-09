@@ -18,6 +18,9 @@ pub fn cancel_remote(gen_id: &str) {
 }
 
 pub fn is_remote_cancelled(gen_id: &str) -> bool {
+    if crate::agent_turn_scope::generation_cancelled(gen_id) {
+        return true;
+    }
     REMOTE_CANCEL
         .lock()
         .map(|s| s.contains(gen_id))

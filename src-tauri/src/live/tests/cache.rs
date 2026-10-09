@@ -8,9 +8,12 @@ fn fixture_cache(transcript: Vec<(&str, &str)>) -> LiveDayCache {
         started_at: "2026-05-13 10:00:00".to_string(),
         transcript_lines: transcript
             .into_iter()
-            .map(|(text, at)| LiveTranscriptLine {
-                text: text.to_string(),
-                at: at.to_string(),
+            .map(|(text, at)| {
+                LiveTranscriptLine {
+                    text: text.to_string(),
+                    at: at.to_string(),
+                }
+                .into()
             })
             .collect(),
         summaries: Vec::new(),
@@ -162,13 +165,15 @@ fn snapshot_serialization_does_not_clone_vec() {
         LiveTranscriptLine {
             text: "one".into(),
             at: "10:00:01".into(),
-        },
+        }
+        .into(),
         LiveTranscriptLine {
             text: "two".into(),
             at: "10:00:02".into(),
-        },
+        }
+        .into(),
     ];
-    let summaries: Vec<LiveSummaryChunk> = vec![];
+    let summaries: Vec<SharedSummaryChunk> = vec![];
     let cache_ref = LiveDayCacheRef {
         date: "2026-05-13".into(),
         course_name: "テスト",

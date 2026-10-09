@@ -150,6 +150,7 @@ impl Database {
                 role            TEXT NOT NULL,
                 content         TEXT NOT NULL,
                 images_json     TEXT,
+                documents_json  TEXT,
                 tool_name       TEXT,
                 tool_result_json TEXT,
                 created_at      INTEGER NOT NULL
@@ -157,6 +158,22 @@ impl Database {
         ",
         )
         .map_err(|e| format!("DB init: {}", e))?;
+
+        // Additive migration: keep all cached/user data and the schedule tables.
+        let has_documents: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_messages') WHERE name='documents_json')",
+            [], |row| row.get(0),
+        ).map_err(|e| format!("DB attachment migration: {e}"))?;
+        if !has_documents {
+            conn.execute(
+                "ALTER TABLE agent_messages ADD COLUMN documents_json TEXT",
+                [],
+            )
+            .map_err(|e| format!("DB attachment migration: {e}"))?;
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_agent_message_documents ON agent_messages(conv_id,id) WHERE documents_json IS NOT NULL AND role='user'")
+            .map_err(|e| format!("DB attachment index: {e}"))?;
+        super::revisions::init(&conn)?;
 
         // Indexes for frequent queries
         conn.execute_batch("
@@ -167,6 +184,8 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_la_luna_id ON luna_activities(luna_id);
             CREATE INDEX IF NOT EXISTS idx_lc_updated ON luna_counts(updated_at);
             CREATE INDEX IF NOT EXISTS idx_agent_messages_conv ON agent_messages(conv_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_display ON agent_messages(conv_id, created_at)
+                WHERE role IN ('user', 'assistant');
             CREATE INDEX IF NOT EXISTS idx_agent_conv_updated ON agent_conversations(updated_at DESC);
         ").map_err(|e| format!("DB index: {}", e))?;
 

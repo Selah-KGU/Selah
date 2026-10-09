@@ -56,24 +56,26 @@ pub(in crate::stt) fn vad_model_path() -> PathBuf {
     stt_models_dir().join(VAD_MODEL_FILE)
 }
 
-fn file_exists(path: &Path) -> bool {
-    path.exists() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+pub(super) fn file_exists(path: &Path) -> bool {
+    path.metadata()
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
 }
 
 fn file_exists_with_min_size(path: &Path, min_bytes: u64) -> bool {
-    path.exists()
-        && path
-            .metadata()
-            .map(|metadata| metadata.len() >= min_bytes)
-            .unwrap_or(false)
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.len() >= min_bytes.max(1))
+        .unwrap_or(false)
 }
 
-pub fn is_stt_model_downloaded(model: &SttModelInfo) -> bool {
-    let dir = stt_model_dir(model);
+pub(super) fn model_files_ready(model: &SttModelInfo, dir: &Path) -> bool {
     let min_model_bytes = model.file_size_mb.saturating_mul(1024 * 1024);
     file_exists_with_min_size(&dir.join(&model.model_file), min_model_bytes)
         && file_exists(&dir.join(&model.tokens_file))
-        && file_exists(&vad_model_path())
+}
+
+pub fn is_stt_model_downloaded(model: &SttModelInfo) -> bool {
+    model_files_ready(model, &stt_model_dir(model)) && file_exists(&vad_model_path())
 }
 
 fn stt_model_missing_message(model: &SttModelInfo) -> String {

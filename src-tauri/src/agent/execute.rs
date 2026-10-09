@@ -10,7 +10,6 @@ use super::*;
 pub(super) async fn execute_tools(
     app: &AppHandle,
     conv_id: &str,
-    db: &Database,
     plan: &Plan,
     user_text: &str,
     turn_context: &AgentTurnContext,
@@ -65,15 +64,7 @@ pub(super) async fn execute_tools(
                     ok: false,
                 },
             );
-            let tool_json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
-            let _ = db.agent_append_message(
-                conv_id,
-                "tool",
-                "",
-                None,
-                Some(&call.name),
-                Some(&tool_json),
-            );
+            let result = persistence::save_tool_result(app, conv_id, &call.name, result).await?;
             results.push((call.name.clone(), result));
             continue;
         }
@@ -85,26 +76,12 @@ pub(super) async fn execute_tools(
             serde_json::to_string(&call.args).unwrap_or_default()
         );
         let timeout = timeout_for(&call.name);
-        let dispatch = agent_tools::dispatch(app, &call.name, &call.args);
-        tokio::pin!(dispatch);
-        let deadline = tokio::time::sleep(timeout);
-        tokio::pin!(deadline);
-        let mut cancel_tick = tokio::time::interval(std::time::Duration::from_millis(120));
-        let result = loop {
-            tokio::select! {
-                value = &mut dispatch => break value,
-                _ = &mut deadline => {
-                    break json!({
-                        "error": format!("tool timed out after {}s", timeout.as_secs()),
-                    });
-                }
-                _ = cancel_tick.tick() => {
-                    if AgentProvider::is_cancelled(conv_id) {
-                        return Err(AgentError::Cancelled);
-                    }
-                }
-            }
-        };
+        let result = await_tool_result(
+            conv_id,
+            timeout,
+            agent_tools::dispatch(app, &call.name, &call.args),
+        )
+        .await?;
         let ok = result.get("error").is_none();
         if !ok && is_browser_mutation_tool(&call.name) {
             browser_mutation_failed = true;
@@ -128,15 +105,7 @@ pub(super) async fn execute_tools(
         );
 
         // Persist tool result.
-        let tool_json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
-        let _ = db.agent_append_message(
-            conv_id,
-            "tool",
-            "",
-            None,
-            Some(&call.name),
-            Some(&tool_json),
-        );
+        let result = persistence::save_tool_result(app, conv_id, &call.name, result).await?;
 
         results.push((call.name.clone(), result));
 
@@ -151,7 +120,7 @@ pub(super) async fn execute_tools(
         {
             let read_args = apply_browser_target_lock("read_browser_page", json!({}), turn_context);
             let read_result =
-                execute_auto_tool(app, conv_id, db, "read_browser_page", read_args).await?;
+                execute_auto_tool(app, conv_id, "read_browser_page", read_args).await?;
             results.push(("read_browser_page".into(), read_result));
             if AgentProvider::is_cancelled(conv_id) {
                 return Err(AgentError::Cancelled);
@@ -169,7 +138,7 @@ pub(super) async fn execute_tools(
                 let mouse_args =
                     apply_browser_target_lock("computer_mouse_click", mouse_args, turn_context);
                 let mouse_result =
-                    execute_auto_tool(app, conv_id, db, "computer_mouse_click", mouse_args).await?;
+                    execute_auto_tool(app, conv_id, "computer_mouse_click", mouse_args).await?;
                 results.push(("computer_mouse_click".into(), mouse_result));
                 auto_mouse_done = true;
                 if AgentProvider::is_cancelled(conv_id) {
@@ -179,7 +148,7 @@ pub(super) async fn execute_tools(
                 let read_args =
                     apply_browser_target_lock("read_browser_page", json!({}), turn_context);
                 let read_result =
-                    execute_auto_tool(app, conv_id, db, "read_browser_page", read_args).await?;
+                    execute_auto_tool(app, conv_id, "read_browser_page", read_args).await?;
                 results.push(("read_browser_page".into(), read_result));
                 if AgentProvider::is_cancelled(conv_id) {
                     return Err(AgentError::Cancelled);
@@ -200,7 +169,7 @@ pub(super) async fn execute_tools(
                 let read_args =
                     apply_browser_target_lock("read_browser_page", json!({}), turn_context);
                 let read_result =
-                    execute_auto_tool(app, conv_id, db, "read_browser_page", read_args).await?;
+                    execute_auto_tool(app, conv_id, "read_browser_page", read_args).await?;
                 let mouse_args =
                     infer_mouse_click_from_observation(user_text, &read_result, turn_context)
                         .or_else(|| {
@@ -218,7 +187,7 @@ pub(super) async fn execute_tools(
                 let mouse_args =
                     apply_browser_target_lock("computer_mouse_click", mouse_args, turn_context);
                 let mouse_result =
-                    execute_auto_tool(app, conv_id, db, "computer_mouse_click", mouse_args).await?;
+                    execute_auto_tool(app, conv_id, "computer_mouse_click", mouse_args).await?;
                 results.push(("computer_mouse_click".into(), mouse_result));
                 auto_mouse_done = true;
                 if AgentProvider::is_cancelled(conv_id) {
@@ -228,7 +197,7 @@ pub(super) async fn execute_tools(
                 let shot_args =
                     apply_browser_target_lock("computer_screenshot", json!({}), turn_context);
                 let shot_result =
-                    execute_auto_tool(app, conv_id, db, "computer_screenshot", shot_args).await?;
+                    execute_auto_tool(app, conv_id, "computer_screenshot", shot_args).await?;
                 results.push(("computer_screenshot".into(), shot_result));
                 if AgentProvider::is_cancelled(conv_id) {
                     return Err(AgentError::Cancelled);
@@ -237,7 +206,7 @@ pub(super) async fn execute_tools(
                 let read_args =
                     apply_browser_target_lock("read_browser_page", json!({}), turn_context);
                 let read_result =
-                    execute_auto_tool(app, conv_id, db, "read_browser_page", read_args).await?;
+                    execute_auto_tool(app, conv_id, "read_browser_page", read_args).await?;
                 results.push(("read_browser_page".into(), read_result));
                 if AgentProvider::is_cancelled(conv_id) {
                     return Err(AgentError::Cancelled);
@@ -254,56 +223,8 @@ pub(super) async fn execute_tools(
                 pick_live_markdown_path(&results[results.len() - 1].1, &preferred_courses)
             {
                 let auto_args = json!({ "path": path });
-                emit(
-                    app,
-                    conv_id,
-                    &StreamEvent::ToolCall {
-                        name: "read_downloaded_file",
-                    },
-                );
-                let auto_started = std::time::Instant::now();
-                log::debug!(
-                    "[agent tool] auto-follow name=read_downloaded_file args={}",
-                    serde_json::to_string(&auto_args).unwrap_or_default()
-                );
-                let auto_timeout = timeout_for("read_downloaded_file");
-                let auto_result = match tokio::time::timeout(
-                    auto_timeout,
-                    agent_tools::dispatch(app, "read_downloaded_file", &auto_args),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => json!({
-                        "error": format!("tool timed out after {}s", auto_timeout.as_secs()),
-                    }),
-                };
-                let auto_ok = auto_result.get("error").is_none();
-                let auto_preview = preview_of(&auto_result);
-                log::debug!(
-                    "[agent tool] finish name=read_downloaded_file ok={} elapsed_ms={} preview={}",
-                    auto_ok,
-                    auto_started.elapsed().as_millis(),
-                    truncate_for_log(&auto_preview, 200)
-                );
-                emit(
-                    app,
-                    conv_id,
-                    &StreamEvent::ToolResult {
-                        name: "read_downloaded_file",
-                        preview: &auto_preview,
-                        ok: auto_ok,
-                    },
-                );
-                let auto_json = serde_json::to_string(&auto_result).unwrap_or_else(|_| "{}".into());
-                let _ = db.agent_append_message(
-                    conv_id,
-                    "tool",
-                    "",
-                    None,
-                    Some("read_downloaded_file"),
-                    Some(&auto_json),
-                );
+                let auto_result =
+                    execute_auto_tool(app, conv_id, "read_downloaded_file", auto_args).await?;
                 results.push(("read_downloaded_file".into(), auto_result));
                 auto_read_done = true;
                 if AgentProvider::is_cancelled(conv_id) {
@@ -318,7 +239,6 @@ pub(super) async fn execute_tools(
 async fn execute_auto_tool(
     app: &AppHandle,
     conv_id: &str,
-    db: &Database,
     name: &str,
     args: Value,
 ) -> Result<Value, AgentError> {
@@ -330,13 +250,8 @@ async fn execute_auto_tool(
         serde_json::to_string(&args).unwrap_or_default()
     );
     let timeout = timeout_for(name);
-    let result = match tokio::time::timeout(timeout, agent_tools::dispatch(app, name, &args)).await
-    {
-        Ok(result) => result,
-        Err(_) => json!({
-            "error": format!("tool timed out after {}s", timeout.as_secs()),
-        }),
-    };
+    let result =
+        await_tool_result(conv_id, timeout, agent_tools::dispatch(app, name, &args)).await?;
     let ok = result.get("error").is_none();
     let preview = preview_of(&result);
     log::debug!(
@@ -355,7 +270,28 @@ async fn execute_auto_tool(
             ok,
         },
     );
-    let tool_json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
-    let _ = db.agent_append_message(conv_id, "tool", "", None, Some(name), Some(&tool_json));
+    let result = persistence::save_tool_result(app, conv_id, name, result).await?;
     Ok(result)
 }
+
+// One cancellation/deadline boundary for planned and automatic tools. No 120 ms
+// polling timer is needed while a tool awaits IO. Admitted writes and external
+// operations that have already executed are not rolled back by dropping a waiter.
+async fn await_tool_result(
+    conv_id: &str,
+    timeout: std::time::Duration,
+    dispatch: impl std::future::Future<Output = Value>,
+) -> Result<Value, AgentError> {
+    let owner = crate::agent_turn_scope::current(conv_id);
+    crate::agent_turn_scope::until_cancelled(owner.as_deref(), async {
+        Ok(match tokio::time::timeout(timeout, dispatch).await {
+            Ok(result) => result,
+            Err(_) => json!({ "error": format!("tool timed out after {}s", timeout.as_secs()) }),
+        })
+    })
+    .await
+}
+
+#[cfg(test)]
+#[path = "execute/tests.rs"]
+mod wait_tests;

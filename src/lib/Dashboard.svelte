@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
+  import { ResourceScope } from "./resourceScope";
   import { activeTab, unreadNotifCount, unreadMailCount, readIdsStore, onCacheUpdate, getCached, loadReadIds, notifKey, liveTodoDrafts, liveTodoPending } from "./stores";
   import { get } from "svelte/store";
   import type { NotificationsData } from "./stores";
@@ -15,6 +16,9 @@
   import type { LunaNotification } from "./types";
   import Onboarding from "./onboarding/Onboarding.svelte";
   import { onboardingVisible, shouldAutoShow, hasResume } from "./onboarding/onboardingState";
+
+  const resources = new ResourceScope();
+  onDestroy(() => resources.dispose());
 
   interface Tab {
     id: string;
@@ -61,10 +65,11 @@
   const loadingViews = new Set<string>();
 
   async function ensureViewLoaded(tab: string) {
-    if (tab === "home" || lazyViews[tab] || loadingViews.has(tab) || !viewLoaders[tab]) return;
+    if (!resources.active || tab === "home" || lazyViews[tab] || loadingViews.has(tab) || !viewLoaders[tab]) return;
     loadingViews.add(tab);
     try {
       const mod = await viewLoaders[tab]();
+      if (!resources.active) return;
       lazyViews = { ...lazyViews, [tab]: mod.default };
       if (lazyErrors[tab]) {
         const next = { ...lazyErrors };
@@ -72,7 +77,7 @@
         lazyErrors = next;
       }
     } catch (e) {
-      lazyErrors = { ...lazyErrors, [tab]: e instanceof Error ? e.message : String(e) };
+      if (resources.active) lazyErrors = { ...lazyErrors, [tab]: e instanceof Error ? e.message : String(e) };
     } finally {
       loadingViews.delete(tab);
     }
@@ -100,8 +105,6 @@
     if (tabId === "mail") return $unreadMailCount;
     return 0;
   }
-
-  let unlistenRefresh: (() => void) | null = null;
 
   // --- Notification badge: compute from cache (works before NotificationsUnified is visited) ---
 
@@ -134,60 +137,72 @@
     unreadNotifCount.set(count);
   }
 
-  const unsubNotif = onCacheUpdate<NotificationsData>("notifications", (fresh) => {
+  resources.own(onCacheUpdate<NotificationsData>("notifications", resources.guard(() => {
     recalcNotifBadge();
-  });
-  const unsubLuna = onCacheUpdate<LunaNotification[]>("luna_updates", (fresh) => {
+  })));
+  resources.own(onCacheUpdate<LunaNotification[]>("luna_updates", resources.guard(() => {
     recalcNotifBadge();
-  });
-  const unsubKwicHome = onCacheUpdate<KwicPortalHome>("kwic_home", (fresh) => {
+  })));
+  resources.own(onCacheUpdate<KwicPortalHome>("kwic_home", resources.guard(() => {
     recalcNotifBadge();
-  });
+  })));
   // Recalc when read IDs change (e.g. user marks notification read in NotificationsUnified)
   $effect(() => { $readIdsStore; recalcNotifBadge(); });
 
   // Keep mail unread count updated from cache (works even before MailView is visited)
-  const unsubMail = onCacheUpdate<MailMessage[]>("mail_inbox", (msgs) => {
+  resources.own(onCacheUpdate<MailMessage[]>("mail_inbox", resources.guard((msgs) => {
     if (msgs) {
       unreadMailCount.set(msgs.filter(m => !m.isRead).length);
     }
-  });
+  })));
 
   // Initialize from cache on first render
   {
     const cached = getCached<MailMessage[]>("mail_inbox");
     if (cached) unreadMailCount.set(cached.filter(m => !m.isRead).length);
     // Load read IDs from DB then compute initial notification badge
-    loadReadIds().catch(() => {}).finally(() => recalcNotifBadge());
+    void loadReadIds().catch(() => {}).finally(resources.guard(recalcNotifBadge));
   }
-  onMount(async () => {
-    const unlistenTrayTab = await listen<string>('tray-open-tab', (event) => {
-      if (event.payload) activeTab.set(event.payload);
-    });
-    const unlistenOpenAgent = await listen("open-agent-tab", () => {
-      activeTab.set("agent");
-    });
+  async function initializeDashboard() {
+    // These independent notifications register together; every late handle is
+    // still owned, even if another registration fails or the dashboard closes.
+    const subscriptions = Promise.allSettled([
+      resources.acquire(() => listen<string>('tray-open-tab', resources.guard((event) => {
+        if (event.payload) activeTab.set(event.payload);
+      }))),
+      resources.acquire(() => listen("open-agent-tab", resources.guard(() => {
+        activeTab.set("agent");
+      }))),
+      resources.acquire(() => listen('ai-config-changed', resources.guard(() => {
+        void updateAiReadiness().catch(() => {});
+      }))),
+      // Kept at this always-mounted level so saved LIVE suggestions remain
+      // available before the TODO page has been opened.
+      resources.acquire(() => listen<LiveTodoSuggestionsEvent>('live-todo-suggestions', resources.guard((event) => {
+        liveTodoPending.set(false);
+        const suggestions = event.payload?.suggestions ?? [];
+        liveTodoDrafts.set(suggestions.length > 0
+          ? { suggestions, sourcePath: event.payload.source_path }
+          : null);
+      }))),
+    ]);
     // Initialize AI readiness stores
-    updateAiReadiness().catch(() => {});
+    void updateAiReadiness().catch(() => {});
     // First-run onboarding gate
-    shouldAutoShow().then(show => { if (show) onboardingVisible.set(true); }).catch(() => {});
-    // Re-check when AI config changes (e.g. user edits settings)
-    const unlistenAiCfg = await listen('ai-config-changed', () => {
-      updateAiReadiness().catch(() => {});
+    void shouldAutoShow().then(resources.guard(show => {
+      if (show) onboardingVisible.set(true);
+    })).catch(() => {});
+    const registrations = await subscriptions;
+    if (!resources.active) return;
+    for (const result of registrations) {
+      if (result.status === "rejected") console.warn("[Dashboard] subscription failed:", result.reason);
+    }
+  }
+  onMount(() => {
+    void initializeDashboard().catch(error => {
+      if (resources.active) console.warn("[Dashboard] initialization failed:", error);
     });
-    // Background TODO/DDL judgment from a saved LIVE session. Kept at this
-    // always-mounted level so the result is never missed if the TODO page
-    // hasn't been opened yet — the page reads it from the store.
-    const unlistenLiveTodos = await listen<LiveTodoSuggestionsEvent>('live-todo-suggestions', (event) => {
-      liveTodoPending.set(false);
-      const suggestions = event.payload?.suggestions ?? [];
-      liveTodoDrafts.set(suggestions.length > 0
-        ? { suggestions, sourcePath: event.payload.source_path }
-        : null);
-    });
-    unlistenRefresh = () => { unlistenTrayTab(); unlistenOpenAgent(); unlistenAiCfg(); unlistenLiveTodos(); };
   });
-  onDestroy(() => { if (unlistenRefresh) unlistenRefresh(); unsubMail(); unsubNotif(); unsubLuna(); unsubKwicHome(); });
 </script>
 
 <div class="dashboard">

@@ -70,9 +70,9 @@ pub(in crate::detective) fn build_context(db: &Database) -> Result<DetectiveCont
         }
     }
 
-    let mut records = crate::commands::list_downloads();
+    let mut records = crate::commands::list_downloads_snapshot()?;
     if !records.iter().any(is_live_record) {
-        records = crate::commands::scan_download_dir();
+        records = crate::commands::scan_download_dir_snapshot()?;
     }
     for record in records
         .into_iter()

@@ -22,7 +22,7 @@ export type LiveControlModel = {
   targetLabel: string;
   targetMeta: string;
   progressLabel: string;
-  saveSteps: string[];
+  saveSteps: readonly string[];
   saveStepIndex: number;
   detailLabel: string;
   elapsedLabel: string;

@@ -71,30 +71,30 @@ fn compile_apple_intelligence_bridge() -> Result<(), String> {
         let slice = slices_dir.join(format!("libselah_apple_ai_{arch}.dylib"));
         let mut command = Command::new(swiftc);
         command.args([
-                "-emit-library",
-                "-parse-as-library",
-                "-module-name",
-                "SelahAppleAI",
-                "-target",
-                &target,
-                "-sdk",
-                sdk.trim(),
-                "-O",
-                "-framework",
-                "Foundation",
-                "-Xlinker",
-                "-weak_framework",
-                "-Xlinker",
-                "FoundationModels",
-                "-Xlinker",
-                "-rpath",
-                "-Xlinker",
-                "/usr/lib/swift",
-                "-Xlinker",
-                "-install_name",
-                "-Xlinker",
-                "@rpath/libselah_apple_ai.dylib",
-            ]);
+            "-emit-library",
+            "-parse-as-library",
+            "-module-name",
+            "SelahAppleAI",
+            "-target",
+            &target,
+            "-sdk",
+            sdk.trim(),
+            "-O",
+            "-framework",
+            "Foundation",
+            "-Xlinker",
+            "-weak_framework",
+            "-Xlinker",
+            "FoundationModels",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "/usr/lib/swift",
+            "-Xlinker",
+            "-install_name",
+            "-Xlinker",
+            "@rpath/libselah_apple_ai.dylib",
+        ]);
         if fm27 {
             command.args(["-D", "SELAH_FM_27"]);
         }
@@ -128,7 +128,6 @@ fn compile_apple_intelligence_bridge() -> Result<(), String> {
     println!("cargo:rustc-env=SELAH_APPLE_AI_LIB={}", bundled.display());
     Ok(())
 }
-
 
 #[cfg(target_os = "macos")]
 fn foundation_models_27(swiftc: &str, sdk: &str, target: &str) -> bool {
@@ -174,7 +173,8 @@ fn compile_macos_widget() -> Result<(), String> {
     let bridge_src = manifest_dir.join("swift/WidgetBridge.swift");
     let entitlements = widget_entitlements(&manifest_dir);
     let app_store_entitlements = manifest_dir.join("swift/widget/Widget.entitlements");
-    let developer_id_entitlements = manifest_dir.join("swift/widget/Widget.DeveloperID.entitlements");
+    let developer_id_entitlements =
+        manifest_dir.join("swift/widget/Widget.DeveloperID.entitlements");
     let logo = manifest_dir.join("../src/assets/logo.png");
     for path in [
         &widget_src,
@@ -232,7 +232,8 @@ fn compile_macos_widget() -> Result<(), String> {
         let widget_slice = slices_dir.join(format!("SelahWidget_{arch}"));
         let host_slice = slices_dir.join(format!("selah-widget-host_{arch}"));
         let bridge_slice = slices_dir.join(format!("libselah_widget_{arch}.dylib"));
-        if let Err(error) = compile_widget_slice(swiftc, sdk.trim(), &target, &widget_src, &widget_slice)
+        if let Err(error) =
+            compile_widget_slice(swiftc, sdk.trim(), &target, &widget_src, &widget_slice)
         {
             if arch == host_arch() {
                 return Err(error);
@@ -270,8 +271,11 @@ fn compile_macos_widget() -> Result<(), String> {
     std::fs::copy(&widget_bin, &executable).map_err(|error| error.to_string())?;
     make_executable(&executable)?;
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "1.1.0".into());
-    std::fs::write(appex.join("Contents/Info.plist"), widget_info_plist(&version))
-        .map_err(|error| error.to_string())?;
+    std::fs::write(
+        appex.join("Contents/Info.plist"),
+        widget_info_plist(&version),
+    )
+    .map_err(|error| error.to_string())?;
     let resources = appex.join("Contents/Resources");
     std::fs::create_dir_all(&resources).map_err(|error| error.to_string())?;
     if !logo.is_file() {
@@ -406,7 +410,12 @@ fn compile_bridge_slice(
 }
 
 #[cfg(target_os = "macos")]
-fn swiftc_output(swiftc: &str, prefix: &[&str], output: &Path, source: &Path) -> Result<(), String> {
+fn swiftc_output(
+    swiftc: &str,
+    prefix: &[&str],
+    output: &Path,
+    source: &Path,
+) -> Result<(), String> {
     let mut command = Command::new(swiftc);
     command.args(prefix).arg(output).arg(source);
     let result = command
@@ -537,7 +546,6 @@ fn make_executable(path: &Path) -> Result<(), String> {
     permissions.set_mode(0o755);
     std::fs::set_permissions(path, permissions).map_err(|error| error.to_string())
 }
-
 
 #[cfg(target_os = "macos")]
 fn output_is_stale(output: &Path, inputs: &[&Path]) -> bool {

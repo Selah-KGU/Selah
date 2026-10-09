@@ -10,56 +10,66 @@ use std::hash::{Hash, Hasher};
 const SCAN_MAX_DEPTH: usize = 6;
 
 #[tauri::command]
-pub fn scan_download_dir() -> Vec<DownloadRecord> {
-    let config = load_download_config();
-    let base = if config.download_dir.is_empty() {
-        default_download_dir()
-    } else {
-        std::path::PathBuf::from(&config.download_dir)
-    };
+pub async fn scan_download_dir() -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "Download scan worker failed",
+        "Download scan encoding failed",
+        scan_download_dir_snapshot,
+    )
+    .await
+}
 
-    let mut records = load_download_history();
-    let known_paths: std::collections::HashSet<String> =
-        records.iter().map(|r| r.path.clone()).collect();
-
-    let mut discovered: Vec<DownloadRecord> = Vec::new();
-    scan_dir_recursive(&base, "", &known_paths, &mut discovered, 0);
-
-    // Re-load so a concurrent record_download (e.g. a Luna download that
-    // finished after we built `known_paths`) is not clobbered, and dedupe by
-    // path so the same file never appears twice in history.
-    if !discovered.is_empty() {
-        let mut latest = load_download_history();
-        let existing: std::collections::HashSet<String> =
-            latest.iter().map(|r| r.path.clone()).collect();
-        for rec in discovered {
-            if !existing.contains(&rec.path) {
-                // Remove any stale (file-missing) records with the same
-                // filename so the moved/reclassified file doesn't appear twice.
-                // Only remove stale entries for the SAME (filename, course_name)
-                // pair so same-named files in different courses are not dropped.
-                let fname_lower = rec.filename.to_lowercase();
-                let course_lower = rec.course_name.to_lowercase();
-                latest.retain(|r| {
-                    r.path == rec.path
-                        || r.filename.to_lowercase() != fname_lower
-                        || r.course_name.to_lowercase() != course_lower
-                        || std::path::Path::new(&r.path).exists()
-                });
-                latest.push(rec);
-            }
-        }
-        if latest.len() > 500 {
-            latest.drain(0..latest.len() - 500);
-        }
-        let _ = save_download_history(&latest);
-        records = latest;
-    }
-
-    records.retain(|r| !r.path.is_empty());
+pub(crate) fn scan_download_dir_snapshot() -> Result<Vec<DownloadRecord>, String> {
+    let base = download_base();
+    let records = scan_download_history(&download_history_store(), &base)?;
+    let mut records: Vec<_> = records.into_iter().filter(|r| !r.path.is_empty()).collect();
     annotate_records(&mut records);
     records.reverse();
-    records
+    Ok(records)
+}
+
+pub(super) fn scan_download_history(
+    store: &super::history_store::HistoryStore,
+    base: &std::path::Path,
+) -> Result<Vec<DownloadRecord>, String> {
+    let records = store.read()?;
+    let known_paths = records.iter().map(|r| r.path.clone()).collect();
+    let mut discovered = Vec::new();
+    // Traverse before taking the write lock. Completion can record a real
+    // download while this walk runs; the merge reads its latest metadata.
+    scan_dir_recursive(base, "", &known_paths, &mut discovered, 0);
+    if discovered.is_empty() {
+        return store.read();
+    }
+    store.update(move |latest| merge_discovered_records(latest, discovered))
+}
+
+pub(super) fn merge_discovered_records(
+    latest: &mut Vec<DownloadRecord>,
+    discovered: Vec<DownloadRecord>,
+) -> bool {
+    let mut existing: std::collections::HashSet<String> =
+        latest.iter().map(|r| r.path.clone()).collect();
+    let mut changed = false;
+    for rec in discovered {
+        if existing.insert(rec.path.clone()) {
+            let fname_lower = rec.filename.to_lowercase();
+            let course_lower = rec.course_name.to_lowercase();
+            latest.retain(|r| {
+                r.path == rec.path
+                    || r.filename.to_lowercase() != fname_lower
+                    || r.course_name.to_lowercase() != course_lower
+                    || std::path::Path::new(&r.path).exists()
+            });
+            latest.push(rec);
+            changed = true;
+        }
+    }
+    if latest.len() > 500 {
+        latest.drain(0..latest.len() - 500);
+        changed = true;
+    }
+    changed
 }
 
 pub(super) fn scan_dir_recursive(

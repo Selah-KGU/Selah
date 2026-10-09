@@ -4,6 +4,9 @@
   import { listen } from "@tauri-apps/api/event";
   import Icon from "./Icon.svelte";
   import { tabFaviconUrl, type DocumentTabSummary as DocumentTab } from "./documentTabs";
+  import { acquireResourceGroup, ResourceScope } from "./resourceScope";
+  import { LatestViewRead } from "./latestViewRead";
+  import { createCacheSyncQueue } from "./cacheSyncQueue";
 
   const OWNER = "document-tabs";
 
@@ -13,15 +16,21 @@
   // Cap the dock list; the full set stays reachable inside the Copilot window.
   const MAX_VISIBLE = 4;
   const visibleTabs = $derived(tabs.slice(0, MAX_VISIBLE));
-  let unlisten: (() => void) | null = null;
-  let destroyed = false;
+  const resources = new ResourceScope();
+  let subscribing = false;
+  let subscribed = false;
   let faviconFailed = $state<Set<string>>(new Set());
 
   // Pause the continuously-repainting flowing border while the window is hidden
   // (minimized / app in background) to avoid burning CPU/battery off-screen.
   let docHidden = $state(typeof document !== "undefined" && document.hidden);
   function onVisibility(): void {
+    const wasHidden = docHidden;
     docHidden = document.hidden;
+    if (wasHidden && !docHidden) {
+      if (subscribed) void refresh();
+      else startDock();
+    }
   }
 
   function onFaviconError(src: string): void {
@@ -33,23 +42,28 @@
     return s.length > 26 ? `${s.slice(0, 25)}…` : s;
   }
 
-  async function refresh(): Promise<void> {
-    try {
-      tabs = await invoke<DocumentTab[]>("document_tabs_list", { owner: OWNER });
-    } catch {
-      /* window not ready yet */
-    }
+  const tabsRead = new LatestViewRead(resources,
+    () => invoke<DocumentTab[]>("document_tabs_list", { owner: OWNER }),
+    (next) => { tabs = next; });
+  const queueRead = createCacheSyncQueue(async () => {
+    // A missing/not-yet-created window does not clear the latest pushed state.
+    await tabsRead.refresh().catch(() => {});
+  });
+  function refresh(): Promise<void> {
+    if (!resources.active) return Promise.resolve();
+    return queueRead(["tabs"]);
   }
 
   async function run(action: () => Promise<unknown>): Promise<void> {
-    if (busy) return;
+    if (!resources.active || busy) return;
     busy = true;
+    tabsRead.invalidate();
     try {
       await action();
     } catch (e) {
-      console.warn("[Copilot dock]", e);
+      if (resources.active) console.warn("[Copilot dock]", e);
     } finally {
-      busy = false;
+      if (resources.active) busy = false;
     }
   }
 
@@ -70,22 +84,38 @@
     void run(() => invoke("document_tabs_close", { owner: OWNER, id, focus: false }));
   }
 
-  onMount(async () => {
-    document.addEventListener("visibilitychange", onVisibility);
-    await refresh();
-    const un = await listen<{ owner: string; tabs: DocumentTab[] }>("document-tabs-changed", (event) => {
-      if (event.payload?.owner === OWNER) tabs = event.payload.tabs || [];
-    });
-    // Guard the async gap: if we unmounted while listen() was resolving, detach now.
-    if (destroyed) un();
-    else unlisten = un;
-  });
+  async function initializeDock(): Promise<void> {
+    if (!resources.active || subscribing || subscribed) return;
+    subscribing = true;
+    try {
+      await acquireResourceGroup(resources, [
+        (group) => listen<{ owner: string; tabs: DocumentTab[] }>("document-tabs-changed", group.guard((event) => {
+          if (event.payload?.owner !== OWNER) return;
+          tabsRead.invalidate();
+          tabs = event.payload.tabs || [];
+        })),
+      ]);
+      if (!resources.active) return;
+      subscribed = true;
+      await refresh();
+    } finally {
+      subscribing = false;
+    }
+  }
 
-  onDestroy(() => {
-    destroyed = true;
-    unlisten?.();
-    document.removeEventListener("visibilitychange", onVisibility);
+  function startDock(): void {
+    void initializeDock().catch((e) => {
+      if (resources.active) console.warn("[Copilot dock] subscription failed:", e);
+    });
+  }
+
+  onMount(() => {
+    const visibility = resources.guard(onVisibility);
+    document.addEventListener("visibilitychange", visibility);
+    resources.own(() => document.removeEventListener("visibilitychange", visibility));
+    startDock();
   });
+  onDestroy(() => resources.dispose());
 </script>
 
 <div class="copilot-dock" class:paused={docHidden}>

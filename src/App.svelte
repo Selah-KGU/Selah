@@ -3,8 +3,9 @@
   import Login from "./lib/Login.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
   import { demoMode } from "./lib/demoStore";
-  import { authState, sessionExpired, invalidateCache } from "./lib/stores";
-  import { restoreAllSessions, startBackgroundPolling, stopBackgroundPolling, serviceRegistry } from "./lib/api";
+  import { authState, sessionExpired, invalidateCache, activeTab } from "./lib/stores";
+  import { restoreAllSessions, startBackgroundPolling, stopBackgroundPolling, serviceRegistry, liveHasActiveSession } from "./lib/api";
+  import { ResourceScope } from "./lib/resourceScope";
   import { startTrayStatus, stopTrayStatus } from "./lib/trayStatus";
   import { startSilentUpdateCheck } from "./lib/updater";
   import { listen } from "@tauri-apps/api/event";
@@ -46,43 +47,71 @@
   let everLoggedIn = $state(readEverLoggedIn());
   let currentView = $derived(($demoMode || demoBootFlag || $authState.authenticated || $sessionExpired || everLoggedIn) ? "dashboard" : "login");
   let restoring = $state(true);
-  let unlistenLogout: (() => void) | null = null;
+  const resources = new ResourceScope();
+  let startupVersion = 0;
 
-  async function restoreDemoState(): Promise<boolean> {
+  async function restoreDemoState(current: () => boolean): Promise<boolean> {
     const { restoreDemo } = await import("./lib/demo");
-    return restoreDemo();
+    return current() && restoreDemo();
   }
 
-  onMount(async () => {
-    // Handle logout triggered from settings window (or other windows)
-    unlistenLogout = await listen("logout", async () => {
-      const { deactivateDemo, isDemoMode: checkDemo } = await import("./lib/demo");
-      if (checkDemo()) deactivateDemo();
-      stopBackgroundPolling();
-      stopTrayStatus();
-      sessionExpired.set(false);
-      for (const svc of Object.values(serviceRegistry)) svc.onReset();
-      invalidateCache();
-      try {
-        localStorage.removeItem("selah-ever-auth");
-        localStorage.removeItem("selah-ever-auth-source");
-      } catch {}
-      demoBootFlag = false;
-      everLoggedIn = false;
+  async function handleLogout() {
+    // Invalidate boot reads immediately, before loading the demo module.
+    const version = ++startupVersion;
+    stopBackgroundPolling();
+    stopTrayStatus();
+    sessionExpired.set(false);
+    for (const svc of Object.values(serviceRegistry)) svc.onReset();
+    invalidateCache();
+    try {
+      localStorage.removeItem("selah-ever-auth");
+      localStorage.removeItem("selah-ever-auth-source");
+    } catch {}
+    demoBootFlag = false;
+    everLoggedIn = false;
+    restoring = false;
+    const { deactivateDemo, isDemoMode: checkDemo } = await import("./lib/demo");
+    if (resources.active && version === startupVersion && checkDemo()) deactivateDemo();
+  }
+
+  async function initializeApp() {
+    const version = startupVersion;
+    const current = () => resources.active && version === startupVersion;
+    // Subscribe before starting reads. A late registration remains owned even
+    // if the root boundary was destroyed while Tauri was registering it.
+    try {
+      await resources.acquire(() => listen("logout", resources.guard(() => {
+        void handleLogout().catch(error => {
+          if (resources.active) console.warn("[Selah] logout handling failed:", error);
+        });
+      })));
+    } catch (error) {
+      if (current()) console.warn("[Selah] logout subscription failed:", error);
+    }
+    if (!current()) return;
+    // The native STT/session survives a WebView reload. Reopen its UI even if
+    // restoring the university login takes longer or is currently unavailable.
+    void liveHasActiveSession().then((active) => {
+      if (current() && active) {
+        everLoggedIn = true;
+        activeTab.set("live");
+      }
+    }).catch((err) => {
+      if (current()) console.warn("[Selah] LIVE recovery read failed:", err);
     });
 
-    // Demo mode: restore from previous session, skip real network calls
-    if (await restoreDemoState()) {
-      demoBootFlag = true;
-      startTrayStatus();
-      void startSilentUpdateCheck();
-      restoring = false;
-      return;
-    }
-
     try {
+      // Demo mode: restore from previous session, skip real network calls.
+      const demoRestored = await restoreDemoState(current);
+      if (!current()) return;
+      if (demoRestored) {
+        demoBootFlag = true;
+        startTrayStatus();
+        return;
+      }
       // Restore all service sessions (KGC + Luna + future)
-      const session = await restoreAllSessions();
+      const session = await restoreAllSessions(current);
+      if (!current()) return;
       debugLog("[Selah] App.onMount: restoreAllSessions returned", session ? "non-null" : "null",
         "authState.authenticated =", get(authState).authenticated,
         "sessionExpired =", get(sessionExpired),
@@ -98,19 +127,29 @@
       }
       startTrayStatus();
     } catch (e) {
+      if (!current()) return;
       console.warn("Session restore failed:", e);
       if (everLoggedIn) {
         sessionExpired.set(true);
         startBackgroundPolling();
       }
     } finally {
-      restoring = false;
-      void startSilentUpdateCheck();
+      if (current()) {
+        restoring = false;
+        void startSilentUpdateCheck();
+      }
     }
+  }
+
+  onMount(() => {
+    void initializeApp().catch(error => {
+      if (resources.active) console.warn("[Selah] initialization failed:", error);
+    });
   });
 
   onDestroy(() => {
-    unlistenLogout?.();
+    resources.dispose();
+    startupVersion += 1;
     stopTrayStatus();
     stopBackgroundPolling();
   });

@@ -1,5 +1,18 @@
 use super::*;
 
+fn counts_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<(String, LunaCountsRow)> {
+    Ok((
+        row.get(offset)?,
+        LunaCountsRow {
+            announcements: row.get(offset + 1)?,
+            new_announcements: row.get(offset + 2)?,
+            reports: row.get(offset + 3)?,
+            exams: row.get(offset + 4)?,
+            discussions: row.get(offset + 5)?,
+        },
+    ))
+}
+
 impl Database {
     // ── Luna counts ──
 
@@ -27,19 +40,22 @@ impl Database {
             "SELECT luna_id, announcements, new_announcements, reports, exams, discussions FROM luna_counts"
         ).map_err(|e| format!("DB query: {}", e))?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    LunaCountsRow {
-                        announcements: row.get(1)?,
-                        new_announcements: row.get(2)?,
-                        reports: row.get(3)?,
-                        exams: row.get(4)?,
-                        discussions: row.get(5)?,
-                    },
-                ))
-            })
+            .query_map([], |row| counts_row(row, 0))
             .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub(super) fn query_visible_luna_counts(
+        conn: &Connection,
+        year: &str,
+        term: &str,
+    ) -> Result<Vec<(String, LunaCountsRow)>, String> {
+        let ids = super::scoped_rows::visible_luna_ids(conn, "luna_counts", year, term)?;
+        let keys: Vec<_> = ids.iter().map(String::as_str).collect();
+        let mut rows: Vec<(i64, (String, LunaCountsRow))> = super::scoped_rows::query_selected(
+            conn, &keys, "SELECT rowid, luna_id, announcements, new_announcements, reports, exams, discussions FROM luna_counts",
+            "luna_id", "", |row| Ok((row.get(0)?, counts_row(row, 1)?)))?;
+        rows.sort_unstable_by_key(|row| row.0);
+        Ok(rows.into_iter().map(|(_, counts)| counts).collect())
     }
 }

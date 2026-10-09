@@ -55,7 +55,7 @@ impl AgentProvider {
     }
 
     /// Non-streaming inference used for Phase 1 (planning).
-    /// `gen_id` should be the conversation id so cancel requests reach planning too.
+    /// A scoped Agent request resolves its own immutable generation identity.
     pub async fn plan(
         &self,
         messages: Vec<ChatMessage>,
@@ -68,55 +68,67 @@ impl AgentProvider {
         #[cfg(not(target_os = "macos"))]
         let _ = (prefill, think_budget_pct);
 
+        let owner = crate::agent_turn_scope::current(gen_id);
+        let generation = owner.as_ref().map(|turn| turn.generation().to_owned());
+        let gen_id = generation.as_deref().unwrap_or(gen_id);
         if Self::is_cancelled(gen_id) {
             return Err(AgentError::Cancelled);
         }
-        match self {
-            #[cfg(target_os = "macos")]
-            Self::Local {
-                model_id,
-                file_name,
-            } => {
-                let model_id = model_id.clone();
-                let file_name = file_name.clone();
-                let prefill = prefill.to_string();
-                let gen_id = plan_gen_id(gen_id);
-                tokio::task::spawn_blocking(move || {
-                    local_ai::run_inference(local_ai::InferenceRequest {
-                        model_id,
-                        file_name,
-                        messages,
-                        sampler: local_ai::SamplerConfig::deterministic(temperature),
-                        max_tokens,
-                        prefill,
-                        gen_id,
-                        think_budget_pct,
+        let result = crate::agent_turn_scope::until_cancelled(owner.as_deref(), async {
+            match self {
+                #[cfg(target_os = "macos")]
+                Self::Local {
+                    model_id,
+                    file_name,
+                } => {
+                    let model_id = model_id.clone();
+                    let file_name = file_name.clone();
+                    let prefill = prefill.to_string();
+                    let gen_id = plan_gen_id(gen_id);
+                    let keep_alive = owner.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _keep_alive = keep_alive;
+                        local_ai::run_inference(local_ai::InferenceRequest {
+                            model_id,
+                            file_name,
+                            messages,
+                            sampler: local_ai::SamplerConfig::deterministic(temperature),
+                            max_tokens,
+                            prefill,
+                            gen_id,
+                            think_budget_pct,
+                        })
                     })
-                })
-                .await
-                .map_err(AgentError::task)?
-                .map_err(agent_error_from_model)
-            }
-            Self::Remote { config } => {
-                let plan_id = plan_gen_id(gen_id);
-                clear_remote_cancel(&plan_id);
-                let result = remote_chat_completion(
-                    config,
-                    messages,
-                    max_tokens,
-                    temperature,
-                    &plan_id,
-                    true,
-                )
-                .await;
-                let cancelled = is_remote_cancelled(&plan_id);
-                clear_remote_cancel(&plan_id);
-                if cancelled {
-                    return Err(AgentError::Cancelled);
+                    .await
+                    .map_err(AgentError::task)?
+                    .map_err(agent_error_from_model)
                 }
-                result.map_err(agent_error_from_model)
+                Self::Remote { config } => {
+                    let plan_id = plan_gen_id(gen_id);
+                    clear_remote_cancel(&plan_id);
+                    let result = remote_chat_completion(
+                        config,
+                        messages,
+                        max_tokens,
+                        temperature,
+                        &plan_id,
+                        true,
+                    )
+                    .await;
+                    let cancelled = is_remote_cancelled(&plan_id);
+                    clear_remote_cancel(&plan_id);
+                    if cancelled {
+                        return Err(AgentError::Cancelled);
+                    }
+                    result.map_err(agent_error_from_model)
+                }
             }
+        })
+        .await;
+        if owner.as_ref().is_some_and(|turn| turn.cancelled()) {
+            return Err(AgentError::Cancelled);
         }
+        result
     }
 
     /// Streaming inference used for Phase 2 (answering).
@@ -131,50 +143,71 @@ impl AgentProvider {
     where
         F: FnMut(&str, bool) + Send + 'static,
     {
+        let owner = crate::agent_turn_scope::current(gen_id);
+        let generation = owner.as_ref().map(|turn| turn.generation().to_owned());
+        let gen_id = generation.as_deref().unwrap_or(gen_id);
         if Self::is_cancelled(gen_id) {
             return Err(AgentError::Cancelled);
         }
-        match self {
-            #[cfg(target_os = "macos")]
-            Self::Local {
-                model_id,
-                file_name,
-            } => {
-                let model_id = model_id.clone();
-                let file_name = file_name.clone();
-                let gen_id = gen_id.to_string();
-                tokio::task::spawn_blocking(move || {
-                    local_ai::run_inference_streaming(
-                        local_ai::InferenceRequest {
-                            model_id,
-                            file_name,
-                            messages,
-                            sampler: local_ai::SamplerConfig::default(),
-                            max_tokens: 0,
-                            prefill: String::new(),
-                            gen_id,
-                            think_budget_pct,
-                        },
-                        on_chunk,
-                    )
-                })
-                .await
-                .map_err(AgentError::task)?
-                .map_err(agent_error_from_model)
+        let callback_owner = owner.clone();
+        let mut on_chunk = on_chunk;
+        let on_chunk = move |text: &str, is_think: bool| {
+            // Streaming adapters may keep running after the async waiter is
+            // dropped. Retain and check the actual request on their thread.
+            if callback_owner.as_ref().is_none_or(|turn| !turn.cancelled()) {
+                on_chunk(text, is_think);
             }
-            Self::Remote { config } => {
-                let gen_id = gen_id.to_string();
-                remote_stream_answer(config, messages, &gen_id, on_chunk, think_budget_pct)
-                    .await
-                    .map_err(|e| {
-                        if e == CANCELLED_MSG {
-                            AgentError::Cancelled
-                        } else {
-                            AgentError::model(e)
-                        }
+        };
+        let result = crate::agent_turn_scope::until_cancelled(owner.as_deref(), async {
+            match self {
+                #[cfg(target_os = "macos")]
+                Self::Local {
+                    model_id,
+                    file_name,
+                } => {
+                    let model_id = model_id.clone();
+                    let file_name = file_name.clone();
+                    let gen_id = gen_id.to_string();
+                    let keep_alive = owner.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _keep_alive = keep_alive;
+                        local_ai::run_inference_streaming(
+                            local_ai::InferenceRequest {
+                                model_id,
+                                file_name,
+                                messages,
+                                sampler: local_ai::SamplerConfig::default(),
+                                max_tokens: 0,
+                                prefill: String::new(),
+                                gen_id,
+                                think_budget_pct,
+                            },
+                            on_chunk,
+                        )
                     })
+                    .await
+                    .map_err(AgentError::task)?
+                    .map_err(agent_error_from_model)
+                }
+                Self::Remote { config } => {
+                    let gen_id = gen_id.to_string();
+                    remote_stream_answer(config, messages, &gen_id, on_chunk, think_budget_pct)
+                        .await
+                        .map_err(|e| {
+                            if e == CANCELLED_MSG {
+                                AgentError::Cancelled
+                            } else {
+                                AgentError::model(e)
+                            }
+                        })
+                }
             }
+        })
+        .await;
+        if owner.as_ref().is_some_and(|turn| turn.cancelled()) {
+            return Err(AgentError::Cancelled);
         }
+        result
     }
 
     /// Cancel any ongoing inference for `gen_id`.
@@ -210,6 +243,12 @@ impl AgentProvider {
     }
 
     pub fn is_cancelled(gen_id: &str) -> bool {
+        if let Some(turn) = crate::agent_turn_scope::current(gen_id) {
+            return turn.cancelled();
+        }
+        if crate::agent_turn_scope::generation_cancelled(gen_id) {
+            return true;
+        }
         TURN_CANCEL
             .lock()
             .map(|set| set.contains(gen_id))

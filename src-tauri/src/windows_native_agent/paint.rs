@@ -50,7 +50,7 @@ pub(super) unsafe fn paint_overlay(hwnd: HWND) {
     let Some(state) = window_snapshot() else {
         return;
     };
-    let mode = CURRENT_MODE.load(Ordering::Relaxed);
+    let mode = state.mode;
 
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);

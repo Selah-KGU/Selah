@@ -1,0 +1,18 @@
+[
+  {
+    "batch_error": "DB schedule version: no such table: schedule_snapshot_state",
+    "snapshot_error": "DB snapshot read: no such table: schedule_snapshot_state"
+  },
+  {
+    "batch_error": "DB schedule AI timestamp: no such table: ai_schedule_cache",
+    "snapshot_error": "DB AI cache read: no such table: ai_schedule_cache"
+  },
+  {
+    "batch_error": "DB schedule version: Invalid column type Text at index: 0, name: COALESCE((SELECT updated_at FROM schedule_snapshot_state WHERE id = 1), 0)",
+    "snapshot_error": "DB snapshot read: Invalid column type Text at index: 7, name: updated_at"
+  },
+  {
+    "batch_error": "DB schedule AI timestamp: Invalid column type Text at index: 0, name: COALESCE((SELECT updated_at FROM ai_schedule_cache WHERE id = 1), 0)",
+    "snapshot_error": "DB AI cache read: Invalid column type Text at index: 1, name: updated_at"
+  }
+]

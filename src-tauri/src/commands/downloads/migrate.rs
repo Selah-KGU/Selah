@@ -32,7 +32,16 @@ pub fn migrate_uncategorized_to_other() {
 /// multiple buckets (full dept-coded name from `record_download`, simplified
 /// folder name from `scan_download_dir`). Idempotent.
 fn migrate_normalize_course_names_impl() {
-    let mut records = load_download_history();
+    apply_history_migration("normalize course names", normalize_course_names);
+}
+
+fn apply_history_migration(name: &str, mutate: impl FnOnce(&mut Vec<DownloadRecord>) -> bool) {
+    if let Err(error) = download_history_store().update(mutate) {
+        log::warn!("Download history migration ({name}) failed: {error}");
+    }
+}
+
+pub(super) fn normalize_course_names(records: &mut Vec<DownloadRecord>) -> bool {
     let mut changed = false;
     for r in records.iter_mut() {
         let trimmed = r.course_name.trim();
@@ -45,9 +54,7 @@ fn migrate_normalize_course_names_impl() {
             changed = true;
         }
     }
-    if changed {
-        let _ = save_download_history(&records);
-    }
+    changed
 }
 
 /// Remove duplicate history entries caused by file migration (old path no
@@ -55,7 +62,10 @@ fn migrate_normalize_course_names_impl() {
 /// scan_download_dir). Keeps the entry whose file actually exists; if both
 /// exist (unlikely) keeps the more-recent one. Idempotent.
 fn migrate_deduplicate_by_filename_impl() {
-    let mut records = load_download_history();
+    apply_history_migration("deduplicate filenames", deduplicate_history_records);
+}
+
+pub(super) fn deduplicate_history_records(records: &mut Vec<DownloadRecord>) -> bool {
     let original_len = records.len();
     // Group indices by lowercase filename. Prefer live files; among ties keep
     // the one with the larger downloaded_at timestamp.
@@ -77,14 +87,13 @@ fn migrate_deduplicate_by_filename_impl() {
         }
     }
     let keep_set: std::collections::HashSet<usize> = keep.values().copied().collect();
-    records = records
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, r)| if keep_set.contains(&i) { Some(r) } else { None })
-        .collect();
-    if records.len() != original_len {
-        let _ = save_download_history(&records);
-    }
+    let mut i = 0;
+    records.retain(|_| {
+        let keep = keep_set.contains(&i);
+        i += 1;
+        keep
+    });
+    records.len() != original_len
 }
 
 /// Move files sitting at the root of the download base dir into `その他/`.
@@ -171,7 +180,15 @@ fn migrate_uncategorized_to_other_impl() {
         return;
     }
 
-    let mut records = load_download_history();
+    apply_history_migration("move uncategorized paths", |records| {
+        apply_uncategorized_paths(records, &path_map)
+    });
+}
+
+pub(super) fn apply_uncategorized_paths(
+    records: &mut Vec<DownloadRecord>,
+    path_map: &std::collections::HashMap<String, String>,
+) -> bool {
     let mut changed = false;
     for r in records.iter_mut() {
         if let Some(new_path) = path_map.get(&r.path) {
@@ -182,9 +199,7 @@ fn migrate_uncategorized_to_other_impl() {
             changed = true;
         }
     }
-    if changed {
-        let _ = save_download_history(&records);
-    }
+    changed
 }
 
 /// Rename course subdirectories whose name does not match the simplified form
@@ -299,8 +314,16 @@ fn migrate_rename_course_folders_impl() {
         let _ = std::fs::remove_dir(src_dir);
     }
 
-    // Update history records: fix both path and course_name
-    let mut records = load_download_history();
+    // File moves have completed; rewrite the latest history under its lock.
+    apply_history_migration("rename course paths", |records| {
+        apply_renamed_course_paths(records, &path_map)
+    });
+}
+
+pub(super) fn apply_renamed_course_paths(
+    records: &mut Vec<DownloadRecord>,
+    path_map: &std::collections::HashMap<String, String>,
+) -> bool {
     let mut changed = false;
     for r in records.iter_mut() {
         if let Some(new_path) = path_map.get(&r.path) {
@@ -313,7 +336,5 @@ fn migrate_rename_course_folders_impl() {
             changed = true;
         }
     }
-    if changed {
-        let _ = save_download_history(&records);
-    }
+    changed
 }

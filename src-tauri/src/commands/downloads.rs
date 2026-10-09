@@ -4,6 +4,8 @@ use super::load_download_config;
 mod duplicates;
 #[path = "downloads/history.rs"]
 mod history;
+#[path = "downloads/history_store.rs"]
+mod history_store;
 #[path = "downloads/markdown.rs"]
 mod markdown;
 #[path = "downloads/migrate.rs"]
@@ -30,7 +32,7 @@ pub use paths::*;
 pub use preview::*;
 pub use scan::*;
 
-pub(in crate::commands::downloads) use history::{annotate_records, save_download_history};
+pub(in crate::commands::downloads) use history::{annotate_records, download_history_store};
 pub(in crate::commands::downloads) use paths::{
     download_base, sanitize_path_component, theme_subfolder, validate_downloads_path,
 };

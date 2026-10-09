@@ -1,5 +1,16 @@
 use super::*;
 
+fn activity_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<LunaActivityRow> {
+    Ok(LunaActivityRow {
+        luna_id: row.get(offset)?,
+        activity_type: row.get(offset + 1)?,
+        title: row.get(offset + 2)?,
+        period: row.get(offset + 3)?,
+        status: row.get(offset + 4)?,
+        detail_path: row.get(offset + 5)?,
+    })
+}
+
 impl Database {
     // ── Luna activities (detailed items) ──
 
@@ -51,17 +62,27 @@ impl Database {
             "SELECT luna_id, activity_type, title, period, status, detail_path FROM luna_activities ORDER BY luna_id, activity_type"
         ).map_err(|e| format!("DB query: {}", e))?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok(LunaActivityRow {
-                    luna_id: row.get(0)?,
-                    activity_type: row.get(1)?,
-                    title: row.get(2)?,
-                    period: row.get(3)?,
-                    status: row.get(4)?,
-                    detail_path: row.get(5)?,
-                })
-            })
+            .query_map([], |row| activity_row(row, 0))
             .map_err(|e| format!("DB map: {}", e))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub(super) fn query_visible_luna_activities(
+        conn: &Connection,
+        year: &str,
+        term: &str,
+    ) -> Result<Vec<LunaActivityRow>, String> {
+        let ids = super::scoped_rows::visible_luna_ids(conn, "luna_activities", year, term)?;
+        let keys: Vec<_> = ids.iter().map(String::as_str).collect();
+        let mut rows: Vec<(i64, LunaActivityRow)> = super::scoped_rows::query_selected(
+            conn, &keys, "SELECT rowid, luna_id, activity_type, title, period, status, detail_path FROM luna_activities",
+            "luna_id", "", |row| Ok((row.get(0)?, activity_row(row, 1)?)))?;
+        rows.sort_unstable_by(|(id_a, a), (id_b, b)| {
+            a.luna_id
+                .cmp(&b.luna_id)
+                .then_with(|| a.activity_type.cmp(&b.activity_type))
+                .then_with(|| id_a.cmp(id_b))
+        });
+        Ok(rows.into_iter().map(|(_, activity)| activity).collect())
     }
 }

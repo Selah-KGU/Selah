@@ -2,43 +2,124 @@
 
 use super::*;
 
-fn normalize_live_whiteboard_layout(layout: &str) -> String {
-    match layout.trim().to_ascii_lowercase().as_str() {
-        "flow" | "hub" | "compare" | "cycle" | "grid" => layout.trim().to_ascii_lowercase(),
-        _ => "grid".to_string(),
+// Model strings can be borrowed from the JSON; numbers retain the previous
+// string conversion, and all other JSON kinds still behave as empty fields.
+fn value_text(value: Option<&serde_json::Value>) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    match value {
+        Some(serde_json::Value::String(text)) => Cow::Borrowed(text.trim()),
+        Some(serde_json::Value::Number(number)) => Cow::Owned(number.to_string()),
+        _ => Cow::Borrowed(""),
     }
 }
 
-fn normalize_live_whiteboard_kind(kind: &str) -> String {
-    match kind.trim().to_ascii_lowercase().as_str() {
-        "core" | "support" | "question" | "result" => kind.trim().to_ascii_lowercase(),
-        _ => "support".to_string(),
+fn clamped_text(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    let end = trimmed.char_indices().nth(limit).map(|(end, _)| end);
+    let prefix = &trimmed[..end.unwrap_or(trimmed.len())];
+    let mut out =
+        String::with_capacity(prefix.len() + if end.is_some() { '…'.len_utf8() } else { 0 });
+    out.push_str(prefix);
+    if end.is_some() {
+        out.push('…');
     }
+    out
 }
 
-fn normalize_live_whiteboard_node_type(node_type: &str) -> String {
-    match node_type.trim().to_ascii_lowercase().as_str() {
-        "term" | "terminology" | "keyword" | "small" => "term".to_string(),
-        _ => "structure".to_string(),
-    }
+fn clamped_value(value: Option<&serde_json::Value>, limit: usize) -> String {
+    clamped_text(&value_text(value), limit)
 }
 
-fn normalize_live_whiteboard_role(role: &str, kind: &str, parent_id: &str) -> String {
-    match role.trim().to_ascii_lowercase().as_str() {
-        "main" | "primary" | "trunk" | "core" => "main".to_string(),
-        "branch" | "detail" | "leaf" | "support" => "branch".to_string(),
-        _ if kind == "core" && parent_id.trim().is_empty() => "main".to_string(),
-        _ => "branch".to_string(),
-    }
+fn canonical_enum(
+    value: &str,
+    aliases: &[(&str, &'static str)],
+    fallback: &'static str,
+) -> &'static str {
+    let value = value.trim();
+    aliases
+        .iter()
+        .find(|(alias, _)| value.eq_ignore_ascii_case(alias))
+        .map_or(fallback, |(_, canonical)| *canonical)
 }
 
-fn normalize_live_whiteboard_source_type(source_type: &str, external_source: &str) -> String {
-    match source_type.trim().to_ascii_lowercase().as_str() {
-        "external" | "outside" | "reference" => "external".to_string(),
-        "lecture" | "class" | "internal" => "lecture".to_string(),
-        _ if !external_source.trim().is_empty() => "external".to_string(),
-        _ => "lecture".to_string(),
-    }
+fn normalize_live_whiteboard_layout(layout: &str) -> &'static str {
+    canonical_enum(
+        layout,
+        &[
+            ("flow", "flow"),
+            ("hub", "hub"),
+            ("compare", "compare"),
+            ("cycle", "cycle"),
+            ("grid", "grid"),
+        ],
+        "grid",
+    )
+}
+
+fn normalize_live_whiteboard_kind(kind: &str) -> &'static str {
+    canonical_enum(
+        kind,
+        &[
+            ("core", "core"),
+            ("support", "support"),
+            ("question", "question"),
+            ("result", "result"),
+        ],
+        "support",
+    )
+}
+
+fn normalize_live_whiteboard_node_type(node_type: &str) -> &'static str {
+    canonical_enum(
+        node_type,
+        &[
+            ("term", "term"),
+            ("terminology", "term"),
+            ("keyword", "term"),
+            ("small", "term"),
+        ],
+        "structure",
+    )
+}
+
+fn normalize_live_whiteboard_role(role: &str, kind: &str, parent_id: &str) -> &'static str {
+    canonical_enum(
+        role,
+        &[
+            ("main", "main"),
+            ("primary", "main"),
+            ("trunk", "main"),
+            ("core", "main"),
+            ("branch", "branch"),
+            ("detail", "branch"),
+            ("leaf", "branch"),
+            ("support", "branch"),
+        ],
+        if kind == "core" && parent_id.trim().is_empty() {
+            "main"
+        } else {
+            "branch"
+        },
+    )
+}
+
+fn normalize_live_whiteboard_source_type(source_type: &str, external_source: &str) -> &'static str {
+    canonical_enum(
+        source_type,
+        &[
+            ("external", "external"),
+            ("outside", "external"),
+            ("reference", "external"),
+            ("lecture", "lecture"),
+            ("class", "lecture"),
+            ("internal", "lecture"),
+        ],
+        if external_source.trim().is_empty() {
+            "lecture"
+        } else {
+            "external"
+        },
+    )
 }
 
 fn normalize_live_whiteboard_id(id: &str, fallback_index: usize) -> String {
@@ -60,52 +141,56 @@ pub(super) fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option
     let mut seen_ids = std::collections::HashSet::new();
     if let Some(items) = board.get("nodes").and_then(|v| v.as_array()) {
         for (idx, item) in items.iter().enumerate() {
-            let label = clamp_chars(&value_to_trimmed_string(item.get("label")), 36);
+            let label = clamped_value(item.get("label"), 36);
             if label.is_empty() {
                 continue;
             }
-            let mut id =
-                normalize_live_whiteboard_id(&value_to_trimmed_string(item.get("id")), idx);
+            let mut id = normalize_live_whiteboard_id(&value_text(item.get("id")), idx);
             if seen_ids.contains(&id) {
                 id = format!("{}-{}", id, idx + 1);
+                // The usual suffix may itself be an existing model ID. Keep
+                // every node, but never publish duplicate renderer keys.
+                if seen_ids.contains(&id) {
+                    let candidate = id;
+                    let mut collision = 2;
+                    loop {
+                        id = format!("{candidate}-{collision}");
+                        if !seen_ids.contains(&id) {
+                            break;
+                        }
+                        collision += 1;
+                    }
+                }
             }
             seen_ids.insert(id.clone());
-            let parent_id =
-                normalize_live_whiteboard_id(&value_to_trimmed_string(item.get("parent_id")), idx);
-            let external_source =
-                clamp_chars(&value_to_trimmed_string(item.get("external_source")), 140);
-            let node_type = normalize_live_whiteboard_node_type(&value_to_trimmed_string(
-                item.get("node_type"),
-            ));
-            let mut kind =
-                normalize_live_whiteboard_kind(&value_to_trimmed_string(item.get("kind")));
-            if node_type == "term" {
-                kind = "support".to_string();
-            }
+            let raw_parent = value_text(item.get("parent_id"));
+            let parent_id = normalize_live_whiteboard_id(&raw_parent, idx);
+            let external_source = clamped_value(item.get("external_source"), 140);
+            let node_type = normalize_live_whiteboard_node_type(&value_text(item.get("node_type")));
+            let kind = if node_type == "term" {
+                "support"
+            } else {
+                normalize_live_whiteboard_kind(&value_text(item.get("kind")))
+            };
+            let role = if node_type == "term" {
+                "branch"
+            } else {
+                normalize_live_whiteboard_role(&value_text(item.get("role")), kind, &raw_parent)
+            };
             nodes.push(LiveWhiteboardNode {
                 id,
                 label,
-                detail: clamp_chars(&value_to_trimmed_string(item.get("detail")), 120),
-                node_type: node_type.clone(),
-                role: if node_type == "term" {
-                    "branch".to_string()
-                } else {
-                    normalize_live_whiteboard_role(
-                        &value_to_trimmed_string(item.get("role")),
-                        &kind,
-                        &value_to_trimmed_string(item.get("parent_id")),
-                    )
-                },
+                detail: clamped_value(item.get("detail"), 120),
+                node_type: node_type.into(),
+                role: role.into(),
                 parent_id,
-                kind,
+                kind: kind.into(),
                 source_type: normalize_live_whiteboard_source_type(
-                    &value_to_trimmed_string(item.get("source_type")),
+                    &value_text(item.get("source_type")),
                     &external_source,
-                ),
-                source_excerpt: clamp_chars(
-                    &value_to_trimmed_string(item.get("source_excerpt")),
-                    80,
-                ),
+                )
+                .into(),
+                source_excerpt: clamped_value(item.get("source_excerpt"), 80),
                 external_source,
             });
         }
@@ -152,10 +237,6 @@ pub(super) fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option
     if nodes.len() < 2 {
         return None;
     }
-    let known_ids = nodes
-        .iter()
-        .map(|node| node.id.as_str())
-        .collect::<std::collections::HashSet<_>>();
     let node_by_id = nodes
         .iter()
         .map(|node| (node.id.as_str(), node))
@@ -165,29 +246,30 @@ pub(super) fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option
     let mut seen_structure_pairs = std::collections::HashSet::new();
     if let Some(items) = board.get("edges").and_then(|v| v.as_array()) {
         for item in items.iter() {
-            let from = value_to_trimmed_string(item.get("from"));
-            let to = value_to_trimmed_string(item.get("to"));
-            if from == to || !known_ids.contains(from.as_str()) || !known_ids.contains(to.as_str())
-            {
+            let from = value_text(item.get("from"));
+            let to = value_text(item.get("to"));
+            if from == to {
                 continue;
             }
-            let from_node = node_by_id.get(from.as_str());
-            let to_node = node_by_id.get(to.as_str());
-            let term_node = match (from_node, to_node) {
-                (Some(node), _) if node.node_type == "term" => Some(*node),
-                (_, Some(node)) if node.node_type == "term" => Some(*node),
-                _ => None,
+            let (Some(&from_node), Some(&to_node)) =
+                (node_by_id.get(from.as_ref()), node_by_id.get(to.as_ref()))
+            else {
+                continue;
+            };
+            let term_node = if from_node.node_type == "term" {
+                Some(from_node)
+            } else if to_node.node_type == "term" {
+                Some(to_node)
+            } else {
+                None
             };
             if let Some(term) = term_node {
-                let other = if from == term.id {
-                    to.as_str()
+                let other = if from.as_ref() == term.id {
+                    to.as_ref()
                 } else {
-                    from.as_str()
+                    from.as_ref()
                 };
-                if other != term.parent_id {
-                    continue;
-                }
-                if !seen_term_edges.insert(term.id.clone()) {
+                if other != term.parent_id || !seen_term_edges.insert(term.id.as_str()) {
                     continue;
                 }
                 edges.push(LiveWhiteboardEdge {
@@ -197,29 +279,34 @@ pub(super) fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option
                 });
                 continue;
             }
-            let from_node = *from_node.expect("known from node");
-            let to_node = *to_node.expect("known to node");
-            let label = clamp_chars(&value_to_trimmed_string(item.get("label")), 32);
-            let parent_link = from_node.parent_id == to || to_node.parent_id == from;
-            if label.is_empty() && !parent_link {
+            let raw_label = value_text(item.get("label"));
+            let parent_link =
+                from_node.parent_id == to.as_ref() || to_node.parent_id == from.as_ref();
+            if raw_label.is_empty() && !parent_link {
                 continue;
             }
+            // Borrow canonical node IDs for dedup; numeric JSON endpoints may
+            // have temporary owned text, while these IDs outlive this traversal.
             let pair = if from <= to {
-                (from.clone(), to.clone())
+                (from_node.id.as_str(), to_node.id.as_str())
             } else {
-                (to.clone(), from.clone())
+                (to_node.id.as_str(), from_node.id.as_str())
             };
             if !seen_structure_pairs.insert(pair) {
                 continue;
             }
-            edges.push(LiveWhiteboardEdge { from, to, label });
+            edges.push(LiveWhiteboardEdge {
+                from: from.into_owned(),
+                to: to.into_owned(),
+                label: clamped_text(&raw_label, 32),
+            });
         }
     }
     for node in &nodes {
         if node.node_type != "term" || node.parent_id.is_empty() {
             continue;
         }
-        if seen_term_edges.contains(&node.id) {
+        if seen_term_edges.contains(node.id.as_str()) {
             continue;
         }
         edges.push(LiveWhiteboardEdge {
@@ -227,15 +314,19 @@ pub(super) fn parse_live_whiteboard(value: Option<&serde_json::Value>) -> Option
             to: node.id.clone(),
             label: String::new(),
         });
-        seen_term_edges.insert(node.id.clone());
+        seen_term_edges.insert(node.id.as_str());
     }
 
     Some(LiveWhiteboard {
-        title: clamp_chars(&value_to_trimmed_string(board.get("title")), 40),
-        layout: normalize_live_whiteboard_layout(&value_to_trimmed_string(board.get("layout"))),
+        title: clamped_value(board.get("title"), 40),
+        layout: normalize_live_whiteboard_layout(&value_text(board.get("layout"))).into(),
         nodes,
         edges,
         schema_version: 1,
         normalized_by: "backend".to_string(),
     })
 }
+
+#[cfg(test)]
+#[path = "board/tests.rs"]
+mod tests;

@@ -11,7 +11,11 @@ pub async fn list_downloaded_files(args: &Value) -> Result<Value, String> {
         .unwrap_or(10)
         .min(LIST_CAP as u64) as usize;
 
-    let mut records = crate::commands::list_downloads();
+    let mut records = crate::background_ipc::run(
+        "Downloaded files worker failed",
+        crate::commands::list_downloads_snapshot,
+    )
+    .await?;
     records.retain(|r| r.file_exists);
     if !keyword_norm.is_empty() {
         records.retain(|r| {
@@ -99,7 +103,7 @@ fn resolve_downloaded_file_arg(args: &Value) -> Result<PathBuf, String> {
         .trim();
     let filename_norm = normalize_text(filename);
     let course_norm = normalize_text(course_hint);
-    let mut records = crate::commands::list_downloads();
+    let mut records = crate::commands::list_downloads_snapshot()?;
     records.retain(|r| r.file_exists);
     if !course_norm.is_empty() {
         records.retain(|r| normalize_text(&r.course_name).contains(&course_norm));

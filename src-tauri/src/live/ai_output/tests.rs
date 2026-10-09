@@ -104,6 +104,7 @@ fn reconcile_whiteboard_trusts_model_rewrite() {
         }],
     );
 
+    let previous = std::sync::Arc::new(previous);
     let reconciled = reconcile_whiteboard(Some(&previous), Some(current)).unwrap();
 
     assert_eq!(reconciled.title, "清晰化後");
@@ -124,6 +125,7 @@ fn reconcile_whiteboard_carries_previous_when_model_skips_board() {
         Vec::new(),
     );
 
+    let previous = std::sync::Arc::new(previous);
     let reconciled = reconcile_whiteboard(Some(&previous), None).unwrap();
 
     assert_eq!(reconciled.title, "前回");
@@ -152,6 +154,7 @@ fn reconcile_whiteboard_keeps_previous_on_unexpected_shrink() {
         Vec::new(),
     );
 
+    let previous = std::sync::Arc::new(previous);
     let reconciled = reconcile_whiteboard(Some(&previous), Some(current)).unwrap();
 
     assert_eq!(reconciled.title, "前回");
@@ -182,6 +185,7 @@ fn reconcile_whiteboard_allows_growth_for_new_topics() {
         Vec::new(),
     );
 
+    let previous = std::sync::Arc::new(previous);
     let reconciled = reconcile_whiteboard(Some(&previous), Some(current)).unwrap();
 
     assert_eq!(reconciled.title, "新課題を追加");

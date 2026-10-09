@@ -80,139 +80,17 @@ pub fn setup(app: &AppHandle) {
 
     let app_theme = app.clone();
     let lid_theme = app.listen("app-theme-changed", move |_| {
-        set_theme_dark(prefers_dark(&app_theme));
-    });
-
-    // stt-final: a VAD-finalized speech segment arrived
-    let app_final = app.clone();
-    let lid_final = app.listen("stt-final", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        if CURRENT_MODE.load(Ordering::Relaxed) == MODE_NONE {
-            return;
-        }
-        let text = payload
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        let (display, pending_submit) = {
-            let mut ag = AGENT.lock().unwrap_or_else(|e| e.into_inner());
-            let trimmed = text.trim().to_string();
-            if !trimmed.is_empty() {
-                if !ag.finals_accumulated.is_empty() {
-                    ag.finals_accumulated.push(' ');
-                }
-                ag.finals_accumulated.push_str(&trimmed);
-            }
-            ag.current_speech.clear();
-            let display = listening_display_text(&ag);
-            let pending = if ag.stop_requested {
-                ag.stop_requested = false;
-                Some(consume_all_speech(&mut ag))
-            } else {
-                None
-            };
-            (display, pending)
-        };
-
-        if CURRENT_MODE.load(Ordering::Relaxed) == MODE_LISTENING && !display.is_empty() {
-            update_text_content(display);
-        }
-        if let Some(t) = pending_submit {
-            if !t.is_empty() {
-                submit_to_agent(app_final.clone(), t);
-            }
+        let dark = prefers_dark(&app_theme);
+        if let Err(error) = enqueue_ui_job(Box::new(move || set_theme_dark(dark))) {
+            log::debug!("Agent theme dispatch skipped: {error}");
         }
     });
 
-    // stt-partial: in-flight transcription while user is still speaking
-    let lid_partial = app.listen("stt-partial", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        if CURRENT_MODE.load(Ordering::Relaxed) != MODE_LISTENING {
-            return;
-        }
-        let text = payload
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if text.trim().is_empty() {
-            return;
-        }
-        let display = {
-            let mut ag = AGENT.lock().unwrap_or_else(|e| e.into_inner());
-            ag.current_speech = text;
-            listening_display_text(&ag)
-        };
-        update_text_content(display);
-    });
-
-    // stt-state: STT engine state changed (started / stopped)
-    let app_state = app.clone();
-    let lid_state = app.listen("stt-state", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        let state_name = payload
-            .get("state")
-            .and_then(|t| t.as_str())
-            .unwrap_or_default();
-        let is_listening = matches!(state_name, "initializing" | "listening");
-
-        if is_listening {
-            transition_to_listening(&app_state, None);
-            return;
-        }
-
-        let mode = CURRENT_MODE.load(Ordering::Relaxed);
-        let pending = {
-            let mut ag = AGENT.lock().unwrap_or_else(|e| e.into_inner());
-            if mode == MODE_PROCESSING || mode == MODE_RESULT || mode == MODE_NOTICE {
-                ag.finals_accumulated.clear();
-                ag.current_speech.clear();
-                None
-            } else {
-                ag.stop_requested = false;
-                Some(consume_all_speech(&mut ag))
-            }
-        };
-        if let Some(t) = pending {
-            if t.is_empty() {
-                close_panel(&app_state, false);
-            } else {
-                submit_to_agent(app_state.clone(), t);
-            }
-        }
-    });
-
-    // stt-error: microphone / engine failure (only for our own caller)
-    let app_err = app.clone();
-    let lid_err = app.listen("stt-error", move |event| {
-        let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or_default();
-        if payload.get("caller").and_then(|c| c.as_str()) != Some("native_agent") {
-            return;
-        }
-        {
-            let mut ag = AGENT.lock().unwrap_or_else(|e| e.into_inner());
-            ag.stop_requested = false;
-            ag.finals_accumulated.clear();
-            ag.current_speech.clear();
-        }
-        transition_to_notice(&app_err, "音声入力を開始できませんでした");
-    });
-
+    crate::native_agent_events::install(&AGENT, enqueue_view, finish_capture, capture_error);
     AGENT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .event_listeners = vec![lid_theme, lid_final, lid_partial, lid_state, lid_err];
+        .event_listeners = vec![lid_theme];
 }
 
 pub fn apply_config(app: &AppHandle, config: &NativeAgentConfig) -> Result<(), String> {
@@ -238,10 +116,12 @@ pub fn apply_config(app: &AppHandle, config: &NativeAgentConfig) -> Result<(), S
         // Disable: zero hook targets (hook becomes no-op), then destroy window.
         HOOK_VK.store(0, Ordering::Relaxed);
         HOOK_MODS.store(0, Ordering::Relaxed);
-        SHORTCUT_ARM_TOKEN.fetch_add(1, Ordering::Relaxed);
-        if stt::stt_get_active_caller().as_deref() == Some("native_agent") {
-            let _ = stt::stt_stop_stream();
-        }
+        AGENT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shortcut
+            .release();
+        close_panel(app, true);
         force_destroy_panel();
     }
 

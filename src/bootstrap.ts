@@ -7,6 +7,7 @@ type PrebootLog = {
 declare global {
   interface Window {
     __SELAH_PREBOOT_LOGS__?: PrebootLog[];
+    __SELAH_REPORT_ERROR__?: (message: string) => void;
     __TAURI_INTERNALS__?: unknown;
   }
 }
@@ -14,15 +15,39 @@ declare global {
 const maxLogs = 50;
 const logs: PrebootLog[] = [];
 window.__SELAH_PREBOOT_LOGS__ = logs;
+const errorLogKey = "selah-frontend-errors";
+// Keep bounded local diagnostics across a recovery reload. No transcript or
+// remote telemetry is added; this is the same error feed the debug UI displays.
+try {
+  const saved: unknown = JSON.parse(localStorage.getItem(errorLogKey) || "[]");
+  if (Array.isArray(saved)) {
+    logs.push(...saved.filter((entry) => entry?.type === "error" && typeof entry.message === "string")
+      .slice(-maxLogs));
+  }
+} catch { /* storage may be unavailable */ }
 
 function addLog(type: PrebootLog["type"], message: string): void {
   if (logs.length >= maxLogs) logs.shift();
   logs.push({
     type,
-    message,
+    message: message.slice(0, 8192),
     time: new Date().toLocaleTimeString("ja-JP"),
   });
+  if (type === "error") {
+    try {
+      localStorage.setItem(errorLogKey, JSON.stringify(logs.filter((entry) => entry.type === "error")));
+    } catch { /* diagnostics must not cause another render failure */ }
+    // A local native log survives a WebContent crash. Keep this independent of
+    // console calls, which are removed from production builds.
+    try {
+      const bridge = window.__TAURI_INTERNALS__ as { invoke?: (command: string, args: unknown) => Promise<unknown> } | undefined;
+      void bridge?.invoke?.("frontend_report_error", { message: message.slice(0, 8192) }).catch(() => {});
+    } catch { /* reporting must never throw */ }
+  }
 }
+
+// Production drops console calls, so handled render errors need a direct sink.
+window.__SELAH_REPORT_ERROR__ = (message) => addLog("error", message);
 
 window.addEventListener("error", event => {
   addLog("error", event.message + (event.filename ? ` @ ${event.filename}:${event.lineno}` : ""));

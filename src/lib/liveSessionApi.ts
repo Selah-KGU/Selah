@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { liveSurfaceSnapshot, liveSurfaceSaveResult } from "./liveSurfaceSnapshot";
+import { expandLiveSurface, expandLiveSurfaceSave, type CompactLiveSurfaceSnapshot, type CompactLiveSurfaceSaveResult } from "./liveBoardTransport";
 
 /** LIVE session types and Tauri commands. Demo playback stays with the session. */
 
@@ -68,7 +70,20 @@ export interface LiveSummaryChunk {
   whiteboard?: LiveWhiteboard | null;
 }
 
+export type LiveFinishPhase = "stopping" | "saving_record" | "summarizing" | "saving_final";
+
+export interface LiveFinishProgress {
+  session_id: string;
+  finish_phase: LiveFinishPhase;
+  finish_revision: number;
+}
+
 export interface LiveSessionSnapshot {
+  /** Capture order across recordings in the running native backend. */
+  update_revision?: number;
+  /** Client-side consumed prefix from a slim update, even before gap recovery. */
+  pending_from_line?: number;
+  session_id?: string | null;
   active: boolean;
   course: LiveCourseInfo | null;
   started_at: string | null;
@@ -79,6 +94,42 @@ export interface LiveSessionSnapshot {
   next_summary_at_ms?: number | null;
   /** True while a periodic summary is being generated. */
   summarizing?: boolean;
+  /** Current backend save stage, also available after a WebView reload. */
+  finish_phase?: LiveFinishPhase | null;
+  /** Orders save stages and retries within a recording. */
+  finish_revision?: number;
+}
+
+/** Page wire reply; complete transcript and pending arrays stay in the backend. */
+export interface LiveSurfaceSnapshot extends Omit<LiveSessionSnapshot, "transcript_lines" | "pending_lines"> {
+  transcript_line_count: number;
+  visible_lines: LiveTranscriptLine[];
+  pending_from_line: number;
+}
+
+/** Complete decoded update; versioned event references are resolved before application. */
+export interface LiveSessionUpdate {
+  update_revision: number;
+  session_id: string | null;
+  active: boolean;
+  course: LiveCourseInfo | null;
+  started_at: string | null;
+  next_summary_at_ms: number | null;
+  summarizing: boolean;
+  finish_phase: LiveFinishPhase | null;
+  finish_revision: number;
+  transcript_line_count: number;
+  pending_line_count: number;
+  summary_count: number;
+  latest_summary?: LiveSummaryChunk | null;
+}
+
+export interface LiveTranscriptUpdate {
+  session_id: string;
+  line_count: number;
+  line: LiveTranscriptLine;
+  /** Native STT capture order; absent for a manually appended line. */
+  seq?: number;
 }
 
 export interface LiveSaveResult {
@@ -90,6 +141,12 @@ export interface LiveSaveResult {
   /** TODO/DDL extraction is running in the background; suggestions arrive via
    *  the `live-todo-suggestions` event. */
   todos_pending?: boolean;
+}
+
+export interface LiveSurfaceSaveResult extends Omit<LiveSaveResult, "snapshot" | "markdown"> {
+  snapshot: LiveSurfaceSnapshot;
+  /** Exact Markdown previously rendered in the saved-note preview. */
+  summary_markdown: string;
 }
 
 /** Payload of the `live-todo-suggestions` event. */
@@ -135,7 +192,8 @@ function loadDemoLiveSession(): LiveSessionSnapshot {
     const raw = localStorage.getItem(DEMO_LIVE_KEY);
     if (!raw) return emptyDemoLiveSession();
     const parsed = JSON.parse(raw) as Partial<LiveSessionSnapshot>;
-    return {
+    const snapshot: LiveSessionSnapshot = {
+      session_id: typeof parsed.session_id === "string" ? parsed.session_id : null,
       active: parsed.active === true,
       course: parsed.course ?? null,
       started_at: parsed.started_at ?? null,
@@ -143,6 +201,11 @@ function loadDemoLiveSession(): LiveSessionSnapshot {
       pending_lines: Array.isArray(parsed.pending_lines) ? parsed.pending_lines : [],
       summaries: Array.isArray(parsed.summaries) ? parsed.summaries : [],
     };
+    if (snapshot.active && !snapshot.session_id) {
+      snapshot.session_id = crypto.randomUUID();
+      saveDemoLiveSession(snapshot);
+    }
+    return snapshot;
   } catch {
     return emptyDemoLiveSession();
   }
@@ -215,9 +278,30 @@ function buildDemoLiveTranscript(course: LiveCourseInfo): LiveTranscriptLine[] {
   ];
 }
 
+export async function liveGetSurface(): Promise<LiveSurfaceSnapshot> {
+  if (_isDemo()) return liveSurfaceSnapshot(loadDemoLiveSession());
+  return expandLiveSurface(await invoke<CompactLiveSurfaceSnapshot>("live_get_surface_compact"));
+}
+
+export async function livePeekDaySurface(course: LiveCourseInfo): Promise<LiveSurfaceSnapshot> {
+  if (_isDemo()) return liveSurfaceSnapshot(await livePeekDayCache(course));
+  return expandLiveSurface(await invoke<CompactLiveSurfaceSnapshot>("live_peek_day_surface_compact", { course }));
+}
+
+export async function liveStartSurface(course: LiveCourseInfo): Promise<LiveSurfaceSnapshot> {
+  if (_isDemo()) return liveSurfaceSnapshot(await liveStartSession(course));
+  return expandLiveSurface(await invoke<CompactLiveSurfaceSnapshot>("live_start_surface_compact", { course }));
+}
+
 export async function liveGetSession(): Promise<LiveSessionSnapshot> {
   if (_isDemo()) return loadDemoLiveSession();
   return invoke<LiveSessionSnapshot>("live_get_session");
+}
+
+/** Startup needs only activity, not the full recording history. */
+export async function liveHasActiveSession(): Promise<boolean> {
+  if (_isDemo()) return loadDemoLiveSession().active;
+  return invoke<boolean>("live_has_active_session");
 }
 
 export async function livePeekDayCache(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
@@ -230,8 +314,10 @@ export async function livePeekDayCache(course: LiveCourseInfo): Promise<LiveSess
 
 export async function liveStartSession(course: LiveCourseInfo): Promise<LiveSessionSnapshot> {
   if (_isDemo()) {
+    if (loadDemoLiveSession().active) throw new Error("Liveセッションが使用中です");
     const transcript_lines = buildDemoLiveTranscript(course);
     return saveDemoLiveSession({
+      session_id: crypto.randomUUID(),
       active: true,
       course,
       started_at: new Date().toISOString(),
@@ -276,21 +362,31 @@ export async function liveFlushSummary(force: boolean = false): Promise<LiveSess
   return invoke<LiveSessionSnapshot>("live_flush_summary", { force });
 }
 
-export async function liveGenerateOverallSummary(): Promise<string> {
+function requireDemoLiveOwner(sessionId: string): void {
+  const snapshot = loadDemoLiveSession();
+  if (!sessionId || !snapshot.active || snapshot.session_id !== sessionId) {
+    throw new Error("Liveセッションが切り替わりました");
+  }
+}
+
+export async function liveGenerateOverallSummary(sessionId: string): Promise<string> {
   if (_isDemo()) {
+    requireDemoLiveOwner(sessionId);
     const snapshot = await liveFlushSummary(true);
+    requireDemoLiveOwner(sessionId);
     const content = snapshot.transcript_lines.map((line) => line.text).join(" / ");
     return `### 全体要約\n${content || "このセッションの内容はまだありません。"}\n\n### 今回の論点\n- 現在までの文字起こし全体を対象に生成したデモ要約`;
   }
-  return invoke<string>("live_generate_overall_summary");
+  return invoke<string>("live_generate_overall_summary", { sessionId });
 }
 
-export async function liveCancelSession(): Promise<void> {
+export async function liveCancelSession(sessionId: string): Promise<void> {
   if (_isDemo()) {
+    requireDemoLiveOwner(sessionId);
     saveDemoLiveSession(emptyDemoLiveSession());
     return;
   }
-  return invoke<void>("live_cancel_session");
+  return invoke<void>("live_cancel_session", { sessionId });
 }
 
 export async function liveClearDayCache(course: LiveCourseInfo): Promise<void> {
@@ -304,9 +400,11 @@ export async function liveClearDayCache(course: LiveCourseInfo): Promise<void> {
   return invoke<void>("live_clear_day_cache", { course });
 }
 
-export async function liveFinishSession(): Promise<LiveSaveResult> {
+export async function liveFinishSession(sessionId: string): Promise<LiveSaveResult> {
   if (_isDemo()) {
+    requireDemoLiveOwner(sessionId);
     const snapshot = await liveFlushSummary(true);
+    requireDemoLiveOwner(sessionId);
     const saved = snapshot.transcript_lines.length > 0;
     const markdown = saved
       ? `# ${snapshot.course?.course_name ?? "LIVE Demo"}\n\n${snapshot.summaries.map((chunk) => chunk.body).join("\n\n")}\n\n## Transcript\n${snapshot.transcript_lines.map((line) => `- ${line.at} ${line.text}`).join("\n")}`
@@ -315,10 +413,15 @@ export async function liveFinishSession(): Promise<LiveSaveResult> {
       saved,
       path: saved ? `/DemoNotes/${(snapshot.course?.course_name ?? "live-demo").replace(/[^\w\u3040-\u30ff\u4e00-\u9faf-]+/g, "_")}.md` : "",
       markdown,
-      snapshot: emptyDemoLiveSession(),
+      snapshot: { ...snapshot, active: false, summarizing: false, next_summary_at_ms: null, finish_phase: null },
     };
     saveDemoLiveSession(emptyDemoLiveSession());
     return result;
   }
-  return invoke<LiveSaveResult>("live_finish_session");
+  return invoke<LiveSaveResult>("live_finish_session", { sessionId });
+}
+
+export async function liveFinishSurface(sessionId: string): Promise<LiveSurfaceSaveResult> {
+  if (_isDemo()) return liveSurfaceSaveResult(await liveFinishSession(sessionId));
+  return expandLiveSurfaceSave(await invoke<CompactLiveSurfaceSaveResult>("live_finish_surface_compact", { sessionId }));
 }

@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 impl Database {
     // ── AI schedule cache ──
@@ -11,7 +12,10 @@ impl Database {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .ok();
+            .optional()
+            .map_err(|e| format!("DB AI cache read: {e}"))?;
+        // The row owns its JSON. Decoding it no longer needs the connection.
+        drop(conn);
         match result {
             Some((json, ts)) => {
                 let parsed: AiScheduleResult =
@@ -23,10 +27,10 @@ impl Database {
     }
 
     pub fn save_ai_schedule_cache(&self, result: &AiScheduleResult) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        let now = epoch_secs();
         let json =
             serde_json::to_string(result).map_err(|e| format!("AI cache serialize: {}", e))?;
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let now = epoch_secs();
         conn.execute(
             "INSERT INTO ai_schedule_cache (id, result_json, updated_at) VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET result_json=?1, updated_at=?2",
@@ -39,14 +43,14 @@ impl Database {
     // ── Snapshot state ──
 
     pub fn save_snapshot_state(&self, state: &SnapshotState) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        let now = epoch_secs();
         let communities_json = serde_json::to_string(&state.luna_communities)
             .map_err(|e| format!("serialize communities: {}", e))?;
         let year_options_json = serde_json::to_string(&state.luna_year_options)
             .map_err(|e| format!("serialize year_options: {}", e))?;
         let term_options_json = serde_json::to_string(&state.luna_term_options)
             .map_err(|e| format!("serialize term_options: {}", e))?;
+        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let now = epoch_secs();
         conn.execute(
             "INSERT INTO schedule_snapshot_state (id, current_week_label, next_week_label, luna_year, luna_term, luna_communities_json, luna_year_options_json, luna_term_options_json, updated_at)
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -77,7 +81,8 @@ impl Database {
             "SELECT current_week_label, next_week_label, luna_year, luna_term, luna_communities_json, luna_year_options_json, luna_term_options_json, updated_at FROM schedule_snapshot_state WHERE id = 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
-        ).ok();
+        ).optional().map_err(|e| format!("DB snapshot read: {e}"))?;
+        drop(conn);
         match result {
             Some((cwl, nwl, ly, lt, comm_json, yo_json, to_json, updated_at)) => {
                 let luna_communities: Vec<luna_parser::LunaCommunity> =
@@ -114,28 +119,16 @@ impl Database {
         let kgc_next = Self::query_kgc_courses(&conn, next_week_label)?;
         let luna_courses = Self::query_luna_courses(&conn)?;
         let (year, term) = Self::effective_luna_scope(&conn);
-        let visible_codes: std::collections::HashSet<&str> = kgc_current
+        let visible_codes: Vec<&str> = kgc_current
             .iter()
             .chain(kgc_next.iter())
             .map(|row| row.kgc_code.as_str())
             .filter(|code| !code.is_empty())
             .collect();
-        let session_plans = Self::query_all_session_plans(&conn)?
-            .into_iter()
-            .filter(|(code, _)| visible_codes.contains(code.as_str()))
-            .collect();
-        let luna_counts = Self::query_all_luna_counts(&conn)?
-            .into_iter()
-            .filter(|(id, _)| luna_course_matches_snapshot(id, &year, &term))
-            .collect();
-        let luna_activities = Self::query_all_luna_activities(&conn)?
-            .into_iter()
-            .filter(|row| luna_course_matches_snapshot(&row.luna_id, &year, &term))
-            .collect();
-        let kgc_course_details = Self::query_all_kgc_course_details(&conn)?
-            .into_iter()
-            .filter(|detail| visible_codes.contains(detail.kgc_code.as_str()))
-            .collect();
+        let session_plans = Self::query_visible_session_plans(&conn, &visible_codes)?;
+        let luna_counts = Self::query_visible_luna_counts(&conn, &year, &term)?;
+        let luna_activities = Self::query_visible_luna_activities(&conn, &year, &term)?;
+        let kgc_course_details = Self::query_visible_kgc_course_details(&conn, &visible_codes)?;
         Ok(ScheduleRawData {
             kgc_entries_current: kgc_current,
             kgc_entries_next: kgc_next,
@@ -150,3 +143,14 @@ impl Database {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "schedule/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "schedule/legacy_raw.rs"]
+mod legacy_raw;
+#[cfg(test)]
+#[path = "schedule/raw_tests.rs"]
+mod raw_tests;

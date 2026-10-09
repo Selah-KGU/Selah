@@ -4,12 +4,11 @@ use chrono::{Duration as ChronoDuration, Local};
 use tauri::{Emitter, Manager};
 
 use super::support::{
-    emit_live_update, empty_snapshot, live_summary_interval_minutes, should_skip_ai_summarization,
+    emit_live_update, live_summary_interval_minutes, should_skip_ai_summarization,
 };
 use super::time::{effective_batch_started_at, format_time, last_transcript_line_datetime};
 use super::{
-    auto_save_day_cache, build_chunk_title, latest_whiteboard, reconcile_whiteboard,
-    summarize_chunk, write_partial_markdown_file, LiveSessionSnapshot, LiveState, LiveSummaryChunk,
+    build_chunk_title, summarize_chunk, LiveSessionSnapshot, LiveState, LiveSummaryChunk,
     LIVE_FLUSH_DRIVER_IDLE_SLEEP_SECS, LIVE_FLUSH_DRIVER_MAX_SLEEP_SECS,
     LIVE_FLUSH_DRIVER_MIN_SLEEP_SECS, LIVE_FLUSH_FORCE_WAIT_ATTEMPTS, LIVE_FLUSH_FORCE_WAIT_MS,
     MIN_AI_SUMMARIZATION_DURATION_SECS,
@@ -19,43 +18,60 @@ pub(in crate::live) async fn flush_session_summary(
     state: &LiveState,
     force: bool,
 ) -> Result<LiveSessionSnapshot, String> {
+    flush_session_summary_on_start(state, force, || {}).await
+}
+
+async fn flush_session_summary_on_start(
+    state: &LiveState,
+    force: bool,
+    on_start: impl FnOnce(),
+) -> Result<LiveSessionSnapshot, String> {
+    let expected = state
+        .active_session_id()
+        .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
     let mut wait_attempts = 0usize;
     let summary_interval_minutes = live_summary_interval_minutes();
     let (session_id, course, lines, recent_summaries, range_start, range_end, chunk_index) = loop {
         let captured = {
             let now = Local::now();
             let mut guard = state
-                .0
+                .session
                 .lock()
                 .map_err(|_| "Live state lock failed".to_string())?;
             let session = guard
                 .as_mut()
                 .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
+            if session.session_id != expected {
+                return Err("Liveセッションが切り替わりました".into());
+            }
+            if session.finish_phase.is_some() && !force {
+                return Ok(state.capture_snapshot(Some(session)));
+            }
             if session.flush_in_flight {
-                let snapshot = session.snapshot();
+                let snapshot = state.capture_snapshot(Some(session));
                 if !force || wait_attempts >= LIVE_FLUSH_FORCE_WAIT_ATTEMPTS {
                     return Ok(snapshot);
                 }
                 None
             } else {
                 if session.pending_lines.is_empty() {
-                    return Ok(session.snapshot());
+                    return Ok(state.capture_snapshot(Some(session)));
                 }
                 if should_skip_ai_summarization(session.started_at, now) {
-                    return Ok(session.snapshot());
+                    return Ok(state.capture_snapshot(Some(session)));
                 }
                 let batch_started_at = effective_batch_started_at(session);
                 if !force
                     && now.signed_duration_since(batch_started_at).num_minutes()
                         < summary_interval_minutes
                 {
-                    return Ok(session.snapshot());
+                    return Ok(state.capture_snapshot(Some(session)));
                 }
                 // Scheduled summaries follow the original noise guard: wait
                 // until at least a few finalized STT segments accumulated.
                 // Forced flushes on stop still include any remaining content.
                 if !force && session.pending_lines.len() < 3 {
-                    return Ok(session.snapshot());
+                    return Ok(state.capture_snapshot(Some(session)));
                 }
                 let lines = session.pending_lines.clone();
                 let range_end =
@@ -79,6 +95,8 @@ pub(in crate::live) async fn flush_session_summary(
         tokio::time::sleep(std::time::Duration::from_millis(LIVE_FLUSH_FORCE_WAIT_MS)).await;
     };
 
+    // The LIVE lock is released before notification serialization or AI IO.
+    on_start();
     let range_label = format!("{}-{}", format_time(range_start), format_time(range_end));
     let chunk_ai_result = summarize_chunk(&course, &lines, &recent_summaries, &range_label).await;
     let summarized_line_count = lines.len();
@@ -86,7 +104,7 @@ pub(in crate::live) async fn flush_session_summary(
         Ok(chunk_ai) => chunk_ai,
         Err(err) => {
             let mut guard = state
-                .0
+                .session
                 .lock()
                 .map_err(|_| "Live state lock failed".to_string())?;
             if let Some(session) = guard.as_mut() {
@@ -97,34 +115,21 @@ pub(in crate::live) async fn flush_session_summary(
             return Err(err);
         }
     };
-    {
-        let mut guard = state
-            .0
-            .lock()
-            .map_err(|_| "Live state lock failed".to_string())?;
-        let Some(session) = guard.as_mut() else {
-            return Ok(empty_snapshot());
-        };
-        if session.session_id != session_id {
-            return Ok(session.snapshot());
-        }
-    }
-    let reconciled_board =
-        reconcile_whiteboard(latest_whiteboard(&recent_summaries), chunk_ai.whiteboard);
-
+    // Parsing, excerpt matching and board reconciliation finished off-thread.
+    // Validate ownership once, under the same lock as the summary commit.
     let mut guard = state
-        .0
+        .session
         .lock()
         .map_err(|_| "Live state lock failed".to_string())?;
     let Some(session) = guard.as_mut() else {
-        return Ok(empty_snapshot());
+        return Ok(state.capture_snapshot(None));
     };
     if session.session_id != session_id {
-        return Ok(session.snapshot());
+        return Ok(state.capture_snapshot(Some(session)));
     }
     session.flush_in_flight = false;
     if session.pending_lines.is_empty() {
-        return Ok(session.snapshot());
+        return Ok(state.capture_snapshot(Some(session)));
     }
     let summary = LiveSummaryChunk {
         title: build_chunk_title(chunk_index, range_start, range_end),
@@ -132,14 +137,14 @@ pub(in crate::live) async fn flush_session_summary(
         body: chunk_ai.body,
         line_count: lines.len(),
         terms: chunk_ai.terms,
-        whiteboard: reconciled_board,
+        whiteboard: chunk_ai.whiteboard,
     };
-    Arc::make_mut(&mut session.summaries).push(summary);
+    session.append_summary(summary);
     let pending = Arc::make_mut(&mut session.pending_lines);
     let drain_count = summarized_line_count.min(pending.len());
     pending.drain(0..drain_count);
     session.batch_started_at = range_end;
-    Ok(session.snapshot())
+    Ok(state.capture_snapshot(Some(session)))
 }
 
 /// Final-flush retry on stop. Unlike scheduled chunks, the closing segment has
@@ -174,7 +179,7 @@ pub(in crate::live) async fn flush_final_summary_with_retry(
 
 fn live_session_matches(state: &LiveState, session_id: &str) -> bool {
     state
-        .0
+        .session
         .lock()
         .ok()
         .and_then(|guard| {
@@ -191,12 +196,14 @@ fn live_next_scheduled_flush_delay(
 ) -> Option<std::time::Duration> {
     let now = Local::now();
     let summary_interval_minutes = live_summary_interval_minutes();
-    let guard = state.0.lock().ok()?;
+    let guard = state.session.lock().ok()?;
     let session = guard.as_ref()?;
     if session.session_id != session_id {
         return None;
     }
-    if session.pending_lines.is_empty() || session.pending_lines.len() < 3 {
+    // Closing owns the final flush. Stay asleep until it finishes or its guard
+    // releases the reservation after an error, then resume on the notification.
+    if session.finish_phase.is_some() || session.pending_lines.len() < 3 {
         return Some(std::time::Duration::from_secs(
             LIVE_FLUSH_DRIVER_IDLE_SLEEP_SECS,
         ));
@@ -224,40 +231,36 @@ pub(in crate::live) async fn live_flush_summary_with_side_effects(
     state: &LiveState,
     force: bool,
 ) -> Result<LiveSessionSnapshot, String> {
-    let summary_count_before = {
-        let guard = state
-            .0
-            .lock()
-            .map_err(|_| "Live state lock failed".to_string())?;
-        guard.as_ref().map(|s| s.summaries.len()).unwrap_or(0)
-    };
-    let snapshot = flush_session_summary(state, force).await?;
-    auto_save_day_cache(state, true);
-
-    // Whenever the AI flush actually produced a new summary chunk, also persist
-    // the formal .md file. Cheap insurance: a crash before stop now leaves a
-    // real markdown on disk, not just the hidden day_cache sidecar.
-    if snapshot.summaries.len() > summary_count_before {
-        let info = {
-            let guard = state
-                .0
-                .lock()
-                .map_err(|_| "Live state lock failed".to_string())?;
-            guard.as_ref().map(|s| {
-                (
-                    s.course.clone(),
-                    s.started_at,
-                    s.transcript_lines.clone(),
-                    s.summaries.clone(),
-                )
-            })
+    let expected = state
+        .active_session_id()
+        .ok_or_else(|| "Liveセッションが開始されていません".to_string())?;
+    let previous_summary_count = state
+        .session
+        .lock()
+        .map_err(|_| "Live state lock failed".to_owned())?
+        .as_ref()
+        .filter(|session| session.session_id == expected)
+        .map_or(0, |session| session.summaries.len());
+    let snapshot =
+        match flush_session_summary_on_start(state, force, || emit_live_update(app, state)).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                // Applies to forced IPC flushes too: their begin notification must
+                // not leave the UI busy after the backend clears its in-flight flag.
+                emit_live_update(app, state);
+                return Err(error);
+            }
         };
-        if let Some((course, started_at, transcript_lines, summaries)) = info {
-            write_partial_markdown_file(&course, started_at, &transcript_lines, &summaries);
-        }
+    if snapshot.session_id.as_deref() == Some(&expected) {
+        super::persistence::LivePersistence::schedule_for(state, &expected, true);
     }
 
-    emit_live_update(app, state);
+    super::support::emit_session_update(
+        app,
+        state,
+        snapshot.session_id.as_deref() == Some(&expected)
+            && snapshot.summaries.len() > previous_summary_count,
+    );
     Ok(snapshot)
 }
 
@@ -291,13 +294,16 @@ pub(in crate::live) fn start_live_flush_driver(app: tauri::AppHandle, session_id
                     }
                 }
                 Err(err) => {
+                    if !live_session_matches(state.inner(), &session_id) {
+                        break;
+                    }
                     log::warn!("[Live] backend scheduled flush failed: {err}");
-                    // The flush already cleared `flush_in_flight` on failure, but
-                    // without pushing a fresh snapshot the UI stays stuck on
-                    // "要約を生成中…". Emit the cleared state plus an error event so
-                    // Live can surface the failure instead of hanging silently.
-                    emit_live_update(&app, state.inner());
-                    let _ = app.emit("live-summary-error", serde_json::json!({ "message": err }));
+                    // The wrapper already emitted the cleared state. Report the
+                    // failure only if this driver still belongs to the recording.
+                    let _ = app.emit(
+                        "live-summary-error",
+                        serde_json::json!({ "message": err, "session_id": session_id }),
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(
                         LIVE_FLUSH_DRIVER_IDLE_SLEEP_SECS,
                     ))
@@ -306,4 +312,45 @@ pub(in crate::live) fn start_live_flush_driver(app: tauri::AppHandle, session_id
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::transcript::recording;
+    use super::*;
+
+    #[test]
+    fn closing_pauses_the_due_driver_and_a_failed_finish_resumes_it() {
+        let state = LiveState::new();
+        let mut session = recording();
+        session.started_at = Local::now() - ChronoDuration::days(1);
+        session.batch_started_at = session.started_at;
+        for i in 0..3 {
+            session.append_line(super::super::LiveTranscriptLine {
+                at: session.started_at.format("%H:%M:%S").to_string(),
+                text: format!("line {i}"),
+            });
+        }
+        *state.session.lock().unwrap() = Some(session);
+        assert_eq!(
+            live_next_scheduled_flush_delay(&state, "recording-test"),
+            Some(std::time::Duration::ZERO)
+        );
+        let ownership = state.begin_finish("recording-test").unwrap();
+        assert_eq!(
+            live_next_scheduled_flush_delay(&state, "recording-test"),
+            Some(std::time::Duration::from_secs(
+                LIVE_FLUSH_DRIVER_IDLE_SLEEP_SECS
+            ))
+        );
+        drop(ownership);
+        assert_eq!(
+            live_next_scheduled_flush_delay(&state, "recording-test"),
+            Some(std::time::Duration::ZERO)
+        );
+        assert_eq!(
+            live_next_scheduled_flush_delay(&state, "old-recording"),
+            None
+        );
+    }
 }

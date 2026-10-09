@@ -1,6 +1,6 @@
 use super::safe_preview;
 use crate::ai;
-use crate::db::{AiScheduleResult, Database};
+use crate::db::{AiScheduleResult, Database, SnapshotState};
 use tauri::State;
 
 #[path = "ai_analysis/detail_todos.rs"]
@@ -19,7 +19,7 @@ use response_json::*;
 use schedule_prompt::*;
 use todo_context::*;
 
-const AI_CACHE_MAX_AGE: i64 = 12 * 3600; // 12 hours
+pub(crate) const AI_CACHE_MAX_AGE: i64 = 12 * 3600; // 12 hours
 
 const TODO_AI_CACHE_KEY: &str = "ai_todo_analysis";
 // 分析結果の有効期限。これを過ぎたキャッシュは無効とみなし、「再分析」が必要。
@@ -258,9 +258,18 @@ pub async fn ai_analyze_todo_internal(
 
 pub(super) fn load_ai_cache(db: &Database) -> Result<(Option<AiScheduleResult>, bool), String> {
     let snapshot = db.get_snapshot_state()?;
+    load_ai_cache_with_snapshot(db, snapshot.as_ref())
+}
+
+/// Reuse metadata already read for a response, preserving None versus a saved
+/// default row. Standalone callers still read metadata through load_ai_cache.
+pub(super) fn load_ai_cache_with_snapshot(
+    db: &Database,
+    snapshot: Option<&SnapshotState>,
+) -> Result<(Option<AiScheduleResult>, bool), String> {
     load_ai_cache_inner(db).map(|opt| match opt {
         Some((mut result, ts)) => {
-            if let Some(snapshot) = snapshot.as_ref() {
+            if let Some(snapshot) = snapshot {
                 let scope = crate::academic_period::visible_weeks(
                     &snapshot.current_week_label,
                     &snapshot.next_week_label,
@@ -306,6 +315,13 @@ fn week_label_mismatch(snapshot_label: &str, cached_label: &str) -> bool {
 fn load_ai_cache_inner(db: &Database) -> Result<Option<(AiScheduleResult, i64)>, String> {
     db.get_ai_schedule_cache()
 }
+
+#[cfg(test)]
+#[path = "ai_analysis/cache_tests.rs"]
+mod cache_tests;
+#[cfg(test)]
+#[path = "ai_analysis/legacy_cache.rs"]
+mod legacy_cache;
 
 #[cfg(test)]
 mod tests {

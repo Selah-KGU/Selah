@@ -1,8 +1,17 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { fade, scale } from "svelte/transition";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { marked } from "marked";
+  import { listen } from "@tauri-apps/api/event";
+  import { ResourceScope } from "../resourceScope";
+  import { AGENT_ATTACHMENT_ACCEPT, isAgentAttachmentFile, isAgentImagePart, appendAgentAttachments } from "../agentAttachments";
+  import AgentDocumentPreview from "../AgentDocumentPreview.svelte";
+  import AgentAttachmentStatus from "../AgentAttachmentStatus.svelte";
+  import { AgentSpeechInput, type AgentSpeechEvent } from "../agentSpeechInput";
+  import { AgentConversationView } from "../agentConversationView";
+  import { LatestViewRead } from "../latestViewRead";
+  import { createCacheSyncQueue } from "../cacheSyncQueue";
+  import { createMarkdownRenderer } from "../markdownRenderer";
+  import { appendSttFinal, mergeSttText } from "../speechDraft";
   import DOMPurify from "dompurify";
   import AgentThinkingStatus from "../AgentThinkingStatus.svelte";
   import AgentIslandIconButton from "../AgentIslandIconButton.svelte";
@@ -12,15 +21,15 @@
   import {
     agentListConversations,
     agentCreateConversation,
-    agentLoadMessages,
+    agentLoadDisplayMessages,
     agentSend,
     agentCancel,
     agentDeleteConversation,
     agentRenameConversation,
-    getAiConfig,
     isDemoActive,
     isAiReady,
     type AgentConversationSummary,
+    type AgentAttachment,
     type AgentImagePart,
     type AgentMessage,
     type AgentStreamEvent,
@@ -28,7 +37,6 @@
   import { agentConversations, agentActiveConvId, agentReady } from "../stores";
   import { reopenOnboarding } from "../onboarding/onboardingState";
   import { invoke } from "@tauri-apps/api/core";
-  import type { AiConfig } from "../stores";
   import { externalLinkDelegate } from "../externalLinkDelegate";
 
   type UIMessage = AgentMessage & { _streaming?: boolean };
@@ -38,9 +46,15 @@
   let activeConvId = $state<string | null>(null);
   let messages = $state<UIMessage[]>([]);
   let inputText = $state("");
-  let attachments = $state<AgentImagePart[]>([]);
+  let attachments = $state<AgentAttachment[]>([]);
+  let attachmentReads = $state(0);
+  let attachmentError = $state("");
   let fileInput = $state<HTMLInputElement | null>(null);
 
+  const resources = new ResourceScope();
+  let preparing = $state(false);
+  let preparationSeq = 0;
+  let selectionIntent = 0;
   let sending = $state(false);
   let sttListening = $state(false);
   let sttBaseText = $state("");
@@ -49,19 +63,11 @@
   let sttStopRequested = $state(false);
   let toolChips = $state<{ id: number; name: string; detail?: string | null; state: "pending" | "running" | "ok" | "err"; preview?: string }[]>([]);
   let chipCounter = 0;
-  let unlisten: UnlistenFn | null = null;
-  let unlistenActiveConv: UnlistenFn | null = null;
-  let unlistenConversationsChanged: UnlistenFn | null = null;
-  let unlistenSttPartial: UnlistenFn | null = null;
-  let unlistenSttFinal: UnlistenFn | null = null;
-  let unlistenSttState: UnlistenFn | null = null;
-  let unlistenSttError: UnlistenFn | null = null;
   let msgListEl: HTMLElement | null = null;
   let composerTextarea = $state<HTMLTextAreaElement | null>(null);
   let composerComposing = false;
   let suppressEnterUntil = 0;
   let autoFollow = $state(true);
-  let aiCfg = $state<AiConfig | null>(null);
   let historyOpen = $state(false);
   let headerMenuEl: HTMLElement | null = null;
   const activeConv = $derived(conversations.find((c) => c.id === activeConvId) ?? null);
@@ -78,32 +84,20 @@
   );
   const actionMode = $derived<ActionMode>(sending ? "stop" : showVoiceAction ? "mic" : "send");
 
-  marked.setOptions({ breaks: true, gfm: true });
-
-  const renderCache = new Map<string, string>();
-  const RENDER_CACHE_MAX = 256;
+  const renderCache = createMarkdownRenderer((html) => DOMPurify.sanitize(html));
   const STREAM_FLUSH_MS = 48;
   const TURN_STALL_MS = 240_000;
-  const CANCEL_TIMEOUT_MS = 2_000;
   const TOOL_CALL_LEAK_FALLBACK =
     "内部ツール呼び出しの形式が崩れたため、そのまま表示せずに止めました。もう一度、必要な資料名や操作を指定してください。";
   let streamTokenBuffer = "";
   let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let turnStallTimer: ReturnType<typeof setTimeout> | null = null;
   let turnSeq = 0;
+  let activeRequestId: string | null = null;
   let terminalTurnSeq = 0;
 
   function render(md: string): string {
-    const cached = renderCache.get(md);
-    if (cached !== undefined) return cached;
-    const raw = marked.parse(md) as string;
-    const out = DOMPurify.sanitize(raw);
-    if (renderCache.size >= RENDER_CACHE_MAX) {
-      const firstKey = renderCache.keys().next().value;
-      if (firstKey !== undefined) renderCache.delete(firstKey);
-    }
-    renderCache.set(md, out);
-    return out;
+    return renderCache.render(md);
   }
 
   function looksLikePseudoToolCallLeak(text: string): boolean {
@@ -122,7 +116,9 @@
     if (!text) return;
     const last = messages[messages.length - 1];
     if (last && last.role === "assistant" && last._streaming) {
-      messages[messages.length - 1] = { ...last, content: last.content + text };
+      // Keep the keyed row stable: only its reactive text changes, not the
+      // history array entry (which would reconcile every old message key).
+      last.content += text;
     } else {
       messages = [
         ...messages,
@@ -173,7 +169,7 @@
   function armTurnWatchdog(seq: number) {
     clearTurnWatchdog();
     turnStallTimer = setTimeout(() => {
-      if (!sending || seq !== turnSeq) return;
+      if (!resources.active || !sending || seq !== turnSeq) return;
       console.warn("agent turn stalled without terminal stream event");
       finalizeTurn(false);
       messages = [
@@ -190,61 +186,119 @@
     }, TURN_STALL_MS);
   }
 
-  async function refreshConfig() {
-    try {
-      aiCfg = await getAiConfig();
-    } catch {
-      aiCfg = null;
-    }
-  }
+  const conversationView = new AgentConversationView<UIMessage[], AgentStreamEvent>({
+    scope: resources,
+    loadMessages: agentLoadDisplayMessages,
+    listen: (id, receive) => listen<AgentStreamEvent>(`agent_stream:${id}`, (event) => receive(event.payload)),
+    select: (id, share) => {
+      if (sending && activeConvId) stopActiveTurn(false);
+      clearStreamBuffer();
+      renderCache.clear();
+      activeConvId = id;
+      activeRequestId = null;
+      messages = [];
+      autoFollow = true;
+      toolChips = [];
+      quotedMessage = null;
+      editingTitle = false;
+      agentActiveConvId.set(id);
+      // Share the selection with the sidebar and scheduled backend turns.
+      if (share) {
+        const current = conversationView.capture();
+        void invoke("agent_set_active_conversation", { convId: id ?? "" }).catch((error) => {
+          if (!current()) return;
+          console.warn("select shared conversation", error);
+          // A cached list entry may have been deleted in another window before
+          // its notification arrived. Restore the durable selection on rejection.
+          void sharedSelectionRead.refresh().catch((error) => {
+            if (resources.active) console.warn("shared conversation recovery", error);
+          });
+        });
+      }
+    },
+    applyMessages: (rows) => {
+      messages = rows;
+      scheduleScroll();
+    },
+    receive: handleStream,
+  });
+
+  const queueConversationRefresh = createCacheSyncQueue(async () => {
+    if (!resources.active) return;
+    const rows = await agentListConversations();
+    if (!resources.active) return;
+    conversations = rows;
+    agentConversations.set(rows);
+  });
 
   async function refreshConversations() {
+    if (!resources.active) return;
     try {
-      conversations = await agentListConversations();
-      agentConversations.set(conversations);
+      await queueConversationRefresh(["conversations"]);
     } catch (e) {
-      console.warn("agent list failed", e);
+      if (resources.active) console.warn("agent list failed", e);
     }
   }
 
-  async function selectConversation(id: string) {
+  async function selectConversation(id: string, share = true): Promise<boolean> {
+    if (!resources.active) return false;
+    selectionIntent += 1;
+    sharedSelectionRead.invalidate();
     historyOpen = false;
-    if (activeConvId === id) return;
-    if (sending && activeConvId) {
-      await stopActiveTurn(false);
-    }
-    clearStreamBuffer();
-    activeConvId = id;
-    agentActiveConvId.set(id);
-    // Share this as the global active conversation so the sidebar agent (and any
-    // backend / scheduled turn) stays on the same continuous chat.
-    void invoke("agent_set_active_conversation", { convId: id }).catch(() => {});
-    toolChips = [];
     try {
-      const rows = await agentLoadMessages(id);
-      messages = rows;
+      return await conversationView.select(id, share);
     } catch (e) {
-      console.warn("load messages", e);
-      messages = [];
+      if (resources.active) console.warn("load conversation", e);
+      return false;
     }
-    await tick();
-    scrollToBottom(true);
-    await rebindListener();
   }
 
-  async function newConversation() {
+  async function newConversation(): Promise<string | null> {
+    if (!resources.active) return null;
+    const intent = ++selectionIntent;
+    sharedSelectionRead.invalidate();
     historyOpen = false;
-    if (sending && activeConvId) {
-      await stopActiveTurn(false);
-    }
+    if (sending && activeConvId) stopActiveTurn(false);
+    const current = () => resources.active && intent === selectionIntent;
     try {
       const id = await agentCreateConversation();
-      await refreshConversations();
-      await selectConversation(id);
+      if (!current()) return null;
+      // Adopt immediately; a slower list refresh must not retarget a later choice.
+      const selected = selectConversation(id);
+      void refreshConversations();
+      return await selected ? id : null;
     } catch (e) {
-      console.warn("create conv", e);
+      if (current()) console.warn("create conv", e);
+      return null;
     }
   }
+
+  let conversationDeletionVersion = 0;
+  function conversationDeleted(id: string): void {
+    if (!id || !resources.active) return;
+    conversationDeletionVersion += 1;
+    sharedSelectionRead.invalidate();
+    // Removing the displayed chat invalidates its reads, but does not revoke
+    // a user's newer request to create a replacement conversation.
+    conversationView.deleted(id);
+  }
+
+  // Events are invalidations, not durable selections: an older IPC can emit
+  // after a newer selection or deletion has already committed.
+  const sharedSelectionRead = new LatestViewRead(
+    resources,
+    () => invoke<string | null>("agent_active_conversation"),
+    (id) => {
+      if (id === activeConvId) return;
+      if (id) {
+        void selectConversation(id, false);
+        if (!conversations.some((conversation) => conversation.id === id)) void refreshConversations();
+      } else {
+        selectionIntent += 1;
+        conversationView.clear(false);
+      }
+    },
+  );
 
   let pendingDeleteId = $state<string | null>(null);
   let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
@@ -275,11 +329,8 @@
     clearArmedDelete();
     try {
       await agentDeleteConversation(id);
-      if (activeConvId === id) {
-        clearStreamBuffer();
-        activeConvId = null;
-        messages = [];
-      }
+      if (!resources.active) return;
+      conversationDeleted(id);
       await refreshConversations();
     } catch (e) {
       console.warn("delete conv", e);
@@ -295,7 +346,9 @@
     historyOpen = false;
     titleDraft = activeConv.title || "";
     editingTitle = true;
+    const current = conversationView.capture();
     await tick();
+    if (!current()) return;
     titleInputEl?.focus();
     titleInputEl?.select();
   }
@@ -325,18 +378,8 @@
     else if (e.key === "Escape") { e.preventDefault(); cancelRename(); }
   }
 
-  async function rebindListener() {
-    if (unlisten) { unlisten(); unlisten = null; }
-    if (!activeConvId) return;
-    const id = activeConvId;
-    unlisten = await listen<AgentStreamEvent>(`agent_stream:${id}`, (ev) => {
-      if (activeConvId !== id) return;
-      handleStream(ev.payload);
-    });
-  }
-
   function handleStream(ev: AgentStreamEvent) {
-    if (!sending) return;
+    if (!resources.active || !sending || !activeRequestId || ev.turn_id !== activeRequestId) return;
     armTurnWatchdog(turnSeq);
     switch (ev.type) {
       case "phase":
@@ -417,56 +460,35 @@
     if (refresh) refreshConversations();
   }
 
-  async function reloadConversationMessages(convId: string) {
-    if (activeConvId !== convId) return;
-    try {
-      messages = await agentLoadMessages(convId);
-      await tick();
-      scheduleScroll();
-    } catch (e) {
-      console.warn("reload messages", e);
-    }
-  }
-
   async function recoverCompletedTurnWithoutDone(convId: string, seq: number) {
-    if (seq !== turnSeq || !sending) return;
+    if (!resources.active || activeConvId !== convId || seq !== turnSeq || !sending) return;
     console.warn("agent send completed without done stream event; finalizing locally");
     flushStreamTokens();
     finalizeTurn();
-    await reloadConversationMessages(convId);
+    try {
+      await conversationView.reload(() => seq === turnSeq && !sending);
+    } catch (e) {
+      if (resources.active) console.warn("reload messages", e);
+    }
   }
-
-  const MAX_ATTACHMENTS = 4;
-  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
   function imageSrc(part: AgentImagePart): string {
     return `data:${part.mime};base64,${part.data_base64}`;
   }
 
-  function fileToImagePart(file: File): Promise<AgentImagePart | null> {
-    return new Promise((resolve) => {
-      if (!file.type.startsWith("image/")) return resolve(null);
-      if (file.size > MAX_IMAGE_BYTES) {
-        alert("画像が大きすぎます（10MBまで）");
-        return resolve(null);
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = typeof reader.result === "string" ? reader.result : "";
-        const comma = result.indexOf(",");
-        if (comma < 0) return resolve(null);
-        resolve({ mime: file.type || "image/png", data_base64: result.slice(comma + 1) });
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(file);
-    });
-  }
-
   async function addFiles(files: Iterable<File>): Promise<void> {
-    for (const file of files) {
-      if (attachments.length >= MAX_ATTACHMENTS) break;
-      const part = await fileToImagePart(file);
-      if (part) attachments = [...attachments, part];
+    if (!resources.active) return;
+    attachmentReads++;
+    attachmentError = "";
+    try {
+      await appendAgentAttachments(files, {
+        active: () => resources.active,
+        count: () => attachments.length,
+        append: part => { attachments = [...attachments, part]; },
+        error: message => { attachmentError = message; },
+      });
+    } finally {
+      if (resources.active) attachmentReads--;
     }
   }
 
@@ -476,12 +498,14 @@
 
   async function onPickFiles(event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
-    if (input.files) await addFiles(Array.from(input.files));
+    const files = Array.from(input.files ?? []);
     input.value = "";
+    await addFiles(files);
   }
 
   function removeAttachment(index: number): void {
     attachments = attachments.filter((_, i) => i !== index);
+    attachmentError = "";
   }
 
   async function handlePaste(event: ClipboardEvent): Promise<void> {
@@ -489,9 +513,9 @@
     if (!items) return;
     const images: File[] = [];
     for (const item of items) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
+      if (item.kind === "file") {
         const file = item.getAsFile();
-        if (file) images.push(file);
+        if (file && isAgentAttachmentFile(file)) images.push(file);
       }
     }
     if (images.length) {
@@ -503,107 +527,122 @@
   async function handleDrop(event: DragEvent): Promise<void> {
     const files = event.dataTransfer?.files;
     if (!files?.length) return;
-    const images = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    if (images.length) {
-      event.preventDefault();
-      await addFiles(images);
-    }
+    event.preventDefault();
+    await addFiles(Array.from(files));
   }
 
   async function send() {
+    if (!resources.active || sending || preparing || attachmentReads > 0) return;
     if (isDemoActive()) {
       alert("デモモードでは Agent チャットは無効です。");
       return;
     }
-    let text = inputText.trim();
-    const images = attachments;
-    if (!text && images.length === 0) return;
-    if (sending) return;
-    if (!activeConvId) {
-      await newConversation();
-      if (!activeConvId) return;
-    }
-    const convId = activeConvId;
-    if (!await isAiReady()) {
-      if (confirm("Agent を使うには AI 設定が必要です。初期設定を開きますか？")) {
-        reopenOnboarding();
-      }
-      return;
-    }
-    if (quotedMessage) {
-      const quotedContent = displayContent(quotedMessage);
-      const qText = quotedMessage.role === "assistant" ? stripHtml(render(quotedContent)) : quotedContent;
-      const lines = qText.trim().split("\n").filter(Boolean);
-      const short = lines.length > 3 ? lines.slice(0, 3).join("\n") + "..." : lines.join("\n");
-      text = `「${short}」について：\n${text}`;
-      quotedMessage = null;
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    messages = [
-      ...messages,
-      {
-        id: -now,
-        conv_id: convId,
-        role: "user",
-        content: text,
-        images: images.length ? images : null,
-        created_at: now,
-      },
-    ];
-    inputText = "";
-    attachments = [];
-    sttBaseText = "";
-    sttCommittedText = "";
-    sttPartialText = "";
-    sttStopRequested = false;
-    sending = true;
-    const seq = ++turnSeq;
-    toolChips = [];
-    autoFollow = true;
-    armTurnWatchdog(seq);
-    scheduleScroll();
-
+    const inputDraft = inputText;
+    let text = inputDraft.trim();
+    const selectedAttachments = attachments;
+    const images = selectedAttachments.filter(isAgentImagePart);
+    const documents = selectedAttachments.filter(part => !isAgentImagePart(part));
+    if (!text && selectedAttachments.length === 0) return;
+    preparing = true;
+    const preparation = ++preparationSeq;
     try {
-      await agentSend(convId, text, images);
-      await recoverCompletedTurnWithoutDone(convId, seq);
-    } catch (e) {
-      if (seq !== turnSeq) return;
-      await tick();
-      if (terminalTurnSeq === seq || !sending) return;
-      console.warn("agent send", e);
-      const message = String(e);
-      const keptContextAnswer = message.includes("コンテキスト上限") && messages.some((item) => item.role === "assistant" && item._streaming && item.content.trim());
-      finalizeTurn(false);
-      if (!keptContextAnswer) {
+      const convId = activeConvId ?? await newConversation();
+      if (!convId || activeConvId !== convId) return;
+      // Do not send before history and stream registration have both finished.
+      const selected = selectConversation(convId);
+      const current = conversationView.capture();
+      if (!await selected || !current()) return;
+      const ready = await isAiReady();
+      if (!current() || sending) return;
+      if (!ready) {
+        if (confirm("Agent を使うには AI 設定が必要です。初期設定を開きますか？")) {
+          reopenOnboarding();
+        }
+        return;
+      }
+      if (quotedMessage) {
+        const quotedContent = displayContent(quotedMessage);
+        const qText = quotedMessage.role === "assistant" ? stripHtml(render(quotedContent)) : quotedContent;
+        const lines = qText.trim().split("\n").filter(Boolean);
+        const short = lines.length > 3 ? lines.slice(0, 3).join("\n") + "..." : lines.join("\n");
+        text = `「${short}」について：\n${text}`;
+        quotedMessage = null;
+      }
+
+      const now = Math.floor(Date.now() / 1000);
       messages = [
         ...messages,
         {
-          id: -Date.now(),
+          id: -now,
           conv_id: convId,
-          role: "assistant",
-          content: `……送信に失敗したみたい。\n\n> ${e}`,
-          created_at: Math.floor(Date.now() / 1000),
+          role: "user",
+          content: text,
+          images: images.length ? images : null,
+          documents,
+          created_at: now,
         },
       ];
+      if (inputText === inputDraft) inputText = "";
+      attachments = attachments.filter(image => !selectedAttachments.includes(image));
+      sttBaseText = "";
+      sttCommittedText = "";
+      sttPartialText = "";
+      sttStopRequested = false;
+      const requestId = crypto.randomUUID();
+      activeRequestId = requestId;
+      sending = true;
+      preparing = false;
+      conversationView.invalidateMessages();
+      const seq = ++turnSeq;
+      toolChips = [];
+      autoFollow = true;
+      armTurnWatchdog(seq);
+      scheduleScroll();
+
+      try {
+        await agentSend(convId, text, images, requestId, documents);
+        await recoverCompletedTurnWithoutDone(convId, seq);
+      } catch (e) {
+        if (!current() || seq !== turnSeq) return;
+        await tick();
+        if (!current() || seq !== turnSeq || terminalTurnSeq === seq || !sending) return;
+        console.warn("agent send", e);
+        const message = String(e);
+        const keptContextAnswer = message.includes("コンテキスト上限") && messages.some((item) => item.role === "assistant" && item._streaming && item.content.trim());
+        finalizeTurn(false);
+        if (!keptContextAnswer) {
+          messages = [
+            ...messages,
+            {
+              id: -Date.now(),
+              conv_id: convId,
+              role: "assistant",
+              content: `……送信に失敗したみたい。\n\n> ${e}`,
+              created_at: Math.floor(Date.now() / 1000),
+            },
+          ];
+        }
       }
+    } catch (e) {
+      if (resources.active) console.warn("agent preparation", e);
+    } finally {
+      if (resources.active && preparation === preparationSeq) preparing = false;
     }
   }
 
-  async function cancel() {
+  function cancel() {
     if (!activeConvId || !sending) return;
-    await stopActiveTurn();
+    stopActiveTurn();
   }
 
-  async function stopActiveTurn(refresh = true) {
+  function stopActiveTurn(refresh = true) {
     const id = activeConvId;
+    const requestId = activeRequestId;
     turnSeq++;
+    conversationView.invalidateMessages();
     finalizeTurn(refresh);
     if (!id) return;
-    void Promise.race([
-      agentCancel(id),
-      new Promise<void>((resolve) => setTimeout(resolve, CANCEL_TIMEOUT_MS)),
-    ]).catch((e) => console.warn("cancel", e));
+    void agentCancel(id, requestId).catch((e) => console.warn("cancel", e));
   }
 
   function onCompositionStart() {
@@ -628,7 +667,7 @@
 
   function resizeComposer() {
     const ta = composerTextarea;
-    if (!ta) return;
+    if (!resources.active || !ta) return;
     ta.style.height = "auto";
     const max = 180;
     const next = Math.min(ta.scrollHeight, max);
@@ -636,22 +675,25 @@
     ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
   }
 
+  let resizeFrame: number | null = null;
   $effect(() => {
     inputText;
-    tick().then(() => requestAnimationFrame(resizeComposer));
+    void tick().then(() => {
+      if (!resources.active || resizeFrame !== null) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        resizeComposer();
+      });
+    });
   });
 
-  function mergeSttText(base: string, committed: string, partial: string): string {
-    const spoken = [committed.trim(), partial.trim()].filter(Boolean).join(" ").trim();
-    if (!spoken) return base;
-    if (!base) return spoken;
-    if (/\s$/.test(base)) return `${base}${spoken}`;
-    return `${base}\n${spoken}`;
-  }
 
-  let preemptedCaller = $state<string | null>(null);
+
+  let sttStarting = $state(false);
+  const speechInput = new AgentSpeechInput(resources, (active) => { sttListening = active; });
 
   async function toggleStt() {
+    if (!resources.active || sttStarting) return;
     if (isDemoActive()) {
       alert("デモモードでは Agent 音声入力は使えません。");
       return;
@@ -660,15 +702,17 @@
       await stopStt();
       return;
     }
+    sttStarting = true;
     try {
       sttBaseText = inputText;
       sttCommittedText = "";
       sttPartialText = "";
       sttStopRequested = false;
-      const prev = await invoke<string | null>("stt_start_stream", { caller: "agent", preempt: true });
-      preemptedCaller = prev;
+      await speechInput.start();
     } catch (e) {
-      alert(`音声入力を開始できませんでした。\n\n${e}`);
+      if (resources.active) alert(`音声入力を開始できませんでした。\n\n${e}`);
+    } finally {
+      if (resources.active) sttStarting = false;
     }
   }
 
@@ -676,36 +720,25 @@
     if (isDemoActive()) return;
     try {
       sttStopRequested = true;
-      await invoke("stt_stop_stream");
+      await speechInput.stop();
     } catch (e) {
       console.warn("stt stop", e);
-      sttStopRequested = false;
+      if (resources.active) sttStopRequested = false;
     }
   }
-
-  async function resumePreempted() {
-    if (preemptedCaller) {
-      const caller = preemptedCaller;
-      preemptedCaller = null;
-      try {
-        await invoke("stt_start_stream", { caller });
-      } catch {
-        // Previous session's page may have ended; that's fine
-      }
-    }
-  }
-
-
 
   // ── Auto-scroll ──
 
   let scrollRafScheduled = false;
+  let scrollFrame: number | null = null;
   function scheduleScroll() {
-    if (!autoFollow) return;
+    if (!resources.active || !autoFollow) return;
     if (scrollRafScheduled) return;
     scrollRafScheduled = true;
-    tick().then(() => {
-      requestAnimationFrame(() => {
+    void tick().then(() => {
+      if (!resources.active) return;
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = null;
         scrollRafScheduled = false;
         scrollToBottom(false);
       });
@@ -713,7 +746,7 @@
   }
 
   function scrollToBottom(force: boolean) {
-    if (!msgListEl) return;
+    if (!resources.active || !msgListEl) return;
     if (!force && !autoFollow) return;
     msgListEl.scrollTop = msgListEl.scrollHeight;
   }
@@ -734,99 +767,100 @@
     }
   }
 
-  async function refreshAgentSttState() {
-    if (isDemoActive()) {
-      sttListening = false;
-      return;
+  async function initializeChat() {
+    if (isDemoActive()) return;
+    const initialSelection = conversationView.capture();
+    const initialIntent = selectionIntent;
+    // Register events before slow initial reads. Each registration is owned even
+    // when the view closes while Tauri is still establishing the subscription.
+    const registrations = await Promise.allSettled([
+      resources.acquire(() => listen<AgentSpeechEvent & { text: string }>("stt-partial", resources.guard((ev) => {
+        if (!speechInput.accepts(ev.payload)) return;
+        sttPartialText = ev.payload.text || "";
+        inputText = mergeSttText(sttBaseText, sttCommittedText, sttPartialText);
+      }))),
+      resources.acquire(() => listen<AgentSpeechEvent & { text: string }>("stt-final", resources.guard((ev) => {
+        if (!speechInput.accepts(ev.payload)) return;
+        sttCommittedText = appendSttFinal(sttCommittedText, ev.payload.text || "");
+        sttPartialText = "";
+        inputText = mergeSttText(sttBaseText, sttCommittedText, "");
+      }))),
+      resources.acquire(() => listen<AgentSpeechEvent & { state: string }>("stt-state", resources.guard((ev) => {
+        if (!speechInput.accepts(ev.payload)) return;
+        const wasListening = sttListening;
+        speechInput.state(ev.payload);
+        if (!sttListening) {
+          sttPartialText = "";
+          inputText = mergeSttText(sttBaseText, sttCommittedText, "");
+          const shouldAutoSend = wasListening && sttStopRequested && !!sttCommittedText.trim();
+          sttStopRequested = false;
+          if (shouldAutoSend) {
+            const current = conversationView.capture();
+            void tick().then(() => { if (current()) void send(); });
+          }
+        }
+      }))),
+      resources.acquire(() => listen<AgentSpeechEvent & { message: string }>("stt-error", resources.guard((ev) => {
+        if (!speechInput.accepts(ev.payload)) return;
+        speechInput.error(ev.payload);
+        sttStopRequested = false;
+        alert(`音声入力エラー\n\n${ev.payload.message}`);
+      }))),
+      resources.acquire(() => listen<string>("agent-active-conversation-changed", resources.guard((ev) => {
+        void sharedSelectionRead.refresh().catch((error) => {
+          if (resources.active) console.warn("shared conversation", error);
+        });
+      }))),
+      resources.acquire(() => listen<string>("agent-conversation-deleted", resources.guard((ev) => {
+        conversationDeleted(ev.payload);
+      }))),
+      resources.acquire(() => listen("agent-conversations-changed", resources.guard(() => {
+        void refreshConversations();
+      }))),
+    ]);
+    if (!resources.active) return;
+    for (const registration of registrations) {
+      if (registration.status === "rejected") console.warn("agent event registration", registration.reason);
     }
-    try {
-      const [running, caller] = await Promise.all([
-        invoke<boolean>("stt_is_running"),
-        invoke<string | null>("stt_get_active_caller"),
+    await speechInput.refresh();
+    // A startup snapshot cannot override a user selection. Deletion of any
+    // conversation invalidates the snapshot; re-read rather than abandoning a
+    // still-valid shared selection when an unrelated chat was deleted.
+    while (initialSelection() && initialIntent === selectionIntent) {
+      const initialDeletion = conversationDeletionVersion;
+      const [, sharedConv] = await Promise.all([
+        refreshConversations(),
+        invoke<string | null>("agent_active_conversation"),
       ]);
-      sttListening = running && caller === "agent";
-    } catch {
-      sttListening = false;
+      if (!initialSelection() || initialIntent !== selectionIntent) return;
+      if (initialDeletion !== conversationDeletionVersion) continue;
+      if (sharedConv && conversations.some((conversation) => conversation.id === sharedConv)) {
+        await selectConversation(sharedConv, false);
+      } else if (conversations.length > 0) {
+        await selectConversation(conversations[0].id);
+      }
+      return;
     }
   }
 
-  // ── Lifecycle ──
-
-  onMount(async () => {
+  onMount(() => {
     document.addEventListener("mousedown", onDocClick);
-    await refreshConfig();
-    if (isDemoActive()) {
-      conversations = [];
-      messages = [];
-      return;
-    }
-    await refreshConversations();
-    await refreshAgentSttState();
-    unlistenSttPartial = await listen<{ text: string; caller: string }>("stt-partial", (ev) => {
-      if (ev.payload.caller !== "agent") return;
-      sttPartialText = ev.payload.text || "";
-      inputText = mergeSttText(sttBaseText, sttCommittedText, sttPartialText);
+    resources.own(() => document.removeEventListener("mousedown", onDocClick));
+    void initializeChat().catch((e) => {
+      if (resources.active) console.warn("agent initialization", e);
     });
-    unlistenSttFinal = await listen<{ text: string; caller: string }>("stt-final", (ev) => {
-      if (ev.payload.caller !== "agent") return;
-      sttCommittedText = ev.payload.text || sttCommittedText;
-      sttPartialText = "";
-      inputText = mergeSttText(sttBaseText, sttCommittedText, "");
-    });
-    unlistenSttState = await listen<{ state: string; caller: string }>("stt-state", (ev) => {
-      if (ev.payload.caller !== "agent") return;
-      const wasListening = sttListening;
-      sttListening = ev.payload.state === "initializing" || ev.payload.state === "listening";
-      if (!sttListening) {
-        sttPartialText = "";
-        inputText = mergeSttText(sttBaseText, sttCommittedText, "");
-        const shouldAutoSend = wasListening && sttStopRequested && !!sttCommittedText.trim();
-        sttStopRequested = false;
-        if (shouldAutoSend) {
-          tick().then(() => send());
-        }
-        resumePreempted();
-      }
-    });
-    unlistenSttError = await listen<{ message: string; caller: string }>("stt-error", (ev) => {
-      if (ev.payload.caller !== "agent") return;
-      sttListening = false;
-      sttStopRequested = false;
-      alert(`音声入力エラー\n\n${ev.payload.message}`);
-    });
-    // Follow the globally-shared active conversation so the main agent and the
-    // sidebar agent stay on one continuous chat. Adopt it if present; otherwise
-    // promote our default selection to be the shared one.
-    unlistenActiveConv = await listen<string>("agent-active-conversation-changed", async (ev) => {
-      const id = ev.payload;
-      if (!id || id === activeConvId) return;
-      if (!conversations.some((c) => c.id === id)) await refreshConversations();
-      await selectConversation(id);
-    });
-    unlistenConversationsChanged = await listen("agent-conversations-changed", () => {
-      void refreshConversations();
-    });
-    const sharedConv = (await invoke<string | null>("agent_active_conversation").catch(() => null)) || "";
-    if (sharedConv && conversations.some((c) => c.id === sharedConv)) {
-      if (activeConvId !== sharedConv) await selectConversation(sharedConv);
-    } else if (!activeConvId && conversations.length > 0) {
-      await selectConversation(conversations[0].id);
-    }
   });
 
   onDestroy(() => {
-    document.removeEventListener("mousedown", onDocClick);
+    resources.dispose();
     clearStreamBuffer();
-    if (unlisten) unlisten();
-    unlistenActiveConv?.();
-    unlistenConversationsChanged?.();
-    unlistenSttPartial?.();
-    unlistenSttFinal?.();
-    unlistenSttState?.();
-    unlistenSttError?.();
+    clearTurnWatchdog();
+    clearArmedDelete();
+    renderCache.clear();
+    if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+    if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
     if (copiedIdTimer) { clearTimeout(copiedIdTimer); copiedIdTimer = null; }
-    if (sttListening) invoke("stt_stop_stream").catch(() => {});
-    if (activeConvId && sending) agentCancel(activeConvId).catch(() => {});
+    if (activeConvId && sending) void agentCancel(activeConvId, activeRequestId).catch(() => {});
   });
 
   function fmtDate(ts: number): string {
@@ -927,7 +961,9 @@
   async function copyMessage(m: UIMessage) {
     const content = displayContent(m);
     const text = m.role === "assistant" && !m._streaming ? stripHtml(render(content)) : content;
+    const current = conversationView.capture();
     await navigator.clipboard.writeText(text);
+    if (!current()) return;
     copiedId = m.id;
     if (copiedIdTimer) clearTimeout(copiedIdTimer);
     copiedIdTimer = setTimeout(() => {
@@ -937,9 +973,11 @@
   }
 
   function quoteReply(m: UIMessage) {
-    quotedMessage = m;
-    tick().then(() => {
-      composerTextarea?.focus();
+    // Capture the clicked text; streaming may keep updating this same row.
+    quotedMessage = { ...m };
+    const current = conversationView.capture();
+    void tick().then(() => {
+      if (current()) composerTextarea?.focus();
     });
   }
 
@@ -954,7 +992,7 @@
   }
 
   function actionDisabled(mode: ActionMode): boolean {
-    return mode === "send" && !inputText.trim();
+    return preparing || (mode !== "stop" && attachmentReads > 0) || (mode === "mic" && sttStarting) || (mode === "send" && !inputText.trim() && attachments.length === 0);
   }
 
   function handleActionClick() {
@@ -1082,6 +1120,7 @@
                     {/each}
                   </div>
                 {/if}
+                {#each m.documents ?? [] as document}<AgentDocumentPreview {document} />{/each}
                 {#if m.content}
                   <div class="text">{displayContent(m)}</div>
                 {/if}
@@ -1145,7 +1184,7 @@
       <input
         bind:this={fileInput}
         type="file"
-        accept="image/*"
+        accept={AGENT_ATTACHMENT_ACCEPT}
         multiple
         class="chat-file-input"
         onchange={onPickFiles}
@@ -1162,25 +1201,28 @@
       {#if attachments.length}
         <div class="chat-attachments">
           {#each attachments as att, i}
-            <div class="chat-attachment">
+            <div class="chat-attachment" class:document={!isAgentImagePart(att)}>
+              {#if isAgentImagePart(att)}
               <img src={imageSrc(att)} alt="添付画像" />
-              <button type="button" class="chat-attachment-remove" title="削除" aria-label="画像を削除" onclick={() => removeAttachment(i)}>
+              {:else}<AgentDocumentPreview document={att} />{/if}
+              <button type="button" class="chat-attachment-remove" title="削除" aria-label="添付を削除" onclick={() => removeAttachment(i)}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
           {/each}
         </div>
       {/if}
+      <AgentAttachmentStatus reading={attachmentReads} count={attachments.length} error={attachmentError} />
       <div class="send-row">
         <div class="composer-island">
           <div class="composer-row">
             <button
               type="button"
               class="chat-attach-button"
-              title="画像を添付"
-              aria-label="画像を添付"
+              title="ファイルを添付"
+              aria-label="ファイルを添付"
               onclick={openFilePicker}
-              disabled={sending}
+              disabled={sending || preparing}
             >
               <Icon name="plus" size={18} />
             </button>
@@ -1194,7 +1236,7 @@
               onpaste={handlePaste}
               placeholder={sending ? "返事を書いている途中……" : "なにか書いてみて。"}
               rows="1"
-              disabled={sending}
+              disabled={sending || preparing}
             ></textarea>
           </div>
         </div>
@@ -1239,6 +1281,7 @@
      Agent Chat — Floating Island Design
      ═══════════════════════════════════════════════ */
   .chat-file-input { display: none; }
+  .chat-attachment.document { width: min(260px, 100%); height: auto; min-height: 40px; padding: 8px 24px 8px 8px; }
 
   .chat-attachments {
     display: flex;

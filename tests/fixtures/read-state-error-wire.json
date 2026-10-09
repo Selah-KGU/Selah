@@ -1,0 +1,31 @@
+{
+  "batch_error": "DB save cache: fixture commit failure",
+  "initial": {
+    "kgc": [
+      "kgc seed"
+    ],
+    "kwic": [
+      "kwic seed"
+    ],
+    "luna": [
+      "luna seed"
+    ]
+  },
+  "read_error": "既読データの解析失敗: expected value at line 1 column 1",
+  "retry_batch": null,
+  "retry_read": {
+    "kgc": [
+      "kgc seed"
+    ],
+    "kwic": [
+      "kwic seed",
+      "new batch"
+    ],
+    "luna": [
+      "luna seed",
+      "new single"
+    ]
+  },
+  "retry_single": null,
+  "single_error": "DB save cache: fixture commit failure"
+}

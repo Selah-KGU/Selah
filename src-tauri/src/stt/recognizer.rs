@@ -48,7 +48,7 @@ pub(in crate::stt) fn build_vad_config(
             threshold: profile.vad_threshold,
             min_silence_duration: profile.vad_min_silence,
             min_speech_duration: profile.vad_min_speech,
-            window_size: 512,
+            window_size: VAD_WINDOW_SAMPLES as i32,
             // sherpa-onnx raises this model's threshold to 0.90 once the
             // buffer exceeds max_speech_duration, and ongoing speech then
             // looks like silence. Do not cut the utterance in userspace to
@@ -60,8 +60,7 @@ pub(in crate::stt) fn build_vad_config(
     })
 }
 
-pub(in crate::stt) fn selected_model_from_config() -> Result<SttModelInfo, String> {
-    let cfg = load_config();
+pub(in crate::stt) fn selected_model_for_config(cfg: &SttConfig) -> Result<SttModelInfo, String> {
     stt_model_catalog()
         .iter()
         .find(|m| m.id == cfg.selected_model)
@@ -75,16 +74,24 @@ pub(in crate::stt) struct RecognizerInitResult {
     pub(in crate::stt) fallback_from: Option<String>,
 }
 
-pub(in crate::stt) fn create_recognizer_with_fallback(
+pub(in crate::stt) fn create_recognizer_for_config(
     model: &SttModelInfo,
+    config: &SttConfig,
 ) -> Result<RecognizerInitResult, String> {
-    let (language, requested_backend) = stt_runtime_preferences();
+    create_recognizer_with_preferences(model, &config.language, &config.execution_backend)
+}
+
+fn create_recognizer_with_preferences(
+    model: &SttModelInfo,
+    language: &str,
+    requested_backend: &str,
+) -> Result<RecognizerInitResult, String> {
     let requested_cfg = build_sense_voice_config_for_backend(model, &language, &requested_backend)?;
 
     if let Some(recognizer) = OfflineRecognizer::create(&requested_cfg) {
         return Ok(RecognizerInitResult {
             recognizer,
-            execution_backend: requested_backend,
+            execution_backend: requested_backend.to_string(),
             fallback_from: None,
         });
     }
@@ -115,6 +122,6 @@ pub(in crate::stt) fn create_recognizer_with_fallback(
     Ok(RecognizerInitResult {
         recognizer,
         execution_backend: STT_BACKEND_CPU.into(),
-        fallback_from: Some(requested_backend),
+        fallback_from: Some(requested_backend.to_string()),
     })
 }

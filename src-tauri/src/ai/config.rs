@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[path = "config/timing.rs"]
+mod timing;
+static LIVE_TIMING: timing::Timing = timing::Timing::new();
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiConfig {
     pub ai_enabled: bool,
-    pub provider: String,    // "local" | "openai" | "openrouter" | "deepseek" | "gemini"
+    pub provider: String, // "local" | "openai" | "openrouter" | "deepseek" | "gemini"
     pub local_model: String, // "apple-intelligence"; kept so saved configs stay valid
     pub api_key: String,
     pub model: String,
@@ -152,26 +156,62 @@ pub fn load_ai_config() -> AiConfig {
     load_config()
 }
 
+/// Reading LIVE timing must not load credentials or perform config migrations.
+/// It also must not acquire the config IO mutex or access files under LIVE locks.
+pub(crate) fn live_summary_interval_minutes() -> i64 {
+    LIVE_TIMING.minutes()
+}
+
+/// The LIVE start command runs this on a worker before taking either LIVE lock.
+pub(crate) fn refresh_live_summary_interval() {
+    LIVE_TIMING.refresh(|| read_live_summary_interval(&config_path()) as u32);
+}
+
+#[cfg(test)]
+pub(crate) fn hold_live_timing_io<R>(work: impl FnOnce() -> R) -> R {
+    LIVE_TIMING.hold_io(work)
+}
+
+fn read_live_summary_interval(path: &std::path::Path) -> i64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|json| parse_live_summary_interval(&json))
+        .unwrap_or_else(|| i64::from(default_live_summary_interval_minutes()))
+}
+
+fn parse_live_summary_interval(json: &str) -> i64 {
+    #[derive(Deserialize)]
+    struct Timing {
+        #[serde(default = "default_live_summary_interval_minutes")]
+        live_summary_interval_minutes: u32,
+    }
+    serde_json::from_str::<Timing>(json)
+        .ok()
+        .map(|timing| timing.live_summary_interval_minutes.max(5))
+        .unwrap_or_else(default_live_summary_interval_minutes) as i64
+}
+
 pub(in crate::ai) fn load_config() -> AiConfig {
     let path = config_path();
-    let mut cfg: AiConfig = if path.exists() {
+    // Only file IO is gated. Credential lookup/migration and normalization run
+    // after releasing the gate; snapshots never take this gate at all.
+    let (observed, mut cfg) = LIVE_TIMING.read(|| {
         std::fs::read_to_string(&path)
             .ok()
-            .and_then(|d| serde_json::from_str(&d).ok())
+            .and_then(|d| serde_json::from_str::<AiConfig>(&d).ok())
             .unwrap_or_default()
-    } else {
-        AiConfig::default()
-    };
+    });
 
     let retired_replacement = retired_preset_replacement(&cfg.provider, &cfg.model);
     normalize_ai_config(&mut cfg);
+    LIVE_TIMING.observe(observed, cfg.live_summary_interval_minutes);
 
     // Migration: move api_key from JSON file to OS keychain
     let mut persisted = false;
     if !cfg.api_key.is_empty() {
         if crate::keychain::set_secret("ai_api_key", &cfg.api_key).is_ok() {
             let key = std::mem::take(&mut cfg.api_key);
-            let _ = save_config_to_disk(&cfg);
+            let _ = save_config_to_disk_if_current(&cfg, Some(observed));
             cfg.api_key = key; // keep in memory for this session
             persisted = true;
         }
@@ -184,7 +224,8 @@ pub(in crate::ai) fn load_config() -> AiConfig {
     demote_unsupported_local_provider(&mut cfg);
     if let Some(replacement) = retired_replacement {
         if !persisted && path.exists() {
-            if let Ok(raw) = std::fs::read_to_string(&path) {
+            let (_, reread) = LIVE_TIMING.read(|| std::fs::read_to_string(&path));
+            if let Ok(raw) = reread {
                 if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) {
                     if let Some(obj) = value.as_object_mut() {
                         obj.insert(
@@ -192,13 +233,13 @@ pub(in crate::ai) fn load_config() -> AiConfig {
                             serde_json::Value::String(replacement.into()),
                         );
                         if let Ok(data) = serde_json::to_string_pretty(&value) {
-                            let _ = std::fs::write(&path, data);
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                let perms = std::fs::Permissions::from_mode(0o600);
-                                std::fs::set_permissions(&path, perms).ok();
-                            }
+                            // Reread JSON preserves unrelated fields, while the
+                            // revision check prevents an older migration from
+                            // rewriting a newer user save.
+                            let minutes = parse_live_summary_interval(&data) as u32;
+                            let _ = LIVE_TIMING.commit_if(Some(observed), minutes, || {
+                                write_config_data(&path, &data)
+                            });
                         }
                     }
                 }
@@ -222,16 +263,37 @@ pub(in crate::ai) fn save_config(config: &AiConfig) -> Result<(), String> {
 }
 
 fn save_config_to_disk(config: &AiConfig) -> Result<(), String> {
+    save_config_to_disk_if_current(config, None).map(|_| ())
+}
+
+fn save_config_to_disk_if_current(
+    config: &AiConfig,
+    expected: Option<u64>,
+) -> Result<bool, String> {
     let path = config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
-    std::fs::write(&path, &data).map_err(|e| format!("Failed to write config: {}", e))?;
+    if let Some(expected) = expected {
+        LIVE_TIMING.commit_if(Some(expected), config.live_summary_interval_minutes, || {
+            write_config_data(&path, &data)
+        })
+    } else {
+        LIVE_TIMING
+            .commit(config.live_summary_interval_minutes, || {
+                write_config_data(&path, &data)
+            })
+            .map(|_| true)
+    }
+}
+
+fn write_config_data(path: &std::path::Path, data: &str) -> Result<(), String> {
+    std::fs::write(path, data).map_err(|e| format!("Failed to write config: {}", e))?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&path, perms).ok();
+        std::fs::set_permissions(path, perms).ok();
     }
 
     Ok(())
@@ -239,6 +301,35 @@ fn save_config_to_disk(config: &AiConfig) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_timing_reads_only_non_secret_settings_without_rewriting_legacy_config() {
+        let path =
+            std::env::temp_dir().join(format!("selah-live-timing-{}.json", uuid::Uuid::new_v4()));
+        assert_eq!(read_live_summary_interval(&path), 5);
+        for (json, expected) in [
+            (
+                r#"{"live_summary_interval_minutes":15,"api_key":"legacy-placeholder"}"#,
+                15,
+            ),
+            (r#"{"live_summary_interval_minutes":1}"#, 5),
+            (r#"{"provider":"local"}"#, 5),
+            (
+                r#"{"live_summary_interval_minutes":4294967295}"#,
+                4294967295,
+            ),
+            (r#"{"live_summary_interval_minutes":4294967296}"#, 5),
+            (r#"{"live_summary_interval_minutes":-1}"#, 5),
+            (r#"{"live_summary_interval_minutes":"15"}"#, 5),
+            (r#"{"live_summary_interval_minutes":null}"#, 5),
+            ("broken json", 5),
+        ] {
+            std::fs::write(&path, json).unwrap();
+            assert_eq!(read_live_summary_interval(&path), expected);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), json);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn retired_presets_become_current_defaults() {

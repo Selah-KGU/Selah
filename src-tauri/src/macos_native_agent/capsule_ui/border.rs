@@ -1,13 +1,17 @@
 //! Gradient border path and color animation.
 
 use super::*;
+use crate::main_thread_animation::MainThreadAnimation;
 
 // ─ Border styling & gradient animation ───────────────────────────────────────
-pub(in crate::macos_native_agent) fn update_border(app: AppHandle, mode: CapsuleMode) {
-    let token = BORDER_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+pub(in crate::macos_native_agent) fn update_border(app: AppHandle, mode: CapsuleMode, token: u64) {
+    let animation = MainThreadAnimation::with_token(&BORDER_TOKEN, token);
 
     if mode != CapsuleMode::Processing {
         let _ = app.run_on_main_thread(move || {
+            if !animation.is_current() {
+                return;
+            }
             UI.with(|ui| {
                 let ui = ui.borrow();
                 let theme = Theme::current();
@@ -34,6 +38,9 @@ pub(in crate::macos_native_agent) fn update_border(app: AppHandle, mode: Capsule
 
     // Processing: hide solid border, show + rotate gradient border.
     let _ = app.run_on_main_thread(move || {
+        if !animation.is_current() {
+            return;
+        }
         UI.with(|ui| {
             let ui = ui.borrow();
             let theme = Theme::current();
@@ -57,24 +64,29 @@ pub(in crate::macos_native_agent) fn update_border(app: AppHandle, mode: Capsule
     tauri::async_runtime::spawn(async move {
         let mut frame = 0_u64;
         loop {
-            if BORDER_TOKEN.load(Ordering::Relaxed) != token {
+            if !animation.is_current() {
                 break;
             }
             let t = frame as f64 * (ANIM_MS as f64 / 1000.0);
             let angle = (t / GRADIENT_ROTATION_PERIOD_SEC) * std::f64::consts::TAU;
             let ex = 0.5 + 0.5 * angle.cos();
             let ey = 0.5 + 0.5 * angle.sin();
-            let _ = app.run_on_main_thread(move || {
-                UI.with(|ui| {
-                    let ui = ui.borrow();
-                    if let Some(gradient) = &ui.gradient_border {
-                        suppress_implicit_animations(|| {
-                            gradient.setStartPoint(NSPoint::new(0.5, 0.5));
-                            gradient.setEndPoint(NSPoint::new(ex, ey));
-                        });
-                    }
-                });
-            });
+            if !animation
+                .frame(&app, move || {
+                    UI.with(|ui| {
+                        let ui = ui.borrow();
+                        if let Some(gradient) = &ui.gradient_border {
+                            suppress_implicit_animations(|| {
+                                gradient.setStartPoint(NSPoint::new(0.5, 0.5));
+                                gradient.setEndPoint(NSPoint::new(ex, ey));
+                            });
+                        }
+                    });
+                })
+                .await
+            {
+                break;
+            }
             frame = frame.wrapping_add(1);
             tokio::time::sleep(Duration::from_millis(ANIM_MS)).await;
         }

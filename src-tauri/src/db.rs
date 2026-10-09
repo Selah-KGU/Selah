@@ -21,6 +21,8 @@ pub struct Database {
 mod agent_store;
 #[path = "db/cache.rs"]
 mod cache;
+#[path = "db/cache_timestamps.rs"]
+mod cache_timestamps;
 #[path = "db/kgc.rs"]
 mod kgc;
 #[path = "db/kgc_detail.rs"]
@@ -33,16 +35,22 @@ mod luna_activities;
 mod luna_counts;
 #[path = "db/luna_scope.rs"]
 mod luna_scope;
+#[path = "db/revisions.rs"]
+mod revisions;
 #[path = "db/schedule.rs"]
 mod schedule;
 #[path = "db/schema.rs"]
 mod schema;
+#[path = "db/scoped_rows.rs"]
+mod scoped_rows;
 #[path = "db/session_plans.rs"]
 mod session_plans;
 #[path = "db/types.rs"]
 mod types;
 
-pub use luna_scope::epoch_secs;
 pub(crate) use cache::source_hash;
+pub use cache::CacheDeltaRow;
+pub use cache_timestamps::CacheTimestampBatch;
+pub use luna_scope::epoch_secs;
 pub(crate) use luna_scope::luna_course_matches_snapshot;
 pub use types::*;

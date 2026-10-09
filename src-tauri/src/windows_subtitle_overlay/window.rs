@@ -49,17 +49,19 @@ pub(super) fn hwnd_from_raw(raw: RawHwnd) -> HWND {
     raw as HWND
 }
 
-pub(super) fn window_snapshot() -> Option<OverlayWindow> {
+pub(super) struct OverlayPaintSnapshot {
+    pub(super) width: i32,
+    pub(super) text: String,
+    pub(super) dark: bool,
+}
+
+pub(super) fn window_snapshot() -> Option<OverlayPaintSnapshot> {
     let state = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
     if state.hwnd == 0 {
         None
     } else {
-        Some(OverlayWindow {
-            hwnd: state.hwnd,
+        Some(OverlayPaintSnapshot {
             width: state.width,
-            center_x: state.center_x,
-            top_y: state.top_y,
-            alpha: state.alpha,
             text: state.text.clone(),
             dark: state.dark,
         })
@@ -152,6 +154,7 @@ pub(super) fn clear_destroyed_window(hwnd: RawHwnd) -> bool {
     state.width = 0;
     state.alpha = 0;
     state.text.clear();
+    state.displayed_session_id = None;
     HWND_READY.store(false, Ordering::Release);
     OVERLAY_OPEN.store(false, Ordering::Relaxed);
     true
@@ -228,6 +231,7 @@ fn spawn_overlay_thread(app: &AppHandle) {
             state.top_y = top_y;
             state.alpha = 0;
             state.text.clear();
+            state.displayed_session_id = None;
             state.dark = dark;
         }
         // hwnd is now visible to other threads; publish HWND_READY before clearing CREATING.

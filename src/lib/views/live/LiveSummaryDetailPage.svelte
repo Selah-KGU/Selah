@@ -82,7 +82,7 @@
         <section class="detail-terms" aria-label="難語">
           <h3 class="detail-terms-head">難語</h3>
           <ul class="term-list">
-            {#each terms as t (t.term)}
+            {#each terms as t, i (i)}
               <li class="term-item">
                 <div class="term-name">{t.term}</div>
                 <div class="term-exp">{t.explanation}</div>

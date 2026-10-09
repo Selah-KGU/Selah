@@ -42,7 +42,96 @@ pub(in crate::stt) struct SttSensitivityProfile {
     pub(in crate::stt) rms_gate: f32,
 }
 
-static STT_CONFIG_CACHE: LazyLock<Mutex<Option<SttConfig>>> = LazyLock::new(|| Mutex::new(None));
+struct CachedSttConfig {
+    config: Option<SttConfig>,
+    partial_profile: SttPartialThrottleProfile,
+    partial_version: u64,
+}
+
+impl Default for CachedSttConfig {
+    fn default() -> Self {
+        Self {
+            config: None,
+            partial_profile: stt_partial_throttle_profile(STT_PARTIAL_MODE_BALANCED),
+            partial_version: 1,
+        }
+    }
+}
+
+#[derive(Default)]
+struct SttConfigCache {
+    state: Mutex<CachedSttConfig>,
+    io: Mutex<()>,
+}
+
+impl SttConfigCache {
+    fn snapshot(&self) -> Option<(SttConfig, u64)> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .config
+            .as_ref()
+            .map(|config| (config.clone(), state.partial_version))
+    }
+
+    fn commit(&self, config: SttConfig) -> (SttConfig, u64) {
+        let partial_profile = stt_partial_throttle_profile(&config.partial_mode);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let enabled = u64::from(partial_profile.enabled);
+        if state.partial_version & 1 != enabled {
+            state.partial_version = (state.partial_version & !1).wrapping_add(2) | enabled;
+        }
+        state.partial_profile = partial_profile;
+        state.config = Some(config.clone());
+        (config, state.partial_version)
+    }
+
+    fn load_with(&self, load: impl FnOnce() -> SttConfig) -> (SttConfig, u64) {
+        if let Some(snapshot) = self.snapshot() {
+            return snapshot;
+        }
+        let _io = self.io.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(snapshot) = self.snapshot() {
+            return snapshot;
+        }
+        self.commit(load())
+    }
+
+    fn save_with(
+        &self,
+        config: &SttConfig,
+        write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _io = self.io.lock().unwrap_or_else(|e| e.into_inner());
+        write()?;
+        self.commit(config.clone());
+        Ok(())
+    }
+
+    fn partial_version(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .partial_version
+    }
+
+    fn partial_preferences_with(
+        &self,
+        load: impl FnOnce() -> SttConfig,
+    ) -> (SttPartialThrottleProfile, u64) {
+        {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.config.is_some() {
+                // Capture only needs these Copy values, not five cloned
+                // settings strings or repeated mode normalization.
+                return (state.partial_profile, state.partial_version);
+            }
+        }
+        let (config, version) = self.load_with(load);
+        (stt_partial_throttle_profile(&config.partial_mode), version)
+    }
+}
+
+static STT_CONFIG_CACHE: LazyLock<SttConfigCache> = LazyLock::new(SttConfigCache::default);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SttExecutionBackendInfo {
@@ -217,14 +306,6 @@ pub(in crate::stt) fn stt_fallback_message(requested_backend: &str) -> String {
     )
 }
 
-pub(in crate::stt) fn stt_runtime_preferences() -> (String, String) {
-    let stt_cfg = load_config();
-    (
-        normalize_stt_language(&stt_cfg.language),
-        normalize_stt_execution_backend(&stt_cfg.execution_backend),
-    )
-}
-
 fn normalized_stt_config(mut config: SttConfig) -> SttConfig {
     config.selected_model = normalize_stt_model_id(&config.selected_model);
     config.language = normalize_stt_language(&config.language);
@@ -235,14 +316,20 @@ fn normalized_stt_config(mut config: SttConfig) -> SttConfig {
 }
 
 pub(in crate::stt) fn load_config() -> SttConfig {
-    if let Ok(cache) = STT_CONFIG_CACHE.lock() {
-        if let Some(config) = cache.clone() {
-            return config;
-        }
-    }
+    STT_CONFIG_CACHE.load_with(read_config_file).0
+}
 
+pub(in crate::stt) fn partial_runtime_preferences() -> (SttPartialThrottleProfile, u64) {
+    STT_CONFIG_CACHE.partial_preferences_with(read_config_file)
+}
+
+pub(in crate::stt) fn current_partial_version() -> u64 {
+    STT_CONFIG_CACHE.partial_version()
+}
+
+fn read_config_file() -> SttConfig {
     let path = stt_config_path();
-    let config = if !path.exists() {
+    if !path.exists() {
         SttConfig::default()
     } else {
         std::fs::read_to_string(&path)
@@ -250,16 +337,14 @@ pub(in crate::stt) fn load_config() -> SttConfig {
             .and_then(|v| serde_json::from_str(&v).ok())
             .map(normalized_stt_config)
             .unwrap_or_default()
-    };
-
-    if let Ok(mut cache) = STT_CONFIG_CACHE.lock() {
-        *cache = Some(config.clone());
     }
-
-    config
 }
 
 pub(in crate::stt) fn save_config(config: &SttConfig) -> Result<(), String> {
+    STT_CONFIG_CACHE.save_with(config, || write_config_file(config))
+}
+
+fn write_config_file(config: &SttConfig) -> Result<(), String> {
     let path = stt_config_path();
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("JSON serialization error: {}", e))?;
@@ -269,8 +354,108 @@ pub(in crate::stt) fn save_config(config: &SttConfig) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    if let Ok(mut cache) = STT_CONFIG_CACHE.lock() {
-        *cache = Some(config.clone());
-    }
     Ok(())
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn final_only() -> SttConfig {
+        SttConfig {
+            partial_mode: STT_PARTIAL_MODE_FINAL_ONLY.into(),
+            ..SttConfig::default()
+        }
+    }
+
+    #[test]
+    fn caption_generations_preserve_fast_disable_reenable_between_capture_polls() {
+        let cache = SttConfigCache::default();
+        let (_, initial) = cache.load_with(SttConfig::default);
+        assert_eq!(initial, 1);
+        cache.save_with(&final_only(), || Ok(())).unwrap();
+        let disabled = cache.partial_version();
+        assert_eq!(disabled & 1, 0);
+        cache.save_with(&SttConfig::default(), || Ok(())).unwrap();
+        let restored = cache.partial_version();
+        assert!(restored > disabled && disabled > initial);
+        assert_eq!(restored & 1, 1);
+        let power_saver = SttConfig {
+            partial_mode: STT_PARTIAL_MODE_POWER_SAVER.into(),
+            ..SttConfig::default()
+        };
+        cache.save_with(&power_saver, || Ok(())).unwrap();
+        assert_eq!(
+            cache.partial_version(),
+            restored,
+            "frequency change unnecessarily reloaded a model"
+        );
+        let (config, version) = cache.load_with(|| panic!("warm cache read disk"));
+        assert_eq!(config.partial_mode, STT_PARTIAL_MODE_POWER_SAVER);
+        assert_eq!(version, restored);
+        let (profile, version) =
+            cache.partial_preferences_with(|| panic!("warm caption preferences read disk"));
+        assert!(profile.enabled);
+        assert_eq!(profile.min_interval_ms, 1500);
+        assert_eq!(version, restored);
+    }
+
+    #[test]
+    fn failed_settings_write_does_not_change_running_caption_preferences() {
+        let cache = SttConfigCache::default();
+        let (_, version) = cache.load_with(SttConfig::default);
+        assert!(cache
+            .save_with(&final_only(), || Err("disk write failed".into()))
+            .is_err());
+        assert_eq!(cache.partial_version(), version);
+        let (profile, profile_version) =
+            cache.partial_preferences_with(|| panic!("failed save invalidated the cache"));
+        assert!(profile.enabled);
+        assert_eq!(profile.min_interval_ms, 600);
+        assert_eq!(profile_version, version);
+        assert_eq!(
+            cache.snapshot().unwrap().0.partial_mode,
+            STT_PARTIAL_MODE_BALANCED
+        );
+    }
+
+    #[test]
+    fn a_cold_config_read_cannot_overwrite_a_concurrent_save_with_old_file_data() {
+        let cache = Arc::new(SttConfigCache::default());
+        let (writing, entered) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let save_cache = Arc::clone(&cache);
+        let save = std::thread::spawn(move || {
+            save_cache.save_with(&final_only(), || {
+                writing.send(()).unwrap();
+                blocked.recv().unwrap();
+                Ok(())
+            })
+        });
+        entered.recv_timeout(Duration::from_secs(3)).unwrap();
+        let read_cache = Arc::clone(&cache);
+        let (reading, read_started) = mpsc::channel();
+        let (finished, read_finished) = mpsc::channel();
+        let read = std::thread::spawn(move || {
+            reading.send(()).unwrap();
+            let result = read_cache.load_with(|| panic!("read old disk config after save"));
+            finished.send(()).unwrap();
+            result
+        });
+        read_started.recv_timeout(Duration::from_secs(3)).unwrap();
+        let premature_read = read_finished.recv_timeout(Duration::from_millis(30));
+        release.send(()).unwrap();
+        save.join().unwrap().unwrap();
+        let (config, version) = read.join().unwrap();
+        assert!(matches!(
+            premature_read,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(config.partial_mode, STT_PARTIAL_MODE_FINAL_ONLY);
+        assert_eq!(version & 1, 0);
+        assert_eq!(
+            cache.snapshot().unwrap().0.partial_mode,
+            STT_PARTIAL_MODE_FINAL_ONLY
+        );
+    }
 }

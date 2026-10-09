@@ -62,11 +62,13 @@ fn effective_batch_start_uses_first_pending_line_for_first_chunk() {
         LiveTranscriptLine {
             text: "first".into(),
             at: "10:03:00".into(),
-        },
+        }
+        .into(),
         LiveTranscriptLine {
             text: "second".into(),
             at: "10:04:00".into(),
-        },
+        }
+        .into(),
     ];
     let session = LiveSession {
         session_id: "test".into(),
@@ -87,7 +89,9 @@ fn effective_batch_start_uses_first_pending_line_for_first_chunk() {
         batch_started_at: started_at,
         flush_in_flight: false,
         is_fresh_start: true,
-        persisted_line_count: 0,
+        cache_progress: CacheProgress::restored(0, 0),
+        finish_phase: None,
+        finish_revision: 0,
     };
 
     let effective = effective_batch_started_at(&session);
@@ -113,7 +117,8 @@ fn effective_batch_start_uses_latest_summary_end_after_resume() {
             line_count: 3,
             terms: Vec::new(),
             whiteboard: None,
-        }],
+        }
+        .into()],
     )
     .unwrap();
     let session = LiveSession {
@@ -132,11 +137,13 @@ fn effective_batch_start_uses_latest_summary_end_after_resume() {
         transcript_lines: Arc::new(vec![LiveTranscriptLine {
             text: "covered".into(),
             at: "10:09:30".into(),
-        }]),
+        }
+        .into()]),
         pending_lines: Arc::new(vec![LiveTranscriptLine {
             text: "new".into(),
             at: "10:20:00".into(),
-        }]),
+        }
+        .into()]),
         summaries: Arc::new(vec![LiveSummaryChunk {
             title: "Chunk 01 | 10:03-10:10".into(),
             range_label: "10:03-10:10".into(),
@@ -144,11 +151,14 @@ fn effective_batch_start_uses_latest_summary_end_after_resume() {
             line_count: 3,
             terms: Vec::new(),
             whiteboard: None,
-        }]),
+        }
+        .into()]),
         batch_started_at: resumed_batch_started_at,
         flush_in_flight: false,
         is_fresh_start: false,
-        persisted_line_count: 1,
+        cache_progress: CacheProgress::restored(1, 0),
+        finish_phase: None,
+        finish_revision: 0,
     };
 
     let effective = effective_batch_started_at(&session);
@@ -186,7 +196,8 @@ fn effective_batch_start_keeps_second_precision_after_current_flush() {
         pending_lines: Arc::new(vec![LiveTranscriptLine {
             text: "new".into(),
             at: "10:20:00".into(),
-        }]),
+        }
+        .into()]),
         summaries: Arc::new(vec![LiveSummaryChunk {
             title: "Chunk 01 | 10:03-10:10".into(),
             range_label: "10:03-10:10".into(),
@@ -194,11 +205,14 @@ fn effective_batch_start_keeps_second_precision_after_current_flush() {
             line_count: 3,
             terms: Vec::new(),
             whiteboard: None,
-        }]),
+        }
+        .into()]),
         batch_started_at: last_subtitle_at,
         flush_in_flight: false,
         is_fresh_start: true,
-        persisted_line_count: 0,
+        cache_progress: CacheProgress::restored(0, 0),
+        finish_phase: None,
+        finish_revision: 0,
     };
 
     let effective = effective_batch_started_at(&session);

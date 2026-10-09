@@ -1,16 +1,17 @@
 //! Download history records.
 
+use super::history_store::HistoryStore;
 use super::*;
 use crate::client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Monotonic per-process counter appended to timestamps so two records created
 /// within the same millisecond get distinct ids.
 static DOWNLOAD_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadRecord {
     pub id: String,
     pub filename: String,
@@ -34,24 +35,12 @@ fn download_history_path() -> std::path::PathBuf {
     client::data_dir().join("download_history.json")
 }
 
-pub fn load_download_history() -> Vec<DownloadRecord> {
-    let path = download_history_path();
-    if path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Ok(records) = serde_json::from_str(&data) {
-                return records;
-            }
-        }
-    }
-    Vec::new()
+pub(super) fn download_history_store() -> HistoryStore {
+    HistoryStore::new(download_history_path())
 }
 
-pub(super) fn save_download_history(records: &[DownloadRecord]) -> Result<(), String> {
-    let path = download_history_path();
-    let data =
-        serde_json::to_string(records).map_err(|e| format!("JSON serialization error: {}", e))?;
-    std::fs::write(&path, &data).map_err(|e| format!("Failed to write download history: {}", e))?;
-    Ok(())
+pub(super) fn load_download_history() -> Result<Vec<DownloadRecord>, String> {
+    download_history_store().read()
 }
 
 /// Record a new download in the history. Called from save_to_downloads.
@@ -62,7 +51,6 @@ pub fn record_download(
     source: &str,
     size_bytes: u64,
 ) {
-    let mut records = load_download_history();
     // Normalize course name to its simplified form. Without this, downloads
     // recorded by Luna (full name with dept code and term suffix) and
     // entries discovered by scan_download_dir (folder name = simplified)
@@ -88,10 +76,17 @@ pub fn record_download(
         file_exists: true,
         subfolder: String::new(),
     };
-    // Dedupe by path: a prior `scan_download_dir` (e.g. triggered by opening
-    // the downloads window while this download was in flight) may have already
-    // inserted a `scan_*` record for this exact path. Replace it so the user
-    // sees one entry per file, not two.
+    if let Err(error) = download_history_store().update(|records| {
+        upsert_download_record(records, record);
+        true
+    }) {
+        log::warn!("Recording download history failed: {error}");
+    }
+}
+
+// Preserve the existing position when a scan record is replaced by its actual
+// download, and only trim the oldest entries when a new path is appended.
+pub(super) fn upsert_download_record(records: &mut Vec<DownloadRecord>, record: DownloadRecord) {
     if let Some(existing) = records.iter_mut().find(|r| r.path == record.path) {
         *existing = record;
     } else {
@@ -100,16 +95,24 @@ pub fn record_download(
             records.drain(0..records.len() - 500);
         }
     }
-    let _ = save_download_history(&records);
 }
 
 #[tauri::command]
-pub fn list_downloads() -> Vec<DownloadRecord> {
-    let mut records = load_download_history();
+pub async fn list_downloads() -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "Download history worker failed",
+        "Download history encoding failed",
+        list_downloads_snapshot,
+    )
+    .await
+}
+
+pub(crate) fn list_downloads_snapshot() -> Result<Vec<DownloadRecord>, String> {
+    let mut records = load_download_history()?;
     records.retain(|r| !r.path.is_empty());
     annotate_records(&mut records);
     records.reverse();
-    records
+    Ok(records)
 }
 
 /// Fills `file_exists` and the derived `subfolder` for each record.
@@ -122,17 +125,36 @@ pub(super) fn annotate_records(records: &mut [DownloadRecord]) {
 }
 
 #[tauri::command]
-pub fn check_files_downloaded(
+pub async fn check_files_downloaded(
     filenames: Vec<String>,
     course_name: Option<String>,
+) -> Result<tauri::ipc::Response, String> {
+    crate::background_ipc::respond(
+        "Download checks worker failed",
+        "Download checks encoding failed",
+        move || {
+            let records = load_download_history()?;
+            Ok(check_downloaded_records(
+                &records,
+                filenames,
+                course_name.as_deref(),
+            ))
+        },
+    )
+    .await
+}
+
+pub(super) fn check_downloaded_records(
+    records: &[DownloadRecord],
+    filenames: Vec<String>,
+    course_name: Option<&str>,
 ) -> HashMap<String, DownloadRecord> {
-    let records = load_download_history();
     let mut found = HashMap::new();
     for filename in filenames {
         if filename.trim().is_empty() {
             continue;
         }
-        if let Some(record) = find_downloaded_record(&records, &filename, course_name.as_deref()) {
+        if let Some(record) = find_downloaded_record(records, &filename, course_name) {
             found.insert(filename.clone(), record.clone());
             found.insert(filename.to_lowercase(), record);
         }
@@ -181,33 +203,52 @@ fn find_downloaded_record(
 }
 
 #[tauri::command]
-pub fn remove_download_record(id: String) -> Result<(), String> {
-    let mut records = load_download_history();
-    records.retain(|r| r.id != id);
-    save_download_history(&records)
+pub async fn remove_download_record(id: String) -> Result<(), String> {
+    remove_download_records(vec![id]).await
 }
 
 #[tauri::command]
-pub fn remove_download_records(ids: Vec<String>) -> Result<(), String> {
-    let ids: std::collections::HashSet<String> = ids.into_iter().collect();
-    let mut records = load_download_history();
-    records.retain(|r| !ids.contains(&r.id));
-    save_download_history(&records)
+pub async fn remove_download_records(ids: Vec<String>) -> Result<(), String> {
+    crate::background_ipc::run("Download history removal worker failed", move || {
+        let ids: HashSet<String> = ids.into_iter().collect();
+        download_history_store()
+            .update(|records| retain_download_records(records, |r| !ids.contains(&r.id)))
+            .map(|_| ())
+    })
+    .await
 }
 
-/// Remove any download history entries whose path matches `path`. Used when a
-/// file is being deleted from disk and we don't want a dangling "missing file"
-/// entry in the downloads list.
-pub fn remove_download_records_by_path(path: &str) {
-    let mut records = load_download_history();
+pub(super) fn retain_download_records(
+    records: &mut Vec<DownloadRecord>,
+    keep: impl FnMut(&DownloadRecord) -> bool,
+) -> bool {
     let before = records.len();
-    records.retain(|r| r.path != path);
-    if records.len() != before {
-        let _ = save_download_history(&records);
+    records.retain(keep);
+    records.len() != before
+}
+
+/// Remove history for successfully deleted files in one transaction.
+pub(super) fn remove_download_records_by_paths(paths: &HashSet<String>) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    download_history_store()
+        .update(|records| retain_download_records(records, |r| !paths.contains(&r.path)))
+        .map(|_| ())
+}
+
+/// Used by LIVE cleanup after a partial file is removed.
+pub fn remove_download_records_by_path(path: &str) {
+    let paths = HashSet::from([path.to_string()]);
+    if let Err(error) = remove_download_records_by_paths(&paths) {
+        log::warn!("Removing deleted file from download history failed: {error}");
     }
 }
 
 #[tauri::command]
-pub fn clear_download_history() -> Result<(), String> {
-    save_download_history(&[])
+pub async fn clear_download_history() -> Result<(), String> {
+    crate::background_ipc::run("Download history clear worker failed", || {
+        download_history_store().clear()
+    })
+    .await
 }

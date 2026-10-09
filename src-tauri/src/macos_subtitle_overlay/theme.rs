@@ -5,6 +5,7 @@ use objc2_foundation::NSString;
 use tauri::{AppHandle, Manager};
 
 use super::*;
+use crate::macos_layer_transaction::suppress_implicit_animations;
 
 pub(in crate::macos_subtitle_overlay) fn srgb(r: u8, g: u8, b: u8, a: f64) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(
@@ -58,63 +59,65 @@ pub(in crate::macos_subtitle_overlay) fn effective_is_dark(app: &AppHandle) -> b
 /// hasn't been constructed yet.
 pub(in crate::macos_subtitle_overlay) fn apply_overlay_theme(dark: bool) {
     SYSTEM_IS_DARK.store(dark, Ordering::Relaxed);
-    UI.with(|ui| {
-        let ui = ui.borrow();
-        if let Some(cap) = &ui.capsule_view {
-            if let Some(l) = cap.layer() {
+    suppress_implicit_animations(|| {
+        UI.with(|ui| {
+            let ui = ui.borrow();
+            if let Some(cap) = &ui.capsule_view {
+                if let Some(l) = cap.layer() {
+                    if dark {
+                        l.setShadowColor(Some(&srgb(60, 140, 255, 0.55).CGColor()));
+                        l.setShadowRadius(32.0);
+                        l.setShadowOpacity(0.30);
+                    } else {
+                        l.setShadowColor(Some(&srgb(0, 0, 0, 0.30).CGColor()));
+                        l.setShadowRadius(24.0);
+                        l.setShadowOpacity(0.18);
+                    }
+                }
+            }
+            if let Some(vfx) = &ui.vfx_view {
+                // Pin the vibrancy view's appearance so the material renders in
+                // the chosen mode regardless of the system value (otherwise
+                // forcing light/dark from the main window wouldn't fully
+                // override the blur tint).
+                unsafe {
+                    let cls = AnyClass::get(c"NSAppearance").unwrap();
+                    let name = NSString::from_str(if dark {
+                        "NSAppearanceNameDarkAqua"
+                    } else {
+                        "NSAppearanceNameAqua"
+                    });
+                    let appearance: *mut objc2::runtime::AnyObject =
+                        msg_send![cls, appearanceNamed: &*name];
+                    if !appearance.is_null() {
+                        let _: () = msg_send![&**vfx, setAppearance: appearance];
+                    }
+                }
+                if let Some(l) = vfx.layer() {
+                    if dark {
+                        l.setBorderColor(Some(&srgb(120, 180, 255, 0.18).CGColor()));
+                    } else {
+                        l.setBorderColor(Some(&srgb(80, 130, 220, 0.14).CGColor()));
+                    }
+                }
+            }
+            if let Some(bg) = &ui.bg_overlay {
+                if let Some(l) = bg.layer() {
+                    if dark {
+                        l.setBackgroundColor(Some(&srgb(10, 10, 13, 0.94).CGColor()));
+                    } else {
+                        l.setBackgroundColor(Some(&srgb(245, 245, 250, 0.91).CGColor()));
+                    }
+                }
+            }
+            if let Some(label) = &ui.text_label {
                 if dark {
-                    l.setShadowColor(Some(&srgb(60, 140, 255, 0.55).CGColor()));
-                    l.setShadowRadius(32.0);
-                    l.setShadowOpacity(0.30);
+                    label.setTextColor(Some(&NSColor::whiteColor()));
                 } else {
-                    l.setShadowColor(Some(&srgb(0, 0, 0, 0.30).CGColor()));
-                    l.setShadowRadius(24.0);
-                    l.setShadowOpacity(0.18);
+                    label.setTextColor(Some(&NSColor::labelColor()));
                 }
             }
-        }
-        if let Some(vfx) = &ui.vfx_view {
-            // Pin the vibrancy view's appearance so the material renders in
-            // the chosen mode regardless of the system value (otherwise
-            // forcing light/dark from the main window wouldn't fully
-            // override the blur tint).
-            unsafe {
-                let cls = AnyClass::get(c"NSAppearance").unwrap();
-                let name = NSString::from_str(if dark {
-                    "NSAppearanceNameDarkAqua"
-                } else {
-                    "NSAppearanceNameAqua"
-                });
-                let appearance: *mut objc2::runtime::AnyObject =
-                    msg_send![cls, appearanceNamed: &*name];
-                if !appearance.is_null() {
-                    let _: () = msg_send![&**vfx, setAppearance: appearance];
-                }
-            }
-            if let Some(l) = vfx.layer() {
-                if dark {
-                    l.setBorderColor(Some(&srgb(120, 180, 255, 0.18).CGColor()));
-                } else {
-                    l.setBorderColor(Some(&srgb(80, 130, 220, 0.14).CGColor()));
-                }
-            }
-        }
-        if let Some(bg) = &ui.bg_overlay {
-            if let Some(l) = bg.layer() {
-                if dark {
-                    l.setBackgroundColor(Some(&srgb(10, 10, 13, 0.94).CGColor()));
-                } else {
-                    l.setBackgroundColor(Some(&srgb(245, 245, 250, 0.91).CGColor()));
-                }
-            }
-        }
-        if let Some(label) = &ui.text_label {
-            if dark {
-                label.setTextColor(Some(&NSColor::whiteColor()));
-            } else {
-                label.setTextColor(Some(&NSColor::labelColor()));
-            }
-        }
+        });
     });
 }
 

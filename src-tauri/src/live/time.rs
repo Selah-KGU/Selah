@@ -1,6 +1,8 @@
 use chrono::{DateTime, Duration as ChronoDuration, Local};
 
-use super::{LiveSession, LiveSummaryChunk, LiveTranscriptLine};
+use super::{
+    LiveSession, LiveSummaryChunk, LiveTranscriptLine, SharedSummaryChunk, SharedTranscriptLine,
+};
 
 pub(in crate::live) fn format_datetime(dt: DateTime<Local>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
@@ -48,7 +50,7 @@ fn summary_range_end_datetime(
 
 pub(in crate::live) fn latest_summary_end_datetime(
     session_started_at: DateTime<Local>,
-    summaries: &[LiveSummaryChunk],
+    summaries: &[SharedSummaryChunk],
 ) -> Option<DateTime<Local>> {
     summaries
         .last()
@@ -57,7 +59,7 @@ pub(in crate::live) fn latest_summary_end_datetime(
 
 pub(in crate::live) fn last_transcript_line_datetime(
     session_started_at: DateTime<Local>,
-    lines: &[LiveTranscriptLine],
+    lines: &[SharedTranscriptLine],
     fallback: DateTime<Local>,
 ) -> DateTime<Local> {
     lines
@@ -68,7 +70,7 @@ pub(in crate::live) fn last_transcript_line_datetime(
 
 fn first_transcript_line_datetime(
     session_started_at: DateTime<Local>,
-    lines: &[LiveTranscriptLine],
+    lines: &[SharedTranscriptLine],
     fallback: DateTime<Local>,
 ) -> DateTime<Local> {
     lines

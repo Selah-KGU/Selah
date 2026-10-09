@@ -373,7 +373,7 @@ async fn run_plan_inference_with_note(
 ) -> Result<Plan, AgentError> {
     let supports_prefill = provider.supports_prefill();
     log::debug!(
-        "[agent plan] user_text={:?} history_tool_turns={}",
+        "[agent plan] user_text={:?} context_tool_rows={}",
         truncate_for_log(user_text, 200),
         history.iter().filter(|r| r.role == "tool").count()
     );

@@ -9,8 +9,11 @@
   import MarkdownImageLightbox from "./MarkdownImageLightbox.svelte";
   import MarkdownWhiteboard from "./MarkdownWhiteboard.svelte";
   import { splitMarkdownWhiteboards } from "./markdownWhiteboards";
+  import { acquireResourceGroup, ResourceScope } from "./resourceScope";
+  import { createCacheSyncQueue } from "./cacheSyncQueue";
 
   interface MarkdownPayload {
+    deliveryRevision: string;
     path?: string;
     filename?: string;
     markdown?: string;
@@ -70,13 +73,18 @@
   let lightboxImage = $state<{ src: string; alt: string } | null>(null);
   let docEl = $state<HTMLElement | null>(null);
   let scrollEl = $state<HTMLDivElement | null>(null);
-  let toastTimer: number | null = null;
-  let unlistenMarkdown: (() => void) | null = null;
-  let unlistenControl: (() => void) | null = null;
-  let themeUnlisten: (() => void) | null = null;
-  let appThemeUnlisten: (() => void) | null = null;
+  const resources = new ResourceScope();
+  const initialResources = resources.fork();
+  let cancelToast = () => {};
   let lastToolbarTitleHint = "";
   let renderSequence = 0;
+  let contentVersion = 0;
+  let deliveryRevision = -1n;
+  let themeVersion = 0;
+  const refreshTheme = createCacheSyncQueue(async () => {
+    const version = ++themeVersion;
+    await syncAuxiliaryTheme(() => resources.active && version === themeVersion);
+  });
 
   const dirty = $derived(editing && editorValue !== savedMarkdown);
 
@@ -106,8 +114,9 @@
     return count ? `${base}-${count + 1}` : base;
   }
 
-  async function renderHtml(source: string): Promise<string> {
+  async function renderHtml(source: string, current: () => boolean): Promise<string> {
     const raw = await marked.parse(source || "");
+    if (!current()) return "";
     return DOMPurify.sanitize(raw, {
       FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form"],
       ADD_ATTR: ["target", "rel"],
@@ -116,23 +125,35 @@
   }
 
   async function renderMarkdown(source: string): Promise<void> {
+    if (!resources.active) return;
     const sequence = ++renderSequence;
-    const segments: RenderedSegment[] = [];
-    for (const block of splitMarkdownWhiteboards(source || "")) {
-      if (block.board) segments.push({ id: segments.length, board: block.board });
-      else segments.push({ id: segments.length, html: await renderHtml(block.source || "") });
+    const current = () => resources.active && sequence === renderSequence;
+    try {
+      const segments: RenderedSegment[] = [];
+      for (const block of splitMarkdownWhiteboards(source || "")) {
+        if (!current()) return;
+        if (block.board) segments.push({ id: segments.length, board: block.board });
+        else segments.push({ id: segments.length, html: await renderHtml(block.source || "", current) });
+      }
+      if (!current()) return;
+      renderedSegments = segments;
+      await tick();
+      if (!current()) return;
+      if (scrollEl) scrollEl.scrollTop = 0;
+      activeHeading = "";
+      buildToc();
+      wireLinks();
+      wireImages();
+      updateControls();
+      updateToolbarTitleHint();
+    } catch (e) {
+      if (!current()) return;
+      error = `Markdown表示失敗: ${String(e)}`;
+      renderedSegments = [];
+      tocItems = [];
+      updateControls();
+      emitToolbarTitleHint("");
     }
-    if (sequence !== renderSequence) return;
-    renderedSegments = segments;
-    await tick();
-    if (sequence !== renderSequence) return;
-    if (scrollEl) scrollEl.scrollTop = 0;
-    activeHeading = "";
-    buildToc();
-    wireLinks();
-    wireImages();
-    updateControls();
-    updateToolbarTitleHint();
   }
 
   function buildToc(): void {
@@ -181,7 +202,13 @@
   }
 
   function applyPayload(payload: MarkdownPayload | null | undefined): void {
-    if (!payload) return;
+    if (!resources.active || !payload || typeof payload.deliveryRevision !== "string" || !/^[0-9]+$/.test(payload.deliveryRevision)) return;
+    const revision = BigInt(payload.deliveryRevision);
+    if (revision <= deliveryRevision || (path && payload.path && payload.path !== path)) return;
+    deliveryRevision = revision;
+    contentVersion += 1;
+    renderSequence += 1;
+    initialResources.dispose();
     loading = false;
     path = payload.path || path;
     filename = payload.filename || filename;
@@ -191,6 +218,7 @@
       markdown = "";
       savedMarkdown = "";
       renderedSegments = [];
+      tocItems = [];
       updateControls();
       emitToolbarTitleHint("");
       return;
@@ -203,10 +231,11 @@
   }
 
   function showToast(message: string, isError = false): void {
+    if (!resources.active) return;
     toastText = message;
     toastError = isError;
-    if (toastTimer !== null) window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => {
+    cancelToast();
+    cancelToast = resources.schedule(() => {
       toastText = "";
       toastError = false;
     }, 1800);
@@ -243,24 +272,32 @@
   }
 
   async function save(): Promise<boolean> {
-    if (!path || !dirty || saving) return false;
+    if (!resources.active || !path || !dirty || saving) return false;
+    const writtenPath = path;
+    const writtenContents = editorValue;
+    const version = contentVersion;
+    const current = () => resources.active && version === contentVersion && writtenPath === path;
     saving = true;
     updateControls();
     try {
-      await invoke("write_markdown_file", { path, contents: editorValue });
-      savedMarkdown = editorValue;
-      markdown = editorValue;
-      editing = false;
-      await renderMarkdown(savedMarkdown);
+      await invoke("write_markdown_file", { path: writtenPath, contents: writtenContents });
+      if (!current()) return false;
+      savedMarkdown = writtenContents;
+      markdown = writtenContents;
+      // Preserve text typed while disk IO was in flight, and its dirty state.
+      if (editorValue === writtenContents) editing = false;
+      await renderMarkdown(writtenContents);
+      if (!current()) return false;
       showToast("保存しました");
       return true;
     } catch (e) {
-      showToast(`保存失敗: ${String(e)}`, true);
-      updateControls();
+      if (current()) showToast(`保存失敗: ${String(e)}`, true);
       return false;
     } finally {
-      saving = false;
-      updateControls();
+      if (resources.active) {
+        saving = false;
+        updateControls();
+      }
     }
   }
 
@@ -301,9 +338,12 @@
   }
 
   async function share(): Promise<void> {
-    if (!path) return;
+    if (!resources.active || !path) return;
+    const sharedPath = path;
+    const version = contentVersion;
     if (dirty && !(await save())) return;
-    await invoke("share_downloaded_file_native", { path }).catch((e) => showToast(`共有失敗: ${String(e)}`, true));
+    if (!resources.active || dirty || version !== contentVersion || path !== sharedPath) return;
+    await invoke("share_downloaded_file_native", { path: sharedPath }).catch((e) => showToast(`共有失敗: ${String(e)}`, true));
   }
 
   function reveal(): void {
@@ -318,17 +358,17 @@
 
   function updateActiveHeading(): void {
     if (!scrollEl || !docEl || !tocItems.length) return;
-    const top = scrollEl.scrollTop + 18;
+    const top = scrollEl.getBoundingClientRect().top + 18;
     let current = tocItems[0]?.id || "";
     for (const item of tocItems) {
       const heading = docEl.querySelector<HTMLElement>(`#${CSS.escape(item.id)}`);
-      if (heading && heading.offsetTop <= top) current = item.id;
+      if (heading && heading.getBoundingClientRect().top <= top) current = item.id;
     }
     activeHeading = current;
   }
 
   function emitToolbarTitleHint(title: string): void {
-    if (!target || title === lastToolbarTitleHint) return;
+    if (!resources.active || !target || title === lastToolbarTitleHint) return;
     lastToolbarTitleHint = title;
     emitTo("document-tabs-strip", "document-tab-title-hint", {
       owner,
@@ -366,10 +406,14 @@
   function scrollToHeading(id: string): void {
     const heading = docEl?.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
     if (!heading || !scrollEl) return;
-    scrollEl.scrollTo({ top: heading.offsetTop - 12, behavior: "smooth" });
+    // Markdown segments and whiteboard wrappers can establish separate offset
+    // parents. Convert viewport geometry to this scroll container's coordinates.
+    const top = heading.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop - 12;
+    scrollEl.scrollTo({ top, behavior: "smooth" });
   }
 
   function updateControls(): void {
+    if (!resources.active || !target) return;
     const controls = [
       { id: "toc", label: tocVisible ? "目次を隠す" : "目次", action: "reader.toggleToc", icon: "sidebar", active: tocVisible, disabled: !tocItems.length, group: "view" },
       { id: "font-down", label: "縮小", action: "reader.fontDown", icon: "minus", disabled: fontSize <= FONT_STEPS[0], group: "font" },
@@ -412,49 +456,88 @@
     else if (action === "reader.external") openExternal();
   }
 
+  function waitInitialDelay(delay: number): Promise<boolean> {
+    const wait = initialResources.fork();
+    return new Promise((resolve) => {
+      wait.own(() => resolve(false));
+      wait.schedule(() => { resolve(true); wait.dispose(); }, delay);
+    });
+  }
+
   async function fetchInitialPayload(): Promise<void> {
+    if (!target || !initialResources.active) return;
     const delays = [0, 300, 700, 1500];
     for (const delay of delays) {
-      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      if (delay && !(await waitInitialDelay(delay))) return;
+      if (!initialResources.active) return;
       const payload = await invoke<MarkdownPayload | null>("get_pending_markdown_payload", { label: target }).catch(() => null);
+      if (!initialResources.active) return;
       if (payload) {
         applyPayload(payload);
-        return;
+        if (!initialResources.active) return;
       }
     }
+    if (!initialResources.active) return;
+    initialResources.dispose();
     loading = false;
     error = "Markdown payload was not delivered.";
     updateControls();
     emitToolbarTitleHint("");
   }
 
-  onMount(async () => {
+  async function initializeReader(): Promise<void> {
+    if (!target) {
+      loading = false;
+      error = "Markdown reader target is missing.";
+      return;
+    }
+    await acquireResourceGroup(resources, [
+      group => listen<MarkdownPayload>("markdown-content", group.guard((event) => {
+        const payload = event.payload;
+        applyPayload(payload);
+        // ACK is cheap, and matching revisions cannot release a newer reopen.
+        if (typeof payload.deliveryRevision === "string" && /^[0-9]+$/.test(payload.deliveryRevision) && BigInt(payload.deliveryRevision) <= deliveryRevision) {
+          void invoke("ack_markdown_payload", { label: target, deliveryRevision: payload.deliveryRevision }).catch(() => {});
+        }
+      }), { target }),
+      group => listen<ControlEvent>("document-tab-control", group.guard(handleControl), { target }),
+      group => listen<string>("theme-changed", group.guard((event) => {
+        themeVersion += 1;
+        applyAuxiliaryTheme(event.payload);
+      })),
+      group => listen("app-theme-changed", group.guard(() => { void refreshTheme(["theme"]); })),
+    ]);
+    if (!resources.active) return;
+    updateControls();
+    // Theme IO must not postpone document delivery or the startup fallback.
+    void refreshTheme(["theme"]);
+    await fetchInitialPayload();
+  }
+
+  onMount(() => {
     document.documentElement.setAttribute("data-aux-surface", "markdown-reader");
     document.body.setAttribute("data-aux-surface", "markdown-reader");
     restorePrefs();
-    await syncAuxiliaryTheme();
-    themeUnlisten = await listen<string>("theme-changed", (event) => applyAuxiliaryTheme(event.payload)).catch(() => null);
-    appThemeUnlisten = await listen("app-theme-changed", () => void syncAuxiliaryTheme()).catch(() => null);
-    updateControls();
-    unlistenMarkdown = await listen<MarkdownPayload>("markdown-content", (event) => {
-      const payload = event.payload;
-      if (path && payload.path && payload.path !== path) return;
-      applyPayload(payload);
-    }).catch(() => null);
-    unlistenControl = await listen<ControlEvent>("document-tab-control", handleControl).catch(() => null);
-    await fetchInitialPayload();
+    void initializeReader().catch((e) => {
+      if (!resources.active) return;
+      initialResources.dispose();
+      loading = false;
+      error = `Markdown初期化失敗: ${String(e)}`;
+      updateControls();
+    });
   });
 
   onDestroy(() => {
-    unlistenMarkdown?.();
-    unlistenControl?.();
-    themeUnlisten?.();
-    appThemeUnlisten?.();
-    if (toastTimer !== null) window.clearTimeout(toastTimer);
+    resources.dispose();
+    renderSequence += 1;
     document.documentElement.removeAttribute("data-aux-surface");
     document.body.removeAttribute("data-aux-surface");
-    emitToolbarTitleHint("");
-    invoke("document_tabs_set_controls", { owner, target, controls: [] }).catch(() => {});
+    if (target) {
+      if (lastToolbarTitleHint) {
+        void emitTo("document-tabs-strip", "document-tab-title-hint", { owner, target, title: "" }).catch(() => {});
+      }
+      void invoke("document_tabs_set_controls", { owner, target, controls: [] }).catch(() => {});
+    }
   });
 </script>
 

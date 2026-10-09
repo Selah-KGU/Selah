@@ -23,85 +23,107 @@ fn cap(set: &mut HashSet<String>) {
     }
 }
 
-fn load(db: &Database) -> ReadData {
-    match db.get_data_cache(CACHE_KEY) {
-        Ok(Some((json, _))) => serde_json::from_str(&json).unwrap_or_default(),
-        _ => {
+fn load(db: &Database) -> Result<ReadData, String> {
+    load_from(db, || crate::client::data_dir().join("read_items.json"))
+}
+
+fn load_from(
+    db: &Database,
+    legacy_path: impl FnOnce() -> std::path::PathBuf,
+) -> Result<ReadData, String> {
+    match db.get_data_cache(CACHE_KEY)? {
+        Some((json, _)) => {
+            serde_json::from_str(&json).map_err(|error| format!("既読データの解析失敗: {error}"))
+        }
+        None => {
             // One-time migration: try loading from old JSON file
-            let path = crate::client::data_dir().join("read_items.json");
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(data) = serde_json::from_slice::<ReadData>(&bytes) {
-                    // Migrate to DB and remove old file
-                    if let Ok(json) = serde_json::to_string(&data) {
-                        let _ = db.save_data_cache(CACHE_KEY, &json);
-                    }
-                    let _ = std::fs::remove_file(&path);
-                    log::info!("Migrated read_items.json to database");
-                    return data;
+            let path = legacy_path();
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(ReadData::default());
                 }
+                Err(error) => return Err(format!("旧既読データの読み取り失敗: {error}")),
+            };
+            let data: ReadData = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("旧既読データの解析失敗: {error}"))?;
+            // A failed migration keeps the original bytes and rejects the
+            // operation; it cannot acknowledge an uncommitted mark as read.
+            persist(db, &data)?;
+            if let Err(error) = std::fs::remove_file(&path) {
+                log::warn!("read state migration committed but source cleanup failed: {error}");
             }
-            ReadData::default()
+            log::info!("Migrated read_items.json to database");
+            Ok(data)
         }
     }
 }
 
-fn persist(db: &Database, data: &ReadData) {
-    if let Ok(json) = serde_json::to_string(data) {
-        let _ = db.save_data_cache(CACHE_KEY, &json);
-    }
+fn persist(db: &Database, data: &ReadData) -> Result<(), String> {
+    let json =
+        serde_json::to_string(data).map_err(|error| format!("既読データの変換失敗: {error}"))?;
+    db.save_data_cache(CACHE_KEY, &json)
 }
 
-pub fn mark_read(db: &Database, source: &str, id: &str) {
-    if id.is_empty() || id.len() > 512 {
-        return;
+pub fn mark_read(db: &Database, source: &str, id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 512 || !matches!(source, "kgc" | "luna" | "kwic") {
+        return Ok(());
     }
-    let mut data = load(db);
+    let mut data = load(db)?;
     let set = match source {
         "kgc" => &mut data.kgc,
         "luna" => &mut data.luna,
         "kwic" => &mut data.kwic,
-        _ => return,
+        _ => unreachable!(),
     };
     // Skip the JSON serialize + DB write when the id is already known —
     // marking the same notification read twice is common (UI re-renders,
     // duplicate clicks) and persisting unchanged data is wasted I/O.
-    let inserted = set.insert(id.to_string());
+    let inserted = !set.contains(id) && set.insert(id.to_string());
     let needs_cap = set.len() > MAX_IDS_PER_SOURCE;
     if !inserted && !needs_cap {
-        return;
+        return Ok(());
     }
     cap(set);
-    persist(db, &data);
+    persist(db, &data)
 }
 
-pub fn mark_batch_read(db: &Database, source: &str, ids: Vec<String>) {
-    let mut data = load(db);
+pub fn mark_batch_read<I, S>(db: &Database, source: &str, ids: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    if !matches!(source, "kgc" | "luna" | "kwic") {
+        return Ok(());
+    }
+    let mut data = load(db)?;
     let set = match source {
         "kgc" => &mut data.kgc,
         "luna" => &mut data.luna,
         "kwic" => &mut data.kwic,
-        _ => return,
+        _ => unreachable!(),
     };
     let mut changed = false;
     for id in ids {
-        if !id.is_empty() && id.len() <= 512 && set.insert(id) {
+        let id = id.as_ref();
+        if !id.is_empty() && id.len() <= 512 && !set.contains(id) && set.insert(id.to_owned()) {
             changed = true;
         }
     }
     if !changed && set.len() <= MAX_IDS_PER_SOURCE {
-        return;
+        return Ok(());
     }
     cap(set);
-    persist(db, &data);
+    persist(db, &data)
 }
 
-pub fn get_all_read_ids(db: &Database) -> ReadIdsResponse {
-    let data = load(db);
-    ReadIdsResponse {
-        kgc: data.kgc.iter().cloned().collect(),
-        luna: data.luna.iter().cloned().collect(),
-        kwic: data.kwic.iter().cloned().collect(),
-    }
+pub fn get_all_read_ids(db: &Database) -> Result<ReadIdsResponse, String> {
+    let data = load(db)?;
+    Ok(ReadIdsResponse {
+        kgc: data.kgc.into_iter().collect(),
+        luna: data.luna.into_iter().collect(),
+        kwic: data.kwic.into_iter().collect(),
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -110,6 +132,14 @@ pub struct ReadIdsResponse {
     pub luna: Vec<String>,
     pub kwic: Vec<String>,
 }
+
+#[cfg(test)]
+#[path = "read_state/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "read_state/errors_before.rs"]
+pub(crate) mod errors_before;
 
 // ── Seen notification IDs (push dedup) ──
 

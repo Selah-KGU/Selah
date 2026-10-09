@@ -271,3 +271,22 @@ fn detects_response_format_rejection() {
         r#"{"error":{"message":"model not found"}}"#
     ));
 }
+
+#[test]
+fn scoped_remote_flags_survive_call_resets_and_cleanup_without_affecting_replacement() {
+    let id = uuid::Uuid::new_v4().to_string();
+    let old = crate::agent_turn_scope::RunningTurn::begin(&id, None);
+    let generation = old.turn.generation().to_owned();
+    let plan = plan_gen_id(&generation);
+    assert!(crate::agent_turn_scope::cancel(&id, None));
+    clear_remote_cancel(&generation);
+    clear_remote_cancel(&plan);
+    assert!(is_remote_cancelled(&generation));
+    assert!(is_remote_cancelled(&plan));
+    let latest = crate::agent_turn_scope::RunningTurn::begin(&id, None);
+    assert!(!is_remote_cancelled(latest.turn.generation()));
+    drop(old);
+    assert!(!is_remote_cancelled(&generation));
+    assert!(!is_remote_cancelled(&plan));
+    assert!(!latest.turn.cancelled());
+}

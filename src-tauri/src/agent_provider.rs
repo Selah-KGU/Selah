@@ -15,11 +15,19 @@ mod gemini;
 mod http;
 mod messages;
 mod openai;
+mod processing;
 mod provider;
+mod requests;
+mod sse;
 mod stream;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod http_tests;
+#[cfg(test)]
+mod legacy_http;
 
 pub use cancel::cancel_remote;
 pub use provider::AgentProvider;

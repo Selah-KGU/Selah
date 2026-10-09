@@ -380,32 +380,31 @@ private struct WidgetPalette {
 
     func dayTint(_ day: Int) -> Color {
         if accented { return .primary }
-        let light: Color
-        let dark: Color
+        // Match Copilot course-time-tag weekday hues in surface-base.css.
+        let rgb: UInt32
         switch day {
         case 1:
-            light = Color(red: 0.05, green: 0.36, blue: 0.82)
-            dark = Color(red: 0.47, green: 0.73, blue: 1.00)
+            rgb = 0x7a6fc0 // 月
         case 2:
-            light = Color(red: 0.80, green: 0.36, blue: 0.04)
-            dark = Color(red: 1.00, green: 0.64, blue: 0.28)
+            rgb = 0xd6534a // 火
         case 3:
-            light = Color(red: 0.06, green: 0.50, blue: 0.30)
-            dark = Color(red: 0.40, green: 0.84, blue: 0.52)
+            rgb = 0x2e93c9 // 水
         case 4:
-            light = Color(red: 0.46, green: 0.26, blue: 0.76)
-            dark = Color(red: 0.76, green: 0.58, blue: 0.98)
+            rgb = 0x4fa45e // 木
         case 5:
-            light = Color(red: 0.00, green: 0.45, blue: 0.50)
-            dark = Color(red: 0.32, green: 0.80, blue: 0.78)
+            rgb = 0xcf9a2e // 金
         case 6:
-            light = Color(red: 0.76, green: 0.22, blue: 0.40)
-            dark = Color(red: 1.00, green: 0.52, blue: 0.64)
+            rgb = 0xa06a36 // 土
         default:
-            light = Color(red: 0.62, green: 0.42, blue: 0.02)
-            dark = Color(red: 0.98, green: 0.80, blue: 0.34)
+            rgb = 0xd65a6e // 日
         }
-        return scheme == .dark ? dark : light
+        return Color(
+            .sRGB,
+            red: Double((rgb >> 16) & 0xff) / 255,
+            green: Double((rgb >> 8) & 0xff) / 255,
+            blue: Double(rgb & 0xff) / 255,
+            opacity: 1
+        )
     }
 
     func dayWash(_ day: Int) -> Color {
@@ -993,11 +992,14 @@ private func timeRange(_ item: SelahClass) -> String {
 }
 
 private func classFeed(_ classes: [SelahClass], today: Int, now: Int) -> [ClassSlot] {
-    guard !classes.isEmpty else { return [] }
+    // Drop ended classes before choosing the first day, so today's timetable
+    // cannot return as a fallback or at the end of the weekly rotation.
+    let upcoming = classes.filter { $0.day != today || $0.endMinutes > now }
+    guard !upcoming.isEmpty else { return [] }
     let start: Int
-    if classes.contains(where: { $0.day == today }) {
+    if upcoming.contains(where: { $0.day == today }) {
         start = today
-    } else if let next = nextSchoolDay(in: classes, after: today) {
+    } else if let next = nextSchoolDay(in: upcoming, after: today) {
         start = next
     } else {
         return []
@@ -1005,15 +1007,8 @@ private func classFeed(_ classes: [SelahClass], today: Int, now: Int) -> [ClassS
     var slots: [ClassSlot] = []
     for offset in 0..<7 {
         let day = ((start - 1 + offset) % 7) + 1
-        let items = classes.filter { $0.day == day }.sorted { $0.period < $1.period }
-        let visible: [SelahClass]
-        if day == today {
-            let remaining = items.filter { $0.endMinutes > now }
-            visible = remaining.isEmpty ? items : remaining
-        } else {
-            visible = items
-        }
-        for (index, item) in visible.enumerated() {
+        let items = upcoming.filter { $0.day == day }.sorted { $0.period < $1.period }
+        for (index, item) in items.enumerated() {
             slots.append(ClassSlot(item: item, day: day, showsDay: index == 0 && day != start))
         }
     }

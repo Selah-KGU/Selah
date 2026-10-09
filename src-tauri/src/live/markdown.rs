@@ -1,8 +1,11 @@
+#[cfg(test)]
+use super::{LiveSummaryChunk, LiveTranscriptLine, LiveWhiteboardEdge, LiveWhiteboardNode};
 use chrono::{DateTime, Local};
+use std::fmt::Write;
 
 use super::{
-    format_datetime, LiveCourseInfo, LiveSummaryChunk, LiveTermExplanation, LiveTranscriptLine,
-    LiveWhiteboard, FREE_NOTE_FOLDER_NAME,
+    format_datetime, LiveCourseInfo, LiveTermExplanation, LiveWhiteboard, SharedSummaryChunk,
+    SharedTranscriptLine, FREE_NOTE_FOLDER_NAME,
 };
 
 fn source_excerpt_label(course: &LiveCourseInfo) -> &'static str {
@@ -13,37 +16,36 @@ fn source_excerpt_label(course: &LiveCourseInfo) -> &'static str {
     }
 }
 
-fn format_terms_markdown(course: &LiveCourseInfo, terms: &[LiveTermExplanation]) -> String {
+fn append_terms_markdown(out: &mut String, course: &LiveCourseInfo, terms: &[LiveTermExplanation]) {
     if terms.is_empty() {
-        return String::new();
+        return;
     }
     let source_label = source_excerpt_label(course);
-    let lines = terms
-        .iter()
-        .map(|term| {
-            let mut detail = String::new();
-            if !term.source_excerpt.is_empty() {
-                detail.push_str(&format!("（{}: {}）", source_label, term.source_excerpt));
-            }
-            if !term.external_source.is_empty() {
-                detail.push_str(&format!("（外部出典: {}）", term.external_source));
-            }
-            format!("- **{}**: {}{}", term.term, term.explanation, detail)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("\n\n### 用語注釈\n{}", lines)
+    out.push_str("\n\n### 用語注釈\n");
+    for (index, term) in terms.iter().enumerate() {
+        if index != 0 {
+            out.push('\n');
+        }
+        write!(out, "- **{}**: {}", term.term, term.explanation).unwrap();
+        if !term.source_excerpt.is_empty() {
+            write!(out, "（{}: {}）", source_label, term.source_excerpt).unwrap();
+        }
+        if !term.external_source.is_empty() {
+            write!(out, "（外部出典: {}）", term.external_source).unwrap();
+        }
+    }
 }
 
-fn format_whiteboard_markdown(
+fn append_whiteboard_markdown(
+    out: &mut String,
     course: &LiveCourseInfo,
     whiteboard: Option<&LiveWhiteboard>,
-) -> String {
+) {
     let Some(board) = whiteboard else {
-        return String::new();
+        return;
     };
     if board.nodes.is_empty() {
-        return String::new();
+        return;
     }
 
     let title = if board.title.trim().is_empty() {
@@ -52,64 +54,54 @@ fn format_whiteboard_markdown(
         &board.title
     };
     let source_label = source_excerpt_label(course);
-    let nodes = board
-        .nodes
-        .iter()
-        .map(|node| {
-            let mut source = String::new();
-            if node.source_type == "external" {
-                source.push_str("（外部補足");
-                if !node.external_source.trim().is_empty() {
-                    source.push_str(&format!(": {}", node.external_source));
-                }
-                source.push('）');
-            } else if !node.source_excerpt.trim().is_empty() {
-                source.push_str(&format!("（{}: {}）", source_label, node.source_excerpt));
-            }
-            if node.detail.trim().is_empty() {
-                format!("- **{}**{}", node.label, source)
-            } else {
-                format!("- **{}**: {}{}", node.label, node.detail, source)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let edges = board
-        .edges
-        .iter()
-        .filter_map(|edge| {
-            let from = board.nodes.iter().find(|node| node.id == edge.from)?;
-            let to = board.nodes.iter().find(|node| node.id == edge.to)?;
-            let label = if edge.label.trim().is_empty() {
-                "→".to_string()
-            } else {
-                format!("--{}-->", edge.label)
-            };
-            Some(format!("- {} {} {}", from.label, label, to.label))
-        })
-        .collect::<Vec<_>>();
-
+    write!(out, "\n\n### 知識整理ボード: {}", title).unwrap();
     // Structured fence: the in-app Markdown reader replaces this with an
     // interactive whiteboard visualization. Plain markdown editors fall
     // through to the bullet list below — same info, text-only.
-    let data_fence = match serde_json::to_string(board) {
-        Ok(json) => format!("\n\n```live-whiteboard\n{}\n```", json),
-        Err(_) => String::new(),
-    };
-
-    if edges.is_empty() {
-        format!(
-            "\n\n### 知識整理ボード: {}{}\n\n{}",
-            title, data_fence, nodes
-        )
-    } else {
-        format!(
-            "\n\n### 知識整理ボード: {}{}\n\n{}\n\n関係:\n{}",
-            title,
-            data_fence,
-            nodes,
-            edges.join("\n")
-        )
+    if let Ok(json) = serde_json::to_string(board) {
+        write!(out, "\n\n```live-whiteboard\n{}\n```", json).unwrap();
+    }
+    out.push_str("\n\n");
+    for (index, node) in board.nodes.iter().enumerate() {
+        if index != 0 {
+            out.push('\n');
+        }
+        write!(out, "- **{}**", node.label).unwrap();
+        if !node.detail.trim().is_empty() {
+            write!(out, ": {}", node.detail).unwrap();
+        }
+        if node.source_type == "external" {
+            out.push_str("（外部補足");
+            if !node.external_source.trim().is_empty() {
+                write!(out, ": {}", node.external_source).unwrap();
+            }
+            out.push('）');
+        } else if !node.source_excerpt.trim().is_empty() {
+            write!(out, "（{}: {}）", source_label, node.source_excerpt).unwrap();
+        }
+    }
+    let mut has_edges = false;
+    for edge in &board.edges {
+        let Some(from) = board.nodes.iter().find(|node| node.id == edge.from) else {
+            continue;
+        };
+        let Some(to) = board.nodes.iter().find(|node| node.id == edge.to) else {
+            continue;
+        };
+        if has_edges {
+            out.push('\n');
+        } else {
+            out.push_str("\n\n関係:\n");
+        }
+        has_edges = true;
+        write!(out, "- {} ", from.label).unwrap();
+        if edge.label.trim().is_empty() {
+            out.push('→');
+        } else {
+            write!(out, "--{}-->", edge.label).unwrap();
+        }
+        out.push(' ');
+        out.push_str(&to.label);
     }
 }
 
@@ -118,45 +110,22 @@ pub(super) fn build_markdown(
     started_at: DateTime<Local>,
     ended_at: DateTime<Local>,
     overall_summary: &str,
-    summaries: &[LiveSummaryChunk],
-    transcript_lines: &[LiveTranscriptLine],
+    summaries: &[SharedSummaryChunk],
+    transcript_lines: &[SharedTranscriptLine],
 ) -> String {
-    let transcript = transcript_lines
-        .iter()
-        .map(|line| format!("- [{}] {}", line.at, line.text))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let chunk_markdown = summaries
-        .iter()
-        .map(|chunk| {
-            format!(
-                "## {}\n{}\n\n{}{}",
-                chunk.title,
-                chunk.range_label,
-                chunk.body,
-                format_terms_markdown(course, &chunk.terms),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let final_whiteboard_markdown = format_whiteboard_markdown(
-        course,
-        summaries
-            .iter()
-            .rev()
-            .find_map(|chunk| chunk.whiteboard.as_ref()),
-    );
-
+    let mut out = String::new();
     if course.is_free_note {
-        format!(
-            "# {title}\n\n- 開始: {started}\n- 終了: {ended}\n\n{overall_summary}{final_whiteboard_markdown}\n\n## 区間ごとの要約\n\n{chunk_markdown}\n\n## 全文転写\n\n{transcript}\n",
+        write!(
+            out,
+            "# {title}\n\n- 開始: {started}\n- 終了: {ended}\n\n",
             title = FREE_NOTE_FOLDER_NAME,
             started = format_datetime(started_at),
             ended = format_datetime(ended_at),
         )
+        .unwrap();
     } else {
-        format!(
-            "# {course_name}\n\n- 授業コード: {course_code}\n- 教員: {teacher}\n- 教室: {room}\n- 時間帯: {time_label}\n- 開始: {started}\n- 終了: {ended}\n\n{overall_summary}{final_whiteboard_markdown}\n\n## 区間ごとの要約\n\n{chunk_markdown}\n\n## 全文転写\n\n{transcript}\n",
+        write!(out,
+            "# {course_name}\n\n- 授業コード: {course_code}\n- 教員: {teacher}\n- 教室: {room}\n- 時間帯: {time_label}\n- 開始: {started}\n- 終了: {ended}\n\n",
             course_name = course.course_name,
             course_code = if course.course_code.is_empty() {
                 "不明"
@@ -180,9 +149,67 @@ pub(super) fn build_markdown(
             },
             started = format_datetime(started_at),
             ended = format_datetime(ended_at),
-        )
+        ).unwrap();
     }
+    out.push_str(overall_summary);
+    append_whiteboard_markdown(
+        &mut out,
+        course,
+        summaries
+            .iter()
+            .rev()
+            .find_map(|chunk| chunk.whiteboard.as_deref()),
+    );
+    out.push_str("\n\n## 区間ごとの要約\n\n");
+    for (index, chunk) in summaries.iter().enumerate() {
+        if index != 0 {
+            out.push_str("\n\n");
+        }
+        write!(
+            out,
+            "## {}\n{}\n\n{}",
+            chunk.title, chunk.range_label, chunk.body
+        )
+        .unwrap();
+        append_terms_markdown(&mut out, course, &chunk.terms);
+    }
+    out.push_str("\n\n## 全文転写\n\n");
+    // Reserve the exact remaining syntax/text size once. Existing lines are
+    // borrowed; no per-line strings, line Vec or joined transcript is created.
+    let remaining =
+        transcript_lines
+            .iter()
+            .fold(usize::from(transcript_lines.is_empty()), |bytes, line| {
+                bytes
+                    .saturating_add(line.at.len())
+                    .saturating_add(line.text.len())
+                    .saturating_add(6)
+            });
+    out.reserve_exact(remaining);
+    for (index, line) in transcript_lines.iter().enumerate() {
+        if index != 0 {
+            out.push('\n');
+        }
+        out.push_str("- [");
+        out.push_str(&line.at);
+        out.push_str("] ");
+        out.push_str(&line.text);
+    }
+    out.push('\n');
+    out
 }
+
+#[cfg(test)]
+#[path = "markdown/before.rs"]
+mod before;
+
+#[cfg(test)]
+#[path = "markdown/fixtures.rs"]
+mod fixtures;
+
+#[cfg(test)]
+#[path = "markdown/equivalence.rs"]
+mod equivalence_tests;
 
 #[cfg(test)]
 mod tests {
@@ -245,19 +272,20 @@ mod tests {
             body: body.to_string(),
             line_count: 1,
             terms: Vec::new(),
-            whiteboard,
+            whiteboard: whiteboard.map(Into::into),
         }
     }
 
     #[test]
     fn build_markdown_writes_only_latest_cumulative_whiteboard_once() {
         let summaries = vec![
-            chunk("Chunk 1", "first body", Some(board("Old Board", &["Old"]))),
+            chunk("Chunk 1", "first body", Some(board("Old Board", &["Old"]))).into(),
             chunk(
                 "Chunk 2",
                 "second body",
                 Some(board("Final Board", &["Final", "Detail"])),
-            ),
+            )
+            .into(),
         ];
         let markdown = build_markdown(
             &course(),
@@ -268,7 +296,8 @@ mod tests {
             &[LiveTranscriptLine {
                 text: "transcript".to_string(),
                 at: "09:00".to_string(),
-            }],
+            }
+            .into()],
         );
 
         assert_eq!(markdown.matches("```live-whiteboard").count(), 1);
@@ -300,7 +329,7 @@ mod tests {
             Local::now(),
             Local::now(),
             "### 全体要約\nsummary",
-            &[summary],
+            &[summary.into()],
             &[],
         );
 

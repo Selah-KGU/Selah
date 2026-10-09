@@ -34,6 +34,9 @@ pub(super) fn recent_screenshot_images(
     limit: usize,
 ) -> Vec<ImagePart> {
     let mut out = Vec::new();
+    if limit == 0 {
+        return out;
+    }
     for row in history.iter().rev() {
         if row.role != "tool" {
             continue;
@@ -41,21 +44,10 @@ pub(super) fn recent_screenshot_images(
         let Some(json) = row.tool_result_json.as_deref() else {
             continue;
         };
-        let Ok(value) = serde_json::from_str::<Value>(json) else {
-            continue;
-        };
-        if let Some(img) = value.get("image") {
-            if let (Some(mime), Some(data)) = (
-                img.get("mime").and_then(|x| x.as_str()),
-                img.get("data_base64").and_then(|x| x.as_str()),
-            ) {
-                out.push(ImagePart {
-                    mime: mime.to_string(),
-                    data_base64: data.to_string(),
-                });
-                if out.len() >= limit {
-                    break;
-                }
+        if let Some(image) = tool_result::screenshot_image(json) {
+            out.push(image);
+            if out.len() >= limit {
+                break;
             }
         }
     }

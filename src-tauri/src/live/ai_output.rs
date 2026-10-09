@@ -1,6 +1,6 @@
 use super::{
-    sanitize_model_output, LiveChunkAiResult, LiveSummaryChunk, LiveTermExplanation,
-    LiveWhiteboard, LiveWhiteboardEdge, LiveWhiteboardNode, MAX_LIVE_TERM_EXPLANATION_CHARS,
+    sanitize_model_output, LiveChunkAiResult, LiveTermExplanation, LiveWhiteboard,
+    LiveWhiteboardEdge, LiveWhiteboardNode, SharedWhiteboard, MAX_LIVE_TERM_EXPLANATION_CHARS,
 };
 
 mod board;
@@ -12,7 +12,9 @@ mod reconcile;
 #[cfg(test)]
 mod tests;
 
-pub(super) use context::{format_latest_whiteboard_context, latest_whiteboard};
+#[cfg(test)]
+pub(super) use context::latest_whiteboard;
+pub(super) use context::{format_latest_whiteboard_context, latest_shared_whiteboard};
 pub(super) use json::{
     clamp_chars, extract_json_object, repair_json_object, salvage_json_string_field,
     value_to_trimmed_string,

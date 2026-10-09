@@ -4,6 +4,9 @@
   import { onMount, onDestroy } from "svelte";
   import { getAiConfig, isDemoActive, updateAiReadiness } from "../../api";
   import CapabilityMatrix from "../../onboarding/CapabilityMatrix.svelte";
+  import { ResourceScope } from "../../resourceScope";
+
+  const resources = new ResourceScope();
 
   interface SttModel {
     id: string;
@@ -188,7 +191,7 @@
   let localTestMsg = $state("");
   let localTestOk = $state<boolean | null>(null);
 
-  let unlistenSttDlProgress: (() => void) | null = null;
+  let clearStatusTimer: () => void = () => {};
 
   function readDemoState<T>(key: string, fallback: T): T {
     try {
@@ -367,9 +370,11 @@
   }
 
   function showStatus(msg: string, type: "success" | "error" | "loading") {
+    if (!resources.active) return;
+    clearStatusTimer();
     statusMsg = msg;
     statusType = type;
-    if (type !== "loading") setTimeout(() => { statusMsg = ""; statusType = ""; }, 4000);
+    if (type !== "loading") clearStatusTimer = resources.schedule(() => { statusMsg = ""; statusType = ""; }, 4000);
   }
 
   function onProviderSwitch() {
@@ -401,17 +406,18 @@
       return;
     }
     try {
-      sttModelList = await invoke<SttModel[]>("list_stt_models");
+      const models = await invoke<SttModel[]>("list_stt_models");
+      if (resources.active) sttModelList = models;
     } catch (e) {
       console.error("Failed to load STT models:", e);
     }
   }
 
   async function startSttDownload(modelId: string) {
-    if (sttDownloading) return;
-    sttDownloading = true;
+    if (!resources.active || sttDownloading) return;
     const m = sttModelList.find(x => x.id === modelId);
     if (!m) return;
+    sttDownloading = true;
     sttDownloadProgress = { modelId, name: m.name, percent: 0, downloaded: 0, total: 0 };
     try {
       if (isDemoActive()) {
@@ -421,6 +427,7 @@
       } else {
       await invoke("download_stt_model", { modelId });
       }
+      if (!resources.active) return;
       showStatus(m.name + " のダウンロードが完了しました", "success");
       await loadSttModelList();
       selectedSttModel = modelId;
@@ -444,6 +451,7 @@
   }
 
   async function deleteSttModel(modelId: string) {
+    if (!resources.active) return;
     if (pendingDeleteSttModelId !== modelId) {
       pendingDeleteSttModelId = modelId;
       if (pendingDeleteSttModelTimer) clearTimeout(pendingDeleteSttModelTimer);
@@ -481,12 +489,14 @@
     }
     try {
       const support = await invoke<LocalAiSupport>("get_local_ai_support");
+      if (!resources.active) return;
       supportsLocalAi = support.supported;
       localModelName = support.model || "Apple Intelligence";
       localAiUnsupportedReason = support.supported
         ? ""
         : (support.reason || "Apple Intelligence を利用できません。");
     } catch {
+      if (!resources.active) return;
       supportsLocalAi = false;
       localAiUnsupportedReason = "Apple Intelligence の状態を確認できません。";
     }
@@ -495,7 +505,9 @@
   async function loadConfig() {
     try {
       await loadLocalAiSupport();
+      if (!resources.active) return;
       const c = await getAiConfig();
+      if (!resources.active) return;
       const stt = isDemoActive()
         ? readDemoState<SttConfig>(DEMO_STT_CONFIG_KEY, {
             selected_model: "sensevoice-ja-en",
@@ -505,9 +517,11 @@
             sensitivity: "normal",
           })
         : await invoke<SttConfig>("get_stt_config");
+      if (!resources.active) return;
       sttExecutionBackendOptions = isDemoActive()
         ? DEFAULT_STT_BACKEND_OPTIONS
         : await invoke<SttExecutionBackendOption[]>("list_stt_execution_backends");
+      if (!resources.active) return;
       aiEnabled = c.ai_enabled !== false ? "true" : "false";
       aiProvider = c.provider === "local" && !supportsLocalAi
         ? "openai"
@@ -543,6 +557,7 @@
             { voice_shortcut_enabled: false, voice_shortcut: "fn", subtitle_overlay_enabled: false }
           )
         : await invoke<{ voice_shortcut_enabled?: boolean; voice_shortcut?: string; subtitle_overlay_enabled?: boolean }>("get_native_agent_config");
+      if (!resources.active) return;
       voiceShortcutEnabled = nativeAgent?.voice_shortcut_enabled ? "true" : "false";
       voiceShortcut = normalizeVoiceShortcut(nativeAgent?.voice_shortcut);
       lastSavedVoiceShortcutEnabled = voiceShortcutEnabled;
@@ -676,21 +691,28 @@
     }
   }
 
-  onMount(async () => {
-    await loadLocalAiSupport();
-    await loadConfig();
-    if (isDemoActive()) return;
-    unlistenSttDlProgress = await listen<{ percent: number; downloaded: number; total: number }>(
+  async function initializeSettings() {
+    if (!isDemoActive()) await resources.acquire(() => listen<{ percent: number; downloaded?: number; total?: number }>(
       "stt-model-download-progress",
-      (ev) => {
+      resources.guard((ev) => {
         if (!sttDownloadProgress) return;
         sttDownloadProgress = { ...sttDownloadProgress, percent: ev.payload.percent ?? sttDownloadProgress.percent, downloaded: ev.payload.downloaded ?? 0, total: ev.payload.total ?? 0 };
-      }
-    );
+      })
+    )).catch((error) => {
+      if (resources.active) console.warn("Failed to subscribe to STT download progress:", error);
+    });
+    if (resources.active) await loadConfig();
+  }
+
+  onMount(() => {
+    void initializeSettings().catch((error) => {
+      if (resources.active) console.error("Failed to initialize AI settings:", error);
+    });
   });
 
   onDestroy(() => {
-    unlistenSttDlProgress?.();
+    resources.dispose();
+    if (pendingDeleteSttModelTimer) clearTimeout(pendingDeleteSttModelTimer);
     if (recordingShortcut) stopShortcutRecording();
   });
 
