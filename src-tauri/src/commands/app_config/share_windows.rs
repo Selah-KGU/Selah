@@ -81,7 +81,7 @@ pub(in crate::commands::app_config) fn open_windows_file_share_picker(
                         for (path, _) in &files_for_handler {
                             let file =
                                 StorageFile::GetFileFromPathAsync(&HSTRING::from(path.as_str()))?
-                                    .get()?;
+                                    .join()?;
                             let item: IStorageItem = file.cast()?;
                             storage_items.push(Some(item));
                         }

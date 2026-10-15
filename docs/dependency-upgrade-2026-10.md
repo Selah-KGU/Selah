@@ -32,6 +32,7 @@
 - `@types/node` は Node.js 24 に合わせて 24.19.2 を使用します。
 - VitePress は安定版の 1.6.4 を維持し、その配下の Vite を 6.4.4 以降へ override しています。これは既存の Vue plugin の対応範囲内で、旧 Vite / esbuild の advisory を解消するためです。アプリ本体の Vite は 8.3.4 です。
 - Windows bindings は `windows` 0.62.2、`windows-core` 0.62.2、`windows-collections` 0.3.2 を WebView2 0.39.1 と組み合わせます。`windows-core` 単体を 0.100 系へ更新すると COM 型が一致しません。
+- Windows ファイル共有の WinRT 非同期操作は、`windows-future` 0.3 の同期待機 API に合わせて `.get()` から `.join()` へ移行しました。
 - reqwest の `form` / `query` を明示的に有効化し、native TLS、文字コード、HTTP/2、システム proxy を維持します。
 - `jsonwebtoken` は `aws_lc_rs` backend を明示指定します。代替の `rust_crypto` backend が導入する `rsa` の未修正 advisory（RUSTSEC-2023-0071）を避けます。
 - SHA-256 の出力は `hex::encode` に移行し、既存のアカウントディレクトリ名やキャッシュ ID の小文字 hex 形式を維持します。
@@ -49,6 +50,7 @@
 - `npm audit`: 既知の脆弱性 0 件。
 - `npm run audit:rust`: vulnerability / 未承認 warning 0 件。Tauri の Linux GTK3 専用依存に対する二件の例外は、以下の到達性チェック付きで管理します。
 - Windows クロスチェックは macOS 上の Windows SDK 不在（`assert.h` がない）で停止しました。Windows x64 / ARM64 の最終ビルドは既存の Windows CI で確認する必要があります。
+- Windows ファイル共有モジュールは Tauri の接続部分だけを stub にした独立 crate で x64 / ARM64 の型チェックに成功。旧 `.get()` では CI と同じ E0599 が再現し、`.join()` で解消することを確認しました。
 
 署名、配布ストアへの提出、実マイクによる録音はこの更新の検証に含みません。
 
