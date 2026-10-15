@@ -24,7 +24,9 @@ export async function loadLiveStartOwner() {
     let sessionEventVersion = 0, sessionUpdateRevision = 0, sttBindToken = 0, sttListenersBound = false;
     let overallSummary = 'saved overall', partialText = 'existing partial', lastSaved = {summary_markdown:'saved preview'}, autoFollow = false;
     let lastEffectiveSpeechAtMs = null, pausedSinceMs = null, autoLifecycleBusy = false, lastPartialSeq = 0;
-    let liveReady = true, readinessMessage = '', notice = null;
+    let liveReady = true, readinessMessage = '', notice = null, captionTranslation = true, captionToggleRevision = 0;
+    const CAPTION_TRANSLATION_KEY = 'caption-translation', savedPreferences = new Map();
+    const localStorage = {setItem: (key, value) => savedPreferences.set(key, value)};
     const controlState = {get busy() {return isLiveBusy(snapshot,busy);}};
     ${owner}
     const isDemoActive = () => !!config.demo;
@@ -40,6 +42,9 @@ export async function loadLiveStartOwner() {
       return result?.applied ?? true;
     }
     async function liveStartSurface(course) {calls.push(['create',course]);return config.create(course);}
+    async function liveSetCaptionTranslation(enabled) {
+      calls.push(['captionTranslation',enabled]);return config.captionTranslation?.(enabled);
+    }
     async function invoke(name,args) {calls.push(['invoke',name,args]);return config.invoke?.(name,args);}
     async function liveCancelSession(id) {calls.push(['cancel',id]);return config.cancel?.(id);}
     async function resyncSession() {if (!resources.active) return;calls.push(['resync']);return config.resync?.();}
@@ -47,14 +52,15 @@ export async function loadLiveStartOwner() {
       const listener = {name,receive,releases:0};listeners.push(listener);
       return () => {listener.releases++;};
     }
-    ${['mergeSessionRead','ensureReadyToStart','markLiveListeningStarted','markEffectiveSpeech','markLivePaused',
+    ${['mergeSessionRead','ensureReadyToStart','syncCaptionTranslation','toggleCaptionTranslation','markLiveListeningStarted','markEffectiveSpeech','markLivePaused',
       'clearLiveAutoLifecycle','startSession','applyLiveSttPhase','bindLiveSttListeners'].map(fn).join('\n')}
-    export {calls,listeners,warnings,startSession,bindLiveSttListeners};
+    export {calls,listeners,warnings,startSession,bindLiveSttListeners,toggleCaptionTranslation};
     export const configure = value => {config = value;};
     export function pushSession(value) {sessionEventVersion++;mergeSessionRead(value);}
     export function dispose() {resources.dispose();}
     export const state = {get value() {return {snapshot,busy,sttListening,sttPhase,overallSummary,partialText,lastSaved,
-      autoFollow,lastEffectiveSpeechAtMs,pausedSinceMs,notice};}};
+      autoFollow,lastEffectiveSpeechAtMs,pausedSinceMs,notice,captionTranslation,
+      storedCaptionTranslation:savedPreferences.get(CAPTION_TRANSLATION_KEY)};}};
   `}, bundle:true,write:false,platform:'node',format:'esm',
     define:{controlsBusy:'controlState.busy','console.warn':'ownerWarning'},inject:['test-owner-console'],
     plugins:[{name:'owner-console',setup(plugin) {

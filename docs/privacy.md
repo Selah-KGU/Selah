@@ -49,6 +49,7 @@ Cookie・OAuth トークン・API キー・KGC のセッション情報は、AES
 | KG-Course (kg-course.kwansei.ac.jp) | SSO 認証 | ログイン資格情報 |
 | Open-Meteo API | 天気情報の取得 | 西宮上ケ原キャンパスの固定座標のみ（位置情報は取得しません） |
 | OpenAI API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
+| ChatGPT プラン（任意） | ChatGPT ログイン・AI 機能 | OAuth 認証、AI に渡す授業・成績・シラバス・メッセージ・添付情報 |
 | OpenRouter API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
 | DeepSeek API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
 | Google Gemini API（任意） | AI 機能 | 授業・成績・シラバス情報の一部 |
@@ -66,7 +67,9 @@ Cookie・OAuth トークン・API キー・KGC のセッション情報は、AES
 
 ### AI 機能について
 
-AI 機能（履修分析・学習計画・通知サマリー）は**任意の機能**であり、ユーザーが API キーを設定した場合にのみ使用されます。AI 機能を使用する際、授業情報・成績情報・シラバス情報の一部が、選択した提供元（OpenAI、OpenRouter、DeepSeek または Google）のサーバーに送信されます。各社のプライバシーポリシーもあわせてご確認ください。
+AI 機能は**任意の機能**です。Apple Intelligence では端末内で推論します。クラウド AI は、API キーを設定するか ChatGPT プランの利用を許可して有効化した場合に使用されます。授業情報・成績情報・シラバス情報の一部や、AI へのメッセージ・添付情報が、選択した提供元（OpenAI、OpenRouter、DeepSeek または Google）のサーバーに送信されます。各社のプライバシーポリシーもあわせてご確認ください。
+
+ChatGPT 連携では、端末ごとのランダムな識別子と OAuth による認証を使用します。確認済みのアカウント情報、登録 ID、トークンは端末内のセキュアストアに保存し、トークンを画面側の JavaScript へ渡しません。ログアウト時はリモートセッションの失効を試み、端末内のトークンを削除します。アカウントと登録 ID の対応は再ログインのために保持します。連携では ChatGPT の会話履歴を取得しません。利用量と接続の許可は [ChatGPT の設定](https://chatgpt.com/settings/usage) で管理できます。
 
 - [OpenAI プライバシーポリシー](https://openai.com/privacy)
 - [OpenRouter プライバシーポリシー](https://openrouter.ai/privacy)

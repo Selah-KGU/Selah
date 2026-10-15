@@ -531,7 +531,7 @@ export function splitByFaculty<T extends { department: string }>(
 
 export interface AiConfig {
   ai_enabled: boolean;
-  provider: "local" | "openai" | "openrouter" | "deepseek" | "gemini";
+  provider: "local" | "chatgpt" | "openai" | "openrouter" | "deepseek" | "gemini";
   local_model: string;
   api_key: string;
   model: string;

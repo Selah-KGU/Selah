@@ -32,6 +32,7 @@ pub(super) struct SttDecodeWorker {
     joins: Vec<std::thread::JoinHandle<()>>,
     failed: Arc<AtomicBool>,
     partial_mode: Arc<PartialMode>,
+    live_session_id: Option<String>,
 }
 
 impl SttDecodeWorker {
@@ -41,6 +42,9 @@ impl SttDecodeWorker {
         live_partial: Option<LivePartialSetup>,
         partial_mode: Arc<PartialMode>,
     ) -> Result<Self, String> {
+        let live_session_id = (context.caller == "live")
+            .then(|| context.live_session_id.clone())
+            .flatten();
         let failed = Arc::new(AtomicBool::new(false));
         let last_partial = Arc::new(Mutex::new(LastPartialText {
             text: String::new(),
@@ -78,6 +82,7 @@ impl SttDecodeWorker {
             joins: vec![join],
             failed,
             partial_mode,
+            live_session_id,
         })
     }
 
@@ -89,6 +94,9 @@ impl SttDecodeWorker {
         last_partial: Arc<Mutex<LastPartialText>>,
         partial_mode: Arc<PartialMode>,
     ) -> Result<Self, String> {
+        let live_session_id = (context.caller == "live")
+            .then(|| context.live_session_id.clone())
+            .flatten();
         let partial_inbox = Arc::new(SttDecodeInbox::new(false, Arc::clone(&failed)));
         let final_inbox = Arc::new(SttDecodeInbox::new(false, Arc::clone(&failed)));
         let partial_for_thread = Arc::clone(&partial_inbox);
@@ -136,6 +144,7 @@ impl SttDecodeWorker {
             joins: vec![partial_join, final_join],
             failed,
             partial_mode,
+            live_session_id,
         })
     }
 
@@ -175,10 +184,13 @@ impl SttDecodeWorker {
         if samples.is_empty() || self.failed() {
             return;
         }
-        self.final_inbox.push(SttDecodeJob::Final {
-            seq: next_stt_event_seq(),
-            samples,
-        });
+        let seq = next_stt_event_seq();
+        // Announce capture order before either decoder can publish a newer
+        // partial. Only the translation side channel waits for this final.
+        if let Some(id) = &self.live_session_id {
+            crate::live::live_caption_final_started(id, seq);
+        }
+        self.final_inbox.push(SttDecodeJob::Final { seq, samples });
     }
 }
 
@@ -190,6 +202,9 @@ impl Drop for SttDecodeWorker {
         finish_decode_lanes(&self.partial_inbox, &self.final_inbox, self.failed());
         for join in self.joins.drain(..) {
             let _ = join.join();
+        }
+        if let Some(id) = &self.live_session_id {
+            crate::live::live_caption_audio_drained(id);
         }
     }
 }
@@ -365,6 +380,12 @@ fn decode_worker_loop(
                 );
             }
             SttDecodeJob::Final { seq, samples } => {
+                let _caption_finished = CaptionFinalFinished {
+                    session_id: (context.caller == "live")
+                        .then_some(context.live_session_id.as_deref())
+                        .flatten(),
+                    seq,
+                };
                 let text = match decode_samples_safely(&recognizer, &samples) {
                     Ok(text) => text,
                     Err(()) => {
@@ -392,6 +413,21 @@ fn decode_worker_loop(
                     context.input_session_id.as_deref(),
                 );
             }
+        }
+    }
+}
+
+struct CaptionFinalFinished<'a> {
+    session_id: Option<&'a str>,
+    seq: u64,
+}
+
+impl Drop for CaptionFinalFinished<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.session_id {
+            // Empty results, decode errors and rejected transcript ownership
+            // must also release the capture-order barrier.
+            crate::live::live_caption_final_finished(id, self.seq);
         }
     }
 }
@@ -494,6 +530,7 @@ mod tests {
             joins: vec![caption_worker, final_worker],
             failed,
             partial_mode: mode,
+            live_session_id: None,
         };
         assert_eq!(count.load(Ordering::SeqCst), 2);
         worker.sync_partial_version(2);
@@ -567,6 +604,7 @@ mod tests {
             joins: vec![partial_join, final_join],
             failed,
             partial_mode: Arc::new(PartialMode::new(true)),
+            live_session_id: None,
         };
         let control = Arc::new(SttSessionControl::default());
         control.request_stop();

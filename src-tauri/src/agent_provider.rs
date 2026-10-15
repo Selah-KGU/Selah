@@ -18,7 +18,7 @@ mod openai;
 mod processing;
 mod provider;
 mod requests;
-mod sse;
+pub(crate) mod sse;
 mod stream;
 
 #[cfg(test)]

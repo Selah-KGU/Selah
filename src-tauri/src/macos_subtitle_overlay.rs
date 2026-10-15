@@ -213,6 +213,7 @@ pub fn close_overlay(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     OVERLAY_OPEN.store(false, Ordering::Relaxed);
+    crate::subtitle_events::overlay_closed(app);
     let lifecycle = MainThreadAnimation::start(&LIFECYCLE_TOKEN);
     CAPTION_MAILBOX.clear();
     HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);

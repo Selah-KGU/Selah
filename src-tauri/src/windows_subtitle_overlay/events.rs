@@ -31,8 +31,9 @@ pub fn open_overlay(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn close_overlay(_app: &AppHandle) -> Result<(), String> {
+pub fn close_overlay(app: &AppHandle) -> Result<(), String> {
     OVERLAY_OPEN.store(false, Ordering::Relaxed);
+    crate::subtitle_events::overlay_closed(app);
     CAPTION_MAILBOX.clear();
     HWND_READY.store(false, Ordering::Relaxed);
     HIDE_TOKEN.fetch_add(1, Ordering::Relaxed);

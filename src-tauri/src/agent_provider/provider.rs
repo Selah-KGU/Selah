@@ -42,6 +42,10 @@ impl AgentProvider {
                 crate::local_ai_support::unsupported_message(),
             )),
             // OpenRouter and DeepSeek are OpenAI-compatible, so they route through the OpenAI path.
+            "chatgpt" => {
+                crate::chatgpt::ensure_connected().map_err(AgentError::config)?;
+                Ok(Self::Remote { config: cfg })
+            }
             "openai" | "openrouter" | "deepseek" | "gemini" => Ok(Self::Remote { config: cfg }),
             other => Err(AgentError::config(format!("不明なプロバイダー: {}", other))),
         }

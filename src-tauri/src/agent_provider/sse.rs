@@ -3,7 +3,7 @@
 use super::is_remote_cancelled;
 use futures_util::StreamExt;
 
-pub(super) async fn receive(
+pub(crate) async fn receive(
     response: reqwest::Response,
     generation: &str,
     mut on_data: impl FnMut(&str) -> bool + Send,

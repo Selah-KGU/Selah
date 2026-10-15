@@ -550,6 +550,7 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | js-sys | 0.3.94 | MIT OR Apache-2.0 | The wasm-bindgen Developers | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys |
 | json-patch | 3.0.1 | MIT/Apache-2.0 | Ivan Dubrov <dubrov.ivan@gmail.com> | https://github.com/idubrov/json-patch |
 | jsonptr | 0.6.3 | MIT OR Apache-2.0 | chance dinkins; André Sá de Mello <codasm@pm.me> | https://github.com/chanced/jsonptr |
+| jsonwebtoken | 9.3.1 | MIT | Vincent Prouillet <hello@vincentprouillet.com> | https://github.com/Keats/jsonwebtoken |
 | keyboard-types | 0.7.0 | MIT OR Apache-2.0 | Pyfisch <pyfisch@posteo.org> | https://github.com/pyfisch/keyboard-types |
 | keyring | 3.6.3 | MIT OR Apache-2.0 | Walther Chen <walther.chen@gmail.com>; Daniel Brotsky <dev@brotsky.com> | https://github.com/hwchen/keyring-rs.git |
 | kuchikiki | 0.8.8-speedreader | MIT | Brave Authors; Ralph Giles <rgiles@brave.com>; Simon Sapin <simon.sapin@exyr.org> | https://github.com/brave/kuchikiki |
@@ -601,6 +602,8 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | num_threads | 0.1.7 | MIT OR Apache-2.0 | Jacob Pratt <open-source@jhpratt.dev> | https://github.com/jhpratt/num_threads |
 | num-conv | 0.2.1 | MIT OR Apache-2.0 | Jacob Pratt <jacob@jhpratt.dev> | https://github.com/jhpratt/num-conv |
 | num-derive | 0.4.2 | MIT OR Apache-2.0 | The Rust Project Developers | https://github.com/rust-num/num-derive |
+| num-bigint | 0.4.8 | MIT OR Apache-2.0 | The Rust Project Developers | https://github.com/rust-num/num-bigint |
+| num-integer | 0.1.47 | MIT OR Apache-2.0 | The Rust Project Developers | https://github.com/rust-num/num-integer |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | The Rust Project Developers | https://github.com/rust-num/num-traits |
 | objc2 | 0.6.4 | MIT | Mads Marquart <mads@marquart.dk> | https://github.com/madsmtm/objc2 |
 | objc2-app-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT |  | https://github.com/madsmtm/objc2 |
@@ -640,6 +643,7 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | Amanieu d'Antras <amanieu@gmail.com> | https://github.com/Amanieu/parking_lot |
 | pathdiff | 0.2.3 | MIT/Apache-2.0 | Manish Goregaokar <manishsmail@gmail.com> | https://github.com/Manishearth/pathdiff |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | The rust-url developers | https://github.com/servo/rust-url/ |
+| pem | 3.0.6 | MIT | Jonathan Creekmore <jonathan@thecreekmores.org> | https://github.com/jcreekmore/pem-rs.git |
 | phf | 0.10.1 | MIT | Steven Fackler <sfackler@gmail.com> | https://github.com/sfackler/rust-phf |
 | phf | 0.11.3 | MIT | Steven Fackler <sfackler@gmail.com> | https://github.com/rust-phf/rust-phf |
 | phf | 0.13.1 | MIT | Steven Fackler <sfackler@gmail.com> | https://github.com/rust-phf/rust-phf |
@@ -774,6 +778,7 @@ This notice was generated from `package-lock.json` and `src-tauri/Cargo.lock` / 
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | Michal 'vorner' Vaner <vorner@vorner.cz>; Masaki Hara <ackie.h.gmai@gmail.com> | https://github.com/vorner/signal-hook |
 | simd-adler32 | 0.3.9 | MIT | Marvin Countryman <me@maar.vin> | https://github.com/mcountryman/simd-adler32 |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 | Hans Kratz <hans@appfour.com> | https://github.com/rusticstuff/simdutf8 |
+| simple_asn1 | 0.6.4 | ISC | Adam Wick <awick@uhsure.com> | https://github.com/acw/simple_asn1 |
 | siphasher | 0.3.11 | MIT/Apache-2.0 | Frank Denis <github@pureftpd.org> | https://github.com/jedisct1/rust-siphash |
 | siphasher | 1.0.2 | MIT/Apache-2.0 | Frank Denis <github@pureftpd.org> | https://github.com/jedisct1/rust-siphash |
 | slab | 0.4.12 | MIT | Carl Lerche <me@carllerche.com> | https://github.com/tokio-rs/slab |

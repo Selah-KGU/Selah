@@ -380,3 +380,24 @@ fn settings_validation_preserves_provider_rules_and_normalization() {
         }
     }
 }
+
+#[test]
+fn chatgpt_settings_use_only_the_public_endpoint_and_never_an_api_key() {
+    let config = super::super::commands::validate_config(AiConfig {
+        provider: "chatgpt".into(),
+        model: " account-model ".into(),
+        base_url: "https://other.example".into(),
+        api_key: "unrelated-api-key".into(),
+        ..AiConfig::default()
+    })
+    .unwrap();
+    assert_eq!(config.model, "account-model");
+    assert_eq!(config.base_url, "https://api.openai.com/v1");
+    assert!(config.api_key.is_empty());
+    assert!(super::super::commands::validate_config(AiConfig {
+        provider: "chatgpt".into(),
+        model: " ".into(),
+        ..AiConfig::default()
+    })
+    .is_err());
+}

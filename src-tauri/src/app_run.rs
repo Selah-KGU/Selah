@@ -116,6 +116,7 @@ pub fn run() {
             app.handle()
                 .plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
             app_updates::init(app.handle())?;
+            crate::chatgpt::init(app.handle());
             protect_log_storage(app.handle())?;
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -388,6 +389,12 @@ pub fn run() {
                 google_commands::gcal_sync_timetable,
                 google_commands::gcal_clear_calendar,
                 ai::get_local_ai_support,
+                crate::chatgpt::chatgpt_accounts,
+                crate::chatgpt::chatgpt_sign_in,
+                crate::chatgpt::chatgpt_cancel_login,
+                crate::chatgpt::chatgpt_select_account,
+                crate::chatgpt::chatgpt_disconnect,
+                crate::chatgpt::chatgpt_list_models,
                 ai::list_local_models,
                 ai::debug_test_notification,
                 native_notification::native_notification_permission_granted,
@@ -424,6 +431,7 @@ pub fn run() {
                 live::live_finish_session,
                 live::live_finish_surface,
                 live::live_finish_surface_compact,
+                live::live_set_caption_translation,
                 detective::detective_get_context,
                 detective::detective_generate_campaign,
                 detective::detective_finalize_finale,

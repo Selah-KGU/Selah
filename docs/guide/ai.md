@@ -1,13 +1,26 @@
 # AI 機能
 
-Selah は macOS の Apple Intelligence とクラウド API に対応した AI 機能を搭載しています。Windows 版ではローカル AI を使用せず、クラウド API を利用します。
+Selah は macOS の Apple Intelligence、ChatGPT サブスクリプション、クラウド API に対応した AI 機能を搭載しています。Windows 版では ChatGPT サブスクリプションまたはクラウド API を利用します。
 
 ::: info 前提条件
 設定画面からプロバイダを選択してください。
 
 - **Apple Intelligence（macOS）**: システム内蔵モデルを端末内で実行します。macOS 26 以降で Apple Intelligence が有効である必要があります。モデルのダウンロードは不要です。
+- **ChatGPT サブスクリプション**: 対象の ChatGPT Plus / Pro アカウントでログインし、Selah にプランの利用を許可します。API キーは不要です。利用量は ChatGPT の上限に含まれ、許可したクレジットが使用される場合があります。
 - **クラウド**: OpenAI / OpenRouter / DeepSeek / Google Gemini の API キーを登録。キーは OS のキーチェーン / クレデンシャルストアに安全に保存されます。
 :::
+
+## ChatGPT プランの接続
+
+1. **設定 → AI → 推論方法 → ChatGPT サブスクリプション** を選びます。
+2. **Continue with ChatGPT** でブラウザを開き、アカウント・ワークスペースを選び、プランの利用を許可します。
+3. Selah に戻り、アカウントのモデル一覧からモデルを選びます。**接続テスト** は設定を保存して応答を確認します。通常は設定画面の保存でも反映できます。
+
+Agent、通知・時間割・課題の AI 分析、LIVE 要約など、共通の AI 設定を使う機能に適用されます。音声認識は引き続き端末内の STT で実行します。
+
+複数のアカウントやワークスペースを登録し、選択できます。アクセストークン・更新トークンは端末のセキュアストアに保存され、自動更新されます。ブラウザ側には渡しません。ログアウトではリモートセッションの失効を試み、端末内のトークンを消去します。登録情報は再ログイン用に保持します。
+
+利用上限と接続の許可は **使用状況を管理** から [ChatGPT の設定](https://chatgpt.com/settings/usage) で確認できます。利用可否はプラン・ワークスペースの権限に従います。ChatGPT 接続の失敗時に別の課金方式へ自動切替は行いません。実装は [公式の Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) に準拠しています。
 
 ## Selah Agent
 
@@ -57,6 +70,7 @@ Selah は macOS の Apple Intelligence とクラウド API に対応した AI �
 | プロバイダ | 対応モデル | 通信 |
 |---|---|---|
 | Apple Intelligence (macOS) | システム内蔵モデル | 不要 |
+| ChatGPT サブスクリプション | 接続したアカウントのモデル一覧から選択 | OAuth / Responses API |
 | OpenAI | GPT-6 Luna（`gpt-6-luna`） | API 直接 |
 | OpenRouter | GPT-6 Luna（`openai/gpt-6-luna`）、Qwen 3.8 Max（`qwen/qwen3.8-max-0902`） | API 直接 |
 | DeepSeek | DeepSeek-V4.1-Flash（`deepseek-flash`） | API 直接 |

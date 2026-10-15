@@ -30,6 +30,7 @@ const followSource = `<script lang="ts">
   const liveSurfaceVisible = $derived(visible);
   const whiteboardExpanded = $derived(covered), summaryDetailOpen = false;
   const sttListening = $derived(listening), autoFollow = $derived(following);
+  const captionTranslation = false, refinedFollowCount = 0;
   const resources = new ResourceScope();
   let scrollEl = $state<HTMLElement | null>(null);
   ${transcriptFollow}

@@ -257,6 +257,10 @@ pub(in crate::ai) async fn chat_completion(
         #[cfg(not(target_os = "macos"))]
         "local" => Err(crate::local_ai_support::unsupported_message()),
         "gemini" => call_gemini(config, messages).await,
+        "chatgpt" => {
+            crate::chatgpt::complete(config, std::sync::Arc::new(messages), "", false, |_, _| {})
+                .await
+        }
         _ => call_openai(config, messages).await,
     }
 }

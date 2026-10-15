@@ -23,6 +23,14 @@ pub(super) fn validate_config(mut config: AiConfig) -> Result<AiConfig, String> 
             crate::local_ai_support::ensure_supported()?;
             config.local_model = crate::local_ai_support::APPLE_INTELLIGENCE_MODEL_ID.into();
         }
+        "chatgpt" => {
+            config.base_url = "https://api.openai.com/v1".into();
+            config.api_key.clear();
+            config.credential_error = None;
+            if config.model.is_empty() {
+                return Err("ChatGPT のモデルを選択してください".into());
+            }
+        }
         "openai" | "openrouter" | "deepseek" | "gemini" => {
             config.max_tokens = config.max_tokens.clamp(8192, 32768);
             if config.model.is_empty() {

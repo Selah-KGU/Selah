@@ -13,6 +13,7 @@ mod agent_text;
 mod agent_tools;
 mod agent_turn_scope;
 pub mod ai;
+mod chatgpt;
 mod ai_refresh;
 #[cfg(target_os = "macos")]
 mod app_menu;

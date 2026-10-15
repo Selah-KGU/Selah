@@ -163,6 +163,8 @@ pub(in crate::live) fn validate_live_ai_config(
     }
     if cfg.provider == "local" {
         crate::local_ai_support::ensure_supported()?;
+    } else if cfg.provider == "chatgpt" {
+        crate::chatgpt::ensure_connected()?;
     } else if cfg.api_key.is_empty() {
         // Surfaces the real cause instead of letting the request 401 silently.
         // Most common in packaged builds when the keychain item is unreadable.

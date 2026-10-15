@@ -1404,39 +1404,46 @@ export async function getAiConfig(): Promise<AiConfig> {
  */
 let _aiReadyCache: boolean | null = null;
 let _aiReadyPromise: Promise<boolean> | null = null;
-export async function isAiReady(): Promise<boolean> {
-  if (_isDemo()) {
-    const cfg = await getAiConfig();
-    return cfg.ai_enabled !== false;
+let _aiReadyRevision = 0;
+
+async function readAiReadiness(): Promise<boolean> {
+  const cfg = await getAiConfig();
+  if (!cfg || cfg.ai_enabled === false) return false;
+  if (_isDemo()) return true;
+  if (cfg.provider === "local") {
+    const support = await invoke<{ supported: boolean }>("get_local_ai_support");
+    return support.supported === true;
   }
+  if (cfg.provider === "chatgpt") {
+    const { isChatGptReady } = await import("./chatgptApi");
+    return isChatGptReady();
+  }
+  return !!cfg.api_key?.trim();
+}
+
+export async function isAiReady(): Promise<boolean> {
+  if (_isDemo()) return readAiReadiness();
   if (_aiReadyCache !== null) return _aiReadyCache;
   if (_aiReadyPromise) return _aiReadyPromise;
-  _aiReadyPromise = (async () => {
-    try {
-      const cfg = await getAiConfig();
-      if (!cfg || cfg.ai_enabled === false) {
-        _aiReadyCache = false;
-        return false;
-      }
-      if (cfg.provider === "local") {
-        const support = await invoke<{ supported: boolean }>("get_local_ai_support");
-        _aiReadyCache = support.supported === true;
-        return _aiReadyCache;
-      }
-      // API provider — needs api_key
-      _aiReadyCache = !!(cfg.api_key?.trim());
-      return _aiReadyCache;
-    } catch {
-      _aiReadyCache = false;
-      return false;
-    } finally {
-      _aiReadyPromise = null;
-    }
-  })();
-  return _aiReadyPromise;
+  const revision = _aiReadyRevision;
+  const request: Promise<boolean> = readAiReadiness().catch(() => false).then((ready) => {
+    // A result from before logout/account switching must never make AI usable
+    // again. Join the current read instead of publishing the obsolete result.
+    if (revision !== _aiReadyRevision) return isAiReady();
+    _aiReadyCache = ready;
+    return ready;
+  }).finally(() => {
+    if (_aiReadyPromise === request) _aiReadyPromise = null;
+  });
+  _aiReadyPromise = request;
+  return request;
 }
 /** Reset the cached AI readiness (e.g. after settings change). */
-export function resetAiReady() { _aiReadyCache = null; }
+export function resetAiReady() {
+  _aiReadyRevision += 1;
+  _aiReadyCache = null;
+  _aiReadyPromise = null;
+}
 
 /**
  * Recompute AI readiness and push into the reactive stores
@@ -1445,29 +1452,14 @@ export function resetAiReady() { _aiReadyCache = null; }
  */
 export async function updateAiReadiness(): Promise<void> {
   resetAiReady();
-  if (_isDemo()) {
-    const cfg = await getAiConfig();
-    aiReady.set(cfg.ai_enabled !== false);
-    agentReady.set(false);
-    return;
-  }
+  const revision = _aiReadyRevision;
   try {
-    const cfg = await getAiConfig();
-    if (!cfg || cfg.ai_enabled === false) {
-      aiReady.set(false);
-      agentReady.set(false);
-      return;
-    }
-    if (cfg.provider === "local") {
-      const support = await invoke<{ supported: boolean }>("get_local_ai_support");
-      aiReady.set(support.supported === true);
-      agentReady.set(support.supported === true);
-    } else {
-      const hasKey = !!(cfg.api_key?.trim());
-      aiReady.set(hasKey);
-      agentReady.set(hasKey);
-    }
+    const ready = await isAiReady();
+    if (revision !== _aiReadyRevision) return;
+    aiReady.set(ready);
+    agentReady.set(_isDemo() ? false : ready);
   } catch {
+    if (revision !== _aiReadyRevision) return;
     aiReady.set(false);
     agentReady.set(false);
   }
@@ -1510,6 +1502,7 @@ export {
   liveFlushSummary,
   liveGenerateOverallSummary,
   liveCancelSession,
+  liveSetCaptionTranslation,
   liveClearDayCache,
   liveFinishSession,
   liveFinishSurface,

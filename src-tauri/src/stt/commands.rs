@@ -37,6 +37,10 @@ pub async fn get_stt_config() -> Result<SttConfig, String> {
     run_stt_blocking(|| Ok(load_config())).await
 }
 
+pub(crate) fn stt_selected_language() -> String {
+    load_config().language
+}
+
 #[tauri::command]
 pub async fn save_stt_config(app: tauri::AppHandle, config: SttConfig) -> Result<(), String> {
     run_stt_blocking(move || save_stt_config_blocking(&app, config)).await

@@ -33,6 +33,39 @@ test('closing while readiness is pending prevents native creation and audio',asy
   assert.deepEqual(commands(h),[]); assert.deepEqual(cancels(h),[]);
 });
 
+test('closing while caption settings sync prevents native creation and audio',async () => {
+  for (const failed of [false,true]) {
+    const h = await loadLiveStartOwner(), sync = deferred();
+    h.configure({captionTranslation:() => sync.promise,create:() => session()});
+    const run = h.startSession(course);await tick();
+    assert.deepEqual(h.calls.filter(([name]) => name === 'captionTranslation'),[['captionTranslation',true]]);
+    h.dispose();
+    if (failed) sync.reject(new Error('caption sync failed'));else sync.resolve();
+    await run;
+    assert.equal(h.calls.filter(([name]) => name === 'create').length,0);
+    assert.deepEqual(commands(h),[]);assert.deepEqual(cancels(h),[]);assert.deepEqual(messages(h),[]);
+  }
+});
+
+test('a recording arriving during caption settings sync prevents another creation',async () => {
+  const h = await loadLiveStartOwner(), sync = deferred();
+  h.configure({captionTranslation:() => sync.promise,create:() => session()});
+  const run=h.startSession(course);await tick();
+  h.pushSession(session('B',10));sync.resolve();await run;
+  assert.equal(h.state.value.snapshot.session_id,'B');
+  assert.equal(h.calls.filter(([name]) => name === 'create').length,0);
+  assert.deepEqual(commands(h),[]);assert.deepEqual(cancels(h),[]);h.dispose();
+});
+
+test('a current caption settings sync failure still permits recording startup',async () => {
+  const h = await loadLiveStartOwner();
+  h.configure({captionTranslation:() => Promise.reject(new Error('caption sync failed')),create:() => session()});
+  await h.startSession(course);
+  assert.equal(h.calls.filter(([name]) => name === 'create').length,1);
+  assert.deepEqual(commands(h),[['invoke','stt_start_stream',{caller:'live',liveSessionId:'A'}]]);
+  assert.deepEqual(messages(h),[]);h.dispose();
+});
+
 test('late creation after view disposal starts no audio, publishes no snapshot and keeps backend data',async () => {
   const h = await loadLiveStartOwner(), create = deferred();
   h.configure({create:() => create.promise});const run = h.startSession(course);await tick();h.dispose();

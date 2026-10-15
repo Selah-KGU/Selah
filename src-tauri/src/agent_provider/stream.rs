@@ -39,6 +39,9 @@ async fn remote_chat_completion_shared(
         return Err("推論はキャンセルされました".into());
     }
     match config.provider.as_str() {
+        "chatgpt" => {
+            crate::chatgpt::complete(config, messages, cancel_id, json_mode, |_, _| {}).await
+        }
         "gemini" => {
             remote_gemini_non_streaming(config, messages, max_tokens, temperature, json_mode).await
         }
@@ -72,6 +75,9 @@ where
     let stream_messages = Arc::clone(&messages);
     let stream_callback = move |chunk: &str, is_think: bool| filtered(chunk, is_think);
     let result = match config.provider.as_str() {
+        "chatgpt" => {
+            crate::chatgpt::complete(config, stream_messages, gen_id, false, stream_callback).await
+        }
         "gemini" => remote_gemini_stream(config, stream_messages, gen_id, stream_callback).await,
         _ => remote_openai_stream(config, stream_messages, gen_id, stream_callback).await,
     };

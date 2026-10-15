@@ -204,12 +204,19 @@ async fn start_reply<T: Serialize + Send + 'static>(
         crate::ai::refresh_live_summary_interval();
         let snapshot = start_session(&state, course)?;
         let id = snapshot.session_id.clone();
+        let course_name = snapshot
+            .course
+            .as_ref()
+            .map(|course| course.course_name.clone())
+            .unwrap_or_default();
         let result = project(snapshot);
         // Guards and surface replies' full indexes are released before a
         // notification can trigger more speech, and before JSON encoding.
         emit_live_update(&app, &state);
         if let Some(id) = id {
-            start_live_flush_driver(app, id);
+            start_live_flush_driver(app.clone(), id.clone());
+            // AI setup failure stays inside the worker and cannot fail start.
+            start_caption_refine(app, id, course_name);
         }
         Ok(result)
     })
@@ -356,7 +363,10 @@ pub(super) fn append_transcript(
     state.notify_flush_driver();
     // One committed delta serves the page and native overlays. Its owner and
     // capture order let overlays reject delayed finals without losing storage.
+    let session_id = update.session_id.clone();
     let _ = app.emit("live-transcript-appended", update);
+    // Side channel only: the stored line remains the raw recognition text.
+    observe_live_caption_final(&session_id, text, seq);
     Ok(true)
 }
 
@@ -427,6 +437,11 @@ fn overall_summary_input(state: &LiveState, expected: &str) -> Result<OverallSum
 }
 
 #[tauri::command]
+pub fn live_set_caption_translation(app: tauri::AppHandle, enabled: bool) {
+    set_caption_translation_enabled(&app, enabled);
+}
+
+#[tauri::command]
 pub async fn live_cancel_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, LiveState>,
@@ -479,6 +494,7 @@ fn cancel_session(state: &LiveState, expected: &str) -> Result<(), String> {
     }
     *guard = None;
     drop(guard);
+    stop_caption_refine(expected);
     state.persistence.wake();
 
     if let Some((course, started_at, had_transcript, is_fresh_start)) = cleanup {
@@ -611,6 +627,7 @@ async fn finish_session(
             let course = session.course.clone();
             *guard = None;
             drop(guard);
+            stop_caption_refine(&expected);
             if !course.is_free_note {
                 if let Err(error) = remove_day_cache(&course) {
                     log::warn!("[Live] empty recording cache cleanup failed: {error}");
@@ -856,6 +873,7 @@ async fn persist_finish_files(
                 }
                 snapshot = state.capture_completed_snapshot(session);
                 *guard = None;
+                stop_caption_refine(&expected);
             }
             return Ok((path, markdown, snapshot));
         }

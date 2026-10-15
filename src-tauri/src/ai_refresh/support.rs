@@ -48,6 +48,10 @@ pub(in crate::ai_refresh) fn ai_unavailable_reason(config: &AiConfig) -> Option<
         if let Err(reason) = crate::local_ai_support::ensure_supported() {
             return Some(reason);
         }
+    } else if config.provider == "chatgpt" {
+        if let Err(reason) = crate::chatgpt::ensure_connected() {
+            return Some(reason);
+        }
     } else if config.api_key.trim().is_empty() {
         return Some("AI APIキーが未設定です".to_string());
     }

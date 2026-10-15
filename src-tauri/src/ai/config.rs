@@ -9,7 +9,7 @@ static LIVE_TIMING: timing::Timing = timing::Timing::new();
 #[serde(default)]
 pub struct AiConfig {
     pub ai_enabled: bool,
-    pub provider: String, // "local" | "openai" | "openrouter" | "deepseek" | "gemini"
+    pub provider: String, // local | chatgpt | openai | openrouter | deepseek | gemini
     pub local_model: String, // "apple-intelligence"; kept so saved configs stay valid
     pub api_key: String,
     /// Runtime credential availability, never accepted from saved/user JSON.
@@ -259,7 +259,7 @@ pub(in crate::ai) fn save_config(config: &AiConfig) -> Result<(), String> {
     // Store api_key in OS keychain, never on disk
     if !config.api_key.is_empty() {
         crate::keychain::set_secret("ai_api_key", &config.api_key)?;
-    } else {
+    } else if config.provider != "chatgpt" {
         crate::keychain::delete_secrets(&["ai_api_key"])?;
     }
 
@@ -375,7 +375,7 @@ mod tests {
 
 impl AiConfig {
     pub(crate) fn ensure_credentials_readable(&self) -> Result<(), String> {
-        if self.provider != "local" {
+        if self.provider != "local" && self.provider != "chatgpt" {
             if let Some(error) = &self.credential_error {
                 return Err(error.to_string());
             }

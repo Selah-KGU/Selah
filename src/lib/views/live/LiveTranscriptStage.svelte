@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { LiveTranscriptLine } from "../../api";
+  import LiveCaptionHistory from "./LiveCaptionHistory.svelte";
 
+  import type { RefinedCaption } from "./liveCaptionRefine";
   import type { LiveSavedPreview, LiveSurfaceSnapshot } from "./liveTranscript";
 
   interface Props {
@@ -13,6 +15,10 @@
     visibleLines: LiveTranscriptLine[];
     hiddenLineCount: number;
     renderMd: (text: string) => string;
+    refinedCaptions: RefinedCaption[];
+    captionTranslation: boolean;
+    visible: boolean;
+    onToggleCaptionTranslation: () => void;
   }
 
   let {
@@ -25,10 +31,24 @@
     visibleLines,
     hiddenLineCount,
     renderMd,
+    refinedCaptions,
+    captionTranslation,
+    visible,
+    onToggleCaptionTranslation,
   }: Props = $props();
 </script>
 
 <section class="lyrics-stage">
+  <div class="caption-tools">
+    <button
+      type="button"
+      class="caption-toggle"
+      class:on={captionTranslation}
+      aria-pressed={captionTranslation}
+      title="3〜4文ごとに、前文を見て一度だけ訳します"
+      onclick={onToggleCaptionTranslation}
+    >字幕翻訳</button>
+  </div>
   {#if pageLoading}
     <div class="lyrics-empty">読み込み中…</div>
   {:else if !hasContent}
@@ -65,9 +85,17 @@
       {#if hiddenLineCount > 0}
         <div class="lyrics-hidden-hint">前{hiddenLineCount}行は保存済み（表示省略）</div>
       {/if}
-      {#each visibleLines as line, i (hiddenLineCount + i)}
-        {@const isLast = i === visibleLines.length - 1 && !partialText.trim()}
-        <div class="lyric-line" class:past={!isLast} class:active={isLast}>
+      {#each visibleLines.slice(0, -1) as line, i (hiddenLineCount + i)}
+        <div class="lyric-line past">
+          <span class="lyric-time">{line.at}</span>
+          <span class="lyric-text">{line.text}</span>
+        </div>
+      {/each}
+      {#if captionTranslation && refinedCaptions.length > 0}
+        <LiveCaptionHistory items={refinedCaptions} {visible} />
+      {/if}
+      {#each visibleLines.slice(-1) as line (hiddenLineCount + visibleLines.length - 1)}
+        <div class="lyric-line" class:past={!!partialText.trim()} class:active={!partialText.trim()}>
           <span class="lyric-time">{line.at}</span>
           <span class="lyric-text">{line.text}</span>
         </div>
@@ -200,6 +228,24 @@
     animation: none;
   }
 
+  .caption-tools {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 8px 0;
+  }
+  .caption-toggle {
+    border: 0.5px solid var(--glass-border, transparent);
+    background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+    color: var(--text-tertiary);
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .caption-toggle.on {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
   .lyric-time {
     flex-shrink: 0;
     width: 42px;

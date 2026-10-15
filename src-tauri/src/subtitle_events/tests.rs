@@ -331,3 +331,289 @@ fn typed_payloads_borrow_plain_text_and_decode_escaped_text_correctly() {
     )
     .is_err());
 }
+
+fn refined<'a>(
+    translation: Option<&'a str>,
+    show: bool,
+    ready: bool,
+    clear: bool,
+) -> RefinedCaption<'a> {
+    RefinedCaption {
+        session_id: "a",
+        segment_id: 1,
+        source: String::new(),
+        translation: translation.map(str::to_string),
+        ready,
+        show_overlay: show,
+        clear,
+    }
+}
+
+#[test]
+fn translation_hold_blocks_original_captions_without_losing_order() {
+    let now = Instant::now();
+    let mut gate = CaptionGate::default();
+    let original = gate
+        .partial(Some("a"), partial(10, "原文"), true, now)
+        .unwrap();
+    let held = gate
+        .refined(
+            Some("a"),
+            refined(Some("translation"), true, true, false),
+            true,
+        )
+        .unwrap();
+    assert!(!held.is_final);
+    assert_eq!(held.text, "translation");
+    assert!(!original.is_current());
+    assert!(gate
+        .partial(
+            Some("a"),
+            partial(11, "next original"),
+            true,
+            now + PARTIAL_INTERVAL
+        )
+        .is_none());
+    assert!(gate
+        .committed(Some("a"), committed(Some(12), 1, "final original"), true)
+        .is_none());
+    assert!(held.is_current());
+    gate.release_hold();
+    assert!(!held.is_current());
+    let resumed = gate
+        .partial(
+            Some("a"),
+            partial(13, "after release"),
+            true,
+            now + PARTIAL_INTERVAL + PARTIAL_INTERVAL,
+        )
+        .unwrap();
+    assert_eq!(resumed.text, "after release");
+    assert!(gate
+        .committed(Some("a"), committed(Some(12), 2, "late final"), true)
+        .is_none());
+}
+
+#[test]
+fn only_a_ready_overlay_translation_holds_the_caption() {
+    let mut gate = CaptionGate::default();
+    assert!(gate
+        .refined(Some("a"), refined(Some("訳"), false, true, false), true)
+        .is_none());
+    assert!(gate
+        .refined(Some("a"), refined(Some("訳"), true, false, false), true)
+        .is_none());
+    assert!(gate
+        .refined(Some("a"), refined(Some("  "), true, true, false), true)
+        .is_none());
+    assert!(gate
+        .refined(Some("a"), refined(None, true, true, false), true)
+        .is_none());
+    let held = gate
+        .refined(Some("a"), refined(Some("訳"), true, true, false), true)
+        .unwrap();
+    assert!(!held.is_final);
+    gate.refined(Some("a"), refined(None, false, false, true), true);
+    assert!(!held.is_current());
+}
+
+#[test]
+fn switching_recordings_releases_a_translation_hold() {
+    let mut gate = CaptionGate::default();
+    let held = gate
+        .refined(Some("a"), refined(Some("訳"), true, true, false), true)
+        .unwrap();
+    assert!(gate.status(Some("b"), &status(2, Some("b"))));
+    assert!(!held.is_current());
+    let mut next = partial(1, "new");
+    next.live_session_id = Some("b");
+    assert_eq!(
+        gate.partial(Some("b"), next, true, Instant::now())
+            .unwrap()
+            .text,
+        "new"
+    );
+}
+
+#[test]
+fn reopening_the_overlay_accepts_new_speech_and_invalidates_old_pages() {
+    let mut gate = CaptionGate::default();
+    let held = gate
+        .refined(
+            Some("a"),
+            refined(Some("old translation"), true, true, false),
+            true,
+        )
+        .unwrap();
+    gate.partial(Some("a"), partial(10, "before close"), true, Instant::now());
+    gate.surface_closed();
+    assert!(!held.is_current());
+    let first = gate
+        .partial(
+            Some("a"),
+            partial(20, "after reopening"),
+            true,
+            Instant::now(),
+        )
+        .unwrap();
+    assert_eq!(first.text, "after reopening");
+    assert!(gate
+        .committed(Some("a"), committed(Some(10), 1, "old final"), true)
+        .is_none());
+    assert!(first.is_current());
+    let final_caption = gate
+        .committed(Some("a"), committed(Some(30), 2, "new final"), true)
+        .unwrap();
+    assert_eq!(final_caption.text, "new final");
+}
+
+#[test]
+fn closing_also_cancels_a_queued_raw_caption_and_resets_its_throttle() {
+    let mut gate = CaptionGate::default();
+    let now = Instant::now();
+    let old = gate
+        .partial(Some("a"), partial(1, "old"), true, now)
+        .unwrap();
+    gate.surface_closed();
+    assert!(!old.is_current());
+    assert!(gate
+        .partial(Some("a"), partial(2, "new"), true, now)
+        .is_some());
+}
+
+#[test]
+fn refined_event_defaults_keep_a_clear_payload_small() {
+    let payload: RefinedCaption<'_> = serde_json::from_str(
+        r#"{"session_id":"a","ready":true,"show_overlay":true,"translation":"訳"}"#,
+    )
+    .unwrap();
+    assert!(!payload.clear);
+    assert_eq!(payload.translation.as_deref(), Some("訳"));
+    assert_eq!(payload.segment_id, 0);
+}
+
+#[test]
+fn escaped_translations_reach_the_native_caption() {
+    for text in ["say \"hello\"", r"C:\data", "日本語\n続き", "🌙"] {
+        let wire = serde_json::json!({
+            "session_id": "a", "segment_id": 3, "ready": true,
+            "show_overlay": true, "translation": text,
+        })
+        .to_string();
+        let payload: RefinedCaption<'_> = serde_json::from_str(&wire).unwrap();
+        let mut gate = CaptionGate::default();
+        assert_eq!(gate.refined(Some("a"), payload, true).unwrap().text, text);
+    }
+}
+
+#[test]
+fn a_failed_translation_immediately_restores_the_latest_original_and_releases_hold() {
+    let now = Instant::now();
+    let mut gate = CaptionGate::default();
+    let held = gate
+        .refined(
+            Some("a"),
+            refined(Some("old translation"), true, true, false),
+            true,
+        )
+        .unwrap();
+    assert!(gate
+        .partial(Some("a"), partial(11, "new speech"), true, now)
+        .is_none());
+    assert!(gate
+        .committed(Some("a"), committed(Some(12), 1, "new final"), true)
+        .is_none());
+    let fallback = RefinedCaption {
+        segment_id: 2,
+        source: "earlier batch source".into(),
+        ..refined(None, false, false, false)
+    };
+    let restored = gate.refined(Some("a"), fallback, true).unwrap();
+    assert!(!held.is_current());
+    assert_eq!(restored.text, "new final");
+    assert!(restored.is_final);
+    assert_eq!(
+        gate.partial(Some("a"), partial(13, "continuing speech"), true, now)
+            .unwrap()
+            .text,
+        "continuing speech"
+    );
+    assert!(gate
+        .committed(Some("a"), committed(Some(12), 2, "late final"), true)
+        .is_none());
+}
+
+#[test]
+fn an_untranslated_ready_caption_uses_its_source_when_no_original_is_waiting() {
+    let mut gate = CaptionGate::default();
+    gate.refined(
+        Some("a"),
+        refined(Some("old translation"), true, true, false),
+        true,
+    );
+    let same_language = RefinedCaption {
+        segment_id: 2,
+        source: "current source".into(),
+        ..refined(None, false, true, false)
+    };
+    let restored = gate.refined(Some("a"), same_language, true).unwrap();
+    assert_eq!(restored.text, "current source");
+    assert!(restored.is_final);
+}
+
+#[test]
+fn a_stale_or_unowned_failure_cannot_release_a_newer_translation() {
+    let mut gate = CaptionGate::default();
+    let held = gate
+        .refined(
+            Some("a"),
+            RefinedCaption {
+                segment_id: 10,
+                ..refined(Some("new translation"), true, true, false)
+            },
+            true,
+        )
+        .unwrap();
+    assert!(gate
+        .refined(
+            Some("a"),
+            RefinedCaption {
+                segment_id: 9,
+                ..refined(None, false, false, false)
+            },
+            true
+        )
+        .is_none());
+    assert!(gate
+        .refined(
+            Some("a"),
+            RefinedCaption {
+                session_id: "old recording",
+                segment_id: 20,
+                ..refined(None, false, false, true)
+            },
+            true
+        )
+        .is_none());
+    assert!(held.is_current());
+}
+
+#[test]
+fn disabling_translation_restores_a_waiting_original_or_clears_the_label() {
+    for original in [None, Some("waiting original")] {
+        let mut gate = CaptionGate::default();
+        gate.refined(
+            Some("a"),
+            refined(Some("old translation"), true, true, false),
+            true,
+        );
+        if let Some(text) = original {
+            gate.partial(Some("a"), partial(1, text), true, Instant::now());
+        }
+        let cleared = gate
+            .refined(Some("a"), refined(None, false, false, true), true)
+            .unwrap();
+        assert_eq!(cleared.text, original.unwrap_or(""));
+        assert!(!gate.holding_translation);
+    }
+}

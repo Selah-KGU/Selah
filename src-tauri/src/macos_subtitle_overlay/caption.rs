@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use objc2_foundation::NSString;
+use objc2::runtime::AnyObject;
+use objc2_app_kit::{NSFont, NSFontAttributeName, NSStringDrawing};
+use objc2_foundation::{NSDictionary, NSString};
 use tauri::{AppHandle, Manager};
 
 use crate::main_thread_animation::MainThreadAnimation;
@@ -12,18 +14,45 @@ fn ease_out_quart(t: f64) -> f64 {
     1.0 - (1.0 - t).powi(4)
 }
 fn estimate_text_w(text: &str) -> f64 {
-    let w: f64 = text
-        .chars()
-        .map(|c| {
-            let code = c as u32;
-            if code > 0x2E7F {
-                16.5_f64
-            } else {
-                8.8_f64
+    let font = NSFont::boldSystemFontOfSize(SUB_FONT);
+    let attributes = NSDictionary::<NSString, AnyObject>::from_slices(
+        &[unsafe { NSFontAttributeName }],
+        &[font.as_ref()],
+    );
+    // Match the actual label font; per-character estimates shrink English
+    // pages below their text width. Reserve the text cell's interior padding.
+    let width = unsafe { NSString::from_str(text).sizeWithAttributes(Some(&attributes)) }.width;
+    (width.ceil() + 4.0 + SUB_PAD_X * 2.0).clamp(SUB_MIN_W, SUB_MAX_W)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translated_pages_fit_the_actual_label_font() {
+        objc2::rc::autoreleasepool(|_| {
+            for text in [
+                "Momentum measures movement. These words all belong to one complete translation.",
+                "WWW WWW WWW WWW WWW WWW WWW WWW WWW WWW WWW WWW",
+                "第一句讲期望值的定义以及如何计算。第二句解释方差和标准差的区别。",
+                "👨‍👩‍👧‍👦 と cafe\u{301} の話です。次の行も表示します。",
+            ] {
+                for page in crate::subtitle_events::pages::split_pages(text) {
+                    let font = NSFont::boldSystemFontOfSize(SUB_FONT);
+                    let attributes = NSDictionary::<NSString, AnyObject>::from_slices(
+                        &[unsafe { NSFontAttributeName }],
+                        &[font.as_ref()],
+                    );
+                    let actual =
+                        unsafe { NSString::from_str(&page).sizeWithAttributes(Some(&attributes)) }
+                            .width;
+                    let label_width = estimate_text_w(&page) - SUB_PAD_X * 2.0 - 4.0;
+                    assert!(actual <= label_width, "page is clipped: {page:?}");
+                }
             }
-        })
-        .sum();
-    (w + SUB_PAD_X * 2.0).clamp(SUB_MIN_W, SUB_MAX_W)
+        });
+    }
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────

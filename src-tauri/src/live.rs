@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 mod admission;
 mod ai_output;
 mod cache;
+mod caption_refine;
 mod commands;
 #[path = "live/context_text.rs"]
 mod context_text;
@@ -68,6 +69,11 @@ use ai_output::{
 #[cfg(test)]
 use cache::{
     replay_deltas_into, LiveDayCache, LiveDayCacheRef, LiveLineDeltaOwned, LiveLineDeltaRef,
+};
+pub(crate) use caption_refine::{
+    caption_translation_enabled, live_caption_audio_drained, live_caption_final_finished,
+    live_caption_final_started, observe_live_caption_final, observe_live_caption_partial,
+    set_caption_translation_enabled, start_caption_refine, stop_caption_refine,
 };
 pub(crate) use commands::append_recognized_transcript;
 pub use commands::*;

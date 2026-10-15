@@ -37,12 +37,14 @@
   import { applyLiveSessionNotification, type LiveSessionNotification } from "./live/liveNotification";
   import { applyLiveFinishProgress, isLiveBusy, LIVE_FINISH_LABELS, liveSavePresentation } from "./live/liveFinish";
   import { LiveTranscriptFollow } from "./live/liveTranscriptFollow";
+  import { applyRefinedCaption, type RefinedCaption, type RefinedCaptionEvent } from "./live/liveCaptionRefine";
   import type { LiveFinishProgress, LiveTranscriptUpdate } from "../liveSessionApi";
   import {
     getScheduleSnapshot,
     getAiConfig,
     isAiReady,
     liveCancelSession,
+    liveSetCaptionTranslation,
     liveClearDayCache,
     liveFinishSurface,
     liveGenerateOverallSummary,
@@ -80,6 +82,16 @@
   let selectedKey = $state("");
   let snapshot = $state.raw<LiveSurfaceSnapshot>(emptyLiveSurfaceSnapshot());
   let partialText = $state("");
+  const CAPTION_TRANSLATION_KEY = "selah-live-caption-translation";
+  function storedCaptionTranslation(): boolean {
+    try { return localStorage.getItem(CAPTION_TRANSLATION_KEY) !== "0"; }
+    catch { return true; }
+  }
+  let captionTranslation = $state(storedCaptionTranslation());
+  let refinedCaptions = $state<RefinedCaption[]>([]);
+  let refinedFollowCount = $state(0);
+  let refinedOwner = "";
+  let captionToggleRevision = 0;
   let lastPartialSeq = 0;
   let sttListening = $state(false);
   let sttPhase = $state<SttPhase>("idle");
@@ -582,7 +594,11 @@
     return resources.acquire(() => listen<T>(name, resources.guard(handler)));
   }
 
-  const hasContent = $derived(snapshot.transcript_line_count > 0 || partialText.trim().length > 0);
+  const hasContent = $derived(
+    snapshot.transcript_line_count > 0
+    || partialText.trim().length > 0
+    || (captionTranslation && refinedCaptions.length > 0)
+  );
   const sttBooting = $derived(
     sttPhase === "checking" || sttPhase === "starting" || sttPhase === "initializing"
   );
@@ -690,12 +706,45 @@
   }
   bindLiveAutoGuard();
 
+  $effect(() => {
+    const id = snapshot.session_id ?? "";
+    if (id === refinedOwner) return;
+    refinedOwner = id;
+    refinedCaptions = [];
+    refinedFollowCount = 0;
+  });
+
+  async function syncCaptionTranslation() {
+    if (isDemoActive()) return;
+    try { await liveSetCaptionTranslation(captionTranslation); }
+    catch (error) {
+      if (resources.active) console.warn("[Live] caption translation sync failed:", error);
+    }
+  }
+
+  async function toggleCaptionTranslation() {
+    const revision = ++captionToggleRevision;
+    const next = !captionTranslation;
+    captionTranslation = next;
+    try { localStorage.setItem(CAPTION_TRANSLATION_KEY, next ? "1" : "0"); } catch {}
+    if (isDemoActive()) return;
+    try {
+      await liveSetCaptionTranslation(next);
+    } catch (error) {
+      if (!resources.active || revision !== captionToggleRevision) return;
+      captionTranslation = !next;
+      try { localStorage.setItem(CAPTION_TRANSLATION_KEY, captionTranslation ? "1" : "0"); } catch {}
+      if (resources.active) setMessage("error", "字幕翻訳の切り替えに失敗しました");
+      console.warn("[Live] caption translation toggle failed:", error);
+    }
+  }
+
   function bindLiveTranscriptFollow() {
     const follow = new LiveTranscriptFollow(resources);
     $effect(() => {
       follow.update({
         recordingId: snapshot.active ? snapshot.session_id ?? null : null,
-        lineCount: snapshot.transcript_line_count,
+        lineCount: snapshot.transcript_line_count + (captionTranslation ? refinedFollowCount : 0),
         target: scrollEl,
         visible: liveSurfaceVisible && !whiteboardExpanded && !summaryDetailOpen,
         listening: sttListening,
@@ -992,6 +1041,9 @@
     if (cfg.provider === "local" && !ready) {
       return "ローカルAIモデルの準備ができていません。AI設定でモデルを確認してください。";
     }
+    if (cfg.provider === "chatgpt") {
+      return "ChatGPT が未接続です。AI設定でログインし、プランの利用を許可してください。";
+    }
     if (!cfg.api_key?.trim()) {
       return "APIキーが未設定です。LIVEを使うにはAI設定を完了してください。";
     }
@@ -1169,6 +1221,8 @@
       if (snapshot.active) return;
       sttPhase = "starting";
       setSttNotice("音声入力を起動中…");
+      await syncCaptionTranslation();
+      if (!resources.active || snapshot.active || initialVersion !== sessionEventVersion) return;
       const started = await liveStartSurface(course);
       createdSessionId = started.session_id ?? null;
       // The backend recording survives view navigation. Do not start new audio
@@ -1603,6 +1657,13 @@
           sessionUpdateRevision = Math.max(sessionUpdateRevision, snapshot.update_revision ?? 0);
           if (result.needsResync) void resyncSession();
         }),
+        listenLive<RefinedCaptionEvent>("live-caption-refined", (event) => {
+          if (!captionTranslation || event.payload.clear) return;
+          if (event.payload.session_id !== snapshot.session_id) return;
+          const applied = applyRefinedCaption(refinedCaptions, event.payload);
+          refinedCaptions = applied.items;
+          refinedFollowCount += applied.followDelta;
+        }),
         listenLive<LiveTranscriptUpdate>("live-transcript-appended", (event) => {
           const result = applyTranscriptDelta(snapshot, event.payload);
           snapshot = result.snapshot;
@@ -1640,6 +1701,7 @@
       }
       await resyncSession();
       if (!resources.active) return;
+      void syncCaptionTranslation();
       await Promise.all([refreshSchedule(false), refreshReadiness()]);
       if (!resources.active) return;
       await refreshLiveSttState();
@@ -1715,6 +1777,10 @@
       {visibleLines}
       {hiddenLineCount}
       {renderMd}
+      {refinedCaptions}
+      {captionTranslation}
+      visible={liveSurfaceVisible && !whiteboardExpanded && !summaryDetailOpen}
+      onToggleCaptionTranslation={toggleCaptionTranslation}
     />
 
 

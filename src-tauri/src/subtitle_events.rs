@@ -1,17 +1,24 @@
 //! Shared native subtitle admission and a latest-value UI mailbox.
 //! Transcript storage remains append-only; only redundant display work is merged.
 
+pub(crate) mod pages;
+
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tauri::{AppHandle, Listener, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::live::{LiveSessionStatus, LiveState};
 
 const PARTIAL_INTERVAL: Duration = Duration::from_millis(120);
+const OVERLAY_CLOSED: &str = "subtitle-overlay-closed";
+
+pub(crate) fn overlay_closed(app: &AppHandle) {
+    let _ = app.emit(OVERLAY_CLOSED, ());
+}
 
 #[derive(Deserialize)]
 struct PartialCaption<'a> {
@@ -49,6 +56,16 @@ impl Caption {
     pub(crate) fn is_current(&self) -> bool {
         self.current_revision.load(Ordering::Relaxed) == self.revision
     }
+
+    fn page(&self, text: String, last: bool) -> Self {
+        Self {
+            text,
+            session_id: self.session_id.clone(),
+            is_final: self.is_final && last,
+            revision: self.revision,
+            current_revision: self.current_revision.clone(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -58,16 +75,47 @@ struct CaptionGate {
     last_seq: u64,
     last_line_count: usize,
     last_partial: Option<Instant>,
+    holding_translation: bool,
+    last_refined_segment: u64,
+    held_original: Option<(String, bool)>,
     caption_revision: Arc<AtomicU64>,
 }
 
+#[derive(Deserialize)]
+struct RefinedCaption<'a> {
+    session_id: &'a str,
+    #[serde(default)]
+    segment_id: u64,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    translation: Option<String>,
+    #[serde(default)]
+    ready: bool,
+    #[serde(default)]
+    show_overlay: bool,
+    #[serde(default)]
+    clear: bool,
+}
+
 impl CaptionGate {
+    fn surface_closed(&mut self) {
+        self.release_hold();
+        self.last_partial = None;
+        // Cancel queued pages even if the overlay is reopened before the next
+        // delivery timer wakes. Capture order still belongs to this recording.
+        self.caption_revision.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn sync_owner(&mut self, owner: Option<&str>) {
         if self.owner.as_deref() != owner {
             self.owner = owner.map(str::to_owned);
             self.last_seq = 0;
             self.last_line_count = 0;
             self.last_partial = None;
+            self.holding_translation = false;
+            self.last_refined_segment = 0;
+            self.held_original = None;
             self.caption_revision.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -102,6 +150,10 @@ impl CaptionGate {
         }
         // Even a throttled or hidden newer partial must outrank older finals.
         self.last_seq = payload.seq;
+        if self.holding_translation && enabled {
+            self.held_original = Some((payload.text.into_owned(), false));
+            return None;
+        }
         if !enabled
             || self
                 .last_partial
@@ -134,11 +186,71 @@ impl CaptionGate {
             _ => return None,
         }
         self.last_line_count = self.last_line_count.max(payload.line_count);
+        if self.holding_translation && enabled {
+            self.held_original = Some((payload.line.text.into_owned(), true));
+            return None;
+        }
         if !enabled {
             return None;
         }
         self.last_partial = None;
         Some(self.caption(payload.line.text, true))
+    }
+
+    fn refined(
+        &mut self,
+        owner: Option<&str>,
+        payload: RefinedCaption<'_>,
+        enabled: bool,
+    ) -> Option<Caption> {
+        self.sync_owner(owner);
+        if owner != Some(payload.session_id) {
+            return None;
+        }
+        if payload.clear {
+            return self.resume_original(enabled, "");
+        }
+        if payload.segment_id < self.last_refined_segment {
+            return None;
+        }
+        self.last_refined_segment = payload.segment_id;
+        let Some(translation) = payload
+            .translation
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
+            return self.resume_original(enabled, &payload.source);
+        };
+        if !payload.ready {
+            return self.resume_original(enabled, &payload.source);
+        }
+        if !enabled || !payload.show_overlay {
+            return None;
+        }
+        self.holding_translation = true;
+        Some(self.caption(Cow::Borrowed(translation), false))
+    }
+
+    fn resume_original(&mut self, enabled: bool, fallback: &str) -> Option<Caption> {
+        let was_holding = self.holding_translation;
+        let original = self.held_original.take();
+        self.release_hold();
+        if !was_holding || !enabled {
+            return None;
+        }
+        self.last_partial = None;
+        let (text, is_final) = original.unwrap_or_else(|| (fallback.to_string(), true));
+        Some(self.caption(Cow::Owned(text), is_final))
+    }
+
+    fn release_hold(&mut self) {
+        if !self.holding_translation {
+            return;
+        }
+        self.holding_translation = false;
+        self.held_original = None;
+        self.caption_revision.fetch_add(1, Ordering::Relaxed);
     }
 
     fn caption(&self, text: Cow<'_, str>, is_final: bool) -> Caption {
@@ -174,6 +286,13 @@ pub(crate) fn subscribe(
     status_changed: fn(&AppHandle, bool),
 ) -> Vec<tauri::EventId> {
     let gate = Arc::new(Mutex::new(CaptionGate::default()));
+    let closed_gate = gate.clone();
+    let closed = app.listen(OVERLAY_CLOSED, move |_| {
+        closed_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .surface_closed();
+    });
     let app_status = app.clone();
     let status_gate = gate.clone();
     let status = app.listen("live-session-updated", move |event| {
@@ -198,13 +317,15 @@ pub(crate) fn subscribe(
         let Ok(payload) = serde_json::from_str::<CommittedCaption<'_>>(event.payload()) else {
             return;
         };
+        let translation_enabled = crate::live::caption_translation_enabled();
         let caption = app_final
             .state::<LiveState>()
             .with_active_session_id(|owner| {
-                final_gate
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .committed(owner, payload, enabled())
+                let mut gate = final_gate.lock().unwrap_or_else(|e| e.into_inner());
+                if !translation_enabled {
+                    gate.release_hold();
+                }
+                gate.committed(owner, payload, enabled())
             })
             .flatten();
         if let Some(caption) = caption {
@@ -212,26 +333,56 @@ pub(crate) fn subscribe(
         }
     });
     let app_partial = app.clone();
+    let partial_gate = gate.clone();
     let partial = app.listen("stt-partial", move |event| {
         let Ok(payload) = serde_json::from_str::<PartialCaption<'_>>(event.payload()) else {
             return;
         };
+        let translation_enabled = crate::live::caption_translation_enabled();
         let caption = app_partial
             .state::<LiveState>()
             .with_active_session_id(|owner| {
-                gate.lock().unwrap_or_else(|e| e.into_inner()).partial(
-                    owner,
-                    payload,
-                    enabled(),
-                    Instant::now(),
-                )
+                let mut gate = partial_gate.lock().unwrap_or_else(|e| e.into_inner());
+                if !translation_enabled {
+                    gate.release_hold();
+                }
+                gate.partial(owner, payload, enabled(), Instant::now())
             })
             .flatten();
         if let Some(caption) = caption {
             show(&app_partial, caption);
         }
     });
-    vec![status, committed, partial]
+    let app_refined = app.clone();
+    let refined = app.listen("live-caption-refined", move |event| {
+        let Ok(payload) = serde_json::from_str::<RefinedCaption<'_>>(event.payload()) else {
+            return;
+        };
+        let translation_enabled = crate::live::caption_translation_enabled();
+        let caption = app_refined
+            .state::<LiveState>()
+            .with_active_session_id(|owner| {
+                let mut gate = gate.lock().unwrap_or_else(|e| e.into_inner());
+                if !translation_enabled && !payload.clear {
+                    gate.release_hold();
+                    return None;
+                }
+                gate.refined(owner, payload, enabled())
+            })
+            .flatten();
+        if let Some(caption) = caption {
+            let owner = caption.session_id.clone();
+            let app_current = app_refined.clone();
+            let app_show = app_refined.clone();
+            tauri::async_runtime::spawn(pages::show_pages(
+                caption,
+                move || enabled() && app_current.state::<LiveState>().is_session_current(&owner),
+                move |page| show(&app_show, page),
+                pages::page_delay,
+            ));
+        }
+    });
+    vec![status, committed, partial, refined, closed]
 }
 
 #[cfg(test)]

@@ -378,8 +378,12 @@
             {/each}
           </div>
         {:else if step === "provider"}
-          <p class="lead">AI 推論の提供元を選びます。API キーを入力するだけで使えます。</p>
+          <p class="lead">ChatGPT プラン、または API キーを使って AI を接続できます。</p>
           <div class="provider-grid">
+            <button class="provider-card" onclick={() => jumpToSettings("ai", "checklist")}>
+              <div class="provider-name">ChatGPT サブスクリプション</div>
+              <div class="provider-desc">AI 設定で ChatGPT を選び、対象の Plus / Pro アカウントでログイン。プランの利用を許可すると、API キーなしで使えます。</div>
+            </button>
             <button class="provider-card" class:selected={provider === "openai"} onclick={() => { provider = "openai"; }}>
               <div class="provider-name">OpenAI <span class="badge">推奨</span></div>
               <div class="provider-desc">既定は GPT-6 Luna。応答が速く、ほとんどの機能で安定して動作します。</div>
@@ -398,7 +402,7 @@
             </button>
           </div>
           <button class="link-quiet" onclick={() => jumpToSettings("ai", "checklist")}>
-            詳しい設定（Apple Intelligence / API）を開く →
+            詳しい設定（ChatGPT / Apple Intelligence / API）を開く →
           </button>
         {:else if step === "apikey"}
           <p class="lead">{PROVIDER_DEFAULTS[provider].hint}</p>

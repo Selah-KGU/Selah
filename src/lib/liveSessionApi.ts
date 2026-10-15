@@ -380,6 +380,11 @@ export async function liveGenerateOverallSummary(sessionId: string): Promise<str
   return invoke<string>("live_generate_overall_summary", { sessionId });
 }
 
+export async function liveSetCaptionTranslation(enabled: boolean): Promise<void> {
+  if (_isDemo()) return;
+  return invoke<void>("live_set_caption_translation", { enabled });
+}
+
 export async function liveCancelSession(sessionId: string): Promise<void> {
   if (_isDemo()) {
     requireDemoLiveOwner(sessionId);

@@ -4,6 +4,7 @@
   import { onMount, onDestroy } from "svelte";
   import { getAiConfig, isDemoActive, updateAiReadiness } from "../../api";
   import CapabilityMatrix from "../../onboarding/CapabilityMatrix.svelte";
+  import ChatGptSettings from "./ChatGptSettings.svelte";
   import { ResourceScope } from "../../resourceScope";
 
   const resources = new ResourceScope();
@@ -345,7 +346,7 @@
       ai_enabled: aiEnabled === "true",
       provider: p,
       local_model: selectedLocalModel,
-      api_key: p === "local" ? "" : apiKey,
+      api_key: p === "local" || p === "chatgpt" ? "" : apiKey,
       model: p === "local" ? "" : model,
       base_url: p === "local" ? "" : baseUrl,
       max_tokens: Number(maxTokens) || 0,
@@ -359,6 +360,7 @@
   function friendlyError(e: any): string {
     const s = String(e);
     if (s.includes("rate limit") || s.includes("429") || s.includes("Too Many")) return "リクエスト上限に達しました。しばらく待ってから再試行してください。";
+    if (aiProvider === "chatgpt") return s;
     if (s.includes("401") || s.includes("Unauthorized") || s.includes("invalid_api_key")) return "APIキーが無効です。";
     if (s.includes("403") || s.includes("Forbidden")) return "アクセスが拒否されました。";
     if (s.includes("timeout") || s.includes("timed out")) return "接続がタイムアウトしました。";
@@ -758,7 +760,7 @@
   </div>
   <div class="hero-text">
     <h2 class="panel-title">AI 設定</h2>
-    <p class="panel-desc">AI の有効化、推論方式、モデル、応答言語、自動更新をまとめて管理します。ローカル実行と外部 API のどちらでも、時間割・課題・通知・LIVE 要約まわりの AI 機能をここで整えられます。</p>
+    <p class="panel-desc">AI の有効化、推論方式、モデル、応答言語、自動更新をまとめて管理します。Apple Intelligence・ChatGPT プラン・外部 API で、時間割・課題・通知・LIVE 要約の AI 機能を使えます。</p>
   </div>
 </div>
 
@@ -818,7 +820,7 @@
   <div class="card-label">AI アシスタントの推論</div>
   <div class="card section-intro-card">
     <div class="section-intro">
-      ホーム・課題・通知・LIVE 要約で使う推論設定です。{isLocal() ? "Apple Intelligence なら端末内で完結します。" : "外部 API を使う場合は接続先とモデルをここで調整します。"}
+      ホーム・課題・通知・LIVE 要約で使う推論設定です。{isLocal() ? "Apple Intelligence なら端末内で完結します。" : aiProvider === "chatgpt" ? "ChatGPT アカウントとモデルをここで設定します。" : "外部 API を使う場合は接続先とモデルをここで調整します。"}
     </div>
   </div>
   <div class="card">
@@ -827,6 +829,7 @@
       <div class="row-input">
         <select bind:value={aiProvider}>
           {#if supportsLocalAi}<option value="local">Apple Intelligence</option>{/if}
+          <option value="chatgpt">ChatGPT サブスクリプション</option>
           <option value="openai">OpenAI API</option>
           <option value="openrouter">OpenRouter</option>
           <option value="deepseek">DeepSeek API</option>
@@ -836,7 +839,7 @@
           <div class="hint hint-error">{localAiUnsupportedReason}</div>
         {/if}
         <div class="hint">
-          {isLocal() ? "この Mac の Apple Intelligence で端末内推論します。モデルのダウンロードは不要です。" : "API 利用時のみ、API キー・モデル名・ベース URL・最大トークン・Temperature が有効です。"}
+          {isLocal() ? "この Mac の Apple Intelligence で端末内推論します。モデルのダウンロードは不要です。" : aiProvider === "chatgpt" ? "ブラウザで ChatGPT にログインして、プランの利用を許可します。API キーは不要です。" : "API 利用時のみ、API キー・モデル名・ベース URL・最大トークン・Temperature が有効です。"}
         </div>
       </div>
     </div>
@@ -860,6 +863,8 @@
         <span class="hint" class:ok={localTestOk === true} class:ng={localTestOk === false}>{localTestMsg}</span>
       {/if}
     </div>
+  {:else if aiProvider === "chatgpt"}
+    <ChatGptSettings bind:model {testConnection} {testBusy} />
   {:else}
     <div class="card-label">AI アシスタントの API 設定</div>
     <div class="card">
