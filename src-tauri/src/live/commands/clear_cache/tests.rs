@@ -213,7 +213,7 @@ fn native_ipc_preserves_error_strings_and_success_null_and_retries_actual_tempor
                 cmd: "clear_fixture".into(),
                 callback: tauri::ipc::CallbackFn(0),
                 error: tauri::ipc::CallbackFn(1),
-                url: "http://tauri.localhost".parse().unwrap(),
+                url: window.url().unwrap(),
                 body: tauri::ipc::InvokeBody::Json(json!({"course":course})),
                 headers: Default::default(),
                 invoke_key: tauri::test::INVOKE_KEY.into(),

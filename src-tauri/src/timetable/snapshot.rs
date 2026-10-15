@@ -39,6 +39,7 @@ pub async fn get_schedule_snapshot<R: tauri::Runtime>(
     .await
 }
 
+#[cfg(test)]
 pub(crate) fn build_schedule_snapshot<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<ScheduleResponse, String> {

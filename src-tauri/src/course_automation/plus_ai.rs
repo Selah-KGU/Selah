@@ -205,7 +205,7 @@ pub(super) fn summary_generation_id(
         hasher.update([0]);
         hasher.update(todo_hash.as_bytes());
     }
-    let digest = format!("{:x}", hasher.finalize());
+    let digest = hex::encode(hasher.finalize());
     format!(
         "course-automation-{}-summary-{}-{}",
         luna_id,

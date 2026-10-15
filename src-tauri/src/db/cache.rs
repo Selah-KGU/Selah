@@ -188,6 +188,7 @@ impl Database {
     }
 
     /// Load several cache rows under one connection lock.
+    #[cfg(test)]
     pub fn get_data_cache_many(
         &self,
         keys: &[String],

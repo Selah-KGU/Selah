@@ -1,0 +1,42 @@
+name: Dependency audit
+
+on:
+  pull_request:
+    paths:
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/.cargo/audit.toml'
+      - 'rust-toolchain.toml'
+      - 'scripts/audit-rust-dependencies.mjs'
+      - 'tests/rust-audit-policy.test.mjs'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/.cargo/audit.toml'
+      - 'rust-toolchain.toml'
+      - 'scripts/audit-rust-dependencies.mjs'
+      - 'tests/rust-audit-policy.test.mjs'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Test audit exception policy
+        run: node --test tests/rust-audit-policy.test.mjs
+      - name: Audit dependencies and verify all release targets
+        run: node scripts/audit-rust-dependencies.mjs

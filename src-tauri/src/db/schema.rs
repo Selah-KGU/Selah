@@ -1,7 +1,8 @@
 use super::*;
 
 impl Database {
-    /// Unscoped database for explicit local stores and isolated tests.
+    /// Unscoped database for isolated tests.
+    #[cfg(test)]
     pub fn open(data_dir: &PathBuf) -> Result<Self, String> {
         Ok(Self {
             conn: super::account::AccountConnection::local(data_dir.clone())?,

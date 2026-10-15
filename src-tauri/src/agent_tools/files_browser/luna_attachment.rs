@@ -433,7 +433,7 @@ fn course_automation_source_fingerprint(value: &Value) -> Result<String, String>
     use sha2::{Digest, Sha256};
 
     let raw = serde_json::to_vec(value).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", Sha256::digest(raw)))
+    Ok(hex::encode(Sha256::digest(raw)))
 }
 
 pub async fn open_luna_attachment(app: &tauri::AppHandle, args: &Value) -> Result<Value, String> {

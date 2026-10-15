@@ -477,7 +477,7 @@ async fn plan_organize_with_agent(
         hasher.update([0]);
         hasher.update(doc.id.as_bytes());
     }
-    let gen_id = format!("course-organize-{:x}", hasher.finalize());
+    let gen_id = format!("course-organize-{}", hex::encode(hasher.finalize()));
 
     let response: PlusJsonResponse<OrganizeAgentOutput> = request_plus_json(
         &provider,

@@ -70,6 +70,7 @@ async fn reply<T: Serialize + Send + 'static>(
     crate::background_ipc::respond(failure, "キャッシュ応答の変換に失敗しました", read).await
 }
 
+#[cfg(test)]
 pub(crate) fn load_frontend_cache_batch<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     queries: Vec<CacheStampQuery>,

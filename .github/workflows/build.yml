@@ -30,7 +30,7 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
       - name: Compute version
         id: version
         env:
@@ -131,11 +131,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
@@ -213,7 +213,7 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          args: --target universal-apple-darwin --features stt-shared,self-updater --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.1.24.4.dylib","lib/libpdfium.dylib","lib/libselah_apple_ai.dylib","lib/libselah_widget.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
+          args: --target universal-apple-darwin --features stt-shared,self-updater --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"entitlements":"Entitlements.DeveloperID.plist","frameworks":["macos-runtime/libsherpa-onnx-c-api.dylib","macos-runtime/libonnxruntime.dylib","lib/libpdfium.dylib","lib/libselah_apple_ai.dylib","lib/libselah_widget.dylib"]},"targets":["dmg","app"]}}' -- --no-default-features
 
       - name: Verify macOS updater artifacts
         shell: bash
@@ -258,12 +258,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: s/package-lock.json
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           targets: x86_64-pc-windows-msvc
 
@@ -379,12 +379,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: s/package-lock.json
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           targets: aarch64-pc-windows-msvc
 

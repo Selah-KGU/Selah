@@ -22,7 +22,7 @@ use crate::native_agent_state::{
 #[allow(unused_imports)]
 use crate::stt;
 #[allow(unused_imports)]
-use rand::RngCore;
+use rand::Rng;
 #[allow(unused_imports)]
 use std::mem::size_of;
 #[allow(unused_imports)]

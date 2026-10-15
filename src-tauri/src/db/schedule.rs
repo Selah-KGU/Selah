@@ -60,20 +60,6 @@ impl Database {
         Ok(())
     }
 
-    /// Timestamp only. Used to skip rebuilding the timetable snapshot on focus.
-    pub fn schedule_snapshot_updated_at(&self) -> Result<i64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        match conn.query_row(
-            "SELECT updated_at FROM schedule_snapshot_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ) {
-            Ok(updated_at) => Ok(updated_at),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
-            Err(e) => Err(format!("DB snapshot stamp: {}", e)),
-        }
-    }
-
     pub fn get_snapshot_state(&self) -> Result<Option<SnapshotState>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
         #[allow(clippy::type_complexity)]

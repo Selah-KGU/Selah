@@ -260,10 +260,10 @@ pub(super) fn has_retryable_activity_artifact_failure(artifacts: &[CourseArtifac
 }
 
 fn activity_detail_cache_id(kind: &str, detail_path: &str) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(format!("activity-detail|{}|{}", kind, detail_path))
-    )
+    hex::encode(Sha256::digest(format!(
+        "activity-detail|{}|{}",
+        kind, detail_path
+    )))
 }
 
 pub(super) fn activity_detail_cache_id_from_value(value: &Value) -> Option<String> {
@@ -361,7 +361,7 @@ pub(super) fn activity_detail_snapshot_value(value: &Value) -> Value {
 }
 
 pub(super) fn artifact_id(kind: &str, filename: &str) -> String {
-    format!("{:x}", Sha256::digest(format!("{}|{}", kind, filename)))
+    hex::encode(Sha256::digest(format!("{}|{}", kind, filename)))
 }
 
 pub(super) fn artifact_from_download_value(

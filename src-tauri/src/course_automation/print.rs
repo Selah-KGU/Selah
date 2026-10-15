@@ -292,15 +292,12 @@ pub(super) fn print_action_key(
     } else {
         source_fingerprint.trim()
     };
-    format!(
-        "{:x}",
-        Sha256::digest(format!(
-            "{}|{}|{}",
-            filename.trim(),
-            source_identity,
-            normalize_category(category)
-        ))
-    )
+    hex::encode(Sha256::digest(format!(
+        "{}|{}|{}",
+        filename.trim(),
+        source_identity,
+        normalize_category(category)
+    )))
 }
 
 pub(super) fn print_result_action_key(result: &PrintResult) -> String {

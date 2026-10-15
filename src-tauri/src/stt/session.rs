@@ -23,13 +23,10 @@ fn choose_input_config(
     if let Ok(configs) = device.supported_input_configs() {
         for range in configs {
             if range.channels() == 1
-                && range.min_sample_rate().0 <= TARGET_SAMPLE_RATE as u32
-                && range.max_sample_rate().0 >= TARGET_SAMPLE_RATE as u32
+                && range.min_sample_rate() <= TARGET_SAMPLE_RATE as u32
+                && range.max_sample_rate() >= TARGET_SAMPLE_RATE as u32
             {
-                return Ok((
-                    range.with_sample_rate(cpal::SampleRate(TARGET_SAMPLE_RATE as u32)),
-                    1,
-                ));
+                return Ok((range.with_sample_rate(TARGET_SAMPLE_RATE as u32), 1));
             }
         }
     }
@@ -210,7 +207,7 @@ fn capture_stt_session(
         .default_input_device()
         .ok_or_else(|| "利用可能なマイク入力デバイスが見つかりません".to_string())?;
     let (supported_cfg, channels) = choose_input_config(&device)?;
-    let sample_rate = supported_cfg.sample_rate().0 as i32;
+    let sample_rate = supported_cfg.sample_rate() as i32;
     let mut stream_config = supported_cfg.config();
     // Request ~80ms callback period: at 48kHz mono this is ~3840 frames,
     // roughly 10× fewer wake-ups than cpal's 10ms default. Fewer callbacks
@@ -243,7 +240,7 @@ fn capture_stt_session(
 
     let input_stream = input::build_input_stream(
         &device,
-        &stream_config,
+        stream_config,
         supported_cfg.sample_format(),
         audio_tx,
         err_fn,

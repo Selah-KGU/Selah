@@ -73,6 +73,6 @@ npm run tauri build
 
 ### 前提条件
 
-- Node.js 20+
-- Rust 1.80.0+
+- Node.js 24 LTS
+- Rust 1.99.0+
 - [Tauri 2 の前提条件](https://tauri.app/start/prerequisites/)

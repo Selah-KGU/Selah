@@ -27,16 +27,12 @@ fn xml(archive: &mut Archive<'_>, name: &str, remaining: &mut u64) -> Result<Str
     String::from_utf8(bytes).map_err(|_| "文書のXML文字コードが正しくありません".into())
 }
 
-fn attribute(
-    element: &BytesStart<'_>,
-    key: &[u8],
-    reader: &Reader<&[u8]>,
-) -> Result<String, String> {
+fn attribute(element: &BytesStart<'_>, key: &str) -> Result<String, String> {
     for attr in element.attributes() {
         let attr = attr.map_err(|_| "文書のXML属性が正しくありません")?;
         if attr.key.as_ref() == key {
             return attr
-                .decode_and_unescape_value(reader.decoder())
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map(|s| s.into_owned())
                 .map_err(|_| "文書のXML属性を読めません".into());
         }
@@ -45,18 +41,14 @@ fn attribute(
 }
 
 fn text(event: &quick_xml::events::BytesText<'_>) -> Result<String, String> {
-    let decoded = event
-        .decode()
-        .map_err(|_| "文書の文字コードが正しくありません")?;
+    let decoded = event.as_ref();
     quick_xml::escape::unescape(&decoded)
         .map(|s| s.into_owned())
         .map_err(|_| "文書のXML文字参照が正しくありません".into())
 }
 
 fn reference(event: &quick_xml::events::BytesRef<'_>) -> Result<String, String> {
-    let name = event
-        .decode()
-        .map_err(|_| "文書のXML文字参照が正しくありません")?;
+    let name = event.as_ref();
     quick_xml::escape::unescape(&format!("&{name};"))
         .map(|s| s.into_owned())
         .map_err(|_| "文書のXML文字参照が正しくありません".into())
@@ -71,21 +63,18 @@ fn office_text(source: &str) -> Result<String, String> {
             .read_event()
             .map_err(|_| "文書のXMLが正しくありません")?
         {
-            Event::Start(e) if e.local_name().as_ref() == b"t" => in_text = true,
+            Event::Start(e) if e.local_name().as_ref() == "t" => in_text = true,
             Event::Text(e) if in_text => out.push_str(&text(&e)?),
             Event::GeneralRef(e) if in_text => out.push_str(&reference(&e)?),
-            Event::CData(e) if in_text => out.push_str(
-                &e.decode()
-                    .map_err(|_| "文書の文字コードが正しくありません")?,
-            ),
+            Event::CData(e) if in_text => out.push_str(&e),
             Event::End(e) => match e.local_name().as_ref() {
-                b"t" => in_text = false,
-                b"p" => out.push('\n'),
+                "t" => in_text = false,
+                "p" => out.push('\n'),
                 _ => {}
             },
             Event::Empty(e) => match e.local_name().as_ref() {
-                b"br" => out.push('\n'),
-                b"tab" => out.push('\t'),
+                "br" => out.push('\n'),
+                "tab" => out.push('\t'),
                 _ => {}
             },
             Event::Eof => break,
@@ -106,22 +95,19 @@ fn shared_strings(source: &str) -> Result<Vec<String>, String> {
             .map_err(|_| "Excelの共有文字列が正しくありません")?
         {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"si" => current.clear(),
-                b"t" => in_text = true,
+                "si" => current.clear(),
+                "t" => in_text = true,
                 _ => {}
             },
             Event::Text(e) if in_text => current.push_str(&text(&e)?),
             Event::GeneralRef(e) if in_text => current.push_str(&reference(&e)?),
-            Event::CData(e) if in_text => current.push_str(
-                &e.decode()
-                    .map_err(|_| "文書の文字コードが正しくありません")?,
-            ),
+            Event::CData(e) if in_text => current.push_str(&e),
             Event::End(e) => match e.local_name().as_ref() {
-                b"t" => in_text = false,
-                b"si" => strings.push(current.clone()),
+                "t" => in_text = false,
+                "si" => strings.push(current.clone()),
                 _ => {}
             },
-            Event::Empty(e) if e.local_name().as_ref() == b"si" => strings.push(String::new()),
+            Event::Empty(e) if e.local_name().as_ref() == "si" => strings.push(String::new()),
             Event::Eof => break,
             _ => {}
         }
@@ -133,7 +119,7 @@ fn worksheet(source: &str, strings: &[String]) -> Result<String, String> {
     let mut reader = Reader::from_str(source);
     let (mut address, mut kind, mut value, mut formula) =
         (String::new(), String::new(), String::new(), String::new());
-    let mut capturing = Vec::new();
+    let mut capturing = String::new();
     let mut out = String::new();
     loop {
         match reader
@@ -141,42 +127,40 @@ fn worksheet(source: &str, strings: &[String]) -> Result<String, String> {
             .map_err(|_| "Excelのセル情報が正しくありません")?
         {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"c" => {
-                    address = attribute(&e, b"r", &reader)?;
-                    kind = attribute(&e, b"t", &reader)?;
+                "c" => {
+                    address = attribute(&e, "r")?;
+                    kind = attribute(&e, "t")?;
                     value.clear();
                     formula.clear();
                 }
-                b"v" | b"t" | b"f" => capturing = e.local_name().as_ref().to_vec(),
+                "v" | "t" | "f" => capturing = e.local_name().as_ref().to_owned(),
                 _ => {}
             },
             Event::Text(e) if !capturing.is_empty() => {
-                if capturing == b"f" {
+                if capturing == "f" {
                     formula.push_str(&text(&e)?);
                 } else {
                     value.push_str(&text(&e)?);
                 }
             }
             Event::GeneralRef(e) if !capturing.is_empty() => {
-                if capturing == b"f" {
+                if capturing == "f" {
                     formula.push_str(&reference(&e)?);
                 } else {
                     value.push_str(&reference(&e)?);
                 }
             }
             Event::CData(e) if !capturing.is_empty() => {
-                let data = e
-                    .decode()
-                    .map_err(|_| "文書の文字コードが正しくありません")?;
-                if capturing == b"f" {
+                let data = e.as_ref();
+                if capturing == "f" {
                     formula.push_str(&data);
                 } else {
                     value.push_str(&data);
                 }
             }
             Event::End(e) => match e.local_name().as_ref() {
-                b"v" | b"t" | b"f" => capturing.clear(),
-                b"c" => {
+                "v" | "t" | "f" => capturing.clear(),
+                "c" => {
                     let displayed = if kind == "s" {
                         strings
                             .get(
@@ -216,7 +200,7 @@ fn office(extension: &str, bytes: &[u8]) -> Result<String, String> {
     let strings = if extension == "xlsx"
         && archive
             .file_names()
-            .any(|name| name == "xl/sharedStrings.xml")
+            .any(|name| name.is_ok_and(|name| name == "xl/sharedStrings.xml"))
     {
         shared_strings(&xml(&mut archive, "xl/sharedStrings.xml", &mut remaining)?)?
     } else {
@@ -230,12 +214,13 @@ fn office(extension: &str, bytes: &[u8]) -> Result<String, String> {
     let mut names: Vec<_> = archive
         .file_names()
         .filter_map(|name| {
+            let name = name.ok()?;
             let number = name
                 .strip_prefix(prefix)?
                 .strip_suffix(".xml")?
                 .parse::<usize>()
                 .ok()?;
-            Some((number, name.to_owned()))
+            Some((number, name.into_owned()))
         })
         .collect();
     names.sort();

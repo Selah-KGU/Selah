@@ -18,7 +18,7 @@ pub(in crate::windows_native_agent) fn ease_out_quart(t: f64) -> f64 {
 
 pub(in crate::windows_native_agent) fn uuid_v4() -> String {
     let mut b = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut b);
+    rand::rng().fill_bytes(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(

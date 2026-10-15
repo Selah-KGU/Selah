@@ -172,11 +172,13 @@ Selah は関西学院大学の教務システム **KWIC** と学習管理シス�
 
 ### 前提条件
 
-- Node.js 20+
-- Rust 1.80.0+
+- Node.js 24 LTS
+- Rust 1.99.0+
   - macOS: `aarch64-apple-darwin`, `x86_64-apple-darwin` (macOS 11.0+)
   - Windows ARM64: `aarch64-pc-windows-msvc` (Windows 10/11, WebView2)
   - Windows: `x86_64-pc-windows-msvc` (Windows 10/11, WebView2 ランタイム)
+
+依存関係の監査は `cargo install cargo-audit --version 0.22.2 --locked` の後に `npm run audit:rust` で実行します。現在の四つの配布 target の依存グラフを検査し、Tauri の Linux 専用 GTK3 依存に限った例外と、それ以外の全 warning の拒否を適用します。詳しくは [依存関係の更新記録](docs/dependency-upgrade-2026-10.md#rustsec-のプラットフォーム限定例外) を参照してください。
 
 ### 手順
 

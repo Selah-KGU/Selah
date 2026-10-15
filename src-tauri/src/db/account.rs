@@ -68,6 +68,7 @@ impl DerefMut for ConnectionGuard<'_> {
     }
 }
 impl AccountConnection {
+    #[cfg(test)]
     pub fn local(directory: PathBuf) -> Result<Self, String> {
         let connection = Database::open_connection(&directory)?;
         Ok(Self {
@@ -134,7 +135,7 @@ impl AccountConnection {
 }
 fn account_key(username: &str) -> String {
     use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(username.as_bytes()))
+    hex::encode(Sha256::digest(username.as_bytes()))
 }
 
 #[derive(Clone)]

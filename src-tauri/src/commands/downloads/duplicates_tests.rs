@@ -61,7 +61,7 @@ fn duplicate_hashes_keep_full_items_and_recommendations_and_sort_by_waste() {
     assert_eq!(groups[0].size_bytes, a.size_bytes);
     assert_eq!(
         groups[0].content_hash,
-        format!("{:x}", Sha256::digest(b"identical file"))
+        hex::encode(Sha256::digest(b"identical file"))
     );
     assert_eq!(
         groups[0]

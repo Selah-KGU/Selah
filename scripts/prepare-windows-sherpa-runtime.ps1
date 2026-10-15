@@ -1,7 +1,7 @@
 param(
     [ValidateSet("x64", "arm64")]
     [string]$Architecture = "arm64",
-    [string]$SherpaVersion = "v1.12.39",
+    [string]$SherpaVersion = "v1.13.8",
     [string]$WorkRoot = "",
     [string]$LibStageDir = "",
     [string]$RuntimeStageDir = ""
@@ -12,16 +12,16 @@ $ProgressPreference = "SilentlyContinue"
 
 $assets = @{
     x64 = @{
-        Name = "sherpa-onnx-v1.12.39-win-x64-shared-MT-Release-lib.tar.bz2"
-        Sha256 = "7990646eda4ae0f74a58486b395cdc179c41d9d548d2df300ab77baf78cf9458"
+        Name = "sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-lib.tar.bz2"
+        Sha256 = "b8eedf41bd6d3779218887b48367bb7a3ece5aaa7667f01f69ee823a12b0a9e7"
     }
     arm64 = @{
-        Name = "sherpa-onnx-v1.12.39-win-arm64-shared-MT-Release-lib.tar.bz2"
-        Sha256 = "b21c13073c6a00960f7acaf24693cdfd271c535a75ecaaef759beb7b9411dc42"
+        Name = "sherpa-onnx-v1.13.8-win-arm64-shared-MT-Release-lib.tar.bz2"
+        Sha256 = "22cd2b2b5e35c1132abc74a91ee77f683645437382617af6a4bd5818b9c509f4"
     }
 }
 
-if ($SherpaVersion -ne "v1.12.39") {
+if ($SherpaVersion -ne "v1.13.8") {
     throw "Unsupported sherpa-onnx version '$SherpaVersion'. Update the pinned asset names and SHA-256 hashes before changing versions."
 }
 

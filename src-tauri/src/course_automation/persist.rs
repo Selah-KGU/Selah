@@ -108,7 +108,7 @@ pub(super) fn status_key(luna_id: &str) -> String {
 
 pub(super) fn sha256_json<T: Serialize + ?Sized>(value: &T) -> Result<String, String> {
     let raw = serde_json::to_vec(value).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", Sha256::digest(raw)))
+    Ok(hex::encode(Sha256::digest(raw)))
 }
 
 pub(super) fn extract_json_object(text: &str) -> Option<&str> {

@@ -26,7 +26,7 @@ fn display_history_matches_all_visible_rows_and_preserves_full_saved_history() {
         for n in 0..1_600 {
             let role = ["user", "tool", "assistant", "system"][n % 4];
             tx.execute("INSERT INTO agent_messages(conv_id,role,content,images_json,tool_name,tool_result_json,created_at) VALUES (?1,?2,?3,?4,'example',?5,?6)",
-                params![if n % 9 == 0 { "other" } else { "c" }, role, format!("全文 あ🌕 {n}"), image, r#"{"body":"hidden result"}"#, n / 7]).unwrap();
+                params![if n % 9 == 0 { "other" } else { "c" }, role, format!("全文 あ🌕 {n}"), image, r#"{"body":"hidden result"}"#, (n / 7) as i64]).unwrap();
         }
         // Match full history's ordering even when the clock moves backwards.
         tx.execute("UPDATE agent_messages SET created_at=-1 WHERE id=1599", [])

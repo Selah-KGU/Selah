@@ -4,7 +4,7 @@ use super::{
     vault::{Mode, Secrets, Storage, StoreError},
 };
 use base64::Engine;
-use rand::RngCore;
+use rand::TryRng;
 use std::path::{Path, PathBuf};
 
 #[cfg(debug_assertions)]
@@ -100,7 +100,9 @@ impl<K: CredentialStore> DiskStore<K> {
                 .ok_or_else(|| StoreError::new("corrupt", "Invalid vault master key"))?,
             None if create => {
                 let mut key = [0; 32];
-                rand::rngs::OsRng.fill_bytes(&mut key);
+                rand::rngs::SysRng
+                    .try_fill_bytes(&mut key)
+                    .map_err(|e| io_error(format!("Generate vault master key: {e}")))?;
                 self.credentials.write(
                     KEY_ACCOUNT,
                     &base64::engine::general_purpose::STANDARD.encode(key),

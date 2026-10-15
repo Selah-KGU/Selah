@@ -108,12 +108,12 @@ mod tests {
 }
 
 pub(crate) fn generate_pkce() -> (String, String) {
-    use rand::Rng;
+    use rand::RngExt;
     use sha2::{Digest, Sha256};
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let verifier: String = (0..64)
         .map(|_| {
-            let idx = rng.gen_range(0..66);
+            let idx = rng.random_range(0..66);
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"[idx] as char
         })
         .collect();

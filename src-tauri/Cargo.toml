@@ -5,7 +5,7 @@ description = "Selah - 新月の下で、知性を繋ぐ。すべての関学生
 authors = ["Selah-KGU"]
 license = "PolyForm-Noncommercial-1.0.0"
 edition = "2021"
-rust-version = "1.93.0"
+rust-version = "1.99.0"
 
 [lib]
 name = "app_lib"
@@ -19,61 +19,63 @@ self-updater = ["tauri-plugin-updater"]
 store-build = ["tauri-plugin-updater"]
 
 [build-dependencies]
-embed-resource = "3.0.8"
-tauri-build = { version = "2.5.6", features = [] }
+embed-resource = "3.0.12"
+tauri-build = { version = "2.7.3", features = [] }
 
 [dev-dependencies]
-tauri = { version = "2.10.3", features = ["test"] }
+tauri = { version = "2.12.4", features = ["test"] }
 
 [dependencies]
-serde_json = "1.0"
-jsonwebtoken = "9.3"
-serde = { version = "1.0", features = ["derive", "rc"] }
-log = "0.4"
-tauri = { version = "2.10.3", features = ["tray-icon", "image-png", "unstable"] }
-tauri-plugin-log = "2"
-reqwest = { version = "0.12", features = ["cookies", "json", "native-tls", "multipart", "blocking", "stream"] }
-futures-util = "0.3"
-tokio = { version = "1", features = ["sync", "time", "macros", "net", "io-util"] }
-scraper = "0.22"
-regex = "1"
-unicode-segmentation = "1"
-base64 = "0.22"
-url = "2"
+serde_json = "1.0.154"
+# Avoid the unpatched RSA timing advisory in the alternative rust_crypto backend.
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+log = "0.4.34"
+tauri = { version = "2.12.4", features = ["tray-icon", "image-png", "unstable"] }
+tauri-plugin-log = "2.10.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["cookies", "json", "native-tls", "multipart", "blocking", "stream", "form", "query", "charset", "http2", "system-proxy"] }
+futures-util = "0.3.34"
+tokio = { version = "1.53.3", features = ["sync", "time", "macros", "net", "io-util"] }
+scraper = "0.27.0"
+regex = "1.13.1"
+unicode-segmentation = "1.13.3"
+base64 = "0.23.1"
+url = "2.5.8"
 urlencoding = "2.1.3"
-dirs = "6"
-lopdf = "0.35"
-pdfium-render = { version = "0.8", features = ["image"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-cookie_store = "0.21"
-reqwest_cookie_store = "0.8"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-uuid = { version = "1", features = ["v4"] }
-rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
-sha2 = "0.10"
-aes-gcm = "0.10"
-cpal = "0.15.3"
-bzip2 = "0.4"
-tar = "0.4"
-time = { version = "0.3.41", default-features = false }
-rusqlite = { version = "0.32", features = ["bundled"] }
-tauri-plugin-opener = "2.5.3"
-tauri-plugin-global-shortcut = "2"
-tauri-plugin-updater = { version = "2", optional = true }
-rfd = "0.15"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-quick-xml = "0.38"
-flate2 = "1"
+dirs = "7.0.0"
+lopdf = "0.45.0"
+pdfium-render = "0.9.4"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+cookie_store = "0.22.1"
+reqwest_cookie_store = "0.10.0"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+uuid = { version = "1.28.0", features = ["v4"] }
+rand = "0.10.3"
+sha2 = "0.11.1"
+hex = "0.4.3"
+aes-gcm = "0.11.1"
+cpal = "0.18.2"
+bzip2 = "0.6.1"
+tar = "0.4.46"
+time = { version = "0.3.55", default-features = false }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tauri-plugin-opener = "2.7.2"
+tauri-plugin-global-shortcut = "2.4.1"
+tauri-plugin-updater = { version = "2.14.0", optional = true }
+rfd = "0.17.2"
+zip = { version = "9.0.3", default-features = false, features = ["deflate"] }
+quick-xml = "0.42.0"
+flate2 = "1.1.10"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-sherpa-onnx = { version = "1.12.39", default-features = false }
+sherpa-onnx = { version = "=1.13.8", default-features = false }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-tauri-plugin-notification = "2.3.3"
+tauri-plugin-notification = "2.7.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3"
-objc2 = "0.6.4"
+security-framework = "3.7.0"
+objc2 = "0.6.5"
 block2 = "0.6.2"
 objc2-user-notifications = "0.3.2"
 objc2-app-kit = { version = "0.3.2", features = [
@@ -102,9 +104,9 @@ objc2-foundation = { version = "0.3.2", features = ["NSData", "NSHTTPCookie", "N
 objc2-web-kit = { version = "0.3.2", features = ["WKWebsiteDataStore", "WKHTTPCookieStore", "block2"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
-webview2-com = "0.38"
-windows = { version = "0.61", features = [
+keyring = "4.2.0"
+webview2-com = "0.39.1"
+windows = { version = "0.62.2", features = [
   "ApplicationModel_DataTransfer",
   "Foundation",
   "Storage",
@@ -113,9 +115,10 @@ windows = { version = "0.61", features = [
   "Win32_System_WinRT",
   "Win32_UI_Shell"
 ] }
-windows-collections = "0.2"
-windows-core = "0.61"
-windows-sys = { version = "0.61", features = [
+# These COM types must match windows and webview2-com, rather than 0.100.x.
+windows-collections = "0.3.2"
+windows-core = "0.62.2"
+windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_System_LibraryLoader",
@@ -124,12 +127,12 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging"
 ] }
-tauri-plugin-single-instance = "2"
-sherpa-onnx = { version = "1.12.39", default-features = false }
+tauri-plugin-single-instance = "2.5.4"
+sherpa-onnx = { version = "=1.13.8", default-features = false }
 
 [profile.dev]
-# rustc 1.93 on macOS can ICE in incremental mode while rebuilding the native
-# agent panel. Keep dev builds non-incremental until the compiler bug is gone.
+# Keep dev builds non-incremental to avoid the macOS native agent panel
+# compiler ICE observed with earlier toolchains.
 incremental = false
 
 [profile.release]

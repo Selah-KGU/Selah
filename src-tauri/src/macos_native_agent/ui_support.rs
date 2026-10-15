@@ -237,9 +237,9 @@ pub(super) fn load_app_logo() -> Option<Retained<NSImage>> {
 }
 
 pub(super) fn uuid_v4() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(

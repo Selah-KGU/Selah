@@ -15,24 +15,18 @@ pub(super) fn document_label(document: &AnalysisDocument) -> String {
 
 pub(super) fn document_id(document: &AnalysisDocument) -> String {
     if !document.source_fingerprint.is_empty() {
-        return format!(
-            "{:x}",
-            Sha256::digest(format!(
-                "{}|{}|{}",
-                document.kind, document.filename, document.source_fingerprint
-            ))
-        );
+        return hex::encode(Sha256::digest(format!(
+            "{}|{}|{}",
+            document.kind, document.filename, document.source_fingerprint
+        )));
     }
     // Identity is deliberately path-free: the organizer moves a file between theme
     // folders, and that must NOT change who the document is — otherwise the next
     // cycle can't find its prior analysis and re-runs the AI on an unchanged file.
-    format!(
-        "{:x}",
-        Sha256::digest(format!(
-            "{}|{}|{}",
-            document.kind, document.title, document.filename
-        ))
-    )
+    hex::encode(Sha256::digest(format!(
+        "{}|{}|{}",
+        document.kind, document.title, document.filename
+    )))
 }
 
 pub(super) fn document_fingerprint(document: &AnalysisDocument) -> Result<String, String> {
@@ -152,13 +146,10 @@ fn source_event_attention(previous: &DocumentAnalysis) -> bool {
 }
 
 fn source_event_id(event: &str, previous_id: &str, current_id: &str) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(format!(
-            "source-event|{}|{}|{}",
-            event, previous_id, current_id
-        ))
-    )
+    hex::encode(Sha256::digest(format!(
+        "source-event|{}|{}|{}",
+        event, previous_id, current_id
+    )))
 }
 
 fn source_event_label(analysis: &DocumentAnalysis) -> String {

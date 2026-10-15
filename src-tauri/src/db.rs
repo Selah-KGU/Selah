@@ -55,6 +55,7 @@ mod types;
 
 pub(crate) use cache::source_hash;
 pub use cache::CacheDeltaRow;
+#[cfg(test)]
 pub use cache_timestamps::CacheTimestampBatch;
 pub use luna_scope::epoch_secs;
 pub(crate) use luna_scope::luna_course_matches_snapshot;

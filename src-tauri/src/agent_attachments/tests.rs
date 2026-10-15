@@ -13,7 +13,7 @@ fn document_attachment_command_accepts_the_frontend_camel_case_payload() {
             .unwrap();
     let result = tauri::test::get_ipc_response(&window, tauri::webview::InvokeRequest {
         cmd: "agent_read_document_attachment".into(), callback: tauri::ipc::CallbackFn(0), error: tauri::ipc::CallbackFn(1),
-        url: "http://tauri.localhost".parse().unwrap(),
+        url: window.url().unwrap(),
         body: tauri::ipc::InvokeBody::Json(serde_json::json!({"name":"資料.txt","dataBase64":STANDARD.encode("日本語の添付 🌕")})),
         headers: Default::default(), invoke_key: tauri::test::INVOKE_KEY.into(),
     }).unwrap().deserialize::<DocumentPart>().unwrap();

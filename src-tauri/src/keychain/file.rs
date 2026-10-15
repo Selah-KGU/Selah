@@ -2,7 +2,7 @@ use aes_gcm::{
     aead::{Aead, Payload},
     Aes256Gcm, KeyInit, Nonce,
 };
-use rand::RngCore;
+use rand::TryRng;
 use std::{fs::OpenOptions, io::Write, path::Path};
 
 const HEADER: &[u8] = b"SELAH-VAULT\x02";
@@ -10,10 +10,12 @@ const HEADER: &[u8] = b"SELAH-VAULT\x02";
 pub(super) fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid vault key")?;
     let mut nonce = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|e| format!("Generate vault nonce: {e}"))?;
     let encrypted = cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plaintext,
                 aad: HEADER,
@@ -31,7 +33,9 @@ pub(super) fn decrypt(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid vault key")?;
     cipher
         .decrypt(
-            Nonce::from_slice(nonce),
+            Nonce::try_from(nonce)
+                .as_ref()
+                .map_err(|_| "Invalid vault nonce")?,
             Payload {
                 msg: &blob[HEADER.len() + 12..],
                 aad: HEADER,
@@ -47,7 +51,12 @@ pub(super) fn decrypt_legacy(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, Str
     }
     Aes256Gcm::new_from_slice(key)
         .map_err(|_| "Invalid legacy key")?
-        .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+        .decrypt(
+            Nonce::try_from(&blob[..12])
+                .as_ref()
+                .map_err(|_| "Invalid legacy nonce")?,
+            &blob[12..],
+        )
         .map_err(|_| "Legacy secret file could not be authenticated".into())
 }
 
@@ -88,6 +97,16 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aes_gcm_010_vaults_remain_readable_after_the_dependency_upgrade() {
+        // Fixed records emitted by aes-gcm 0.10.3 with key [9; 32] and nonce [7; 12].
+        let current = hex::decode("53454c41482d5641554c54020707070707070707070707072adafbfa0c51be493eca3ce8efe2957198de9ae668a66c656e119d05aa2ad362dd6cf6a88731ebbd533316e2").unwrap();
+        let legacy = hex::decode("0707070707070707070707072adafbfa0c51be493eca3ce8efe2957198de9ae668a66c656e119d05fe371dc622663df0e8c50ba60bfe6386").unwrap();
+        let expected = "saved API key 日本語 🌕".as_bytes();
+        assert_eq!(decrypt(&[9; 32], &current).unwrap(), expected);
+        assert_eq!(decrypt_legacy(&[9; 32], &legacy).unwrap(), expected);
+    }
 
     #[test]
     fn authenticated_format_roundtrips_large_payload_and_rejects_damage() {

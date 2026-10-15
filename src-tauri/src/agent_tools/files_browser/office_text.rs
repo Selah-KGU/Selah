@@ -145,9 +145,14 @@ pub fn render_pdf_to_images(path: &Path) -> Result<Vec<crate::ai::ImagePart>, St
             .render_with_config(&config)
             .map_err(|error| format!("ページ描画失敗: {}", error))?;
         let mut buffer = Vec::new();
-        image::DynamicImage::ImageRgb8(bitmap.as_image().into_rgb8())
-            .write_to(&mut Cursor::new(&mut buffer), image::ImageFormat::Jpeg)
-            .map_err(|error| format!("JPEG 変換失敗: {}", error))?;
+        image::DynamicImage::ImageRgb8(
+            bitmap
+                .as_image()
+                .map_err(|error| format!("ページ画像の変換失敗: {error}"))?
+                .into_rgb8(),
+        )
+        .write_to(&mut Cursor::new(&mut buffer), image::ImageFormat::Jpeg)
+        .map_err(|error| format!("JPEG 変換失敗: {}", error))?;
         if buffer.is_empty() || buffer.len() > MAX_PDF_IMAGE_BYTES {
             continue;
         }
@@ -215,7 +220,7 @@ fn extract_zipped_office_text(
             archive
                 .by_index(index)
                 .ok()
-                .map(|entry| entry.name().to_string())
+                .and_then(|entry| entry.name().ok().map(|name| name.into_owned()))
         })
         .filter(|name| {
             prefixes.iter().any(|prefix| name.starts_with(prefix)) && name.ends_with(".xml")

@@ -12,7 +12,7 @@ pub(super) fn set_owner(owner: Option<String>) {
 pub(crate) fn scoped_key(owner: Option<&str>, key: &str) -> String {
     use sha2::{Digest, Sha256};
     let owner = owner
-        .map(|id| format!("{:x}", Sha256::digest(id.as_bytes())))
+        .map(|id| hex::encode(Sha256::digest(id.as_bytes())))
         .unwrap_or_else(|| "disconnected".into());
     format!("mail-connection/{owner}/{key}")
 }

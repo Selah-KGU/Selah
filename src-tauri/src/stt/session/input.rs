@@ -5,10 +5,10 @@ use std::sync::mpsc;
 
 pub(super) fn build_input_stream(
     device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
     format: cpal::SampleFormat,
     audio_tx: mpsc::Sender<Vec<f32>>,
-    on_error: impl FnMut(cpal::StreamError) + Send + 'static,
+    on_error: impl FnMut(cpal::Error) + Send + 'static,
 ) -> Result<cpal::Stream, String> {
     macro_rules! converted_stream {
         ($sample:ty) => {

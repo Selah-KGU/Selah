@@ -23,7 +23,7 @@ impl PartialMode {
 
     pub(super) fn sync_version(&self, version: u64) -> bool {
         self.version
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |previous| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |previous| {
                 (version > previous).then_some(version)
             })
             .is_ok()
@@ -31,7 +31,7 @@ impl PartialMode {
 
     pub(super) fn set_enabled(&self, enabled: bool) -> bool {
         self.version
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |previous| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |previous| {
                 if previous & 1 == u64::from(enabled) {
                     return None;
                 }
