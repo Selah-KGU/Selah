@@ -31,6 +31,8 @@ mod budget;
 #[path = "local_ai/types.rs"]
 mod types;
 
+#[cfg(target_os = "macos")]
+pub(crate) use bridge::run_caption_inference;
 pub use bridge::unload_model;
 #[cfg(target_os = "macos")]
 pub use bridge::{

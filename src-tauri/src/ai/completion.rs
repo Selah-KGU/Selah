@@ -221,6 +221,36 @@ pub async fn chat_completion_public(
     chat_completion(config, messages).await
 }
 
+/// Caption-only guided output on the local model. Other providers keep their
+/// existing request adapter and are still checked by the caption protocol.
+pub(crate) async fn caption_completion(
+    config: &AiConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    if config.provider == "local" {
+        if !config.ai_enabled {
+            return Err("AI機能が無効になっています。".into());
+        }
+        let config = config.clone();
+        return tokio::task::spawn_blocking(move || {
+            crate::local_ai::run_caption_inference(crate::local_ai::InferenceRequest {
+                model_id: crate::local_ai::APPLE_INTELLIGENCE_MODEL_ID.into(),
+                file_name: String::new(),
+                messages,
+                sampler: crate::local_ai::SamplerConfig::deterministic(config.temperature),
+                max_tokens: config.max_tokens,
+                prefill: String::new(),
+                gen_id: String::new(),
+                think_budget_pct: 0,
+            })
+        })
+        .await
+        .map_err(|error| format!("字幕推論タスクの実行に失敗しました: {error}"))?;
+    }
+    chat_completion_public(config, messages).await
+}
+
 pub(in crate::ai) async fn chat_completion(
     config: &AiConfig,
     messages: Vec<ChatMessage>,

@@ -78,7 +78,12 @@ fn is_cancelled(gen_id: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 pub fn run_inference(req: InferenceRequest) -> Result<String, String> {
-    run_local(&req, None)
+    run_local(&req, None, None)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn run_caption_inference(req: InferenceRequest) -> Result<String, String> {
+    run_local(&req, None, Some("live_caption_edits_v1"))
 }
 
 #[cfg(target_os = "macos")]
@@ -89,7 +94,7 @@ pub fn run_inference_streaming<F: FnMut(&str, bool)>(
     if !req.gen_id.is_empty() {
         clear_inference_cancel(&req.gen_id);
     }
-    let result = run_local(&req, Some(&mut on_chunk));
+    let result = run_local(&req, Some(&mut on_chunk), None);
     if !req.gen_id.is_empty() {
         clear_inference_cancel(&req.gen_id);
     }
@@ -100,6 +105,7 @@ pub fn run_inference_streaming<F: FnMut(&str, bool)>(
 fn run_local(
     req: &InferenceRequest,
     on_chunk: Option<&mut dyn FnMut(&str, bool)>,
+    output_format: Option<&str>,
 ) -> Result<String, String> {
     let _ = (&req.model_id, &req.file_name, req.think_budget_pct);
     local_ai_support::ensure_supported()?;
@@ -116,12 +122,22 @@ fn run_local(
     let (instructions, prompt) = apple_request_parts(&req.messages, &req.prefill);
     let fitted = fit_apple_request(&instructions, &prompt, req.max_tokens);
     if fitted.trimmed {
+        if output_format.is_some() {
+            return Err("字幕全体をコンテキストに収められませんでした。".into());
+        }
         log::info!(
             "Apple Intelligence input trimmed to {} tokens; response cap {}",
             fitted.input_tokens,
             fitted.max_tokens
         );
     }
+    let caption_input = output_format.and_then(|_| {
+        req.messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .and_then(|message| serde_json::from_str::<serde_json::Value>(&message.content).ok())
+    });
     let temperature = req.sampler.temperature;
     let request = serde_json::json!({
         "gen_id": req.gen_id,
@@ -130,6 +146,9 @@ fn run_local(
         "temperature": temperature,
         "max_tokens": fitted.max_tokens,
         "greedy": temperature <= 0.0,
+        "output_format": output_format,
+        "caption_sentence_count": caption_input.as_ref().and_then(|input| input["字幕"].as_array()).map(Vec::len),
+        "caption_translate": caption_input.as_ref().is_some_and(|input| input.get("訳語").is_some()),
     });
     let request = serde_json::to_string(&request).map_err(|error| error.to_string())?;
     let api = library()?;

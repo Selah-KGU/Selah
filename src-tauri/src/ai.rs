@@ -8,6 +8,7 @@ mod config;
 mod operations;
 
 pub use commands::*;
+pub(crate) use completion::caption_completion;
 pub use completion::chat_completion_public;
 #[cfg(test)]
 pub(crate) use config::hold_live_timing_io;
