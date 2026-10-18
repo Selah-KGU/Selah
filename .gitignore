@@ -2,6 +2,23 @@
 /node_modules/
 .DS_Store
 
+# Local environment files; keep shareable templates available.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local diagnostic output and temporary LIVE replay entry points.
+*.log
+/docs/test-results/
+/runtime-replay.html
+/src/__runtime_replay.ts
+
+# Historical local A/B experiments, not wired into the current test suite.
+/src-tauri/src/live/caption_refine/evaluation.rs
+/src-tauri/src/live/caption_refine/evaluation/
+/tests/fixtures/caption-refine-evaluation/
+
 # VitePress build output and temp files. Keep docs/.vitepress source files tracked.
 /docs/.vitepress/dist/
 /docs/.vitepress/.temp/
