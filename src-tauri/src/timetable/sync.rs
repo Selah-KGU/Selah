@@ -16,7 +16,7 @@ impl Drop for WidgetSnapshotGuard<'_> {
     }
 }
 
-/// Serial data sync: KGC current, KGC next, Luna, then enrichment.
+/// Data sync with optional KGC current/next weeks, Luna, then enrichment.
 /// KGC being down or logged out must not fail the command. Luna still refreshes,
 /// and a login-required error is not returned unless Luna itself needs recovery.
 #[tauri::command]
@@ -38,9 +38,9 @@ pub async fn sync_schedule_data(
     if !kgc_authenticated {
         log::warn!("sync_schedule_data: KGC not authenticated; continuing with Luna");
         kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
-    } else {
-        // Struts 1 keeps one token per session, so KGC fetches stay serial.
-        let _kgc_gate = kgc.gate.lock().await;
+    } else if let Ok(_kgc_gate) = kgc.gate.try_lock() {
+        // KGC is optional: never wait for an in-progress login or another KGC
+        // command. Struts 1 still requires serial access within this session.
         let lease = kgc.session();
         let http = {
             let client = &lease;
@@ -113,6 +113,9 @@ pub async fn sync_schedule_data(
             log::warn!("sync_schedule_data: KGC logged out before fetch; continuing with Luna");
             kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
         }
+    } else {
+        log::info!("sync_schedule_data: KGC busy; continuing with Luna");
+        kgc_warning = KGC_UNAVAILABLE_WARNING.to_string();
     }
 
     let scope = crate::academic_period::visible_weeks(
@@ -192,6 +195,8 @@ pub async fn sync_schedule_data(
             clear_kgc_if_expired(&lease, &e).await;
             log::warn!("sync_schedule_data: enrichment failed: {}", e);
         }
+    } else if let Err(e) = refresh_luna_counts_internal(&luna_state, &db, false).await {
+        log::warn!("sync_schedule_data: Luna counts failed: {}", e);
     }
 
     let response_year = if scope.from_calendar {

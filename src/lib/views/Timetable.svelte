@@ -4,8 +4,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { toPng } from "html-to-image";
   import selahLogoUrl from "../../assets/logo.png";
-  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, fetchSyllabusFavorites, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive, saveImageFile, copyImageToClipboard, shareImageNative } from "../api";
-  import { lunaAuthState, gcalAuthState, sessionExpired, cachedBackendFetch, onCacheUpdate, aiReady, authState, activeTab } from "../stores";
+  import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive, saveImageFile, copyImageToClipboard, shareImageNative } from "../api";
+  import { lunaAuthState, gcalAuthState, sessionExpired, onCacheUpdate, aiReady, authState, activeTab } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import FirstVisitTip from "../onboarding/FirstVisitTip.svelte";
@@ -265,7 +265,8 @@
     toastTimer = setTimeout(() => { toast = null; }, 3000);
   }
 
-  // ── Load exam + favorites (DB cache first, then network fallback) ──
+  // Extras are optional cached overlays; opening/updating the timetable must
+  // not start KGC authentication just because an overlay has no cache yet.
   async function loadCachedExtras() {
     debugLog("[Timetable] loadCachedExtras: start");
 
@@ -275,9 +276,6 @@
       debugLog("[Timetable] exam cache:", examJson ? `${examJson.length} chars` : "null");
       if (examJson) {
         const data: ExamTimetableData = JSON.parse(examJson);
-        examEntries = data.entries || [];
-      } else {
-        const data = await cachedBackendFetch<ExamTimetableData>("exams");
         examEntries = data.entries || [];
       }
       debugLog("[Timetable] exam entries:", examEntries.length);
@@ -291,10 +289,6 @@
       debugLog("[Timetable] favorites cache:", favJson ? `${favJson.length} chars` : "null");
       if (favJson) {
         const data: SyllabusSearchResult = JSON.parse(favJson);
-        favoriteEntries = data.entries || [];
-      } else {
-        debugLog("[Timetable] no favorites cache, fetching...");
-        const data = await fetchSyllabusFavorites();
         favoriteEntries = data.entries || [];
       }
       debugLog("[Timetable] favorites loaded:", favoriteEntries.length, favoriteEntries.map(f => ({ title: f.course_title, dp: f.day_period })));
@@ -409,7 +403,7 @@
     }
   }
 
-  // ── Sync: serial fetch KGC → Luna → enrichment → persist ──
+  // ── Sync: Luna with optional KGC data → enrichment → persist ──
   async function handleSync() {
     if (syncing) return;
     syncing = true;

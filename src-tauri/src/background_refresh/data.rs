@@ -121,12 +121,6 @@ async fn refresh_backend_data_inner(
     let mut updated_keys = Vec::new();
     let mut schedule_changed = false;
 
-    // KGC is not kept alive on a timer. When an automatic KGC-backed data task
-    // is actually due, allow that run to make one hidden-login attempt.
-    if kgc_data_request_due(request, &db) {
-        kgc_authenticated = crate::commands::ensure_kgc_session_for_automatic_request(app).await;
-    }
-
     let fast_max_age = super::fast_cache_max_age_secs(super::is_app_focused(app));
     if request.wants("luna_todo")
         && luna_authenticated
@@ -197,6 +191,18 @@ async fn refresh_backend_data_inner(
             Ok(_) => {}
             Err(e) => log::warn!("background refresh: luna counts failed: {}", e),
         }
+    }
+
+    // Publish Luna's schedule before optional KGC recovery can delay the run.
+    let published_keys = updated_keys.len();
+    if published_keys > 0 {
+        emit_cache_updates(app, updated_keys.clone());
+    }
+
+    // A schedule refresh uses Luna and any existing KGC session. Only tasks
+    // that require KGC may recover it, after the Luna schedule has refreshed.
+    if kgc_data_request_due(request, &db) {
+        kgc_authenticated = crate::commands::ensure_kgc_session_for_automatic_request(app).await;
     }
 
     if kgc_authenticated {
@@ -298,8 +304,8 @@ async fn refresh_backend_data_inner(
         super::calendar::maybe_auto_sync_calendars(app, &db, schedule_changed, request.force).await;
     }
 
-    if !updated_keys.is_empty() {
-        emit_cache_updates(app, updated_keys.clone());
+    if updated_keys.len() > published_keys {
+        emit_cache_updates(app, updated_keys[published_keys..].to_vec());
     }
     db.checkpoint_passive();
 
@@ -314,9 +320,8 @@ fn cache_is_stale(db: &Database, key: &str, max_age_secs: i64) -> bool {
 }
 
 fn kgc_data_request_due(request: &BackendRefreshRequest, db: &Database) -> bool {
-    (request.wants("schedule_data") && (request.force || schedule_refresh_is_stale(db)))
-        || (request.wants("grades")
-            && (request.force || cache_is_stale(db, "grades", ACADEMIC_RECORD_CACHE_MAX_AGE_SECS)))
+    (request.wants("grades")
+        && (request.force || cache_is_stale(db, "grades", ACADEMIC_RECORD_CACHE_MAX_AGE_SECS)))
         || (request.wants("registration")
             && (request.force
                 || cache_is_stale(db, "registration", ACADEMIC_RECORD_CACHE_MAX_AGE_SECS)))
@@ -330,6 +335,49 @@ fn kgc_data_request_due(request: &BackendRefreshRequest, db: &Database) -> bool 
             && (request.force || cache_is_stale(db, "student_profile", STABLE_CACHE_MAX_AGE_SECS)))
         || (request.wants("exams")
             && (request.force || cache_is_stale(db, "exam_timetable", STABLE_CACHE_MAX_AGE_SECS)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schedule_refresh_never_requires_kgc_recovery() {
+        let directory =
+            std::env::temp_dir().join(format!("selah-schedule-{}", uuid::Uuid::new_v4()));
+        let db = Database::open(&directory).unwrap();
+        for force in [false, true] {
+            let keys = vec!["schedule_data".to_string()];
+            let request = BackendRefreshRequest::new(Some(&keys), force);
+            assert!(!kgc_data_request_due(&request, &db));
+
+            let keys = vec!["schedule_data".to_string(), "grades".to_string()];
+            let request = BackendRefreshRequest::new(Some(&keys), force);
+            assert!(kgc_data_request_due(&request, &db));
+        }
+        drop(db);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn fresh_kgc_data_does_not_trigger_login_for_a_stale_schedule() {
+        let directory =
+            std::env::temp_dir().join(format!("selah-schedule-{}", uuid::Uuid::new_v4()));
+        let db = Database::open(&directory).unwrap();
+        db.save_data_cache("grades", "{}").unwrap();
+        let keys = vec!["schedule_data".to_string(), "grades".to_string()];
+        assert!(schedule_refresh_is_stale(&db));
+        assert!(!kgc_data_request_due(
+            &BackendRefreshRequest::new(Some(&keys), false),
+            &db
+        ));
+        assert!(kgc_data_request_due(
+            &BackendRefreshRequest::new(Some(&keys), true),
+            &db
+        ));
+        drop(db);
+        let _ = std::fs::remove_dir_all(directory);
+    }
 }
 
 fn schedule_refresh_is_stale(db: &Database) -> bool {
