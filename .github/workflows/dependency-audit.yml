@@ -5,6 +5,7 @@ on:
     paths:
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'
+      - 'src-tauri/vendor/**'
       - 'src-tauri/.cargo/audit.toml'
       - 'rust-toolchain.toml'
       - 'scripts/audit-rust-dependencies.mjs'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'
+      - 'src-tauri/vendor/**'
       - 'src-tauri/.cargo/audit.toml'
       - 'rust-toolchain.toml'
       - 'scripts/audit-rust-dependencies.mjs'

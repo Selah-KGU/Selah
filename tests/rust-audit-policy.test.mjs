@@ -6,8 +6,9 @@ function fixture() {
   return {
     lockfile: [
       ["glib", "0.18.5"], ["proc-macro-error", "1.0.4"],
+      ["zvariant", "5.15.0"], ["zbus_names", "4.3.4"], ["zvariant_derive", "5.15.0"],
     ].map(([name, version]) => `[[package]]\nname = "${name}"\nversion = "${version}"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`).join("\n"),
-    config: '[advisories]\nignore = ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429"]\n',
+    config: '[advisories]\nignore = ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429", "RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"]\n',
     workflowSources: ["targets: aarch64-apple-darwin,x86_64-apple-darwin\nargs: --target x86_64-pc-windows-msvc"],
     trees: new Map(releaseTargets.map(target => [target, "selah-app v1.1.0\ntauri v2.12.4\n"])),
   };
@@ -17,7 +18,7 @@ test("reviewed Linux-only packages can remain in the cross-platform lockfile", (
   assert.doesNotThrow(() => checkAuditScope(fixture()));
 });
 
-for (const name of ["glib", "proc-macro-error"]) {
+for (const name of ["glib", "proc-macro-error", "zvariant", "zbus_names", "zvariant_derive"]) {
   test(`${name} cannot enter any macOS or Windows release graph`, () => {
     for (const target of releaseTargets) {
       const input = fixture();
@@ -64,6 +65,9 @@ test("the policy rejects added, duplicated, or missing advisory ignores", () => 
     'ignore = ["RUSTSEC-2024-0370"]',
     'ignore = ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429", "RUSTSEC-2023-0071"]',
     'ignore = ["RUSTSEC-2024-0370", "RUSTSEC-2024-0429", "RUSTSEC-2024-0429"]',
+    fixture().config.replace('"RUSTSEC-2026-0370", ', ''),
+    fixture().config.replace('"RUSTSEC-2026-0371", ', ''),
+    fixture().config.replace('"RUSTSEC-2026-0372"', '"RUSTSEC-2026-0369"'),
   ]) {
     assert.throws(() => checkAuditScope({ ...fixture(), config }), /must match/);
   }

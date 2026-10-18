@@ -62,7 +62,9 @@ time = { version = "0.3.55", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tauri-plugin-opener = "2.7.2"
 tauri-plugin-global-shortcut = "2.4.1"
-tauri-plugin-updater = { version = "2.14.0", optional = true }
+# Windows updater feeds contain signed raw NSIS installers, so ZIP support is
+# unnecessary. macOS tar.gz support is independent of this optional feature.
+tauri-plugin-updater = { version = "2.14.0", optional = true, default-features = false, features = ["rustls-tls", "system-proxy"] }
 rfd = "0.17.2"
 zip = { version = "9.0.3", default-features = false, features = ["deflate"] }
 quick-xml = "0.42.0"
@@ -130,6 +132,10 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 tauri-plugin-single-instance = "2.5.4"
 sherpa-onnx = { version = "=1.13.8", default-features = false }
+
+[patch.crates-io]
+# Backport the upstream ZIP 9 fix while preserving the 1.13.8 native ABI.
+sherpa-onnx-sys = { path = "vendor/sherpa-onnx-sys" }
 
 [profile.dev]
 # Keep dev builds non-incremental to avoid the macOS native agent panel

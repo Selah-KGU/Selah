@@ -13,13 +13,16 @@ export const releaseTargets = [
 const exceptions = [
   { name: "proc-macro-error", version: "1.0.4", id: "RUSTSEC-2024-0370" },
   { name: "glib", version: "0.18.5", id: "RUSTSEC-2024-0429" },
+  { name: "zvariant", version: "5.15.0", id: "RUSTSEC-2026-0370" },
+  { name: "zbus_names", version: "4.3.4", id: "RUSTSEC-2026-0371" },
+  { name: "zvariant_derive", version: "5.15.0", id: "RUSTSEC-2026-0372" },
 ];
 
 export function checkAuditScope({ lockfile, config, workflowSources, trees }) {
   const configured = [...(config.match(/ignore\s*=\s*\[([^\]]*)\]/)?.[1] ?? "")
     .matchAll(/"(RUSTSEC-[^"]+)"/g)].map(match => match[1]).sort();
   if (JSON.stringify(configured) !== JSON.stringify(exceptions.map(item => item.id).sort())) {
-    throw new Error("Audit exceptions must match the two reviewed Linux-only advisories.");
+    throw new Error("Audit exceptions must match the reviewed Linux-only advisories.");
   }
 
   const packages = lockfile.split(/^\[\[package\]\]\s*$/m).map(block => ({
