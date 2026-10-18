@@ -54,6 +54,8 @@ pub(crate) mod reservation;
 mod runtime;
 #[path = "stt/session.rs"]
 mod session;
+#[path = "stt/text.rs"]
+mod text;
 
 #[allow(unused_imports)]
 use audio::{

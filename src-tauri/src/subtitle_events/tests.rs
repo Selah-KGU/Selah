@@ -341,6 +341,7 @@ fn refined<'a>(
     RefinedCaption {
         session_id: "a",
         segment_id: 1,
+        source_seq: None,
         source: String::new(),
         translation: translation.map(str::to_string),
         ready,
@@ -350,7 +351,7 @@ fn refined<'a>(
 }
 
 #[test]
-fn translation_hold_blocks_original_captions_without_losing_order() {
+fn translation_holds_partials_but_a_new_confirmed_capture_resumes_current_speech() {
     let now = Instant::now();
     let mut gate = CaptionGate::default();
     let original = gate
@@ -374,11 +375,10 @@ fn translation_hold_blocks_original_captions_without_losing_order() {
             now + PARTIAL_INTERVAL
         )
         .is_none());
-    assert!(gate
+    let final_original = gate
         .committed(Some("a"), committed(Some(12), 1, "final original"), true)
-        .is_none());
-    assert!(held.is_current());
-    gate.release_hold();
+        .unwrap();
+    assert_eq!(final_original.text, "final original");
     assert!(!held.is_current());
     let resumed = gate
         .partial(
@@ -392,6 +392,54 @@ fn translation_hold_blocks_original_captions_without_losing_order() {
     assert!(gate
         .committed(Some("a"), committed(Some(12), 2, "late final"), true)
         .is_none());
+}
+
+#[test]
+fn finishing_translation_pages_resumes_the_newest_speech_without_a_new_model_result() {
+    let mut gate = CaptionGate::default();
+    let translated = gate
+        .refined(Some("a"), refined(Some("訳"), true, true, false), true)
+        .unwrap();
+    gate.partial(
+        Some("a"),
+        partial(10, "current speech"),
+        true,
+        Instant::now(),
+    );
+    let restored = gate
+        .translation_finished(Some("a"), translated.revision, true)
+        .unwrap();
+    assert_eq!(restored.text, "current speech");
+    assert!(!restored.is_final);
+    assert!(!gate.holding_translation);
+    assert!(!translated.is_current());
+}
+
+#[test]
+fn an_old_page_timer_cannot_release_a_newer_translation_or_recording() {
+    let mut gate = CaptionGate::default();
+    let old = gate
+        .refined(Some("a"), refined(Some("old"), true, true, false), true)
+        .unwrap();
+    let new = gate
+        .refined(
+            Some("a"),
+            RefinedCaption {
+                segment_id: 2,
+                ..refined(Some("new"), true, true, false)
+            },
+            true,
+        )
+        .unwrap();
+    assert!(gate
+        .translation_finished(Some("a"), old.revision, true)
+        .is_none());
+    assert!(new.is_current());
+    gate.sync_owner(Some("b"));
+    assert!(gate
+        .translation_finished(Some("b"), new.revision, true)
+        .is_none());
+    assert!(!gate.holding_translation);
 }
 
 #[test]
@@ -415,6 +463,107 @@ fn only_a_ready_overlay_translation_holds_the_caption() {
     assert!(!held.is_final);
     gate.refined(Some("a"), refined(None, false, false, true), true);
     assert!(!held.is_current());
+}
+
+#[test]
+fn a_current_confirmed_translation_can_display_while_newer_speech_is_still_partial() {
+    let mut gate = CaptionGate::default();
+    gate.committed(Some("a"), committed(Some(10), 1, "old speech"), true);
+    let original = gate
+        .partial(
+            Some("a"),
+            partial(20, "new speech still in progress"),
+            true,
+            Instant::now(),
+        )
+        .unwrap();
+    let stale = RefinedCaption {
+        source_seq: Some(10),
+        source: "old speech".into(),
+        ..refined(Some("old translation"), true, true, false)
+    };
+    let translated = gate.refined(Some("a"), stale, true).unwrap();
+    assert_eq!(translated.text, "old translation");
+    assert!(!original.is_current());
+    let restored = gate
+        .translation_finished(Some("a"), translated.revision, true)
+        .unwrap();
+    assert_eq!(restored.text, "new speech still in progress");
+}
+
+#[test]
+fn a_newer_confirmed_capture_rejects_old_translation_even_when_its_raw_line_is_hidden() {
+    let mut gate = CaptionGate::default();
+    gate.committed(Some("a"), committed(Some(10), 1, "old speech"), true);
+    let latest = gate
+        .partial(
+            Some("a"),
+            partial(30, "current speech"),
+            true,
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(gate
+        .committed(
+            Some("a"),
+            committed(Some(20), 2, "new confirmed speech"),
+            true
+        )
+        .is_none());
+    assert!(gate
+        .refined(
+            Some("a"),
+            RefinedCaption {
+                source_seq: Some(10),
+                source: "old speech".into(),
+                ..refined(Some("obsolete translation"), true, true, false)
+            },
+            true,
+        )
+        .is_none());
+    assert!(latest.is_current());
+}
+
+#[test]
+fn a_final_acknowledging_the_same_text_does_not_suppress_its_translation() {
+    let mut gate = CaptionGate::default();
+    gate.committed(Some("a"), committed(Some(20), 1, "First.  Second."), true);
+    let translated = RefinedCaption {
+        source_seq: Some(10),
+        source: "First.\nSecond.".into(),
+        ..refined(Some("current translation"), true, true, false)
+    };
+    assert_eq!(
+        gate.refined(Some("a"), translated, true).unwrap().text,
+        "current translation"
+    );
+}
+
+#[test]
+fn an_obsolete_batch_releases_an_older_translation_instead_of_leaving_its_pages_running() {
+    let mut gate = CaptionGate::default();
+    let old = gate
+        .refined(
+            Some("a"),
+            refined(Some("old pages"), true, true, false),
+            true,
+        )
+        .unwrap();
+    gate.partial(
+        Some("a"),
+        partial(30, "latest speech"),
+        true,
+        Instant::now(),
+    );
+    let skipped = RefinedCaption {
+        segment_id: 2,
+        source_seq: Some(20),
+        ..refined(Some("obsolete translation"), false, true, false)
+    };
+    let restored = gate.refined(Some("a"), skipped, true).unwrap();
+    assert_eq!(restored.text, "latest speech");
+    assert!(!old.is_current());
+    assert!(!gate.holding_translation);
 }
 
 #[test]
@@ -520,9 +669,6 @@ fn a_failed_translation_immediately_restores_the_latest_original_and_releases_ho
     assert!(gate
         .partial(Some("a"), partial(11, "new speech"), true, now)
         .is_none());
-    assert!(gate
-        .committed(Some("a"), committed(Some(12), 1, "new final"), true)
-        .is_none());
     let fallback = RefinedCaption {
         segment_id: 2,
         source: "earlier batch source".into(),
@@ -530,8 +676,13 @@ fn a_failed_translation_immediately_restores_the_latest_original_and_releases_ho
     };
     let restored = gate.refined(Some("a"), fallback, true).unwrap();
     assert!(!held.is_current());
-    assert_eq!(restored.text, "new final");
-    assert!(restored.is_final);
+    assert_eq!(restored.text, "new speech");
+    assert!(!restored.is_final);
+    let final_caption = gate
+        .committed(Some("a"), committed(Some(12), 1, "new final"), true)
+        .unwrap();
+    assert_eq!(final_caption.text, "new final");
+    assert!(!restored.is_current());
     assert_eq!(
         gate.partial(Some("a"), partial(13, "continuing speech"), true, now)
             .unwrap()

@@ -1,6 +1,6 @@
 //! Fit complete translated batches into the shared single-line overlay.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -9,6 +9,7 @@ use super::Caption;
 // Both overlays cap at 620px. Reserve their padding and a font-measurement
 // margin; graphemes keep combining characters and emoji on the same page.
 const PAGE_WIDTH: usize = 520;
+const LIVE_HOLD_BUDGET: Duration = Duration::from_secs(5);
 
 fn width(grapheme: &str) -> usize {
     if grapheme.chars().all(char::is_whitespace) {
@@ -18,6 +19,42 @@ fn width(grapheme: &str) -> usize {
     } else {
         22
     }
+}
+
+/// Raw recognition replaces the current line. Keep its newest words visible
+/// instead of allowing the single-line native label to ellipsize the tail.
+pub(super) fn live_tail(text: &str) -> String {
+    let text = text.trim();
+    let mut measured = 0;
+    let mut start = text.len();
+    for (index, grapheme) in text.grapheme_indices(true).rev() {
+        measured += width(grapheme);
+        if measured > PAGE_WIDTH {
+            break;
+        }
+        start = index;
+    }
+    if start == 0 {
+        return text.to_string();
+    }
+    // Reserve the ellipsis, then prefer a complete English word. Never trim
+    // inside a grapheme, including a family emoji or combining accent.
+    while start < text.len()
+        && text[start..].graphemes(true).map(width).sum::<usize>() + width("…") > PAGE_WIDTH
+    {
+        start += text[start..].graphemes(true).next().unwrap().len();
+    }
+    if text[..start].ends_with(|ch: char| ch.is_ascii_alphanumeric())
+        && text[start..].starts_with(|ch: char| ch.is_ascii_alphanumeric())
+    {
+        if let Some((offset, _)) = text[start..]
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace())
+        {
+            start += offset;
+        }
+    }
+    format!("…{}", text[start..].trim_start())
 }
 
 pub(crate) fn split_pages(text: &str) -> Vec<String> {
@@ -61,12 +98,33 @@ pub(super) fn page_delay(text: &str) -> Duration {
     Duration::from_millis((text.graphemes(true).count() as u64 * 90).clamp(1_800, 3_000))
 }
 
+#[cfg(test)]
 pub(super) async fn show_pages(
+    caption: Caption,
+    current: impl Fn() -> bool,
+    show: impl FnMut(Caption),
+    delay: fn(&str) -> Duration,
+) {
+    show_budgeted_pages(caption, current, show, delay, None).await;
+}
+
+pub(super) async fn show_live_pages(
+    caption: Caption,
+    current: impl Fn() -> bool,
+    show: impl FnMut(Caption),
+    delay: fn(&str) -> Duration,
+) {
+    show_budgeted_pages(caption, current, show, delay, Some(LIVE_HOLD_BUDGET)).await;
+}
+
+async fn show_budgeted_pages(
     caption: Caption,
     current: impl Fn() -> bool,
     mut show: impl FnMut(Caption),
     delay: fn(&str) -> Duration,
+    budget: Option<Duration>,
 ) {
+    let deadline = budget.map(|budget| Instant::now() + budget);
     let pages = split_pages(&caption.text);
     let count = pages.len();
     for (index, text) in pages.into_iter().enumerate() {
@@ -74,8 +132,19 @@ pub(super) async fn show_pages(
             return;
         }
         let pause = delay(&text);
+        // Full translations remain in the LIVE history. Do not start another
+        // overlay page unless its reading time fits before returning to speech.
+        if index > 0 && deadline.is_some_and(|deadline| Instant::now() + pause > deadline) {
+            return;
+        }
         show(caption.page(text, index + 1 == count));
-        if index + 1 < count {
+        // Hold the last translated page long enough to read, then allow the
+        // owner to resume current speech. A translation must not freeze the
+        // overlay until another model response happens to arrive.
+        if index + 1 < count || !caption.is_final {
+            let pause = deadline.map_or(pause, |deadline| {
+                pause.min(deadline.saturating_duration_since(Instant::now()))
+            });
             tokio::time::sleep(pause).await;
         }
     }
@@ -99,6 +168,50 @@ mod tests {
 
     fn immediate(_: &str) -> Duration {
         Duration::ZERO
+    }
+
+    #[test]
+    fn raw_captions_show_the_latest_words_instead_of_a_clipped_old_prefix() {
+        let short = "最新の短い字幕です。";
+        assert_eq!(live_tail(short), short);
+        for text in [
+            "これは既に話し終えた説明です。".repeat(12) + "今話しているのは条件付き確率です。",
+            "These previous words were already spoken. ".repeat(12)
+                + "The current topic is conditional probability.",
+            "👨‍👩‍👧‍👦e\u{301}🇯🇵".repeat(40),
+        ] {
+            let tail = live_tail(&text);
+            assert!(tail.starts_with('…'));
+            assert!(text.ends_with(tail.trim_start_matches('…')));
+            assert!(tail.graphemes(true).map(width).sum::<usize>() <= PAGE_WIDTH);
+            let graphemes: Vec<_> = text.graphemes(true).collect();
+            let tail_graphemes: Vec<_> = tail.graphemes(true).skip(1).collect();
+            assert!(graphemes.ends_with(&tail_graphemes));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_long_live_translation_releases_the_overlay_before_all_history_pages_are_played() {
+        fn reading_time(_: &str) -> Duration {
+            Duration::from_millis(10)
+        }
+        let text = "長い翻訳です。".repeat(400);
+        let full_pages = split_pages(&text).len();
+        let mut shown = Vec::new();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            show_budgeted_pages(
+                caption(&text),
+                || true,
+                |page| shown.push(page.text),
+                reading_time,
+                Some(Duration::from_millis(25)),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!shown.is_empty() && shown.len() < full_pages);
+        assert!(text.starts_with(&shown.concat()));
     }
 
     #[tokio::test]

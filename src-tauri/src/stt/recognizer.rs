@@ -51,9 +51,9 @@ pub(in crate::stt) fn build_vad_config(
             window_size: VAD_WINDOW_SAMPLES as i32,
             // sherpa-onnx raises this model's threshold to 0.90 once the
             // buffer exceeds max_speech_duration, and ongoing speech then
-            // looks like silence. Do not cut the utterance in userspace to
-            // stay under a short limit: that reset drops the continuation
-            // and queues a long final in front of the next live partial.
+            // looks like silence. Keep that threshold stable; Live flushes
+            // bounded frames separately without resetting the acoustic state
+            // or putting final decoding in front of the live partial lane.
             max_speech_duration: 86_400.0,
         },
         ..Default::default()

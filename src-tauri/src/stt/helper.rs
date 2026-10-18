@@ -43,7 +43,7 @@ pub(super) fn decode_samples(
     recognizer.decode(&stream);
     stream
         .get_result()
-        .map(|r| strip_sense_voice_tags(r.text.trim()))
+        .map(|r| super::text::join_cjk_tokens(&strip_sense_voice_tags(r.text.trim())))
         .unwrap_or_default()
 }
 

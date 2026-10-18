@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub(super) struct CheckedCorrection {
     pub text: String,
+    pub parts: Vec<String>,
     pub reverted: usize,
 }
 
@@ -12,16 +13,10 @@ pub(super) fn parts(text: &str) -> Vec<String> {
     let mut start = 0;
     let mut index = 0;
     while index < chars.len() {
-        let boundary = matches!(chars[index], '。' | '！' | '？' | '!' | '?' | '\n')
-            || (chars[index] == '.' && period_ends_sentence(&chars, index));
+        let boundary = super::sentences::ends_sentence(&chars, index) || chars[index] == '\n';
         index += 1;
         if boundary {
-            while index < chars.len()
-                && matches!(
-                    chars[index],
-                    '。' | '！' | '？' | '!' | '?' | '」' | '』' | '”' | '"' | ')' | '）'
-                )
-            {
+            while index < chars.len() && super::sentences::closing(chars[index]) {
                 index += 1;
             }
             push(&mut output, &chars[start..index]);
@@ -37,28 +32,6 @@ fn push(output: &mut Vec<String>, chars: &[char]) {
     if text.chars().any(char::is_alphanumeric) {
         output.push(text.trim().to_string());
     }
-}
-
-fn period_ends_sentence(chars: &[char], index: usize) -> bool {
-    if chars.get(index + 1).is_none() {
-        return true;
-    }
-    if chars
-        .get(index + 1)
-        .is_some_and(|ch| !ch.is_whitespace() && ch.is_ascii_alphanumeric())
-    {
-        return false;
-    }
-    let start = chars[..index]
-        .iter()
-        .rposition(|ch| !ch.is_ascii_alphabetic())
-        .map_or(0, |i| i + 1);
-    let word: String = chars[start..index].iter().collect();
-    !(word.len() == 1 && word.chars().all(|ch| ch.is_ascii_uppercase()))
-        && ![
-            "mr", "mrs", "ms", "dr", "prof", "jr", "sr", "vs", "etc", "e", "g", "i",
-        ]
-        .contains(&word.to_ascii_lowercase().as_str())
 }
 
 pub(super) fn reordered(source: &[String], corrected: &[String]) -> bool {
@@ -118,21 +91,24 @@ pub(super) fn check(value: &Value, source: &str) -> Option<CheckedCorrection> {
         return None;
     }
     let mut reverted = 0;
-    let text = source
+    let parts: Vec<String> = source
         .iter()
         .zip(&candidates)
         .enumerate()
         .map(|(index, (original, candidate))| {
             if !rejected[index] && super::quality::acceptable_correction(original, candidate) {
-                candidate.as_str()
+                candidate.clone()
             } else {
                 reverted += 1;
-                original.as_str()
+                original.clone()
             }
         })
-        .collect::<Vec<_>>()
-        .join(" ");
-    Some(CheckedCorrection { text, reverted })
+        .collect();
+    Some(CheckedCorrection {
+        text: parts.join(" "),
+        parts,
+        reverted,
+    })
 }
 
 pub(super) fn edit_candidates(
@@ -171,6 +147,20 @@ pub(super) fn edit_candidates(
         // Kana-only inflection changes are paraphrases, not term repairs.
         let left: Vec<_> = from.chars().collect();
         let right: Vec<_> = to.chars().collect();
+        let han = |ch: &char| ('\u{4e00}'..='\u{9fff}').contains(ch);
+        let hiragana = |ch: &char| ('\u{3040}'..='\u{309f}').contains(ch);
+        if left.iter().any(han)
+            && right.iter().any(han)
+            && !left
+                .iter()
+                .filter(|ch| hiragana(ch))
+                .eq(right.iter().filter(|ch| hiragana(ch)))
+        {
+            // A term repair may change kanji, but must not delete particles
+            // or turn Japanese verb endings into Chinese grammar.
+            rejected[index] = true;
+            continue;
+        }
         let prefix = left.iter().zip(&right).take_while(|(a, b)| a == b).count();
         let suffix = left[prefix..]
             .iter()
@@ -247,6 +237,22 @@ pub(super) fn edit_candidates(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn actual_model_clause_rewrites_cannot_translate_a_japanese_correction_into_chinese() {
+        let source = "た時に平均が近づいていく値です。";
+        let value = json!({"edits":[{"id":1,"from":"平均が近づいていく値です","to":"平均近づいていく值是"}]});
+        let checked = check(&value, source).unwrap();
+        assert_eq!(checked.text, source);
+        assert_eq!(checked.reverted, 1);
+        let checked = check(
+            &json!({"edits":[{"id":1,"from":"確立変数です","to":"確率変数です"}]}),
+            "確立変数です。",
+        )
+        .unwrap();
+        assert_eq!(checked.text, "確率変数です。");
+        assert_eq!(checked.reverted, 0);
+    }
 
     #[test]
     fn boundaries_preserve_quotes_decimals_abbreviations_and_unpunctuated_batch_lines() {

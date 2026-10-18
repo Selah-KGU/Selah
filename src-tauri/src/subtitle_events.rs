@@ -73,11 +73,12 @@ struct CaptionGate {
     owner: Option<String>,
     live_revision: u64,
     last_seq: u64,
+    last_committed_seq: u64,
     last_line_count: usize,
     last_partial: Option<Instant>,
     holding_translation: bool,
     last_refined_segment: u64,
-    held_original: Option<(String, bool)>,
+    latest_original: Option<(String, bool)>,
     caption_revision: Arc<AtomicU64>,
 }
 
@@ -86,6 +87,7 @@ struct RefinedCaption<'a> {
     session_id: &'a str,
     #[serde(default)]
     segment_id: u64,
+    source_seq: Option<u64>,
     #[serde(default)]
     source: String,
     #[serde(default)]
@@ -111,11 +113,12 @@ impl CaptionGate {
         if self.owner.as_deref() != owner {
             self.owner = owner.map(str::to_owned);
             self.last_seq = 0;
+            self.last_committed_seq = 0;
             self.last_line_count = 0;
             self.last_partial = None;
             self.holding_translation = false;
             self.last_refined_segment = 0;
-            self.held_original = None;
+            self.latest_original = None;
             self.caption_revision.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -150,8 +153,8 @@ impl CaptionGate {
         }
         // Even a throttled or hidden newer partial must outrank older finals.
         self.last_seq = payload.seq;
+        self.latest_original = Some((payload.text.to_string(), false));
         if self.holding_translation && enabled {
-            self.held_original = Some((payload.text.into_owned(), false));
             return None;
         }
         if !enabled
@@ -162,7 +165,7 @@ impl CaptionGate {
             return None;
         }
         self.last_partial = Some(now);
-        Some(self.caption(payload.text, false))
+        Some(self.original_caption(payload.text, false))
     }
 
     fn committed(
@@ -178,23 +181,29 @@ impl CaptionGate {
         {
             return None;
         }
+        let resumed = if payload.seq.is_some_and(|seq| seq > self.last_committed_seq) {
+            self.last_committed_seq = payload.seq.unwrap();
+            self.resume_original(enabled, "")
+        } else {
+            None
+        };
         match payload.seq {
             Some(seq) if seq > self.last_seq => self.last_seq = seq,
             // Manual lines have no capture order. Once STT has supplied order,
             // an unordered line must not cover its newer partial.
             None if self.last_seq == 0 && payload.line_count > self.last_line_count => {}
-            _ => return None,
+            _ => return resumed,
         }
         self.last_line_count = self.last_line_count.max(payload.line_count);
+        self.latest_original = Some((payload.line.text.to_string(), true));
         if self.holding_translation && enabled {
-            self.held_original = Some((payload.line.text.into_owned(), true));
             return None;
         }
         if !enabled {
             return None;
         }
         self.last_partial = None;
-        Some(self.caption(payload.line.text, true))
+        Some(self.original_caption(payload.line.text, true))
     }
 
     fn refined(
@@ -225,8 +234,19 @@ impl CaptionGate {
         if !payload.ready {
             return self.resume_original(enabled, &payload.source);
         }
-        if !enabled || !payload.show_overlay {
-            return None;
+        // Translation necessarily finishes after newer partials have arrived.
+        // Only a newer confirmed capture makes its source obsolete; otherwise
+        // normal continuous speech would suppress every translated result.
+        let newer_original = payload
+            .source_seq
+            .is_some_and(|seq| seq < self.last_committed_seq);
+        let same_original = self.latest_original.as_ref().is_some_and(|(text, _)| {
+            text.chars()
+                .filter(|ch| !ch.is_whitespace())
+                .eq(payload.source.chars().filter(|ch| !ch.is_whitespace()))
+        });
+        if !enabled || !payload.show_overlay || newer_original && !same_original {
+            return self.resume_original(enabled, "");
         }
         self.holding_translation = true;
         Some(self.caption(Cow::Borrowed(translation), false))
@@ -234,14 +254,27 @@ impl CaptionGate {
 
     fn resume_original(&mut self, enabled: bool, fallback: &str) -> Option<Caption> {
         let was_holding = self.holding_translation;
-        let original = self.held_original.take();
+        let original = self.latest_original.clone();
         self.release_hold();
         if !was_holding || !enabled {
             return None;
         }
         self.last_partial = None;
         let (text, is_final) = original.unwrap_or_else(|| (fallback.to_string(), true));
-        Some(self.caption(Cow::Owned(text), is_final))
+        Some(self.original_caption(Cow::Owned(text), is_final))
+    }
+
+    fn translation_finished(
+        &mut self,
+        owner: Option<&str>,
+        revision: u64,
+        enabled: bool,
+    ) -> Option<Caption> {
+        self.sync_owner(owner);
+        if self.caption_revision.load(Ordering::Relaxed) != revision {
+            return None;
+        }
+        self.resume_original(enabled, "")
     }
 
     fn release_hold(&mut self) {
@@ -249,7 +282,6 @@ impl CaptionGate {
             return;
         }
         self.holding_translation = false;
-        self.held_original = None;
         self.caption_revision.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -262,6 +294,10 @@ impl CaptionGate {
             revision,
             current_revision: self.caption_revision.clone(),
         }
+    }
+
+    fn original_caption(&self, text: Cow<'_, str>, is_final: bool) -> Caption {
+        self.caption(Cow::Owned(pages::live_tail(&text)), is_final)
     }
 }
 
@@ -371,15 +407,35 @@ pub(crate) fn subscribe(
             })
             .flatten();
         if let Some(caption) = caption {
+            let revision = caption.revision;
             let owner = caption.session_id.clone();
             let app_current = app_refined.clone();
             let app_show = app_refined.clone();
-            tauri::async_runtime::spawn(pages::show_pages(
-                caption,
-                move || enabled() && app_current.state::<LiveState>().is_session_current(&owner),
-                move |page| show(&app_show, page),
-                pages::page_delay,
-            ));
+            let release_gate = gate.clone();
+            let app_release = app_refined.clone();
+            tauri::async_runtime::spawn(async move {
+                pages::show_live_pages(
+                    caption,
+                    move || {
+                        enabled() && app_current.state::<LiveState>().is_session_current(&owner)
+                    },
+                    move |page| show(&app_show, page),
+                    pages::page_delay,
+                )
+                .await;
+                let original = app_release
+                    .state::<LiveState>()
+                    .with_active_session_id(|owner| {
+                        release_gate
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .translation_finished(owner, revision, enabled())
+                    })
+                    .flatten();
+                if let Some(original) = original {
+                    show(&app_release, original);
+                }
+            });
         }
     });
     vec![status, committed, partial, refined, closed]

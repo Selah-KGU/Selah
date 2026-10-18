@@ -910,19 +910,22 @@ private struct StreamOutcome {
 // Caption output is generated as data, rather than trusting free-form JSON.
 private func guidedCaption(
     instructions: String, prompt: String, options: GenerationOptions, genId: String,
-    sentenceCount: Int, translate: Bool
+    sentenceCount: Int, translate: Bool, targetLanguage: String
 ) async throws -> String {
     let edit = DynamicGenerationSchema(name: "CaptionEdit", properties: [
         .init(name: "id", description: "The input sentence id, from 1 to \(sentenceCount), containing this recognition error.", schema: .init(type: Int.self)),
         .init(name: "from", description: "Copy the misspelled term verbatim from that sentence, 2 to 32 characters. Only a term, not a sentence. No particles, endings, honorifics or numbers.", schema: .init(type: String.self)),
         .init(name: "to", description: "Correct this recognition mistake in the original language. Use the reference term's original writing when applicable. No paraphrasing or extra words.", schema: .init(type: String.self)),
     ])
-    var properties: [DynamicGenerationSchema.Property] = [
-        .init(name: "edits", description: "Only confident local term corrections. Empty if the original wording is natural. Never rewrite an entire sentence.", schema: .init(arrayOf: edit, maximumElements: 8)),
-    ]
+    var properties: [DynamicGenerationSchema.Property] = []
     if translate {
-        properties.append(.init(name: "translation", description: "Translate all corrected sentences into the requested language, without omissions.", schema: .init(type: String.self)))
+        let translation = DynamicGenerationSchema(name: "CaptionTranslation", properties: [
+            .init(name: "id", description: "The input sentence id. Include every id from 1 to \(sentenceCount), once, in order.", schema: .init(type: Int.self)),
+            .init(name: "text", description: "Translate the entire ORIGINAL input sentence into \(targetLanguage), before any edits. Write \(targetLanguage); do not copy the source language or translate reference terms. Preserve every clause, digit sequence, sign, decimal, condition and exception. Do not complete a fragment.", schema: .init(type: String.self)),
+        ])
+        properties.append(.init(name: "source_translations", description: "Independent translations of the original input into \(targetLanguage), one per input id, in order. Do not apply proposed edits to these translations.", schema: .init(arrayOf: translation, minimumElements: sentenceCount, maximumElements: sentenceCount)))
     }
+    properties.append(.init(name: "edits", description: "Optional confident local term corrections. These do not affect source_translations. Empty if uncertain. Never rewrite a sentence or translate a correction.", schema: .init(arrayOf: edit, maximumElements: translate ? 2 : 8)))
     let schema = try GenerationSchema(root: .init(name: "CaptionOutput", properties: properties), dependencies: [])
     let session = LanguageModelSession(instructions: instructions)
     let response = try await session.respond(to: prompt, schema: schema, options: options)
@@ -1018,7 +1021,7 @@ private func runGenerate(_ raw: String, _ callback: SendableCallback) async -> S
     let temperature = doubleField(object, "temperature")
     let maxTokens = intField(object, "max_tokens")
     let greedy = boolField(object, "greedy") || temperature <= 0
-    let captionOutput = stringField(object, "output_format") == "live_caption_edits_v1"
+    let captionOutput = stringField(object, "output_format") == "live_caption_edits_v2"
     let fitted = await fitToContext(
         model: model,
         instructions: instructions,
@@ -1043,7 +1046,8 @@ private func runGenerate(_ raw: String, _ callback: SendableCallback) async -> S
             guard sentenceCount > 0 else { return failure("字幕の文番号を読み取れませんでした。") }
             let text = try await guidedCaption(
                 instructions: fitted.instructions, prompt: fitted.prompt, options: options, genId: genId,
-                sentenceCount: sentenceCount, translate: boolField(object, "caption_translate")
+                sentenceCount: sentenceCount, translate: boolField(object, "caption_translate"),
+                targetLanguage: stringField(object, "caption_target_language")
             )
             emit(callback, text, final: false)
             emit(callback, "", final: true)

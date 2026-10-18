@@ -38,7 +38,7 @@
     if (visible && scrollEl) autoFollow = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 24;
   }}
 >
-  {#each items as item (item.segment_id)}
+  {#each items as item (`${item.segment_id}:${item.sentence_index ?? 0}`)}
     <div class="lyric-refine" class:pending={!item.ready}>
       <span class="lyric-corrected">{item.corrected}</span>
       {#if item.translation}<span class="lyric-translation">訳 {item.translation}</span>{/if}

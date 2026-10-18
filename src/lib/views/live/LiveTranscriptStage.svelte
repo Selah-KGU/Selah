@@ -45,7 +45,7 @@
       class="caption-toggle"
       class:on={captionTranslation}
       aria-pressed={captionTranslation}
-      title="3〜4文ごとに、前文を見て一度だけ訳します"
+      title="文のまとまりで翻訳します。短い発話も順次表示します"
       onclick={onToggleCaptionTranslation}
     >字幕翻訳</button>
   </div>

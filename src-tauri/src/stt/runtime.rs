@@ -412,11 +412,8 @@ pub(in crate::stt) fn emit_partial(
     live_session_id: Option<&str>,
     input_session_id: Option<&str>,
 ) {
-    if caller == "live" {
-        if let Some(id) = live_session_id {
-            crate::live::observe_live_caption_partial(id, &text, seq);
-        }
-    }
+    // Temporary hypotheses replace the raw display only. Capture activity
+    // keeps unfinished confirmed sentences open independently of this decoder.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     crate::native_agent_events::publish(
         app,

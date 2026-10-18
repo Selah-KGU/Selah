@@ -32,7 +32,6 @@ pub(super) struct SttDecodeWorker {
     joins: Vec<std::thread::JoinHandle<()>>,
     failed: Arc<AtomicBool>,
     partial_mode: Arc<PartialMode>,
-    live_session_id: Option<String>,
 }
 
 impl SttDecodeWorker {
@@ -42,9 +41,6 @@ impl SttDecodeWorker {
         live_partial: Option<LivePartialSetup>,
         partial_mode: Arc<PartialMode>,
     ) -> Result<Self, String> {
-        let live_session_id = (context.caller == "live")
-            .then(|| context.live_session_id.clone())
-            .flatten();
         let failed = Arc::new(AtomicBool::new(false));
         let last_partial = Arc::new(Mutex::new(LastPartialText {
             text: String::new(),
@@ -82,7 +78,6 @@ impl SttDecodeWorker {
             joins: vec![join],
             failed,
             partial_mode,
-            live_session_id,
         })
     }
 
@@ -94,9 +89,6 @@ impl SttDecodeWorker {
         last_partial: Arc<Mutex<LastPartialText>>,
         partial_mode: Arc<PartialMode>,
     ) -> Result<Self, String> {
-        let live_session_id = (context.caller == "live")
-            .then(|| context.live_session_id.clone())
-            .flatten();
         let partial_inbox = Arc::new(SttDecodeInbox::new(false, Arc::clone(&failed)));
         let final_inbox = Arc::new(SttDecodeInbox::new(false, Arc::clone(&failed)));
         let partial_for_thread = Arc::clone(&partial_inbox);
@@ -144,7 +136,6 @@ impl SttDecodeWorker {
             joins: vec![partial_join, final_join],
             failed,
             partial_mode,
-            live_session_id,
         })
     }
 
@@ -181,15 +172,13 @@ impl SttDecodeWorker {
     }
 
     pub(super) fn push_final(&self, samples: Vec<f32>) {
-        if samples.is_empty() || self.failed() {
+        // A forced VAD boundary can leave a final slice of digital silence
+        // while the detector's recurrent state settles. SenseVoice can turn
+        // that slice into "嗯。"; do not create a phantom transcript line.
+        if samples.is_empty() || rms(&samples) < 1e-6 || self.failed() {
             return;
         }
         let seq = next_stt_event_seq();
-        // Announce capture order before either decoder can publish a newer
-        // partial. Only the translation side channel waits for this final.
-        if let Some(id) = &self.live_session_id {
-            crate::live::live_caption_final_started(id, seq);
-        }
         self.final_inbox.push(SttDecodeJob::Final { seq, samples });
     }
 }
@@ -202,9 +191,6 @@ impl Drop for SttDecodeWorker {
         finish_decode_lanes(&self.partial_inbox, &self.final_inbox, self.failed());
         for join in self.joins.drain(..) {
             let _ = join.join();
-        }
-        if let Some(id) = &self.live_session_id {
-            crate::live::live_caption_audio_drained(id);
         }
     }
 }
@@ -380,12 +366,6 @@ fn decode_worker_loop(
                 );
             }
             SttDecodeJob::Final { seq, samples } => {
-                let _caption_finished = CaptionFinalFinished {
-                    session_id: (context.caller == "live")
-                        .then_some(context.live_session_id.as_deref())
-                        .flatten(),
-                    seq,
-                };
                 let text = match decode_samples_safely(&recognizer, &samples) {
                     Ok(text) => text,
                     Err(()) => {
@@ -413,21 +393,6 @@ fn decode_worker_loop(
                     context.input_session_id.as_deref(),
                 );
             }
-        }
-    }
-}
-
-struct CaptionFinalFinished<'a> {
-    session_id: Option<&'a str>,
-    seq: u64,
-}
-
-impl Drop for CaptionFinalFinished<'_> {
-    fn drop(&mut self) {
-        if let Some(id) = self.session_id {
-            // Empty results, decode errors and rejected transcript ownership
-            // must also release the capture-order barrier.
-            crate::live::live_caption_final_finished(id, self.seq);
         }
     }
 }
@@ -462,6 +427,28 @@ pub(super) fn drain_vad_segments(vad: &VoiceActivityDetector, worker: &SttDecode
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn silent_vad_tails_are_not_decoded_but_very_quiet_speech_is_preserved() {
+        let failed = Arc::new(AtomicBool::new(false));
+        let inbox = Arc::new(SttDecodeInbox::new(false, failed.clone()));
+        let worker = SttDecodeWorker {
+            partial_inbox: inbox.clone(),
+            final_inbox: inbox.clone(),
+            joins: Vec::new(),
+            failed,
+            partial_mode: Arc::new(PartialMode::new(true)),
+        };
+        worker.push_final(vec![0.0; 8_000]);
+        let quiet = vec![0.0001; 8_000];
+        worker.push_final(quiet.clone());
+        drop(worker);
+        match inbox.pop() {
+            SttDecodeJob::Final { samples, .. } => assert_eq!(samples, quiet),
+            other => panic!("expected quiet speech, got {other:?}"),
+        }
+        assert!(matches!(inbox.pop(), SttDecodeJob::Shutdown));
+    }
 
     struct TrackedModel(Arc<AtomicUsize>);
     impl TrackedModel {
@@ -530,7 +517,6 @@ mod tests {
             joins: vec![caption_worker, final_worker],
             failed,
             partial_mode: mode,
-            live_session_id: None,
         };
         assert_eq!(count.load(Ordering::SeqCst), 2);
         worker.sync_partial_version(2);
@@ -604,7 +590,6 @@ mod tests {
             joins: vec![partial_join, final_join],
             failed,
             partial_mode: Arc::new(PartialMode::new(true)),
-            live_session_id: None,
         };
         let control = Arc::new(SttSessionControl::default());
         control.request_stop();

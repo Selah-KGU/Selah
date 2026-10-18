@@ -83,7 +83,7 @@ pub fn run_inference(req: InferenceRequest) -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run_caption_inference(req: InferenceRequest) -> Result<String, String> {
-    run_local(&req, None, Some("live_caption_edits_v1"))
+    run_local(&req, None, Some("live_caption_edits_v2"))
 }
 
 #[cfg(target_os = "macos")]
@@ -149,6 +149,7 @@ fn run_local(
         "output_format": output_format,
         "caption_sentence_count": caption_input.as_ref().and_then(|input| input["字幕"].as_array()).map(Vec::len),
         "caption_translate": caption_input.as_ref().is_some_and(|input| input.get("訳語").is_some()),
+        "caption_target_language": caption_input.as_ref().and_then(|input| input["訳語"].as_str()),
     });
     let request = serde_json::to_string(&request).map_err(|error| error.to_string())?;
     let api = library()?;

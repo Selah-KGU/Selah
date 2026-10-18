@@ -3,6 +3,9 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use super::config::{AiConfig, ChatMessage};
+#[cfg(any(target_os = "macos", test))]
+#[path = "completion/caption_cancel.rs"]
+mod caption_cancel;
 #[path = "completion/processing.rs"]
 mod processing;
 #[path = "completion/requests.rs"]
@@ -233,18 +236,22 @@ pub(crate) async fn caption_completion(
             return Err("AI機能が無効になっています。".into());
         }
         let config = config.clone();
-        return tokio::task::spawn_blocking(move || {
-            crate::local_ai::run_caption_inference(crate::local_ai::InferenceRequest {
-                model_id: crate::local_ai::APPLE_INTELLIGENCE_MODEL_ID.into(),
-                file_name: String::new(),
-                messages,
-                sampler: crate::local_ai::SamplerConfig::deterministic(config.temperature),
-                max_tokens: config.max_tokens,
-                prefill: String::new(),
-                gen_id: String::new(),
-                think_budget_pct: 0,
-            })
-        })
+        return caption_cancel::run(
+            move |generation| {
+                crate::local_ai::run_caption_inference(crate::local_ai::InferenceRequest {
+                    model_id: crate::local_ai::APPLE_INTELLIGENCE_MODEL_ID.into(),
+                    file_name: String::new(),
+                    messages,
+                    sampler: crate::local_ai::SamplerConfig::deterministic(config.temperature),
+                    max_tokens: config.max_tokens,
+                    prefill: String::new(),
+                    gen_id: generation,
+                    think_budget_pct: 0,
+                })
+            },
+            crate::local_ai::cancel_inference,
+            crate::local_ai::clear_inference_cancel,
+        )
         .await
         .map_err(|error| format!("字幕推論タスクの実行に失敗しました: {error}"))?;
     }

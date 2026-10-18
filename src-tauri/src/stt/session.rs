@@ -6,6 +6,8 @@ mod input;
 mod partial;
 #[path = "session/queue.rs"]
 mod queue;
+#[path = "session/utterance.rs"]
+mod utterance;
 #[path = "session/vad_tail.rs"]
 mod vad_tail;
 #[path = "session/worker.rs"]
@@ -274,6 +276,8 @@ fn capture_stt_session(
     let mut agc = Agc::new();
     let mut onset = OnsetBuffer::default();
     let mut vad_tail = VadInputTail::default();
+    let mut live_utterance = utterance::LiveUtterance::default();
+    let mut last_caption_activity = Instant::now();
     let mut vad_feed_grace_until = Instant::now();
     let mut vad_feed_grace_deadline = Instant::now();
 
@@ -304,10 +308,33 @@ fn capture_stt_session(
             };
             agc.apply(&mut resampled, in_utterance);
             vad_tail.accept(&vad, &resampled);
-            if vad.detected() {
+            let detected = vad.detected();
+            if caller == "live"
+                && detected
+                && last_caption_activity.elapsed() >= Duration::from_millis(200)
+            {
+                if let Some(id) = live_session_id {
+                    // Audio activity must keep an unfinished sentence open
+                    // even when partial decoding is disabled, slow or unchanged.
+                    crate::live::observe_live_caption_activity(id, queue::next_stt_event_seq());
+                }
+                last_caption_activity = Instant::now();
+            }
+            let flush_live = caller == "live"
+                && live_utterance.observe(
+                    resampled.len(),
+                    detected,
+                    chunk_rms < partial_tail_silence_rms(sensitivity_profile.rms_gate),
+                );
+            if detected {
                 current_utterance.extend_from_slice(&resampled);
                 trim_live_utterance(&mut current_utterance);
-                if let Some(profile) = partial_profile {
+                if flush_live {
+                    // Flush consumes only complete audio frames. It retains
+                    // Silero's recurrent state and any incomplete next frame;
+                    // reset() here would lose the continuing speaker's onset.
+                    vad.flush();
+                } else if let Some(profile) = partial_profile {
                     if let Some(slice) = partial_decode_slice(
                         &current_utterance,
                         &mut last_partial_at,

@@ -51,7 +51,7 @@ fn content_chars(text: &str) -> Vec<char> {
         .collect()
 }
 
-fn numbers(text: &str) -> Vec<String> {
+pub(super) fn numbers(text: &str) -> Vec<String> {
     let chars: Vec<_> = text.chars().map(normalize_numeric_char).collect();
     let mut runs = Vec::new();
     let mut index = 0;
