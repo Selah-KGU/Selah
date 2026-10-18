@@ -9,10 +9,46 @@ use crate::parser;
 use crate::{KgcState, LunaState};
 use futures_util::stream::{self, StreamExt};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::State;
+use tauri::{Manager, State};
 
 /// Guard to prevent concurrent enrichment runs (Struts token conflicts).
 static ENRICHMENT_RUNNING: AtomicBool = AtomicBool::new(false);
+static COUNTS_RUNNING: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn spawn_luna_counts(app: &tauri::AppHandle, db: &Database, force: bool) {
+    if COUNTS_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let app = app.clone();
+    let db = db.clone();
+    let account = crate::db::capture_account();
+    tauri::async_runtime::spawn(async move {
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                COUNTS_RUNNING.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = Guard;
+        let result = crate::db::account_work(account, async {
+            let updated =
+                refresh_luna_counts_internal(&app.state::<LunaState>(), &db, force).await?;
+            db.ensure_current_account()?;
+            if updated > 0 {
+                crate::background_refresh::emit_cache_updates(&app, vec!["schedule_data".into()]);
+                crate::widget_bridge::publish(&db);
+            }
+            Ok(())
+        })
+        .await;
+        if let Err(error) = result {
+            log::info!("Luna activity supplement skipped: {error}");
+        }
+    });
+}
 
 /// Background enrichment: fetch KGC syllabus pages for session plans + Luna counts.
 /// The Struts gate is taken per course inside the syllabus fetch, not for the

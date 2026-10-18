@@ -7,7 +7,8 @@ import { ResourceScope } from "./resourceScope";
 import { LatestViewRead } from "./latestViewRead";
 import { TrayStatusRefresh, TrayStatusWriter } from "./trayStatusRefresh";
 import { onCacheUpdate, getCached, registerTask, updateTask } from "./stores";
-import type { LunaTodoItem, ScheduleResponse, KgcCourseRow } from "./types";
+import type { LunaTodoItem, ScheduleResponse } from "./types";
+import { buildCourseSlots, type CourseSlot } from "./schedule";
 import { PERIOD_TIMES, DAY_LABELS, DAY_NUM_LABELS } from "./types";
 
 // ============ State ============
@@ -30,7 +31,7 @@ function jsToUnifiedDay(jsDow: number): number {
   return jsDow === 0 ? 7 : jsDow;
 }
 
-function findNextSchoolDay(entries: KgcCourseRow[], fromJsDow: number): { dayLabel: string; dayOffset: number; classes: KgcCourseRow[] } | null {
+function findNextSchoolDay(entries: CourseSlot[], fromJsDow: number): { dayLabel: string; dayOffset: number; classes: CourseSlot[] } | null {
   for (let offset = 1; offset <= 7; offset++) {
     const jsDow = (fromJsDow + offset) % 7;
     const unifiedDay = jsToUnifiedDay(jsDow);
@@ -187,8 +188,9 @@ function buildStatusItems(live: LiveTrayStatus): string[] {
   let currentOrNext: string | null = null;
 
   // 1. Today's classes
-  if (timetableData?.raw.kgc_entries_current.length) {
-    const todayClasses = timetableData.raw.kgc_entries_current
+  const courseSlots = buildCourseSlots(timetableData);
+  if (courseSlots.length) {
+    const todayClasses = courseSlots
       .filter(e => e.day === todayDay && !e.is_cancelled)
       .sort((a, b) => a.period - b.period);
 
@@ -231,7 +233,7 @@ function buildStatusItems(live: LiveTrayStatus): string[] {
 
     // Next school day preview (when all today's classes are done, or always as secondary info)
     if (!todayHasRemaining) {
-      const next = findNextSchoolDay(timetableData.raw.kgc_entries_current, now.getDay());
+      const next = findNextSchoolDay(courseSlots, now.getDay());
       if (next) {
         const label = next.dayOffset === 1 ? "明日" : `${next.dayLabel}曜`;
         const first = next.classes[0];

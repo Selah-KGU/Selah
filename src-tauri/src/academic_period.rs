@@ -17,7 +17,6 @@ pub(crate) struct VisibleWeeks {
     pub year: String,
     pub term: String,
     pub from_calendar: bool,
-    pub hid_current: bool,
 }
 
 pub(crate) fn calendar_academic_period(today: NaiveDate) -> Option<AcademicPeriod> {
@@ -118,19 +117,17 @@ pub(crate) fn visible_weeks(
             year: snapshot_year.to_string(),
             term: snapshot_term.to_string(),
             from_calendar: false,
-            hid_current: false,
         };
     };
     let current_visible =
         visible_week_label(current, Some(&period), snapshot_year, snapshot_term, today);
     let next_visible = visible_week_label(next, Some(&period), snapshot_year, snapshot_term, today);
     VisibleWeeks {
-        current: current_visible.clone(),
+        current: current_visible,
         next: next_visible,
         year: period.year,
         term: period.term,
         from_calendar: true,
-        hid_current: !current.trim().is_empty() && current_visible.is_empty(),
     }
 }
 

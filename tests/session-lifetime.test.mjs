@@ -33,12 +33,12 @@ async function load() {
 function deferred() { let resolve, reject; const promise = new Promise((a,b)=>{resolve=a;reject=b;}); return {promise,resolve,reject}; }
 async function flush() { for(let i=0;i<30;i++) await Promise.resolve(); }
 
-test('overlapping callers share a service and distinct service flows serialize', async () => {
+test('overlapping callers share a service while different services recover independently', async () => {
   const h = await load(), first = deferred();
   h.configure(s => s === 'luna' ? first.promise : outcome('kwic'));
   const requests = Array.from({length: 100}, () => h.syncSession('luna'));
   const other = h.syncSession('kwic'); await flush();
-  assert.deepEqual(h.events, [['invoke','luna']]);
+  assert.deepEqual(h.events.filter(([name])=>name==='invoke'), [['invoke','luna'],['invoke','kwic']]);
   first.resolve(outcome());
   assert.ok((await Promise.all(requests)).every(value => value.results[0].recovered)); assert.equal((await other).results[0].service, 'kwic');
   assert.deepEqual(h.events.filter(([name])=>name==='invoke'), [['invoke','luna'],['invoke','kwic']]);
@@ -53,9 +53,31 @@ test('new native generation cancels old work and queues; stale cleanup cannot ev
   const next = h.syncSession('luna'); await flush();
   old.resolve(outcome()); assert.match(await first, /cancelled/); assert.match(await queued, /cancelled/);
   const joined = h.syncSession('luna'); await flush();
-  assert.deepEqual(h.events, [['invoke','luna'],['invoke','luna']]);
+  assert.deepEqual(h.events, [['invoke','luna'],['invoke','kwic'],['invoke','luna']]);
   fresh.resolve(outcome('luna',true,1)); assert.equal((await next).results[0].recovered, true); assert.equal((await joined).results[0].recovered,true);
   assert.equal(h.universitySessionLifetime.accept(0), false);
+});
+
+test('a stalled KGC recovery cannot delay a timetable Luna recovery', async () => {
+  const h = await load(), kgc = deferred();
+  h.configure(service => service === 'kgc' ? kgc.promise : outcome(service));
+  const stalled = h.syncSession('kgc');
+  let calls = 0;
+  const fresh = await h.withSessionGuard('luna', async () => {
+    if (++calls === 1) throw new Error('Luna needs recovery');
+    return 'Fresh Luna timetable';
+  });
+  assert.equal(fresh, 'Fresh Luna timetable');
+  assert.deepEqual(h.events.filter(([name]) => name === 'invoke'), [['invoke','kgc'],['invoke','luna']]);
+  kgc.resolve(outcome('kgc')); await stalled;
+});
+
+test('retired recovery intents do not start native work after their microtask', async () => {
+  const h = await load();
+  const queued = h.syncSession('luna').catch(error => error.message);
+  h.universitySessionLifetime.retire();
+  assert.match(await queued, /cancelled/);
+  assert.deepEqual(h.events, []);
 });
 
 test('late API success or expiry after logout never reaches callers or launches recovery', async () => {

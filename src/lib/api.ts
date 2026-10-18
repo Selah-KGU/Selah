@@ -1200,7 +1200,7 @@ export async function validateSession(): Promise<SessionStatus> {
   return await checkSession();
 }
 
-// ── AI-driven schedule (DB-backed, KGC+Luna raw + AI analysis) ──
+// ── Luna timetable with optional KGC and AI enrichment ──
 
 export async function getScheduleSnapshot(): Promise<ScheduleResponse> {
   if (_isDemo()) {
@@ -1908,11 +1908,12 @@ export async function refreshAllData(): Promise<void> {
   // Filter out guarded items that aren't available
   const steps = sequence.filter(s => !s.guard || s.guard());
   // Build initial item status list
-  const initialItems: RefreshItemStatus[] = steps.map(s => ({
-    key: s.key, label: s.label, platform: s.platform, status: "pending",
-  }));
-  // Add schedule sync as the last item
-  initialItems.push({ key: "schedule_sync", label: "時間割同期", platform: "KGC", status: "pending" });
+  const initialItems: RefreshItemStatus[] = [
+    { key: "schedule_sync", label: "時間割同期", platform: "Luna", status: "pending" },
+    ...steps.map<RefreshItemStatus>(s => ({
+      key: s.key, label: s.label, platform: s.platform, status: "pending",
+    })),
+  ];
   // Add AI refresh items (only if AI has been validated to work)
   const aiReady = await isAiReady();
   if (aiReady) {
@@ -1933,7 +1934,18 @@ export async function refreshAllData(): Promise<void> {
   }
 
   try {
-    // Serial execution: one item at a time
+    // Publish the primary timetable before starting any optional KGC jobs.
+    setItemStatus("schedule_sync", "running");
+    updateTask("schedule_data", { running: true });
+    try {
+      const data = await syncScheduleData();
+      replaceCacheEntry("schedule_data", data);
+      updateTask("schedule_data", { running: false, lastRunTs: Date.now(), lastOk: true });
+      setItemStatus("schedule_sync", "done");
+    } catch {
+      updateTask("schedule_data", { running: false, lastRunTs: Date.now(), lastOk: false });
+      setItemStatus("schedule_sync", "error");
+    }
     for (const step of steps) {
       setItemStatus(step.key, "running");
       updateTask(step.key, { running: true });
@@ -1945,17 +1957,6 @@ export async function refreshAllData(): Promise<void> {
         updateTask(step.key, { running: false, lastRunTs: Date.now(), lastOk: false });
         setItemStatus(step.key, "error");
       }
-    }
-    // Schedule sync
-    setItemStatus("schedule_sync", "running");
-    updateTask("schedule_data", { running: true });
-    try {
-      await refreshBackendManagedCache("schedule_data");
-      updateTask("schedule_data", { running: false, lastRunTs: Date.now(), lastOk: true });
-      setItemStatus("schedule_sync", "done");
-    } catch {
-      updateTask("schedule_data", { running: false, lastRunTs: Date.now(), lastOk: false });
-      setItemStatus("schedule_sync", "error");
     }
     // AI refresh (after all data is fresh)
     if (aiReady) {

@@ -4,7 +4,6 @@ export class SessionLifetime {
   private generation = 0;
   private revision = -1;
   private pending = new Map<string, Promise<unknown>>();
-  private tail: Promise<void> = Promise.resolve();
 
   ticket(): number { return this.epoch; }
   current(ticket: number): boolean { return ticket === this.epoch; }
@@ -15,7 +14,6 @@ export class SessionLifetime {
   retire(): void {
     this.epoch += 1;
     this.pending.clear();
-    this.tail = Promise.resolve();
   }
 
   accept(generation: number): boolean {
@@ -38,7 +36,9 @@ export class SessionLifetime {
     const existing = this.pending.get(service);
     if (existing) return existing as Promise<T>;
     const ticket = this.ticket();
-    const request = this.tail.catch(() => {}).then(async () => {
+    // Native recovery serializes each service. A slow KGC request must not
+    // queue independent Luna recovery in the WebView as well.
+    const request = Promise.resolve().then(async () => {
       this.assertCurrent(ticket);
       const result = await run();
       this.assertCurrent(ticket);
@@ -46,7 +46,6 @@ export class SessionLifetime {
     }).finally(() => {
       if (this.pending.get(service) === request) this.pending.delete(service);
     });
-    this.tail = request.then(() => {}, () => {});
     this.pending.set(service, request);
     return request;
   }

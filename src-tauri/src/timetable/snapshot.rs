@@ -18,6 +18,7 @@ pub struct ScheduleResponse {
     pub luna_term_options: Vec<luna_parser::SelectOption>,
     pub luna_year: String,
     pub luna_term: String,
+    // Retained in the IPC shape for compatibility; optional KGC failures are logged.
     #[serde(default)]
     pub kgc_warning: String,
 }
@@ -62,10 +63,6 @@ pub(crate) fn build_schedule_snapshot_from_db(db: &Database) -> Result<ScheduleR
     let raw = db.build_raw_data(&scope.current, &scope.next, communities.clone())?;
     let (ai_result, ai_stale) =
         load_ai_cache_with_snapshot(&db, has_saved_snapshot.then_some(&snap))?;
-    let mut kgc_warning = load_kgc_warning(&db);
-    if scope.hid_current {
-        kgc_warning = STALE_SEMESTER_KGC_WARNING.to_string();
-    }
     Ok(ScheduleResponse {
         raw,
         ai_result,
@@ -76,6 +73,6 @@ pub(crate) fn build_schedule_snapshot_from_db(db: &Database) -> Result<ScheduleR
         luna_term_options: snap.luna_term_options,
         luna_year: scope.year,
         luna_term: scope.term,
-        kgc_warning,
+        kgc_warning: String::new(),
     })
 }

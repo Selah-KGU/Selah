@@ -7,7 +7,7 @@ use crate::db::{AiScheduleItem, AiScheduleResult, ScheduleRawData};
 use serde::Deserialize;
 
 pub(super) const SCHEDULE_SYSTEM_PROMPT: &str = r#"あなたは関西学院大学の学生向けスケジュール分析AIです。
-提供された時間割データ（KGC + Luna）を分析し、構造化されたJSON形式で2週間分の日程表を生成してください。
+提供された時間割データ（主: Luna、補足: KGC）を分析し、構造化されたJSON形式で2週間分の日程表を生成してください。
 
 出力は必ず以下のJSON形式で返してください（他のテキストは不要）:
 {
@@ -91,6 +91,7 @@ topicに日付がある回を、今週・来週のカレンダーと照合して
 推定すらできない場合のみ「(要確認)」を使う。ただし空白や省略はしない——必ず最も可能性の高い回を記載する。
 
 ## Step 3: データ統合
+- 科目名・曜日・時限は Luna を優先する。KGC は同じ科目と確認できる場合だけ教室・休講・補講・授業計画を補足し、矛盾する KGC の古い科目や時限で Luna を上書きしない。
 - KGCデータとLunaデータを照合し、同じコマの情報を統合（科目名/曜日/時限で照合）
 - Luna活動詳細の個別アイテム（課題名、締切、状態）をassignments/exams/notificationsに反映
 - 休講の授業は is_cancelled: true
@@ -101,9 +102,10 @@ topicに日付がある回を、今週・来週のカレンダーと照合して
 - 回答は指定された言語で書くこと"#;
 
 pub(super) const LOCAL_SCHEDULE_SYSTEM_PROMPT: &str = r#"あなたは関西学院大学の学生向けスケジュール分析AIです。
-提供データ（KGC + Luna）から2週間分の時間割を作成し、JSONのみで返してください。
+提供データ（主: Luna、補足: KGC）から2週間分の時間割を作成し、JSONのみで返してください。
 
 重要:
+- 科目名・曜日・時限は Luna を優先し、KGC は一致する科目の教室・休講・補講・授業計画だけを補足する。
 - JSON以外の文章は出力しない
 - マークダウンのコードブロック（```）を使わない
 

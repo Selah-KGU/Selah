@@ -114,3 +114,48 @@ test("manual timetable refresh recovers Luna alone after its session expires", a
     ["invoke", "sync_schedule_data"],
   ]);
 });
+
+async function fullRefreshFixture(failPrimary = false) {
+  const source = await readFile("src/lib/api.ts", "utf8");
+  const fn = source.match(/export async function refreshAllData[^]*?\n}\n/)[0];
+  const result = await build({
+    stdin: { contents: `
+      export const calls = [];
+      const _isDemo = () => false, get = value => value;
+      const authState = { authenticated:true }, reloginInProgress = false, sessionExpired = false;
+      export let status = { items:[], refreshingCount:0 };
+      const cacheStatus = { update: fn => status = fn(status) };
+      const getRefreshSequence = () => [{ key:'grades', label:'Grades', platform:'KGC' }];
+      const isAiReady = async () => false, invalidateCache = () => {}, updateTask = () => {};
+      export let completeKgc;
+      async function syncScheduleData() {
+        calls.push('luna');
+        if (${failPrimary}) throw new Error('Luna unavailable');
+        return { raw:{ luna_courses:[{ name:'Fresh Luna' }] } };
+      }
+      function replaceCacheEntry(key, value) { calls.push(['published', key, value.raw.luna_courses[0].name]); }
+      function refreshBackendManagedCache(key) { calls.push(key); return new Promise(resolve => { completeKgc=resolve; }); }
+      ${fn}
+    `, loader:'ts' }, bundle:true, write:false, format:'esm', platform:'node',
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}#full-${++instance}`);
+}
+
+test('full refresh publishes Luna while KGC is still waiting', async () => {
+  const h = await fullRefreshFixture();
+  const refresh = h.refreshAllData();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.calls, ['luna', ['published', 'schedule_data', 'Fresh Luna'], 'grades']);
+  assert.equal(h.status.items.find(item => item.key === 'schedule_sync').status, 'done');
+  assert.equal(h.status.items.find(item => item.key === 'grades').status, 'running');
+  h.completeKgc({}); await refresh;
+});
+
+test('full refresh reports a real Luna failure instead of calling the cached grid fresh', async () => {
+  const h = await fullRefreshFixture(true);
+  const refresh = h.refreshAllData();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.calls, ['luna', 'grades']);
+  assert.equal(h.status.items.find(item => item.key === 'schedule_sync').status, 'error');
+  h.completeKgc({}); await refresh;
+});

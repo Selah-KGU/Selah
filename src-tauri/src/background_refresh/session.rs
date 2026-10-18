@@ -7,20 +7,32 @@ pub async fn sync_backend_session_status(
     app: &AppHandle,
     attempt_recovery: bool,
 ) -> Result<BackendSessionStatusPayload, String> {
-    sync_session_status(app, attempt_recovery.then_some(RecoveryTrigger::Foreground)).await
+    sync_session_status(
+        app,
+        attempt_recovery.then_some(RecoveryTrigger::Foreground),
+        &[Service::Luna, Service::Kwic],
+    )
+    .await
 }
 pub(super) async fn sync_backend_session_status_for_refresh(
     app: &AppHandle,
+    luna_only: bool,
 ) -> Result<BackendSessionStatusPayload, String> {
-    sync_session_status(app, Some(RecoveryTrigger::Background)).await
+    let services: &[Service] = if luna_only {
+        &[Service::Luna]
+    } else {
+        &[Service::Luna, Service::Kwic]
+    };
+    sync_session_status(app, Some(RecoveryTrigger::Background), services).await
 }
 async fn sync_session_status(
     app: &AppHandle,
     trigger: Option<RecoveryTrigger>,
+    services: &[Service],
 ) -> Result<BackendSessionStatusPayload, String> {
     let generation = SESSIONS.generation();
     if let Some(trigger) = trigger {
-        crate::commands::recover_sessions(app, &[Service::Luna, Service::Kwic], trigger).await?;
+        crate::commands::recover_sessions(app, services, trigger).await?;
     }
     let payload = session_status_projection(app).await;
     SESSIONS.ensure_current(generation)?;

@@ -18,32 +18,18 @@ pub(super) fn snapshot_from_db(
         now.date_naive(),
     );
     let raw = db.build_raw_data(&scope.current, &scope.next, snap.luna_communities)?;
-    let mut classes = classes_from_sources(
-        &raw.kgc_entries_current
-            .iter()
+    let classes = classes_from_sources(
+        &crate::timetable::primary_courses(&raw.luna_courses, &raw.kgc_entries_current)
+            .into_iter()
             .map(|row| ClassSource {
                 day: row.day,
                 period: row.period,
-                name: row.name.clone(),
-                room: row.room.clone(),
+                name: row.name.to_string(),
+                room: row.room.to_string(),
                 cancelled: row.is_cancelled,
             })
             .collect::<Vec<_>>(),
     );
-    if classes.is_empty() {
-        classes = classes_from_sources(
-            &raw.luna_courses
-                .iter()
-                .map(|row| ClassSource {
-                    day: row.day,
-                    period: row.period,
-                    name: row.name.clone(),
-                    room: String::new(),
-                    cancelled: false,
-                })
-                .collect::<Vec<_>>(),
-        );
-    }
     let todos = todos_from_cache(db, now)?;
     Ok(assemble_snapshot(now, classes, todos))
 }

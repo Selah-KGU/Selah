@@ -5,17 +5,17 @@
   import { toPng } from "html-to-image";
   import selahLogoUrl from "../../assets/logo.png";
   import { getScheduleSnapshot, syncScheduleData, aiGenerateSchedule, isAiReady, openSettingsWindow, gcalCheckSession, gcalSyncTimetable, gcalOpenLogin, getDataCache, saveDataCache, openSyllabusDetail, getAiConfig, resetAiReady, isDemoActive, saveImageFile, copyImageToClipboard, shareImageNative } from "../api";
-  import { lunaAuthState, gcalAuthState, sessionExpired, onCacheUpdate, aiReady, authState, activeTab } from "../stores";
+  import { gcalAuthState, sessionExpired, onCacheUpdate, aiReady, authState, activeTab } from "../stores";
   import type { ExamEntry, ExamTimetableData, SyllabusEntry, SyllabusSearchResult } from "../stores";
   import ViewLoader from "../ViewLoader.svelte";
   import FirstVisitTip from "../onboarding/FirstVisitTip.svelte";
   import type { ScheduleResponse, AiScheduleItem, AiScheduleResult, KgcCourseRow, LunaCourseRow } from "../types";
-  import { preferredLunaCourse } from "../schedule";
+  import { buildCourseSlots, courseNamesMatch, preferredLunaCourse, supplementalKgcCourse, type CourseSlot } from "../schedule";
 
   // ── State ──
   let loading = $state(true);
   let error = $state("");
-  let kgcWarning = $state("");
+  let syncError = $state("");
   let scheduleData = $state<ScheduleResponse | null>(null);
   let aiResult = $state<AiScheduleResult | null>(null);
   let aiGenerating = $state(false);
@@ -65,8 +65,8 @@
 
   let weekLabelRaw = $derived(
     activeWeek === "current"
-      ? (aiResult?.current_week_label || scheduleData?.raw.current_week_label || "")
-      : (aiResult?.next_week_label || scheduleData?.raw.next_week_label || ""),
+      ? (scheduleData?.raw.current_week_label || "")
+      : (scheduleData?.raw.next_week_label || ""),
   );
 
   // "2026年04月07日～2026年04月11日" -> "26年 4/7-11"
@@ -145,7 +145,10 @@
   }
 
   function getCell(day: number, period: number): CellData {
-    const kgc = kgcEntries.find(e => e.day === day && e.period === period);
+    const kgc = supplementalKgcCourse(
+      kgcEntries, scheduleData?.raw.luna_courses ?? [], day, period,
+      scheduleData?.luna_term ?? "", scheduleData?.luna_year ?? "",
+    );
     const luna = preferredLunaCourse(
       scheduleData?.raw.luna_courses ?? [],
       day,
@@ -156,7 +159,9 @@
     const aiItems = aiWeekMatches() && aiResult
       ? (activeWeek === "current" ? aiResult.current_week : aiResult.next_week)
       : [];
-    const ai = aiItems.find(i => i.day === day && i.period === period);
+    const primaryName = luna?.name || kgc?.name || "";
+    const ai = aiItems.find(i => i.day === day && i.period === period
+      && courseNamesMatch(i.course_name, primaryName));
     const dayStr = dayLabels[day - 1];
     const exam = examEntries.find(e => e.day === dayStr && e.period === period);
     const fav = favSlots.find(f => f.day === day && f.period === period);
@@ -166,24 +171,14 @@
   function cellName(c: CellData): string {
     const rawName = rawCourseName(c);
     const aiName = c.ai?.course_name?.trim() || "";
-    if (aiName && namesAgree(aiName, rawName)) return aiName;
+    if (aiName && courseNamesMatch(aiName, rawName)) return aiName;
     return rawName || c.favorite?.course_title || "";
   }
 
   function rawCourseName(c: CellData): string {
     const kgcName = c.kgc?.name?.trim() || "";
     const lunaName = c.luna?.name?.trim() || "";
-    if (kgcName && lunaName && !namesAgree(lunaName, kgcName)) return kgcName;
     return lunaName || kgcName;
-  }
-
-  function namesAgree(a: string, b: string): boolean {
-    const norm = (value: string) => value.replace(/\s+/g, "").trim();
-    return !norm(a) || !norm(b) || norm(a) === norm(b);
-  }
-
-  function lunaAgreesWithKgc(c: CellData): boolean {
-    return !!c.luna && namesAgree(c.luna.name || "", c.kgc?.name || "");
   }
 
   function aiWeekMatches(): boolean {
@@ -214,7 +209,6 @@
 
   function applySchedule(data: ScheduleResponse) {
     scheduleData = data;
-    kgcWarning = data.kgc_warning || "";
     aiResult = matchingAiResult(data.ai_result, data);
   }
 
@@ -236,7 +230,7 @@
     const name = cellName(c);
     if (!name) return;
     if (isDemoActive()) return;
-    if (lunaAgreesWithKgc(c) && c.luna && $lunaAuthState.authenticated) {
+    if (c.luna) {
       try {
         await invoke("university_open_detail_window", {
           path: "", title: name, mode: "course", idnumber: c.luna.luna_id,
@@ -322,8 +316,8 @@
   }
 
   // ── Simple hash for change detection ──
-  function computeScheduleHash(entries: KgcCourseRow[]): string {
-    const key = entries.map(e => `${e.kgc_code}:${e.day}:${e.period}:${e.is_cancelled}:${e.is_makeup}:${e.room}`).sort().join("|");
+  function computeScheduleHash(entries: CourseSlot[]): string {
+    const key = entries.map(e => `${e.luna_id}:${e.kgc_code}:${e.name}:${e.day}:${e.period}:${e.is_cancelled}:${e.is_makeup}:${e.room}`).sort().join("|");
     let h = 0;
     for (let i = 0; i < key.length; i++) {
       h = ((h << 5) - h + key.charCodeAt(i)) | 0;
@@ -331,8 +325,8 @@
     return String(h);
   }
 
-  // ── Build CalendarSyncEntry[] from kgc entries ──
-  function buildCalendarEntries(entries: KgcCourseRow[]): { day: string; period: number; course_name: string; room: string; is_cancelled: boolean }[] {
+  // ── Build calendar entries from the resolved Luna timetable ──
+  function buildCalendarEntries(entries: CourseSlot[]): { day: string; period: number; course_name: string; room: string; is_cancelled: boolean }[] {
     return entries.map(e => ({
       day: dayLabels[e.day - 1] || String(e.day),
       period: e.period,
@@ -345,29 +339,33 @@
   function buildSyncWeeks(raw: {
     kgc_entries_current: KgcCourseRow[];
     kgc_entries_next: KgcCourseRow[];
+    luna_courses: LunaCourseRow[];
     current_week_label?: string;
     next_week_label?: string;
   }) {
+    if (!scheduleData) return [];
+    const data = { ...scheduleData, raw: { ...scheduleData.raw, ...raw } };
     const candidates = [
       { kind: "current" as const, entries: raw.kgc_entries_current, label: (raw.current_week_label || "").trim() },
       { kind: "next" as const, entries: raw.kgc_entries_next, label: (raw.next_week_label || "").trim() },
     ];
     const seen = new Set<string>();
-    const weeks: { kind: "current" | "next"; entries: KgcCourseRow[]; label: string }[] = [];
+    const weeks: { kind: "current" | "next"; entries: CourseSlot[]; label: string }[] = [];
     for (const w of candidates) {
-      if (!w.entries.length || !w.label) continue;
+      const entries = buildCourseSlots(data, w.kind);
+      if (!entries.length || !w.label) continue;
       if (seen.has(w.label)) {
         console.warn("[Timetable] duplicate week label detected, skip sync target:", w.kind, w.label);
         continue;
       }
       seen.add(w.label);
-      weeks.push(w);
+      weeks.push({ ...w, entries });
     }
     return weeks;
   }
 
   // ── Auto-sync to calendars if data changed ──
-  async function autoSyncCalendars(entries: KgcCourseRow[], weekLabel: string) {
+  async function autoSyncCalendars(entries: CourseSlot[], weekLabel: string) {
     const newHash = computeScheduleHash(entries);
     // Derive stable hash key from weekLabel (e.g. "2026/04/13") instead of activeWeek tab
     const weekId = weekLabel.slice(0, 10).replace(/\//g, "");
@@ -403,11 +401,12 @@
     }
   }
 
-  // ── Sync: Luna with optional KGC data → enrichment → persist ──
+  // ── Primary sync: persist Luna timetable, enrich separately ──
   async function handleSync() {
     if (syncing) return;
     syncing = true;
     error = "";
+    syncError = "";
     try {
       const data = await syncScheduleData();
       debugLog("[Timetable] sync done:", {
@@ -416,8 +415,7 @@
         luna: data.raw.luna_courses.length,
       });
       applySchedule(data);
-      if (data.kgc_warning) showToast(data.kgc_warning, "info");
-      else showToast("時間割を更新しました");
+      showToast("時間割を更新しました");
 
       // Reload cached extras (exam might have updated)
       loadCachedExtras();
@@ -435,7 +433,7 @@
         recovered = hasVisibleSchedule();
       } catch { /* keep the grid that is already on screen */ }
       if (recovered) {
-        if (!kgcWarning) kgcWarning = message;
+        syncError = message;
         showToast(message, "error");
       } else {
         error = message;
@@ -558,7 +556,7 @@
     {
       const lines: string[] = [];
       const room = c.ai?.room || c.kgc?.room;
-      const teacher = c.ai?.teacher || (lunaAgreesWithKgc(c) ? c.luna?.teacher : "");
+      const teacher = c.luna?.teacher || c.ai?.teacher;
       if (room) lines.push(room);
       if (teacher) lines.push(teacher);
       const hasNotify = !!(c.ai?.notifications?.length);
@@ -1184,10 +1182,10 @@
       <button class="link-btn" onclick={() => gcalError = ""}>閉じる</button>
     </div>
   {/if}
-  {#if kgcWarning}
+  {#if syncError}
     <div class="error-banner">
-      <span>{kgcWarning}</span>
-      <button class="link-btn" onclick={() => kgcWarning = ""}>閉じる</button>
+      <span>{syncError}</span>
+      <button class="link-btn" onclick={() => syncError = ""}>閉じる</button>
     </div>
   {/if}
 

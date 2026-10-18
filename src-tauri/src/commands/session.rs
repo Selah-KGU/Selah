@@ -13,7 +13,7 @@ use crate::{KgcState, KwicState, LunaState};
 use serde::Serialize;
 use tauri::{Manager, State};
 
-pub(super) async fn lock_session_sync() -> tokio::sync::OwnedMutexGuard<()> {
+pub(super) async fn lock_session_sync() -> tokio::sync::OwnedRwLockWriteGuard<()> {
     SESSIONS.lock().await
 }
 
@@ -295,7 +295,7 @@ pub(crate) async fn recover_sessions(
 ) -> Result<RecoveryReport, SessionError> {
     let generation = SESSIONS.generation();
     let requested = std::time::Instant::now();
-    let _sync_gate = SESSIONS.lock().await;
+    let _sync_gate = SESSIONS.lock_recovery().await;
     SESSIONS
         .ensure_current(generation)
         .map_err(|_| SessionError::Cancelled)?;
@@ -316,6 +316,11 @@ pub(crate) async fn recover_sessions(
             if target == Service::Kgc && !trigger.may_recover_kgc() {
                 continue;
             }
+            // KGC recovery may wait for its own network/gate, never for Luna's.
+            let _service_gate = SESSIONS.lock_service(target).await;
+            SESSIONS
+                .ensure_current(generation)
+                .map_err(|_| SessionError::Cancelled)?;
             if let Some(result) = SESSIONS.completed_since(generation, target, requested) {
                 results.push(result);
                 continue;

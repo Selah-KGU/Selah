@@ -32,9 +32,10 @@ fn gcal_sync_interval_secs() -> i64 {
 
 fn build_calendar_entries(
     entries: &[crate::db::KgcCourseRow],
+    luna: &[crate::db::LunaCourseRow],
 ) -> Vec<crate::google_calendar::CalendarSyncEntry> {
-    entries
-        .iter()
+    crate::timetable::primary_courses(luna, entries)
+        .into_iter()
         .map(|entry| crate::google_calendar::CalendarSyncEntry {
             day: match entry.day {
                 1 => "月",
@@ -47,8 +48,8 @@ fn build_calendar_entries(
             }
             .to_string(),
             period: entry.period,
-            course_name: entry.name.clone(),
-            room: entry.room.clone(),
+            course_name: entry.name.to_string(),
+            room: entry.room.to_string(),
             is_cancelled: entry.is_cancelled,
         })
         .filter(|entry| !entry.day.is_empty())
@@ -67,10 +68,13 @@ fn build_sync_weeks(
 
     for (label, entries) in candidates {
         let label = label.trim();
-        if label.is_empty() || entries.is_empty() || !seen.insert(label.to_string()) {
+        if label.is_empty() || !seen.insert(label.to_string()) {
             continue;
         }
-        weeks.push((label.to_string(), build_calendar_entries(entries)));
+        let merged = build_calendar_entries(entries, &raw.luna_courses);
+        if !merged.is_empty() {
+            weeks.push((label.to_string(), merged));
+        }
     }
 
     weeks

@@ -13,7 +13,7 @@ use records::{Record, SessionRepository};
 use serde::Serialize;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
-use tokio::sync::{watch, OwnedMutexGuard};
+use tokio::sync::{watch, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard};
 pub(crate) use verification::verify;
 
 pub(crate) const CANCELLED: &str = "University authentication operation was cancelled";
@@ -98,7 +98,9 @@ struct RecoveryResult {
 pub(crate) struct Coordinator {
     persistence: persistence::Writer,
     clock_origin: Instant,
-    gate: Arc<tokio::sync::Mutex<()>>,
+    gate: Arc<tokio::sync::RwLock<()>>,
+    recovery_gates: [Arc<tokio::sync::Mutex<()>>; 3],
+    flow_gate: tokio::sync::Mutex<()>,
     changed: watch::Sender<u64>,
     state: Mutex<State>,
     commit_gate: Mutex<()>,
@@ -114,7 +116,9 @@ impl Coordinator {
         Self {
             persistence: persistence::Writer::new(repository),
             clock_origin: Instant::now(),
-            gate: Arc::new(tokio::sync::Mutex::new(())),
+            gate: Arc::new(tokio::sync::RwLock::new(())),
+            recovery_gates: std::array::from_fn(|_| Arc::new(tokio::sync::Mutex::new(()))),
+            flow_gate: tokio::sync::Mutex::new(()),
             changed,
             commit_gate: Mutex::new(()),
             state: Mutex::new(State {
@@ -147,8 +151,18 @@ impl Coordinator {
         }
     }
 
-    pub async fn lock(&self) -> OwnedMutexGuard<()> {
-        self.gate.clone().lock_owned().await
+    /// Interactive login and reset remain exclusive with all recovery work.
+    pub async fn lock(&self) -> OwnedRwLockWriteGuard<()> {
+        self.gate.clone().write_owned().await
+    }
+    pub async fn lock_recovery(&self) -> OwnedRwLockReadGuard<()> {
+        self.gate.clone().read_owned().await
+    }
+    pub async fn lock_service(&self, service: Service) -> OwnedMutexGuard<()> {
+        self.recovery_gates[service.index()]
+            .clone()
+            .lock_owned()
+            .await
     }
     pub fn generation(&self) -> u64 {
         self.state
@@ -311,6 +325,7 @@ impl Coordinator {
         }
     }
     pub async fn pace_flow(&self) {
+        let _start = self.flow_gate.lock().await;
         let wait = self
             .state
             .lock()
@@ -385,6 +400,38 @@ pub(crate) fn get_session_diagnostics() -> SessionDiagnostics {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn kgc_recovery_cannot_block_luna_but_login_and_reset_still_wait() {
+        let coordinator = Coordinator::new(false);
+        let recovery = coordinator.lock_recovery().await;
+        let kgc = coordinator.lock_service(Service::Kgc).await;
+        let luna = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            coordinator.lock_service(Service::Luna),
+        )
+        .await
+        .unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            coordinator.lock_service(Service::Kgc)
+        )
+        .await
+        .is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), coordinator.lock())
+                .await
+                .is_err()
+        );
+        drop((kgc, luna, recovery));
+        let _exclusive = coordinator.lock().await;
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            coordinator.lock_recovery()
+        )
+        .await
+        .is_err());
+    }
+
     #[test]
     fn overlapping_recovery_shares_failure_and_later_calls_are_deferred() {
         let coordinator = Coordinator::new(false);
@@ -457,14 +504,16 @@ mod tests {
             let owner = coordinator.clone();
             let (started, receiver) = tokio::sync::oneshot::channel();
             let running = tokio::spawn(async move {
-                let _guard = owner.lock().await;
+                let _lifecycle = owner.lock_recovery().await;
+                let _guard = owner.lock_service(Service::Kgc).await;
                 started.send(()).unwrap();
                 owner.cancelled(generation).await;
             });
             receiver.await.unwrap();
             let queued = coordinator.clone();
             let second = tokio::spawn(async move {
-                let _guard = queued.lock().await;
+                let _lifecycle = queued.lock_recovery().await;
+                let _guard = queued.lock_service(Service::Kgc).await;
                 queued.ensure_current(generation)
             });
             coordinator.invalidate(true);

@@ -4796,6 +4796,7 @@ dependencies = [
  "tauri-plugin-updater",
  "time",
  "tokio",
+ "unicode-normalization",
  "unicode-segmentation",
  "url",
  "urlencoding",

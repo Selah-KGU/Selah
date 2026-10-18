@@ -255,6 +255,7 @@ pub async fn ai_analyze_todo_internal(
     Ok(result)
 }
 
+#[cfg(test)]
 pub(super) fn load_ai_cache(db: &Database) -> Result<(Option<AiScheduleResult>, bool), String> {
     let snapshot = db.get_snapshot_state()?;
     load_ai_cache_with_snapshot(db, snapshot.as_ref())

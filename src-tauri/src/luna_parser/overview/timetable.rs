@@ -34,6 +34,19 @@ pub struct LunaCommunity {
     pub name: String,
 }
 
+/// Recognize the actual timetable grid, including an intentionally empty grid.
+pub fn is_luna_timetable(html: &str) -> bool {
+    let doc = Html::parse_document(html);
+    doc.select(&SEL_DATA_ROW).any(|row| {
+        let period = row
+            .select(&SEL_PERIOD_COL)
+            .next()
+            .map(|cell| parse_japanese_number(&cell.text().collect::<String>()))
+            .unwrap_or_default();
+        (1..=7).contains(&period) && row.select(&SEL_TABLE_CELL).count() == 6
+    })
+}
+
 pub fn parse_luna_timetable(html: &str) -> LunaTimetable {
     let doc = Html::parse_document(html);
 

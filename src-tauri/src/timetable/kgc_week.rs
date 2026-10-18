@@ -1,18 +1,14 @@
-use super::*;
-
 use crate::client;
 use crate::config;
-use crate::db::Database;
 use crate::parser;
 
 /// Fetch next week's KGC data by navigating the Struts form.
 pub(super) async fn fetch_next_week_kgc(
     kgc_http: &reqwest::Client,
     current_data: &parser::TimetableData,
-    db: &Database,
-) -> Result<String, String> {
+) -> Result<Option<parser::TimetableData>, String> {
     if current_data.form_fields.is_empty() {
-        return Ok(String::new());
+        return Ok(None);
     }
 
     let fresh_url = format!(
@@ -56,27 +52,7 @@ pub(super) async fn fetch_next_week_kgc(
     );
 
     if next_data.entries.is_empty() && next_week_label.is_empty() {
-        return Ok(String::new());
+        return Ok(None);
     }
-
-    for entry in &next_data.entries {
-        let day_int = day_str_to_int(&entry.day);
-        if day_int == 0 {
-            continue;
-        }
-        db.upsert_kgc_course(
-            &entry.course_code,
-            &entry.course_name,
-            day_int,
-            entry.period,
-            &entry.room,
-            &entry.detail_path,
-            entry.is_cancelled,
-            entry.is_makeup,
-            entry.is_room_changed,
-            &next_week_label,
-        )?;
-    }
-
-    Ok(next_week_label)
+    Ok(Some(next_data))
 }

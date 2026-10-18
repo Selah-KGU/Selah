@@ -17,13 +17,6 @@ pub async fn refresh_backend_now(
     let request = BackendRefreshRequest::new(keys, force);
     let mut updated = Vec::new();
 
-    if request.wants_any(&["notifications", "luna_updates", "kwic_home", "mail_inbox"]) {
-        updated.extend(
-            crate::notifier::sync_notification_sources(app, request.keys.as_ref(), request.force)
-                .await?,
-        );
-    }
-
     if request.wants_any(&[
         "schedule_data",
         "luna_todo",
@@ -37,6 +30,13 @@ pub async fn refresh_backend_now(
         "exams",
     ]) {
         updated.extend(refresh_backend_data_with_request(app, &request).await?);
+    }
+
+    if request.wants_any(&["notifications", "luna_updates", "kwic_home", "mail_inbox"]) {
+        updated.extend(
+            crate::notifier::sync_notification_sources(app, request.keys.as_ref(), request.force)
+                .await?,
+        );
     }
 
     Ok(dedup_keys(updated))
@@ -112,14 +112,41 @@ async fn refresh_backend_data_inner(
     app: &AppHandle,
     request: &BackendRefreshRequest,
 ) -> Result<Vec<String>, String> {
-    super::session::maybe_renew_sessions(app).await;
-
     let db = app.state::<Database>().scope();
-    let session_status = super::session::sync_backend_session_status_for_refresh(app).await?;
+    let session_status = super::session::sync_backend_session_status_for_refresh(
+        app,
+        request.wants("schedule_data"),
+    )
+    .await?;
     let mut kgc_authenticated = session_status.kgc_session_present;
     let luna_authenticated = session_status.luna_authenticated;
     let mut updated_keys = Vec::new();
     let mut schedule_changed = false;
+
+    let schedule_due =
+        request.wants("schedule_data") && (request.force || schedule_refresh_is_stale(&db));
+    // Publish the timetable before optional activity, weather, or KGC requests.
+    if schedule_due && luna_authenticated {
+        match crate::timetable::sync_schedule_data(
+            app.clone(),
+            app.state::<LunaState>(),
+            app.state::<Database>().scope(),
+        )
+        .await
+        {
+            Ok(_) => {
+                updated_keys.push("schedule_data".to_string());
+                schedule_changed = true;
+                emit_cache_updates(app, vec!["schedule_data".into()]);
+            }
+            Err(e) => log::warn!("background refresh: schedule sync failed: {}", e),
+        }
+    }
+    if request.wants("schedule_data") && luna_authenticated {
+        crate::timetable::spawn_luna_counts(app, &db, request.force);
+    }
+
+    super::session::maybe_renew_sessions(app).await;
 
     let fast_max_age = super::fast_cache_max_age_secs(super::is_app_focused(app));
     if request.wants("luna_todo")
@@ -156,51 +183,13 @@ async fn refresh_backend_data_inner(
         }
     }
 
-    // Luna timetable must refresh even when KGC is down or logged out.
-    if request.wants("schedule_data")
-        && (kgc_authenticated || luna_authenticated)
-        && (request.force || schedule_refresh_is_stale(&db))
-    {
-        match crate::timetable::sync_schedule_data(
-            app.state::<KgcState>(),
-            app.state::<LunaState>(),
-            app.state::<Database>().scope(),
-        )
-        .await
-        {
-            Ok(_) => {
-                updated_keys.push("schedule_data".to_string());
-                schedule_changed = true;
-            }
-            Err(e) => log::warn!("background refresh: schedule sync failed: {}", e),
-        }
-    }
-
-    if request.wants("schedule_data") && luna_authenticated {
-        match crate::timetable::refresh_luna_counts_internal(
-            &app.state::<LunaState>(),
-            &db,
-            request.force,
-        )
-        .await
-        {
-            Ok(updated) if updated > 0 => {
-                updated_keys.push("schedule_data".to_string());
-                schedule_changed = true;
-            }
-            Ok(_) => {}
-            Err(e) => log::warn!("background refresh: luna counts failed: {}", e),
-        }
-    }
-
     // Publish Luna's schedule before optional KGC recovery can delay the run.
     let published_keys = updated_keys.len();
     if published_keys > 0 {
         emit_cache_updates(app, updated_keys.clone());
     }
 
-    // A schedule refresh uses Luna and any existing KGC session. Only tasks
-    // that require KGC may recover it, after the Luna schedule has refreshed.
+    // Only tasks that require KGC may recover it, after Luna has refreshed.
     if kgc_data_request_due(request, &db) {
         kgc_authenticated = crate::commands::ensure_kgc_session_for_automatic_request(app).await;
     }
@@ -298,6 +287,10 @@ async fn refresh_backend_data_inner(
                 Err(e) => log::warn!("background refresh: exams failed: {}", e),
             }
         }
+    }
+
+    if request.wants("schedule_data") && kgc_authenticated {
+        crate::timetable::spawn_kgc_supplement(app, &db, request.force);
     }
 
     if request.wants("schedule_data") {

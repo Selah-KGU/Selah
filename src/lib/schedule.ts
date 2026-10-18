@@ -1,4 +1,4 @@
-import { PERIOD_TIMES, type LunaCourseRow, type ScheduleResponse } from "./types";
+import { PERIOD_TIMES, type KgcCourseRow, type LunaCourseRow, type ScheduleResponse } from "./types";
 
 export interface CourseSlot {
   name: string;
@@ -8,6 +8,7 @@ export interface CourseSlot {
   room: string;
   detail_path: string;
   is_cancelled: boolean;
+  is_makeup?: boolean;
   luna_id: string;
   teacher: string;
 }
@@ -55,38 +56,59 @@ export interface HeroCourse {
   live: boolean;
 }
 
-export function buildCourseSlots(schedule: ScheduleResponse | null): CourseSlot[] {
+export function courseNamesMatch(left: string, right: string): boolean {
+  const normalize = (name: string) => name.normalize("NFKC").replace(/\s+/g, "");
+  const name = normalize(left);
+  return name.length > 0 && name === normalize(right);
+}
+
+/** Supplement Luna only when the KGC row belongs to the same course. */
+export function supplementalKgcCourse(
+  entries: KgcCourseRow[], courses: LunaCourseRow[],
+  day: number, period: number, term: string, year = "",
+): KgcCourseRow | undefined {
+  const luna = preferredLunaCourse(courses, day, period, term, year);
+  if (luna) {
+    return entries.find(entry => entry.day === day && entry.period === period && courseNamesMatch(entry.name, luna.name));
+  }
+  return entries.find(entry => entry.day === day && entry.period === period && (
+    entry.is_makeup || !courses.some(course =>
+      preferredLunaCourse(courses, course.day, course.period, term, year) === course && courseNamesMatch(entry.name, course.name))
+  ));
+}
+
+export function buildCourseSlots(schedule: ScheduleResponse | null, week: "current" | "next" = "current"): CourseSlot[] {
   if (!schedule) return [];
-  const kgc = schedule.raw.kgc_entries_current;
-  const luna = schedule.raw.luna_courses;
+  const kgc = (week === "current" ? schedule.raw.kgc_entries_current : schedule.raw.kgc_entries_next) ?? [];
+  const luna = schedule.raw.luna_courses ?? [];
   const term = schedule.luna_term || "";
   const year = schedule.luna_year || "";
-  if (kgc.length === 0) {
-    const seen = new Set<string>();
-    const slots: CourseSlot[] = [];
-    for (const course of luna) {
-      const picked = preferredLunaCourse(luna, course.day, course.period, term, year);
-      if (!picked || picked.luna_id !== course.luna_id || picked.day !== course.day || picked.period !== course.period) continue;
-      const key = picked.day + ":" + picked.period + ":" + picked.luna_id;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      slots.push({
-        name: picked.name,
-        kgc_code: "",
-        day: picked.day,
-        period: picked.period,
-        room: "",
-        detail_path: "",
-        is_cancelled: false,
-        luna_id: picked.luna_id,
-        teacher: picked.teacher,
-      });
-    }
-    return slots;
+  const seen = new Set<string>();
+  const slots: CourseSlot[] = [];
+  for (const course of luna) {
+    const picked = preferredLunaCourse(luna, course.day, course.period, term, year);
+    if (!picked || picked.luna_id !== course.luna_id || picked.day !== course.day || picked.period !== course.period) continue;
+    const key = picked.day + ":" + picked.period + ":" + picked.luna_id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const extra = supplementalKgcCourse(kgc, luna, picked.day, picked.period, term, year);
+    slots.push({
+      name: picked.name,
+      kgc_code: extra?.kgc_code ?? "",
+      day: picked.day,
+      period: picked.period,
+      room: extra?.room ?? "",
+      detail_path: extra?.detail_path ?? "",
+      is_cancelled: extra?.is_cancelled ?? false,
+      is_makeup: extra?.is_makeup ?? false,
+      luna_id: picked.luna_id,
+      teacher: picked.teacher,
+    });
   }
-  return kgc.map((entry) => {
-    const lunaCourse = preferredLunaCourse(luna, entry.day, entry.period, term, year);
-    return {
+  for (const entry of kgc) {
+    if (preferredLunaCourse(luna, entry.day, entry.period, term, year)) continue;
+    if (supplementalKgcCourse(kgc, luna, entry.day, entry.period, term, year) !== entry) continue;
+    slots.push({
       name: entry.name,
       kgc_code: entry.kgc_code,
       day: entry.day,
@@ -94,10 +116,12 @@ export function buildCourseSlots(schedule: ScheduleResponse | null): CourseSlot[
       room: entry.room,
       detail_path: entry.detail_path,
       is_cancelled: entry.is_cancelled,
-      luna_id: lunaCourse?.luna_id ?? "",
-      teacher: lunaCourse?.teacher ?? "",
-    };
-  });
+      is_makeup: entry.is_makeup,
+      luna_id: "",
+      teacher: "",
+    });
+  }
+  return slots.sort((left, right) => left.day - right.day || left.period - right.period);
 }
 
 

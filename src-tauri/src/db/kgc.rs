@@ -3,30 +3,25 @@ use super::*;
 impl Database {
     // ── KGC courses ──
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn upsert_kgc_course(
+    /// Replace one verified week atomically so removed secondary rows disappear.
+    pub(crate) fn replace_kgc_week(
         &self,
-        kgc_code: &str,
-        name: &str,
-        day: i32,
-        period: i32,
-        room: &str,
-        detail_path: &str,
-        is_cancelled: bool,
-        is_makeup: bool,
-        is_room_changed: bool,
-        week_label: &str,
-    ) -> Result<i64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("DB lock: {}", e))?;
-        let now = epoch_secs();
-        conn.execute(
-            "INSERT INTO kgc_courses (kgc_code, name, day, period, room, detail_path, is_cancelled, is_makeup, is_room_changed, week_label, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
-             ON CONFLICT(kgc_code, day, period, week_label) DO UPDATE SET
-               name=?2, room=?5, detail_path=?6, is_cancelled=?7, is_makeup=?8, is_room_changed=?9, updated_at=?11",
-            params![kgc_code, name, day, period, room, detail_path, is_cancelled as i32, is_makeup as i32, is_room_changed as i32, week_label, now],
-        ).map_err(|e| format!("DB upsert kgc: {}", e))?;
-        Ok(conn.last_insert_rowid())
+        label: &str,
+        entries: &[KgcCourseRow],
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| format!("DB lock: {e}"))?;
+        let tx = conn.transaction().map_err(|e| format!("DB begin: {e}"))?;
+        tx.execute("DELETE FROM kgc_courses WHERE week_label = ?1", [label])
+            .map_err(|e| format!("DB clear KGC week: {e}"))?;
+        for entry in entries {
+            tx.execute(
+                "INSERT OR REPLACE INTO kgc_courses (kgc_code, name, day, period, room, detail_path, is_cancelled, is_makeup, is_room_changed, week_label, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![entry.kgc_code, entry.name, entry.day, entry.period, entry.room, entry.detail_path,
+                    entry.is_cancelled, entry.is_makeup, entry.is_room_changed, label, epoch_secs()],
+            ).map_err(|e| format!("DB save KGC week: {e}"))?;
+        }
+        tx.commit().map_err(|e| format!("DB commit: {e}"))
     }
 
     pub fn get_kgc_courses(&self, week_label: &str) -> Result<Vec<KgcCourseRow>, String> {

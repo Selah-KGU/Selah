@@ -1,9 +1,7 @@
 use crate::client;
-use crate::config;
 use crate::db::{Database, SnapshotState};
 use crate::luna_client;
 use crate::luna_parser;
-use crate::LunaState;
 
 pub(super) struct LunaSnapshotFields {
     pub(super) communities: Vec<luna_parser::LunaCommunity>,
@@ -11,49 +9,16 @@ pub(super) struct LunaSnapshotFields {
     pub(super) term_opts: Vec<luna_parser::SelectOption>,
     pub(super) year: String,
     pub(super) term: String,
-    pub(super) replaced: bool,
-    pub(super) metadata_changed: bool,
-}
-
-fn luna_fields_from_snapshot(snapshot: &SnapshotState) -> LunaSnapshotFields {
-    LunaSnapshotFields {
-        communities: snapshot.luna_communities.clone(),
-        year_opts: snapshot.luna_year_options.clone(),
-        term_opts: snapshot.luna_term_options.clone(),
-        year: snapshot.luna_year.clone(),
-        term: snapshot.luna_term.clone(),
-        replaced: false,
-        metadata_changed: false,
-    }
 }
 
 pub(super) async fn sync_luna_timetable(
-    luna_state: &LunaState,
+    http: &reqwest::Client,
     db: &Database,
     previous: &SnapshotState,
+    base_url: &str,
 ) -> Result<LunaSnapshotFields, String> {
-    let http = {
-        let luna = luna_state.session();
-        if luna.has_credentials() {
-            Some(luna.http().clone())
-        } else {
-            None
-        }
-    };
-    let Some(http) = http else {
-        log::info!("sync_schedule_data: Luna not authenticated; keeping stored timetable");
-        return Ok(luna_fields_from_snapshot(previous));
-    };
-
     let target = target_luna_period(previous);
-    let parsed = match fetch_current_luna_timetable(&http, target.as_ref()).await {
-        Ok(parsed) => parsed,
-        Err(error) if is_luna_auth_error(&error) => return Err(error),
-        Err(error) => {
-            log::warn!("sync_schedule_data: Luna fetch skipped persist: {}", error);
-            return Ok(luna_fields_from_snapshot(previous));
-        }
-    };
+    let parsed = fetch_current_luna_timetable(http, target.as_ref(), base_url).await?;
 
     if !courses_fit_target(&parsed.courses, target.as_ref()) {
         log::warn!(
@@ -61,23 +26,20 @@ pub(super) async fn sync_luna_timetable(
             parsed.year,
             parsed.term
         );
-        return Ok(luna_fields_from_snapshot(previous));
+        return Err(
+            "Luna の時間割の学期を確認できませんでした。保存済みの時間割を表示しています。".into(),
+        );
     }
 
-    let replaced = if parsed.courses.is_empty() {
-        log::warn!("sync_schedule_data: Luna timetable had no courses; keeping stored rows");
-        false
-    } else {
-        db.replace_luna_courses(&parsed.courses)?;
-        log::info!(
-            "sync_schedule_data: Luna: {} courses, {} communities, term={}/{}",
-            parsed.courses.len(),
-            parsed.communities.len(),
-            parsed.year,
-            parsed.term
-        );
-        true
-    };
+    // A recognized empty timetable is authoritative too (e.g. withdrawn courses).
+    db.replace_luna_courses(&parsed.courses)?;
+    log::info!(
+        "sync_schedule_data: Luna: {} courses, {} communities, term={}/{}",
+        parsed.courses.len(),
+        parsed.communities.len(),
+        parsed.year,
+        parsed.term
+    );
 
     let year = if parsed.year.is_empty() {
         previous.luna_year.clone()
@@ -90,11 +52,7 @@ pub(super) async fn sync_luna_timetable(
         parsed.term
     };
     Ok(LunaSnapshotFields {
-        communities: if parsed.communities.is_empty() {
-            previous.luna_communities.clone()
-        } else {
-            parsed.communities
-        },
+        communities: parsed.communities,
         year_opts: if parsed.year_options.is_empty() {
             previous.luna_year_options.clone()
         } else {
@@ -107,25 +65,24 @@ pub(super) async fn sync_luna_timetable(
         },
         year,
         term,
-        replaced,
-        metadata_changed: true,
     })
 }
 
 async fn fetch_current_luna_timetable(
     http: &reqwest::Client,
     target: Option<&(String, String)>,
+    base_url: &str,
 ) -> Result<luna_parser::LunaTimetable, String> {
-    let url = format!("{}/lms/timetable", config::LUNA_BASE);
+    let url = format!("{}/lms/timetable", base_url);
     let html = client::fetch_with_redirect(
         http,
         &url,
-        config::LUNA_BASE,
+        base_url,
         luna_client::LUNA_SESSION_EXPIRED_MSG,
         luna_client::is_luna_session_expired,
     )
     .await?;
-    let parsed = luna_parser::parse_luna_timetable(&html);
+    let parsed = checked_timetable(&html)?;
     if luna_timetable_matches(&parsed, target) {
         return Ok(parsed);
     }
@@ -140,7 +97,10 @@ async fn fetch_current_luna_timetable(
             year,
             term
         );
-        return Err("luna-term-mismatch".into());
+        return Err(
+            "Luna の時間割を現在の学期に切り替えられませんでした。もう一度更新してください。"
+                .into(),
+        );
     };
     log::info!(
         "sync_schedule_data: Luna page is {}/{}, switching to {}/{}",
@@ -149,8 +109,8 @@ async fn fetch_current_luna_timetable(
         year,
         term
     );
-    let switched_html = submit_luna_timetable_switch(http, &request).await?;
-    let switched = luna_parser::parse_luna_timetable(&switched_html);
+    let switched_html = submit_luna_timetable_switch(http, &request, base_url).await?;
+    let switched = checked_timetable(&switched_html)?;
     if luna_timetable_matches(&switched, target) {
         return Ok(switched);
     }
@@ -159,15 +119,16 @@ async fn fetch_current_luna_timetable(
         switched.year,
         switched.term
     );
-    Err("luna-term-mismatch".into())
+    Err("Luna の時間割を現在の学期に切り替えられませんでした。もう一度更新してください。".into())
 }
 
 async fn submit_luna_timetable_switch(
     http: &reqwest::Client,
     request: &luna_parser::LunaTimetableSwitch,
+    base_url: &str,
 ) -> Result<String, String> {
-    let url = resolve_luna_action(&request.action)?;
-    let referer = format!("{}/lms/timetable", config::LUNA_BASE);
+    let url = resolve_luna_action(&request.action, base_url)?;
+    let referer = format!("{}/lms/timetable", base_url);
     if request.method.eq_ignore_ascii_case("get") {
         let builder = http
             .get(&url)
@@ -176,7 +137,7 @@ async fn submit_luna_timetable_switch(
         return client::send_and_follow_redirect(
             http,
             builder,
-            config::LUNA_BASE,
+            base_url,
             luna_client::LUNA_SESSION_EXPIRED_MSG,
             luna_client::is_luna_session_expired,
         )
@@ -185,34 +146,53 @@ async fn submit_luna_timetable_switch(
     client::post_form_with_redirect(
         http,
         &url,
-        config::LUNA_BASE,
+        base_url,
         luna_client::LUNA_SESSION_EXPIRED_MSG,
         luna_client::is_luna_session_expired,
         request.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())),
-        &[("Referer", referer.as_str()), ("Origin", config::LUNA_BASE)],
+        &[("Referer", referer.as_str()), ("Origin", base_url)],
     )
     .await
 }
 
-fn resolve_luna_action(action: &str) -> Result<String, String> {
+fn resolve_luna_action(action: &str, base_url: &str) -> Result<String, String> {
     let action = action.trim();
     if action.is_empty() || action == "#" || action.starts_with("javascript:") {
-        return Ok(format!("{}/lms/timetable", config::LUNA_BASE));
+        return Ok(format!("{}/lms/timetable", base_url));
     }
     if action.starts_with("http://") || action.starts_with("https://") {
-        if action.starts_with(config::LUNA_BASE) {
+        if url::Url::parse(action)
+            .ok()
+            .zip(url::Url::parse(base_url).ok())
+            .is_some_and(|(action, base)| action.origin() == base.origin())
+        {
             return Ok(action.to_string());
         }
         return Err("Luna timetable form action is outside Luna".into());
     }
     if let Some(path) = action.strip_prefix('/') {
-        return Ok(format!("{}/{}", config::LUNA_BASE, path));
+        return Ok(format!("{}/{}", base_url, path));
     }
-    Ok(format!(
-        "{}/{}",
-        config::LUNA_BASE,
-        action.trim_start_matches("./")
-    ))
+    Ok(format!("{}/{}", base_url, action.trim_start_matches("./")))
+}
+
+fn checked_timetable(html: &str) -> Result<luna_parser::LunaTimetable, String> {
+    if !luna_parser::is_luna_timetable(html) {
+        return Err("Luna の時間割ページを確認できませんでした。もう一度更新してください。".into());
+    }
+    let parsed = luna_parser::parse_luna_timetable(html);
+    if parsed.year.is_empty()
+        || parsed.term.is_empty()
+        || parsed.courses.iter().any(|course| {
+            course.idnumber.is_empty()
+                || course.name.is_empty()
+                || !(1..=6).contains(&course.day)
+                || !(1..=7).contains(&course.period)
+        })
+    {
+        return Err("Luna の時間割を読み取れませんでした。もう一度更新してください。".into());
+    }
+    Ok(parsed)
 }
 
 fn target_luna_period(snapshot: &SnapshotState) -> Option<(String, String)> {

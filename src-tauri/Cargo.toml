@@ -39,6 +39,7 @@ tokio = { version = "1.53.3", features = ["sync", "time", "macros", "net", "io-u
 scraper = "0.27.0"
 regex = "1.13.1"
 unicode-segmentation = "1.13.3"
+unicode-normalization = "0.1.25"
 base64 = "0.23.1"
 url = "2.5.8"
 urlencoding = "2.1.3"
