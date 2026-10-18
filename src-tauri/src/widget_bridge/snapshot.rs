@@ -10,14 +10,14 @@ pub(super) fn snapshot_from_db(
     now: chrono::DateTime<Local>,
 ) -> Result<WidgetSnapshot, String> {
     let snap = db.get_snapshot_state()?.unwrap_or_default();
-    let scope = crate::academic_period::visible_weeks(
+    let label = crate::academic_period::visible_week_containing_date(
         &snap.current_week_label,
         &snap.next_week_label,
         &snap.luna_year,
         &snap.luna_term,
         now.date_naive(),
     );
-    let raw = db.build_raw_data(&scope.current, &scope.next, snap.luna_communities)?;
+    let raw = db.build_raw_data(&label, "", snap.luna_communities)?;
     let classes = classes_from_sources(
         &crate::timetable::primary_courses(&raw.luna_courses, &raw.kgc_entries_current)
             .into_iter()

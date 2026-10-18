@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -103,6 +103,57 @@ fn period_from_recurring_bounds(
     None
 }
 
+/// The timetable advances on Saturday, independently of Luna/KGC availability.
+pub(crate) fn timetable_week_labels(
+    current: &str,
+    next: &str,
+    today: NaiveDate,
+) -> (String, String) {
+    let mut monday = calendar_week_start(today);
+    if today.weekday().num_days_from_monday() >= 5 {
+        monday += Duration::days(7);
+    }
+    (
+        label_for_week(current, next, monday),
+        label_for_week(current, next, monday + Duration::days(7)),
+    )
+}
+
+/// Today's classes still use today's dates, including Saturday, when the
+/// timetable page has already advanced to the upcoming teaching week.
+pub(crate) fn visible_week_containing_date(
+    current: &str,
+    next: &str,
+    snapshot_year: &str,
+    snapshot_term: &str,
+    day: NaiveDate,
+) -> String {
+    let label = label_for_week(current, next, calendar_week_start(day));
+    let period = calendar_academic_period(day);
+    visible_week_label(&label, period.as_ref(), snapshot_year, snapshot_term, day)
+}
+
+fn calendar_week_start(day: NaiveDate) -> NaiveDate {
+    day - Duration::days(i64::from(day.weekday().num_days_from_monday()))
+}
+
+fn label_for_week(current: &str, next: &str, start: NaiveDate) -> String {
+    // Keep the saved spelling so date-keyed KGC rows remain available when a
+    // saved next week becomes the current week.
+    for cached in [current, next] {
+        if week_label_range(cached).is_some_and(|(cached_start, _)| cached_start == start) {
+            return cached.to_string();
+        }
+    }
+    format!(
+        "{}～{}",
+        start.format("%Y年%m月%d日"),
+        (start + Duration::days(5)).format("%Y年%m月%d日")
+    )
+}
+
+/// Project saved semester data onto the weeks to show today. This is read-only:
+/// advancing dates does not make cached course data a successful network sync.
 pub(crate) fn visible_weeks(
     current: &str,
     next: &str,
@@ -110,18 +161,20 @@ pub(crate) fn visible_weeks(
     snapshot_term: &str,
     today: NaiveDate,
 ) -> VisibleWeeks {
+    let (current, next) = timetable_week_labels(current, next, today);
     let Some(period) = calendar_academic_period(today) else {
         return VisibleWeeks {
-            current: current.to_string(),
-            next: next.to_string(),
+            current,
+            next,
             year: snapshot_year.to_string(),
             term: snapshot_term.to_string(),
             from_calendar: false,
         };
     };
     let current_visible =
-        visible_week_label(current, Some(&period), snapshot_year, snapshot_term, today);
-    let next_visible = visible_week_label(next, Some(&period), snapshot_year, snapshot_term, today);
+        visible_week_label(&current, Some(&period), snapshot_year, snapshot_term, today);
+    let next_visible =
+        visible_week_label(&next, Some(&period), snapshot_year, snapshot_term, today);
     VisibleWeeks {
         current: current_visible,
         next: next_visible,
@@ -200,6 +253,78 @@ fn parse_flexible_date(text: &str) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timetable_rolls_on_saturday_and_keeps_the_same_week_through_monday() {
+        for (day, expected_current, expected_next) in [
+            (
+                "2026-10-16",
+                "2026年10月12日～2026年10月17日",
+                "2026年10月19日～2026年10月24日",
+            ),
+            (
+                "2026-10-17",
+                "2026年10月19日～2026年10月24日",
+                "2026年10月26日～2026年10月31日",
+            ),
+            (
+                "2026-10-18",
+                "2026年10月19日～2026年10月24日",
+                "2026年10月26日～2026年10月31日",
+            ),
+            (
+                "2026-10-19",
+                "2026年10月19日～2026年10月24日",
+                "2026年10月26日～2026年10月31日",
+            ),
+            (
+                "2026-10-23",
+                "2026年10月19日～2026年10月24日",
+                "2026年10月26日～2026年10月31日",
+            ),
+            (
+                "2026-10-24",
+                "2026年10月26日～2026年10月31日",
+                "2026年11月02日～2026年11月07日",
+            ),
+            (
+                "2026-10-31",
+                "2026年11月02日～2026年11月07日",
+                "2026年11月09日～2026年11月14日",
+            ),
+            (
+                "2026-12-26",
+                "2026年12月28日～2027年01月02日",
+                "2027年01月04日～2027年01月09日",
+            ),
+            (
+                "2027-01-02",
+                "2027年01月04日～2027年01月09日",
+                "2027年01月11日～2027年01月16日",
+            ),
+        ] {
+            let today = NaiveDate::parse_from_str(day, "%Y-%m-%d").unwrap();
+            assert_eq!(
+                timetable_week_labels("", "", today),
+                (expected_current.into(), expected_next.into()),
+                "{day}"
+            );
+        }
+    }
+
+    #[test]
+    fn advancing_to_saved_next_week_preserves_its_database_key() {
+        let saturday = NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let old = "2026/10/12～2026/10/17";
+        let next = "2026/10/19～2026/10/24";
+        let (current, following) = timetable_week_labels(old, next, saturday);
+        assert_eq!(current, next);
+        assert_eq!(following, "2026年10月26日～2026年10月31日");
+        assert_eq!(
+            visible_week_containing_date(old, next, "2026", "03", saturday),
+            old
+        );
+    }
 
     fn period(today: NaiveDate) -> AcademicPeriod {
         expected_academic_period(today, "2026-04-03", "2026-09-21").unwrap()

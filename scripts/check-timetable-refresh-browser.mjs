@@ -11,20 +11,21 @@ import { spawn } from "node:child_process";
 const state = `
 export const calls = [], listeners = new Map();
 export const legacyWarning = 'KGC に接続できません。Luna と保存済みの時間割を表示しています。';
-export function schedule(name) {
+export function schedule(name, current='2026年10月19日～2026年10月24日', next='2026年10月26日～2026年10月31日') {
   return { raw: {
     kgc_entries_current: [{ name:'Old KGC', day:1, period:1, kgc_code:'old', room:'Old room', is_cancelled:true }],
     kgc_entries_next: [], luna_courses:[{ name, day:1, period:1, luna_id:'2026000000000301', teacher:'Luna teacher' }],
     session_plans:[], luna_counts:[], luna_activities:[], kgc_course_details:[], luna_communities:[],
-    current_week_label:'2026年10月19日～2026年10月24日', next_week_label:'2026年10月26日～2026年10月31日',
+    current_week_label:current, next_week_label:next,
   }, ai_result:{ current_week:[
       { day:1, period:1, course_name:'Old AI course', room:'Wrong AI room', teacher:'Wrong AI teacher', is_cancelled:true },
       { day:2, period:2, course_name:'Ghost AI course', is_cancelled:true },
-    ], next_week:[], current_week_label:'2026年10月19日～2026年10月24日', next_week_label:'2026年10月26日～2026年10月31日' }, ai_stale:false, snapshot_updated_at:1,
+    ], next_week:[], current_week_label:current, next_week_label:next }, ai_stale:false, snapshot_updated_at:1,
     luna_communities:[], luna_year_options:[], luna_term_options:[], luna_year:'2026', luna_term:'03', kgc_warning:legacyWarning };
 }
-export let snapshot = schedule('Initial Luna'), failure = false;
+export let snapshot = schedule('Initial Luna', '2026/10/12～2026/10/17', '2026/10/19～2026/10/24'), failure = false;
 export const failSync = value => { failure = value; };
+export const setSnapshot = value => { snapshot = value; };
 export function pushSchedule(value) { snapshot=value; listeners.get('schedule_data')?.(value); }
 export async function readSnapshot() { calls.push('get_schedule_snapshot'); return snapshot; }
 export async function sync() {
@@ -69,7 +70,21 @@ export async function cachedBackendFetch() { throw new Error('Unexpected KGC req
 const source = `
 import { mount, unmount, tick } from 'svelte';
 import Timetable from ${JSON.stringify(resolve("src/lib/views/Timetable.svelte"))};
-import { calls, schedule, failSync, pushSchedule, legacyWarning } from 'timetable-test-state';
+import { calls, schedule, failSync, pushSchedule, setSnapshot, legacyWarning } from 'timetable-test-state';
+const RealDate = Date;
+let clock = new RealDate(2026,9,16,23,59).getTime();
+globalThis.Date = class extends RealDate {
+  constructor(...args) { if(args.length) super(...args); else super(clock); }
+  static now() { return clock; }
+};
+const realSetInterval = window.setInterval.bind(window), realClearInterval = window.clearInterval.bind(window);
+const dayChecks = new Map();
+window.setInterval = (callback, ms, ...args) => {
+  const id = realSetInterval(callback, ms, ...args);
+  if(ms === 60_000) dayChecks.set(id, callback);
+  return id;
+};
+window.clearInterval = id => { dayChecks.delete(id); realClearInterval(id); };
 const target = document.getElementById('probe'), checks = [];
 let app;
 function check(value, message) { if (!value) throw new Error(message); checks.push(message); }
@@ -78,12 +93,14 @@ async function until(predicate) {
   throw new Error('DOM condition timed out');
 }
 const updateButton = () => [...target.querySelectorAll('button')].find(button => button.textContent.trim() === '更新');
+const shownWeek = () => target.querySelector('.header-date-content')?.textContent.replace(/\\s/g,'');
 async function show() {
   app = mount(Timetable, { target });
   await until(() => updateButton() && target.textContent.includes('Luna'));
 }
 try {
   await show();
+  check(shownWeek() === '26年10月12-17日', 'Friday displays the outgoing teaching week');
   check(target.textContent.includes('Initial Luna'), 'the grid displays Luna despite conflicting KGC cache data');
   check(!target.textContent.includes('Old KGC'), 'KGC cannot replace the primary course');
   check(!target.querySelector('.entry-cancelled') && !target.textContent.includes('Wrong AI room'), 'old AI cannot attach cancellation or room to a different Luna course');
@@ -92,9 +109,14 @@ try {
   target.querySelector('.course-cell').click(); await tick();
   check(calls.includes('university_open_detail_window'), 'a Luna course opens its Luna detail even before the login status projection catches up');
   check(!target.textContent.includes(legacyWarning) && !target.querySelector('.error-banner'), 'the screenshot warning is absent even in an old cached payload');
+  clock = new RealDate(2026,9,17,0,1).getTime();
   updateButton().click();
   await until(() => target.textContent.includes('Updated Luna') && !updateButton().disabled);
   check(target.textContent.includes('時間割を更新しました'), 'successful Luna refresh shows a success acknowledgment');
+  check(shownWeek() === '26年10月19-24日', 'Saturday refresh advances the displayed week without KGC');
+  target.querySelector('.header-date').click(); await tick();
+  check(shownWeek() === '26年10月26-31日', 'the next-week control follows the advanced current week');
+  target.querySelector('.header-date').click(); await tick();
   check(calls.filter(command => command === 'sync_schedule_data').length === 1, 'one click invokes the primary refresh once');
   check(!calls.some(command => !command.startsWith('cache:') && /kgc|syllabus|fetch_exams|login|check_session/i.test(command)), 'opening and refreshing the page issue no KGC or login commands');
   pushSchedule(schedule('Background Luna')); await tick();
@@ -109,6 +131,25 @@ try {
   check(!target.querySelector('.error-banner'), 'retry clears the actual error after a successful refresh');
   await unmount(app); app=null; await show();
   check(!target.textContent.includes(legacyWarning), 'remounting the page cannot restore the persisted KGC warning');
+  const offline = schedule('Offline Luna', '2026年10月26日～2026年10月31日', '2026年11月02日～2026年11月07日');
+  failSync(true); setSnapshot(offline);
+  clock = new RealDate(2026,9,24,0,1).getTime();
+  const syncCalls = calls.filter(command => command === 'sync_schedule_data').length;
+  check(dayChecks.size === 1, 'remounting leaves only one calendar check timer');
+  for(const callback of dayChecks.values()) callback();
+  await until(() => target.textContent.includes('Offline Luna'));
+  check(shownWeek() === '26年10月26-31日', 'a page left open advances on Saturday from its local snapshot while offline');
+  check(calls.filter(command => command === 'sync_schedule_data').length === syncCalls, 'crossing the day reads the local snapshot without network refresh or KGC login');
+  updateButton().click();
+  await until(() => target.querySelector('.error-banner')?.textContent.includes('Luna unavailable'));
+  check(shownWeek() === '26年10月26-31日' && target.textContent.includes('Offline Luna'), 'a failed refresh preserves the advanced offline week and courses');
+  setSnapshot(schedule('Resumed Luna', offline.raw.current_week_label, offline.raw.next_week_label));
+  clock = new RealDate(2026,9,25,9,0).getTime();
+  window.dispatchEvent(new Event('focus'));
+  await until(() => target.textContent.includes('Resumed Luna'));
+  check(shownWeek() === '26年10月26-31日', 'resuming after another day reloads the local dates without advancing a second time');
+  await unmount(app); app=null;
+  check(dayChecks.size === 0, 'unmounting releases the calendar check timer');
   await fetch('/result', { method:'POST', body:JSON.stringify({ passed:checks.length, checks }) });
 } catch(error) {
   await fetch('/result', { method:'POST', body:JSON.stringify({ passed:checks.length, checks, error:String(error) }) });

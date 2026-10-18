@@ -263,9 +263,18 @@ pub(super) fn load_ai_cache(db: &Database) -> Result<(Option<AiScheduleResult>, 
 
 /// Reuse metadata already read for a response, preserving None versus a saved
 /// default row. Standalone callers still read metadata through load_ai_cache.
+#[cfg(test)]
 pub(super) fn load_ai_cache_with_snapshot(
     db: &Database,
     snapshot: Option<&SnapshotState>,
+) -> Result<(Option<AiScheduleResult>, bool), String> {
+    load_ai_cache_with_snapshot_on(db, snapshot, chrono::Local::now().date_naive())
+}
+
+pub(super) fn load_ai_cache_with_snapshot_on(
+    db: &Database,
+    snapshot: Option<&SnapshotState>,
+    today: chrono::NaiveDate,
 ) -> Result<(Option<AiScheduleResult>, bool), String> {
     load_ai_cache_inner(db).map(|opt| match opt {
         Some((mut result, ts)) => {
@@ -275,7 +284,7 @@ pub(super) fn load_ai_cache_with_snapshot(
                     &snapshot.next_week_label,
                     &snapshot.luna_year,
                     &snapshot.luna_term,
-                    chrono::Local::now().date_naive(),
+                    today,
                 );
                 let current_mismatch =
                     week_label_mismatch(&scope.current, &result.current_week_label);

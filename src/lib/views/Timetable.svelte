@@ -942,6 +942,27 @@
   }
 
   onMount(() => {
+    let shownDay = new Date().toDateString();
+    let readingDay = false;
+    let mounted = true;
+    // A page left open across Saturday must also advance when Luna/KGC is
+    // offline. The native snapshot projects dates locally without network IO.
+    const reloadOnDayChange = async () => {
+      const today = new Date().toDateString();
+      if (document.visibilityState !== "visible" || syncing || readingDay || today === shownDay) return;
+      readingDay = true;
+      try {
+        const data = await getScheduleSnapshot();
+        if (mounted && !syncing) {
+          applySchedule(data);
+          shownDay = today;
+        }
+      } catch { /* preserve the grid and retry on the next check */ }
+      finally { readingDay = false; }
+    };
+    const dayTimer = setInterval(reloadOnDayChange, 60_000);
+    window.addEventListener("focus", reloadOnDayChange);
+    document.addEventListener("visibilitychange", reloadOnDayChange);
     document.addEventListener("click", closeShareMenu);
     getAiConfig().then(cfg => {
       aiProvider = cfg.provider || "";
@@ -960,6 +981,12 @@
         syncedEvents: status.synced_events,
       }));
     }).catch(() => {});
+    return () => {
+      mounted = false;
+      clearInterval(dayTimer);
+      window.removeEventListener("focus", reloadOnDayChange);
+      document.removeEventListener("visibilitychange", reloadOnDayChange);
+    };
   });
 
   function handleFavToggle(e: CustomEvent<boolean>) {

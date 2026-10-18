@@ -48,16 +48,17 @@ pub async fn list_week_classes(app: &tauri::AppHandle, args: &Value) -> Result<V
 
 fn current_week_and_dow(db: &Database) -> Result<(String, i32), String> {
     let snap = db.get_snapshot_state()?.unwrap_or_default();
-    let scope = crate::academic_period::visible_weeks(
+    let now = chrono::Local::now();
+    let week = crate::academic_period::visible_week_containing_date(
         &snap.current_week_label,
         &snap.next_week_label,
         &snap.luna_year,
         &snap.luna_term,
-        chrono::Local::now().date_naive(),
+        now.date_naive(),
     );
     use chrono::Datelike;
-    let dow = chrono::Local::now().weekday().number_from_monday() as i32; // 1=Mon..7=Sun
-    Ok((scope.current, dow))
+    let dow = now.weekday().number_from_monday() as i32; // 1=Mon..7=Sun
+    Ok((week, dow))
 }
 
 fn dow_label(dow: i32) -> &'static str {

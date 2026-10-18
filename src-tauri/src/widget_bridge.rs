@@ -88,6 +88,66 @@ mod tests {
     }
 
     #[test]
+    fn saturday_widget_uses_todays_cancellation_after_the_timetable_has_advanced() {
+        let directory =
+            std::env::temp_dir().join(format!("selah-widget-week-{}", uuid::Uuid::new_v4()));
+        let db = Database::open(&directory).unwrap();
+        let today = Local
+            .with_ymd_and_hms(2026, 10, 17, 9, 0, 0)
+            .single()
+            .unwrap();
+        // A successful Saturday refresh has already replaced the saved labels.
+        db.save_snapshot_state(&crate::db::SnapshotState {
+            current_week_label: "2026年10月19日～2026年10月24日".into(),
+            next_week_label: "2026年10月26日～2026年10月31日".into(),
+            luna_year: "2026".into(),
+            luna_term: "03".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        db.replace_luna_courses(&[crate::luna_parser::LunaCourse {
+            idnumber: "local-course".into(),
+            name: "Saturday Luna".into(),
+            teacher: String::new(),
+            day: 6,
+            period: 1,
+        }])
+        .unwrap();
+        for (label, cancelled) in [
+            ("2026/10/12～2026/10/17", true),
+            ("2026/10/19～2026/10/24", false),
+        ] {
+            db.replace_kgc_week(
+                label,
+                &[crate::db::KgcCourseRow {
+                    id: 0,
+                    kgc_code: "code".into(),
+                    name: "Saturday Luna".into(),
+                    day: 6,
+                    period: 1,
+                    room: String::new(),
+                    detail_path: String::new(),
+                    is_cancelled: cancelled,
+                    is_makeup: false,
+                    is_room_changed: false,
+                    week_label: label.into(),
+                }],
+            )
+            .unwrap();
+        }
+        assert!(snapshot_from_db(&db, today).unwrap().classes.is_empty());
+        // The following Saturday has no cancellation; an old cancellation
+        // must not carry forward just because its weekday and course match.
+        let next_saturday = today + chrono::Duration::days(7);
+        assert_eq!(
+            snapshot_from_db(&db, next_saturday).unwrap().classes.len(),
+            1
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn saturday_classes_keep_period_order_and_drop_cancelled() {
         let classes = classes_from_sources(&[
             ClassSource {

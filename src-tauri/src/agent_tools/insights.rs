@@ -163,7 +163,8 @@ pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, Str
     };
 
     // Today's classes (best-effort: snapshot may be missing).
-    let schedule_scope = db.get_snapshot_state().ok().flatten().map(|snap| {
+    let snapshot = db.get_snapshot_state().ok().flatten();
+    let schedule_scope = snapshot.as_ref().map(|snap| {
         crate::academic_period::visible_weeks(
             &snap.current_week_label,
             &snap.next_week_label,
@@ -172,9 +173,18 @@ pub(super) async fn get_today_brief(app: &tauri::AppHandle) -> Result<Value, Str
             now.date_naive(),
         )
     });
-    let classes: Vec<Value> = match schedule_scope.as_ref() {
-        Some(scope) => {
-            let kgc = db.get_kgc_courses(&scope.current).unwrap_or_default();
+    let today_label = snapshot.as_ref().map(|snap| {
+        crate::academic_period::visible_week_containing_date(
+            &snap.current_week_label,
+            &snap.next_week_label,
+            &snap.luna_year,
+            &snap.luna_term,
+            now.date_naive(),
+        )
+    });
+    let classes: Vec<Value> = match today_label.as_ref() {
+        Some(label) => {
+            let kgc = db.get_kgc_courses(label).unwrap_or_default();
             let luna = db.get_luna_courses().unwrap_or_default();
             let mut out: Vec<Value> = Vec::new();
             for c in kgc.iter().filter(|c| c.day == dow) {

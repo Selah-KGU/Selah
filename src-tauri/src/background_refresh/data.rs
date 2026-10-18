@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use chrono::{Datelike, Local, TimeZone, Weekday};
+use chrono::Local;
 
 use crate::db::Database;
 use crate::{KgcState, LunaState};
@@ -335,6 +335,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recent_snapshot_is_still_due_when_the_teaching_week_rolls_on_saturday() {
+        use chrono::TimeZone;
+        let friday = Local
+            .with_ymd_and_hms(2026, 10, 16, 23, 59, 0)
+            .single()
+            .unwrap();
+        let saturday = friday + chrono::Duration::minutes(2);
+        let (current, next) =
+            crate::academic_period::timetable_week_labels("", "", friday.date_naive());
+        let mut snapshot = crate::db::SnapshotState {
+            current_week_label: current,
+            next_week_label: next,
+            luna_year: "2026".into(),
+            luna_term: "03".into(),
+            updated_at: friday.timestamp(),
+            ..Default::default()
+        };
+        assert!(!snapshot_is_stale(&snapshot, friday));
+        assert!(snapshot_is_stale(&snapshot, saturday));
+        // Even an old build's successful Saturday refresh used the wrong week.
+        snapshot.updated_at = saturday.timestamp();
+        assert!(snapshot_is_stale(&snapshot, saturday));
+        (snapshot.current_week_label, snapshot.next_week_label) =
+            crate::academic_period::timetable_week_labels(
+                &snapshot.current_week_label,
+                &snapshot.next_week_label,
+                saturday.date_naive(),
+            );
+        assert!(!snapshot_is_stale(&snapshot, saturday));
+        assert!(snapshot_is_stale(
+            &snapshot,
+            saturday + chrono::Duration::hours(6)
+        ));
+    }
+
+    #[test]
     fn schedule_refresh_never_requires_kgc_recovery() {
         let directory =
             std::env::temp_dir().join(format!("selah-schedule-{}", uuid::Uuid::new_v4()));
@@ -374,24 +410,25 @@ mod tests {
 }
 
 fn schedule_refresh_is_stale(db: &Database) -> bool {
-    let now = epoch_secs();
     let Some(snapshot) = db.get_snapshot_state().ok().flatten() else {
         return true;
     };
+    snapshot_is_stale(&snapshot, Local::now())
+}
 
+fn snapshot_is_stale(snapshot: &crate::db::SnapshotState, now: chrono::DateTime<Local>) -> bool {
     if snapshot.updated_at <= 0
-        || now.saturating_sub(snapshot.updated_at) >= SCHEDULE_CACHE_MAX_AGE_SECS
+        || now.timestamp().saturating_sub(snapshot.updated_at) >= SCHEDULE_CACHE_MAX_AGE_SECS
     {
         return true;
     }
 
-    if Local::now().weekday() != Weekday::Sun {
-        return false;
-    }
-
-    let snapshot_day = chrono::Utc
-        .timestamp_opt(snapshot.updated_at, 0)
-        .single()
-        .map(|dt| dt.with_timezone(&Local).date_naive());
-    snapshot_day != Some(Local::now().date_naive())
+    let scope = crate::academic_period::visible_weeks(
+        &snapshot.current_week_label,
+        &snapshot.next_week_label,
+        &snapshot.luna_year,
+        &snapshot.luna_term,
+        now.date_naive(),
+    );
+    scope.current != snapshot.current_week_label || scope.next != snapshot.next_week_label
 }

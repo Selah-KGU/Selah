@@ -24,14 +24,15 @@ impl Drop for Temporary {
 
 fn snapshot() -> SnapshotState {
     let today = chrono::Local::now().date_naive();
+    let (current, next) = crate::academic_period::timetable_week_labels("", "", today);
+    let slash_label = |label: &str| {
+        let (start, end) = crate::academic_period::week_label_range(label).unwrap();
+        format!("{}～{}", start.format("%Y/%m/%d"), end.format("%Y/%m/%d"))
+    };
     let period = crate::academic_period::calendar_academic_period(today);
     SnapshotState {
-        current_week_label: format!("{}～{}", today.format("%Y/%m/%d"), today.format("%Y/%m/%d")),
-        next_week_label: format!(
-            "{}～{}",
-            (today + chrono::Duration::days(7)).format("%Y/%m/%d"),
-            (today + chrono::Duration::days(13)).format("%Y/%m/%d")
-        ),
+        current_week_label: slash_label(&current),
+        next_week_label: slash_label(&next),
         luna_year: period.as_ref().map(|p| p.year.clone()).unwrap_or_default(),
         luna_term: period.as_ref().map(|p| p.term.clone()).unwrap_or_default(),
         ..Default::default()

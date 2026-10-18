@@ -35,33 +35,32 @@ async fn refresh_primary_schedule(
     if !luna.has_credentials() {
         return Err(crate::luna_client::LUNA_AUTH_REQUIRED_MSG.into());
     }
-    refresh_primary_schedule_with_http(luna.http(), db, crate::config::LUNA_BASE).await
+    refresh_primary_schedule_with_http(
+        luna.http(),
+        db,
+        crate::config::LUNA_BASE,
+        chrono::Local::now().date_naive(),
+    )
+    .await
 }
 
 async fn refresh_primary_schedule_with_http(
     http: &reqwest::Client,
     db: &crate::db::Database,
     base_url: &str,
+    today: chrono::NaiveDate,
 ) -> Result<ScheduleResponse, String> {
     let previous = db.get_snapshot_state()?.unwrap_or_default();
     // KGC is an optional source. Retire warnings persisted by older versions.
     let _ = db.delete_data_cache("schedule_kgc_warning");
 
-    let (mut current_week_label, mut next_week_label) = primary_week_labels(
+    let scope = crate::academic_period::visible_weeks(
         &previous.current_week_label,
         &previous.next_week_label,
-        chrono::Local::now().date_naive(),
-    );
-
-    let scope = crate::academic_period::visible_weeks(
-        &current_week_label,
-        &next_week_label,
         &previous.luna_year,
         &previous.luna_term,
-        chrono::Local::now().date_naive(),
+        today,
     );
-    current_week_label = scope.current.clone();
-    next_week_label = scope.next.clone();
     let (display_year, display_term) = if scope.from_calendar {
         (scope.year.clone(), scope.term.clone())
     } else {
@@ -76,8 +75,8 @@ async fn refresh_primary_schedule_with_http(
         (luna.year.clone(), luna.term.clone())
     };
     let snap = SnapshotState {
-        current_week_label: current_week_label.clone(),
-        next_week_label: next_week_label.clone(),
+        current_week_label: scope.current,
+        next_week_label: scope.next,
         luna_year: save_year,
         luna_term: save_term,
         luna_communities: luna.communities.clone(),
@@ -87,33 +86,7 @@ async fn refresh_primary_schedule_with_http(
     };
     db.save_snapshot_state(&snap)?;
     // Use the persisted timestamp, shared by later secondary cache pushes.
-    super::snapshot::build_schedule_snapshot_from_db(db)
-}
-
-/// Luna has a weekly timetable but no KGC week labels. Derive both weeks from
-/// the calendar, reusing a cached label only when it describes that same week.
-pub(super) fn primary_week_labels(
-    current: &str,
-    next: &str,
-    today: chrono::NaiveDate,
-) -> (String, String) {
-    use chrono::{Datelike, Duration};
-    let monday = today - Duration::days(i64::from(today.weekday().num_days_from_monday()));
-    let label = |start: chrono::NaiveDate| {
-        for cached in [current, next] {
-            if crate::academic_period::week_label_range(cached)
-                .is_some_and(|(cached_start, _)| cached_start == start)
-            {
-                return cached.to_string();
-            }
-        }
-        format!(
-            "{}～{}",
-            start.format("%Y年%m月%d日"),
-            (start + Duration::days(5)).format("%Y年%m月%d日")
-        )
-    };
-    (label(monday), label(monday + Duration::days(7)))
+    super::snapshot::build_schedule_snapshot_on(db, today)
 }
 
 #[cfg(test)]

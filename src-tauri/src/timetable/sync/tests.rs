@@ -18,12 +18,17 @@ impl Drop for Temporary {
 #[test]
 fn luna_week_labels_exist_without_kgc_and_advance_from_the_calendar() {
     let monday = chrono::NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
-    let (current, next) = primary_week_labels("", "", monday);
+    let (current, next) = crate::academic_period::timetable_week_labels("", "", monday);
     assert_eq!(current, "2026年10月19日～2026年10月24日");
     assert_eq!(next, "2026年10月26日～2026年10月31日");
-    let (_, advanced) = primary_week_labels(&current, &next, monday + chrono::Duration::days(7));
+    let (_, advanced) = crate::academic_period::timetable_week_labels(
+        &current,
+        &next,
+        monday + chrono::Duration::days(7),
+    );
     assert_eq!(advanced, "2026年11月02日～2026年11月07日");
-    let (current, _) = primary_week_labels("2026/10/19～2026/10/24", "", monday);
+    let (current, _) =
+        crate::academic_period::timetable_week_labels("2026/10/19～2026/10/24", "", monday);
     assert_eq!(current, "2026/10/19～2026/10/24");
 }
 
@@ -78,12 +83,14 @@ async fn an_unavailable_luna_session_does_not_change_the_saved_snapshot() {
 async fn primary_http_refresh_validates_pages_and_persists_only_real_timetables() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (db, _directory) = Temporary::open();
-    let target =
-        crate::academic_period::calendar_academic_period(chrono::Local::now().date_naive());
+    let saturday = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+    let target = crate::academic_period::calendar_academic_period(saturday);
     let (year, term) = target
         .map(|p| (p.year, p.term))
         .unwrap_or(("2026".into(), "03".into()));
     db.save_snapshot_state(&SnapshotState {
+        current_week_label: "2026/10/12～2026/10/17".into(),
+        next_week_label: "2026/10/19～2026/10/24".into(),
         luna_year: year.clone(),
         luna_term: term.clone(),
         ..Default::default()
@@ -132,18 +139,20 @@ async fn primary_http_refresh_validates_pages_and_persists_only_real_timetables(
         .await;
     let fresh = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        refresh_primary_schedule_with_http(&http, &db, &base),
+        refresh_primary_schedule_with_http(&http, &db, &base, saturday),
     )
     .await
     .unwrap()
     .unwrap();
     assert_eq!(fresh.raw.luna_courses[0].name, "Fresh Luna");
     assert!(fresh.raw.kgc_entries_current.is_empty());
+    assert_eq!(fresh.raw.current_week_label, "2026/10/19～2026/10/24");
+    assert_eq!(fresh.raw.next_week_label, "2026年10月26日～2026年10月31日");
     let saved = db.get_snapshot_state().unwrap().unwrap();
     assert_eq!(fresh.snapshot_updated_at, saved.updated_at);
     assert!(!saved.current_week_label.is_empty());
     for auth_error in [false, true] {
-        let error = refresh_primary_schedule_with_http(&http, &db, &base)
+        let error = refresh_primary_schedule_with_http(&http, &db, &base, saturday)
             .await
             .unwrap_err();
         assert_eq!(
@@ -156,7 +165,7 @@ async fn primary_http_refresh_validates_pages_and_persists_only_real_timetables(
             serde_json::to_value(&saved).unwrap()
         );
     }
-    let empty = refresh_primary_schedule_with_http(&http, &db, &base)
+    let empty = refresh_primary_schedule_with_http(&http, &db, &base, saturday)
         .await
         .unwrap();
     assert!(empty.raw.luna_courses.is_empty());

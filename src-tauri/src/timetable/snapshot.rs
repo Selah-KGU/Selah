@@ -1,6 +1,5 @@
 use super::*;
 
-use super::ai_analysis::load_ai_cache_with_snapshot;
 use crate::db::{AiScheduleResult, Database, ScheduleRawData};
 use crate::luna_parser;
 use serde::Serialize;
@@ -48,6 +47,13 @@ pub(crate) fn build_schedule_snapshot<R: tauri::Runtime>(
 }
 
 pub(crate) fn build_schedule_snapshot_from_db(db: &Database) -> Result<ScheduleResponse, String> {
+    build_schedule_snapshot_on(db, chrono::Local::now().date_naive())
+}
+
+pub(super) fn build_schedule_snapshot_on(
+    db: &Database,
+    today: chrono::NaiveDate,
+) -> Result<ScheduleResponse, String> {
     let saved_snapshot = db.get_snapshot_state()?;
     let has_saved_snapshot = saved_snapshot.is_some();
     let snap = saved_snapshot.unwrap_or_default();
@@ -56,13 +62,16 @@ pub(crate) fn build_schedule_snapshot_from_db(db: &Database) -> Result<ScheduleR
         &snap.next_week_label,
         &snap.luna_year,
         &snap.luna_term,
-        chrono::Local::now().date_naive(),
+        today,
     );
     let mut communities = snap.luna_communities.clone();
     retain_current_communities(&mut communities, &scope.year, &scope.term);
     let raw = db.build_raw_data(&scope.current, &scope.next, communities.clone())?;
-    let (ai_result, ai_stale) =
-        load_ai_cache_with_snapshot(&db, has_saved_snapshot.then_some(&snap))?;
+    let (ai_result, ai_stale) = super::ai_analysis::load_ai_cache_with_snapshot_on(
+        db,
+        has_saved_snapshot.then_some(&snap),
+        today,
+    )?;
     Ok(ScheduleResponse {
         raw,
         ai_result,
@@ -76,3 +85,7 @@ pub(crate) fn build_schedule_snapshot_from_db(db: &Database) -> Result<ScheduleR
         kgc_warning: String::new(),
     })
 }
+
+#[cfg(test)]
+#[path = "snapshot/tests.rs"]
+mod tests;
