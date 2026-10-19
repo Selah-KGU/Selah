@@ -921,11 +921,12 @@ private func guidedCaption(
     if translate {
         let translation = DynamicGenerationSchema(name: "CaptionTranslation", properties: [
             .init(name: "id", description: "The input sentence id. Include every id from 1 to \(sentenceCount), once, in order.", schema: .init(type: Int.self)),
-            .init(name: "text", description: "Translate the entire ORIGINAL input sentence into \(targetLanguage), before any edits. Write \(targetLanguage); do not copy the source language or translate reference terms. Preserve every clause, digit sequence, sign, decimal, condition and exception. Do not complete a fragment.", schema: .init(type: String.self)),
+            .init(name: "text", description: "Translate the entire supplied sentence into \(targetLanguage). It has already been proofread and validated; do not change or undo any source term. Write \(targetLanguage); do not copy the source language or translate reference terms. Preserve every clause, digit sequence, sign, decimal, condition and exception. Do not complete a fragment.", schema: .init(type: String.self)),
         ])
-        properties.append(.init(name: "source_translations", description: "Independent translations of the original input into \(targetLanguage), one per input id, in order. Do not apply proposed edits to these translations.", schema: .init(arrayOf: translation, minimumElements: sentenceCount, maximumElements: sentenceCount)))
+        properties.append(.init(name: "translations", description: "Translations of the supplied validated sentences into \(targetLanguage), one per input id, in order. Preserve the supplied source terms.", schema: .init(arrayOf: translation, minimumElements: sentenceCount, maximumElements: sentenceCount)))
+    } else {
+        properties.append(.init(name: "edits", description: "Confident local term corrections, empty if uncertain. Never rewrite a sentence or translate a correction.", schema: .init(arrayOf: edit, maximumElements: 8)))
     }
-    properties.append(.init(name: "edits", description: "Optional confident local term corrections. These do not affect source_translations. Empty if uncertain. Never rewrite a sentence or translate a correction.", schema: .init(arrayOf: edit, maximumElements: translate ? 2 : 8)))
     let schema = try GenerationSchema(root: .init(name: "CaptionOutput", properties: properties), dependencies: [])
     let session = LanguageModelSession(instructions: instructions)
     let response = try await session.respond(to: prompt, schema: schema, options: options)
@@ -1021,7 +1022,7 @@ private func runGenerate(_ raw: String, _ callback: SendableCallback) async -> S
     let temperature = doubleField(object, "temperature")
     let maxTokens = intField(object, "max_tokens")
     let greedy = boolField(object, "greedy") || temperature <= 0
-    let captionOutput = stringField(object, "output_format") == "live_caption_edits_v2"
+    let captionOutput = stringField(object, "output_format") == "live_caption_pipeline_v3"
     let fitted = await fitToContext(
         model: model,
         instructions: instructions,

@@ -83,7 +83,7 @@ pub fn run_inference(req: InferenceRequest) -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run_caption_inference(req: InferenceRequest) -> Result<String, String> {
-    run_local(&req, None, Some("live_caption_edits_v2"))
+    run_local(&req, None, Some("live_caption_pipeline_v3"))
 }
 
 #[cfg(target_os = "macos")]

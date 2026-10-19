@@ -96,7 +96,10 @@ pub(super) fn check(value: &Value, source: &str) -> Option<CheckedCorrection> {
         .zip(&candidates)
         .enumerate()
         .map(|(index, (original, candidate))| {
-            if !rejected[index] && super::quality::acceptable_correction(original, candidate) {
+            if !rejected[index]
+                && self::parts(candidate).len() == 1
+                && super::quality::acceptable_correction(original, candidate)
+            {
                 candidate.clone()
             } else {
                 reverted += 1;
@@ -265,6 +268,16 @@ mod tests {
                 "続きです。"
             ]
         );
+    }
+
+    #[test]
+    fn a_term_edit_cannot_create_extra_translation_sentence_ids() {
+        let source = "Use the data base.";
+        let value = json!({"edits":[{"id":1,"from":"data base","to":"data. base"}]});
+        let result = check(&value, source).unwrap();
+        assert_eq!(result.text, source);
+        assert_eq!(result.reverted, 1);
+        assert_eq!(result.parts.len(), 1);
     }
 
     #[test]

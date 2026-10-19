@@ -1,4 +1,4 @@
-//! Check translation coverage separately from local correction edits.
+//! Check translations against the final, backend-validated source sentences.
 use serde_json::Value;
 
 #[cfg(test)]
@@ -18,10 +18,7 @@ pub(super) fn check(
 ) -> Option<CheckedTranslations> {
     let sentences = super::protocol::parts(corrected);
     let parts =
-        if let Some(items) = value
-            .get("source_translations")
-            .or_else(|| value.get("translations"))
-        {
+        if let Some(items) = value.get("translations") {
             let items = items.as_array()?;
             if items.len() != sentences.len() {
                 return None;
